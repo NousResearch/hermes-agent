@@ -339,10 +339,11 @@ def _on_turn_change(
         task_id=task_id,
         context="_on_turn_change",
     )
+    turn_output = _collect_turn_output(task_id, row, registry)
     try:
         from session_orchestration.feed import push_turn_change
 
-        push_turn_change(task_id, row, new_state, old_state)
+        push_turn_change(task_id, row, new_state, old_state, turn_output=turn_output)
     except Exception as exc:
         # Non-fatal: a failed notification must not crash the watcher.
         logger.error(
@@ -350,6 +351,84 @@ def _on_turn_change(
             task_id,
             exc,
         )
+
+
+def _collect_turn_output(
+    task_id: str,
+    row: Dict[str, Any],
+    registry: Optional["SessionOrchestrationRegistry"] = None,
+) -> Optional[str]:
+    """Read the agent's new assistant text since the last relay.
+
+    Sources the agent's own transcript file (``agent_session_file``, e.g.
+    omp's per-session JSONL) rather than the pane, so the Discord thread gets
+    the clean response — no tool calls, build logs, or the user's own pasted
+    reply. Retries file discovery here when spawn-time discovery missed
+    (transcript created slightly after launch). Persists the consumed line
+    offset. Best-effort: returns None on any failure.
+    """
+    try:
+        from session_orchestration.agent_transcript import (
+            discover_omp_session_file,
+            read_assistant_texts,
+        )
+
+        reg = registry if registry is not None else SessionOrchestrationRegistry()
+
+        transcript = row.get("agent_session_file")
+        if not transcript and row.get("agent") == "omp" and row.get("workdir"):
+            # created_at is SQLite datetime('now') — a naive UTC ISO string.
+            from datetime import datetime, timezone as _tz
+
+            created_dt = None
+            try:
+                created_dt = datetime.fromisoformat(
+                    str(row.get("created_at") or "")
+                ).replace(tzinfo=_tz.utc)
+            except ValueError:
+                pass
+            if created_dt is not None:
+                claimed = [
+                    r.get("agent_session_file")
+                    for r in reg.list()
+                    if r.get("agent_session_file")
+                ]
+                transcript = discover_omp_session_file(
+                    row["workdir"],
+                    created_dt,
+                    claimed,
+                )
+                if transcript:
+                    reg.upsert(
+                        task_id,
+                        agent=row.get("agent", "unknown"),
+                        run_id=row.get("run_id"),
+                        repo=row.get("repo"),
+                        source=row.get("source", "spawn"),
+                        agent_session_file=transcript,
+                    )
+        if not transcript:
+            return None
+
+        offset = int(row.get("transcript_line_offset") or 0)
+        texts, new_offset = read_assistant_texts(transcript, offset)
+        if new_offset != offset:
+            reg.upsert(
+                task_id,
+                agent=row.get("agent", "unknown"),
+                run_id=row.get("run_id"),
+                repo=row.get("repo"),
+                source=row.get("source", "spawn"),
+                transcript_line_offset=new_offset,
+            )
+        if not texts:
+            return None
+        return "\n\n".join(texts)
+    except Exception as exc:  # noqa: BLE001 — relay must never break the notification
+        logger.debug(
+            "watcher._collect_turn_output: failed for task_id=%s: %s", task_id, exc
+        )
+        return None
 
 
 def _on_heartbeat_tick(task_id: str, row: Dict[str, Any]) -> None:
@@ -982,6 +1061,31 @@ def _handle_terminate_adapter(
             agent_name,
             task_id,
         )
+        # The intent is consumed either way, so a skipped kill would orphan the
+        # tmux session forever (seen live when a flaky `omp --help` probe left
+        # the adapter unverified for one tick). Killing tmux needs no adapter —
+        # do it directly.
+        tmux_session = row.get("tmux_session") or ""
+        if tmux_session:
+            try:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", tmux_session],
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.info(
+                    "_handle_terminate_adapter: direct tmux kill for task_id=%s "
+                    "session=%s (no adapter)",
+                    task_id,
+                    tmux_session,
+                )
+            except Exception as exc:
+                logger.error(
+                    "_handle_terminate_adapter: direct tmux kill failed for "
+                    "task_id=%s: %s",
+                    task_id,
+                    exc,
+                )
         # Still attempt restart if requested — adapter kill is best-effort
     else:
         handle = _build_handle_from_row(row)

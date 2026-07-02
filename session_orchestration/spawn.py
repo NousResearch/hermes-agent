@@ -273,6 +273,27 @@ def spawn_session(
     task_id = handle.session_id
     repo = canonical_repo_id(workdir=request.workdir)
 
+    # Discover the agent's own transcript file (omp writes one per session
+    # under ~/.omp/agent/sessions/<cwd>/). The watcher relays new assistant
+    # text from it to the Discord thread on each needs-input transition —
+    # clean response text instead of pane scrapings. Best-effort: on a miss
+    # the watcher retries discovery each tick until it resolves.
+    agent_session_file = None
+    if request.agent == "omp":
+        try:
+            from session_orchestration.agent_transcript import discover_omp_session_file
+
+            claimed = [
+                r.get("agent_session_file")
+                for r in _registry.list()
+                if r.get("agent_session_file")
+            ]
+            agent_session_file = discover_omp_session_file(
+                request.workdir, handle.launch_ts, claimed
+            )
+        except Exception as exc:  # noqa: BLE001 — discovery must never fail a spawn
+            logger.debug("spawn: transcript discovery failed for %s: %s", task_id, exc)
+
     _registry.upsert(
         task_id,
         agent=request.agent,
@@ -287,6 +308,8 @@ def spawn_session(
         # Previously dropped here even though SpawnRequest carried it, leaving
         # every row's discord_user_id empty and the WAITING_USER ping silent.
         discord_user_id=request.discord_user_id,
+        agent_session_file=agent_session_file,
+        transcript_line_offset=0,
     )
     logger.info("spawn: registry row created task_id=%s repo=%s", task_id, repo)
 

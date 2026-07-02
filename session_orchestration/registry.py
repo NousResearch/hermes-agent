@@ -385,6 +385,27 @@ class SessionOrchestrationRegistry:
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent
 
+            # Turn-output relay: path of the agent's own transcript file (e.g.
+            # omp's ~/.omp/agent/sessions/<cwd>/<ts>_<id>.jsonl) and how many
+            # lines of it have already been relayed to the Discord thread. The
+            # transcript is the clean source of assistant text (no tool spam),
+            # discovered at spawn time (see agent_transcript.py).
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN agent_session_file TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN transcript_line_offset INTEGER"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
         self._write(_do)
 
     def _write(self, fn, conn: Optional[sqlite3.Connection] = None) -> Any:

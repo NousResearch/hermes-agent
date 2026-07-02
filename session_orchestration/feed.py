@@ -506,6 +506,28 @@ def _notify_key(new_state: str, row: Dict[str, Any]) -> str:
     return f"{new_state}\x00{digest}"
 
 
+#: Discord hard message cap is 2000 chars; leave headroom for markdown fences.
+_TURN_OUTPUT_CHUNK = 1900
+#: Cap the relayed turn output at this many thread messages per transition.
+_TURN_OUTPUT_MAX_CHUNKS = 4
+
+
+def _chunk_text(text: str, size: int = _TURN_OUTPUT_CHUNK) -> list[str]:
+    """Split *text* into <=size chunks, preferring newline boundaries."""
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= size:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, size)
+        if cut < size // 2:
+            cut = size
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    return chunks
+
+
 def push_turn_change(
     task_id: str,
     row: Dict[str, Any],
@@ -514,6 +536,7 @@ def push_turn_change(
     *,
     feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
+    turn_output: Optional[str] = None,
 ) -> bool:
     """Post an optional task-thread notice for a user-attention transition.
 
@@ -562,11 +585,33 @@ def push_turn_change(
         f"State: `{old_state}` → `{new_state}`"
     )
     if new_state == "WAITING_USER":
-        detail = _render_needs_input_detail(row)
-        if detail:
-            message = f"{message}\n\n{detail}"
+        # For a MENU the extracted question+options are the actionable detail.
+        # For a free-form/finished-turn idle the relayed turn_output IS the
+        # content — the pane-extracted "question" (last prose line) is
+        # redundant there and can even echo the user's own pasted reply.
+        if row.get("last_input_kind") == "menu" or not turn_output:
+            detail = _render_needs_input_detail(row)
+            if detail:
+                message = f"{message}\n\n{detail}"
 
     posted = False
+    # Relay the agent's actual response first (clean assistant text from its
+    # transcript file — no tool spam), chunked to Discord's message cap, so the
+    # thread reads: [what the agent said] then [what it needs from you].
+    if turn_output and thread_id and thread_id != resolved_feed_channel:
+        chunks = _chunk_text(turn_output.strip())
+        overflow = len(chunks) > _TURN_OUTPUT_MAX_CHUNKS
+        for chunk in chunks[:_TURN_OUTPUT_MAX_CHUNKS]:
+            if _post_discord_message(thread_id, chunk, token=token):
+                posted = True
+        if overflow:
+            _post_discord_message(
+                thread_id,
+                f"_…output truncated ({len(chunks) - _TURN_OUTPUT_MAX_CHUNKS} more "
+                f"chunk(s)); attach to tmux `{row.get('tmux_session', '')}` for the full log._",
+                token=token,
+            )
+
     if thread_id and thread_id != resolved_feed_channel:
         thread_msg_id = _post_discord_message(thread_id, message, token=token)
         if thread_msg_id:
@@ -591,8 +636,14 @@ def push_turn_change(
     # target; this is the live "needs you" ping.
     if resolved_feed_channel and uid:
         thread_link = f"<#{thread_id}>" if thread_id else f"`{task_label}`"
-        question = (row.get("last_question") or "").strip()
-        snippet = f"\n> {_truncate(question)}" if question else ""
+        # Snippet preference: menu question > relayed response tail > extracted
+        # last line (the latter can echo the user's own pasted reply).
+        if row.get("last_input_kind") == "menu" or not turn_output:
+            snippet_src = (row.get("last_question") or "").strip()
+        else:
+            lines = [l for l in turn_output.strip().splitlines() if l.strip()]
+            snippet_src = lines[-1] if lines else ""
+        snippet = f"\n> {_truncate(snippet_src)}" if snippet_src else ""
         router_ping = (
             f"<@{uid}> {icon} **[{agent}]** {verb}{project_part} → {thread_link}"
             f"{snippet}"

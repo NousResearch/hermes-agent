@@ -219,6 +219,73 @@ class TestPushTurnChange:
 
         assert [c for c, _ in tracker.calls] == ["thread-777"]
 
+    def test_turn_output_relayed_to_thread_before_detail(self):
+        """turn_output (clean assistant text) posts to the thread first; for a
+        prompt-kind idle the redundant extracted 'question' line is dropped."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-out", thread_id="thread-out")
+        row["discord_user_id"] = "555000111"
+        row["last_input_kind"] = "prompt"
+        row["last_question"] = "stale last line (would echo)"
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-out", row, new_state="WAITING_USER", old_state="RUNNING",
+                feed_channel_id="feed-ch-001",
+                turn_output="Here is the full z-explain answer.\nSecond line.",
+            )
+
+        channels = [c for c, _ in tracker.calls]
+        assert channels[0] == "thread-out"  # response chunk first
+        bodies = [b for _, b in tracker.calls]
+        assert "Here is the full z-explain answer." in bodies[0]
+        # Prompt-kind: the extracted last-line 'question' is NOT re-rendered.
+        assert all("stale last line" not in b for b in bodies)
+        # Feed snippet quotes the response tail, not the stale extraction.
+        feed_body = [b for c, b in tracker.calls if c == "feed-ch-001"][0]
+        assert "Second line." in feed_body
+
+    def test_turn_output_chunked_and_capped(self):
+        """Oversized turn_output splits at ~1900 chars and caps with a
+        truncation notice."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-big", thread_id="thread-big")
+        big = "\n".join(f"line {i} " + "x" * 90 for i in range(120))  # ~11k chars
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-big", row, new_state="WAITING_USER", old_state="RUNNING",
+                feed_channel_id="feed-ch-001",
+                turn_output=big,
+            )
+
+        thread_posts = [b for c, b in tracker.calls if c == "thread-big"]
+        # 4 chunks + truncation notice + state message
+        chunk_posts = [b for b in thread_posts if b.startswith("line ")]
+        assert len(chunk_posts) == feed_mod._TURN_OUTPUT_MAX_CHUNKS
+        assert all(len(b) <= 2000 for b in thread_posts)
+        assert any("truncated" in b for b in thread_posts)
+
+    def test_menu_detail_kept_alongside_turn_output(self):
+        """Menu rows keep the numbered-options detail even when turn_output
+        is relayed (the menu is the actionable part)."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-menu-out", thread_id="thread-mo")
+        row["last_input_kind"] = "menu"
+        row["last_question"] = "Pick one?"
+        row["last_options"] = json.dumps(["A", "B"])
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-menu-out", row, new_state="WAITING_USER", old_state="RUNNING",
+                feed_channel_id="feed-ch-001",
+                turn_output="Context before the menu.",
+            )
+
+        thread_posts = [b for c, b in tracker.calls if c == "thread-mo"]
+        assert any("Context before the menu." in b for b in thread_posts)
+        assert any("Pick one?" in b and "1." in b for b in thread_posts)
+
     def test_transition_to_paused_handoff_posts_once_to_thread(self):
         tracker = _FakePostTracker()
         row = _make_row(task_id="t-002", thread_id="thread-222")

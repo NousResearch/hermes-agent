@@ -1,7 +1,7 @@
 """Regression tests for Kitty keyboard protocol CSI-u control key sequences.
 
 When ``enable_kitty_keyboard_protocol()`` pushes the terminal into CSI-u
-mode, *every* modified key is sent as a CSI-u sequence — not just
+mode, *every* key press is sent as a CSI-u sequence — not just
 Shift+Enter and Ctrl+Enter.  prompt_toolkit's stock ``ANSI_SEQUENCES``
 table contains only four CSI-u entries (codepoint 1, modifier 5–8).
 
@@ -35,13 +35,24 @@ def _parse(byte_seq: str):
     return out
 
 
-# ---- Mapping tests --------------------------------------------------------
+def _parse_bulk(byte_seq: str):
+    """Feed *byte_seq* in one shot via ``feed_and_flush``."""
+    out: list = []
+    parser = Vt100Parser(out.append)
+    parser.feed_and_flush(byte_seq)
+    return out
+
+
+# ---- Fixtures -------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
 def _ensure_aliases_installed():
     """Make every test idempotent — install the aliases once per test run."""
     install_kitty_control_aliases()
+
+
+# ---- Mapping tests: Ctrl+A – Ctrl+Z --------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -84,6 +95,60 @@ def test_csi_u_ctrl_letter_mapped(codepoint, expected_key):
     )
 
 
+# ---- Mapping tests: Ctrl+0 – Ctrl+9 --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "codepoint,expected_key",
+    [
+        (48, Keys.Control0),
+        (49, Keys.Control1),
+        (50, Keys.Control2),
+        (51, Keys.Control3),
+        (52, Keys.Control4),
+        (53, Keys.Control5),
+        (54, Keys.Control6),
+        (55, Keys.Control7),
+        (56, Keys.Control8),
+        (57, Keys.Control9),
+    ],
+)
+def test_csi_u_ctrl_number_mapped(codepoint, expected_key):
+    """Each Ctrl+number CSI-u sequence must map to the correct Keys.ControlN."""
+    seq = f"\x1b[{codepoint};5u"
+    assert ANSI_SEQUENCES.get(seq) == expected_key, (
+        f"CSI-u sequence {seq!r} should map to {expected_key}, "
+        f"got {ANSI_SEQUENCES.get(seq)!r}"
+    )
+
+
+# ---- Mapping tests: Ctrl+special chars -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "codepoint,expected_key,name",
+    [
+        (64, Keys.ControlAt, "Ctrl+@"),
+        (91, Keys.Escape, "Ctrl+["),
+        (92, Keys.ControlBackslash, "Ctrl+\\"),
+        (93, Keys.ControlSquareClose, "Ctrl+]"),
+        (94, Keys.ControlCircumflex, "Ctrl+^"),
+        (95, Keys.ControlUnderscore, "Ctrl+_"),
+        (32, Keys.ControlAt, "Ctrl+Space"),
+    ],
+)
+def test_csi_u_ctrl_special_mapped(codepoint, expected_key, name):
+    """Ctrl+special char CSI-u sequences must map to the correct Keys."""
+    seq = f"\x1b[{codepoint};5u"
+    assert ANSI_SEQUENCES.get(seq) == expected_key, (
+        f"CSI-u sequence for {name} ({seq!r}) should map to {expected_key}, "
+        f"got {ANSI_SEQUENCES.get(seq)!r}"
+    )
+
+
+# ---- Mapping test: Plain Escape ------------------------------------------
+
+
 def test_escape_csi_u_mapped():
     """Plain Escape in kitty protocol is ESC[27u — must map to Keys.Escape."""
     assert ANSI_SEQUENCES.get("\x1b[27u") == Keys.Escape
@@ -108,6 +173,13 @@ def test_escape_parses_as_single_keypress():
     assert result[0].key == Keys.Escape
 
 
+def test_ctrl_c_bulk_feed_matches_char_feed():
+    """Both char-by-char and bulk feed must produce the same result."""
+    char_result = _parse("\x1b[99;5u")
+    bulk_result = _parse_bulk("\x1b[99;5u")
+    assert [kp.key for kp in char_result] == [kp.key for kp in bulk_result]
+
+
 def test_ctrl_c_does_not_produce_garbage_text():
     """The old bug: ESC[99;5u parsed as Escape + '[99;5u' literal text.
     After the fix, the result must be a single Keys.ControlC keypress —
@@ -128,6 +200,80 @@ def test_multiple_ctrl_keys_in_sequence():
     assert result[1].key == Keys.ControlD
 
 
+def test_ctrl_c_followed_by_plain_text():
+    """Ctrl+C followed by 'hello' must produce Ctrl+C then the text chars."""
+    result = _parse("\x1b[99;5uhello")
+    assert result[0].key == Keys.ControlC
+    assert [kp.key for kp in result[1:]] == ["h", "e", "l", "l", "o"]
+
+
+def test_escape_followed_by_plain_text():
+    """Escape followed by 'hello' must produce Escape then the text chars."""
+    result = _parse("\x1b[27uhello")
+    assert result[0].key == Keys.Escape
+    assert [kp.key for kp in result[1:]] == ["h", "e", "l", "l", "o"]
+
+
+def test_rapid_escape_and_ctrl_c():
+    """Escape then Ctrl+C in rapid succession."""
+    result = _parse("\x1b[27u\x1b[99;5u")
+    assert len(result) == 2
+    assert result[0].key == Keys.Escape
+    assert result[1].key == Keys.ControlC
+
+
+# ---- No-conflict tests ----------------------------------------------------
+
+
+def test_no_conflict_with_shift_enter():
+    """install_kitty_control_aliases must not overwrite Shift+Enter mappings
+    installed by install_shift_enter_alias."""
+    from hermes_cli.pt_input_extras import install_shift_enter_alias
+    install_shift_enter_alias()
+    install_kitty_control_aliases()
+    alt_enter = (Keys.Escape, Keys.ControlM)
+    assert ANSI_SEQUENCES.get("\x1b[13;2u") == alt_enter
+
+
+def test_no_conflict_with_ctrl_enter():
+    """install_kitty_control_aliases must not overwrite Ctrl+Enter mappings
+    installed by install_ctrl_enter_alias."""
+    from hermes_cli.pt_input_extras import install_ctrl_enter_alias
+    install_ctrl_enter_alias()
+    install_kitty_control_aliases()
+    alt_enter = (Keys.Escape, Keys.ControlM)
+    assert ANSI_SEQUENCES.get("\x1b[13;5u") == alt_enter
+
+
+def test_ctrl_m_does_not_conflict_with_ctrl_enter():
+    """Ctrl+M (codepoint 109) and Ctrl+Enter (codepoint 13) are different
+    sequences and must not interfere with each other."""
+    assert ANSI_SEQUENCES.get("\x1b[109;5u") == Keys.ControlM
+    # Ctrl+Enter is codepoint 13 — mapped by install_ctrl_enter_alias
+    from hermes_cli.pt_input_extras import install_ctrl_enter_alias
+    install_ctrl_enter_alias()
+    assert ANSI_SEQUENCES.get("\x1b[13;5u") == (Keys.Escape, Keys.ControlM)
+
+
+def test_escape_csi_u_does_not_conflict_with_xterm_shift_enter():
+    """ESC[27u (plain Escape) must not interfere with ESC[27;2;13~ (xterm
+    Shift+Enter). The parser must correctly disambiguate them by prefix."""
+    from hermes_cli.pt_input_extras import install_shift_enter_alias
+    install_shift_enter_alias()
+    install_kitty_control_aliases()
+
+    # Both must parse correctly
+    esc_result = _parse("\x1b[27u")
+    shift_enter_result = _parse("\x1b[27;2;13~")
+
+    assert len(esc_result) == 1
+    assert esc_result[0].key == Keys.Escape
+
+    assert len(shift_enter_result) == 2
+    assert shift_enter_result[0].key == Keys.Escape
+    assert shift_enter_result[1].key == Keys.ControlM
+
+
 # ---- Idempotency / cache tests -------------------------------------------
 
 
@@ -142,8 +288,6 @@ def test_prefix_cache_cleared_after_install():
     like '\\x1b[99' (previously cached as is_prefix_of_longer=False because
     no longer match existed) are recomputed and now return True."""
     install_kitty_control_aliases()
-    # After install, \x1b[99 should be a prefix of \x1b[99;5u
-    # The cache should have been cleared, so this will recompute
     assert _IS_PREFIX_OF_LONGER_MATCH_CACHE["\x1b[99"] is True
 
 

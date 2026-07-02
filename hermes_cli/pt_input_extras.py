@@ -116,28 +116,38 @@ def install_ctrl_enter_alias() -> int:
 
 
 def install_kitty_control_aliases() -> int:
-    """Map Kitty keyboard protocol CSI-u sequences for common control keys
-    (Ctrl+A–Z, Escape) to their corresponding prompt_toolkit ``Keys`` entries.
+    """Map Kitty keyboard protocol CSI-u sequences for all control keys
+    to their corresponding prompt_toolkit ``Keys`` entries.
 
     When :func:`enable_kitty_keyboard_protocol` pushes the terminal into
-    CSI-u mode, *every* modified key is sent as a CSI-u sequence — not just
+    CSI-u mode, *every* key press is sent as a CSI-u sequence — not just
     Shift+Enter and Ctrl+Enter.  prompt_toolkit's stock ``ANSI_SEQUENCES``
     table contains only four CSI-u entries (codepoint 1, modifier 5–8).
     The existing :func:`install_shift_enter_alias` and
     :func:`install_ctrl_enter_alias` cover Enter (codepoint 13), but all
-    other Ctrl+letter combinations (Ctrl+C = ``\\x1b[99;5u``, Ctrl+D =
-    ``\\x1b[100;5u``, …) are unmapped.
+    other Ctrl+key combinations (Ctrl+C = ``\\x1b[99;5u``, Ctrl+D =
+    ``\\x1b[100;5u``, …) and plain Escape (``\\x1b[27u``) are unmapped.
 
     Unmapped CSI-u sequences fall through prompt_toolkit's VT100 parser to
     literal text insertion: the leading ESC fires as ``Keys.Escape``, then
     ``[99;5u`` appears as garbage text in the prompt buffer.  In vi mode
     this is especially disruptive because Escape is the mode-switch key.
 
-    This helper registers CSI-u sequences for all Ctrl+letter keys (a–z,
-    codepoints 97–122, modifier 5 = Ctrl) and plain Escape (codepoint 27,
-    no modifier) so the parser routes them to the correct
-    ``Keys.ControlX`` / ``Keys.Escape`` entries instead of inserting
-    literal text.
+    This helper registers CSI-u sequences for:
+
+    - **Ctrl+A–Z** (codepoints 97–122, modifier 5 = Ctrl)
+    - **Ctrl+0–9** (codepoints 48–57, modifier 5 = Ctrl)
+    - **Ctrl+special chars**: ``@`` (64), ``[`` (91), ``\\`` (92),
+      ``]`` (93), ``^`` (94), ``_`` (95) — all modifier 5 = Ctrl
+    - **Plain Escape** (codepoint 27, no modifier)
+
+    so the parser routes them to the correct ``Keys.ControlX`` /
+    ``Keys.Escape`` entries instead of inserting literal text.
+
+    Sequences for which prompt_toolkit has no corresponding ``Keys`` entry
+    (e.g. Alt+letter = modifier 3, Ctrl+Shift+letter = modifier 6) cannot
+    be mapped and are left untouched.  The parser will still fall through
+    to literal text for those — a limitation of prompt_toolkit's key model.
 
     Also clears the VT100 parser's ``_IS_PREFIX_OF_LONGER_MATCH_CACHE`` so
     the new entries are immediately effective even if a parser has already
@@ -154,8 +164,17 @@ def install_kitty_control_aliases() -> int:
     except Exception:
         return 0
 
-    # Ctrl+A through Ctrl+Z: codepoints 97–122, modifier 5 (Ctrl).
-    _CTRL_LETTERS = {
+    # Map Unicode codepoint → prompt_toolkit Keys for all Ctrl-modified
+    # keys that prompt_toolkit has an enum entry for.
+    #
+    # In the Kitty keyboard protocol, the CSI-u codepoint is the Unicode
+    # code point of the key's base character.  For Ctrl+A the base char is
+    # 'a' (codepoint 97), so the sequence is ESC[97;5u.  For Ctrl+1 the
+    # base char is '1' (codepoint 49), so the sequence is ESC[49;5u.
+    #
+    # Modifier 5 = Ctrl (bit 2 set in the modifier bitmask).
+    _CTRL_CODEPOINTS: dict[int, Keys] = {
+        # Ctrl+A – Ctrl+Z (codepoints 97–122)
         97: Keys.ControlA,
         98: Keys.ControlB,
         99: Keys.ControlC,
@@ -182,10 +201,29 @@ def install_kitty_control_aliases() -> int:
         120: Keys.ControlX,
         121: Keys.ControlY,
         122: Keys.ControlZ,
+        # Ctrl+0 – Ctrl+9 (codepoints 48–57)
+        48: Keys.Control0,
+        49: Keys.Control1,
+        50: Keys.Control2,
+        51: Keys.Control3,
+        52: Keys.Control4,
+        53: Keys.Control5,
+        54: Keys.Control6,
+        55: Keys.Control7,
+        56: Keys.Control8,
+        57: Keys.Control9,
+        # Ctrl+special characters
+        64: Keys.ControlAt,          # Ctrl+@
+        91: Keys.Escape,             # Ctrl+[ — same as Escape
+        92: Keys.ControlBackslash,   # Ctrl+\
+        93: Keys.ControlSquareClose,  # Ctrl+]
+        94: Keys.ControlCircumflex,  # Ctrl+^
+        95: Keys.ControlUnderscore,  # Ctrl+_
+        32: Keys.ControlAt,          # Ctrl+Space — same key as Ctrl+@ (NUL)
     }
 
     changed = 0
-    for codepoint, key in _CTRL_LETTERS.items():
+    for codepoint, key in _CTRL_CODEPOINTS.items():
         seq = f"\x1b[{codepoint};5u"
         if ANSI_SEQUENCES.get(seq) != key:
             ANSI_SEQUENCES[seq] = key

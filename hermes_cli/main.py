@@ -4269,6 +4269,13 @@ def cmd_project(args):
     return projects_command(args)
 
 
+def cmd_hki(args):
+    """Manage project-scoped Human Knowledge Infrastructure artifacts."""
+    from hermes_cli.hki_cmd import hki_command
+
+    return hki_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -11926,7 +11933,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "hki", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
@@ -12689,6 +12696,14 @@ def main():
 
     project_parser = _build_project_parser(subparsers)
     project_parser.set_defaults(func=cmd_project)
+
+    # =========================================================================
+    # hki command — project-scoped Human Knowledge Infrastructure artifacts
+    # =========================================================================
+    from hermes_cli.hki_cmd import build_parser as _build_hki_parser
+
+    hki_parser = _build_hki_parser(subparsers)
+    hki_parser.set_defaults(func=cmd_hki)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

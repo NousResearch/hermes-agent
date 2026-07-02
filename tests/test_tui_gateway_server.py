@@ -16,6 +16,49 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_load_cfg_invalidates_same_mtime_config_size_change(tmp_path):
+    """Config edits from another process must be visible to the TUI gateway.
+
+    A fast ``hermes config set model.*`` can rewrite config.yaml inside the
+    same filesystem timestamp tick.  The TUI backend must still notice the
+    content changed before it builds model options or syncs an open session's
+    model from config.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "model:\n  default: old\n  provider: old\n",
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(home)
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+
+        assert server._load_cfg()["model"]["default"] == "old"
+        original_stat = config_path.stat()
+
+        config_path.write_text(
+            "model:\n  default: newer-model\n  provider: new\n",
+            encoding="utf-8",
+        )
+        # Preserve the timestamp value that the old cache key used.  The file
+        # size changes, so an mtime+size signature should still invalidate.
+        os.utime(
+            config_path,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+
+        assert server._load_cfg()["model"]["default"] == "newer-model"
+    finally:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

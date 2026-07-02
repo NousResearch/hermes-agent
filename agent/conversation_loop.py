@@ -1279,6 +1279,15 @@ def run_conversation(
                             request_messages=list(request_messages)
                             if isinstance(request_messages, list)
                             else [],
+                            # Raw passthrough of the Anthropic Messages-API
+                            # ``system`` field (anthropic_adapter.py sets
+                            # api_kwargs["system"]). Same precedent as
+                            # request_messages above: intentionally NOT
+                            # sanitised. mnemosya's debug tap reads it because
+                            # ``request["body"]`` is sanitised to a truncated
+                            # stub on real requests (no ``body`` key), so
+                            # system/model/max_tokens are unrecoverable there.
+                            request_system=api_kwargs.get("system"),
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
                             approx_input_tokens=approx_tokens,

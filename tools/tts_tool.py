@@ -2400,12 +2400,29 @@ def text_to_speech_tool(
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-            and not file_str.endswith(".ogg")
         ):
-            opus_path = _convert_to_opus(file_str)
-            if opus_path:
-                file_str = opus_path
-                voice_compatible = True
+            # Providers like edge, minimax, and xai always write MP3
+            # regardless of the requested filename extension.  When a
+            # caller supplies an explicit .ogg output_path the file
+            # lands as MP3 bytes under a .ogg name, and the naive
+            # ``not file_str.endswith(".ogg")`` guard skips the very
+            # conversion that would make it real Opus.  Rename the
+            # mislabeled file to .mp3 first so _convert_to_opus can
+            # operate on the real format.
+            if file_str.endswith(".ogg") and provider in {
+                "edge", "minimax", "xai",
+            }:
+                mp3_sibling = file_str[:-4] + ".mp3"
+                try:
+                    os.rename(file_str, mp3_sibling)
+                    file_str = mp3_sibling
+                except OSError:
+                    pass  # leave as-is; conversion will likely fail
+            if not file_str.endswith(".ogg"):
+                opus_path = _convert_to_opus(file_str)
+                if opus_path:
+                    file_str = opus_path
+                    voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 

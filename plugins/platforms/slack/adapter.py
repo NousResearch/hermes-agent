@@ -1444,9 +1444,21 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(
+                client = self._get_client(
                     chat_id, team_id=self._metadata_team_id(metadata)
-                ).chat_postMessage(**kwargs)
+                )
+                try:
+                    last_result = await client.chat_postMessage(**kwargs)
+                except Exception as exc:
+                    if "blocks" not in kwargs or not self._is_invalid_blocks_error(exc):
+                        raise
+                    logger.warning(
+                        "[Slack] Block Kit payload rejected; retrying without blocks: %s",
+                        exc,
+                    )
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs.pop("blocks", None)
+                    last_result = await client.chat_postMessage(**fallback_kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1542,9 +1554,26 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks = self._maybe_blocks(content)
                 if blocks:
                     update_kwargs["blocks"] = blocks
-            await self._get_client(
+            client = self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
-            ).chat_update(**update_kwargs)
+            )
+            try:
+                await client.chat_update(**update_kwargs)
+            except Exception as exc:
+                if "blocks" not in update_kwargs or not self._is_invalid_blocks_error(
+                    exc
+                ):
+                    raise
+                logger.warning(
+                    "[Slack] Final Block Kit edit rejected; clearing blocks and retrying: %s",
+                    exc,
+                )
+                fallback_kwargs = dict(update_kwargs)
+                # Omitting blocks on chat.update preserves the previous block
+                # layout. An explicit empty list clears it before plain-text
+                # fallback is applied.
+                fallback_kwargs["blocks"] = []
+                await client.chat_update(**fallback_kwargs)
             if finalize:
                 await self.stop_typing(chat_id, metadata=metadata)
             return SendResult(success=True, message_id=message_id)
@@ -2062,6 +2091,10 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
+
+    @staticmethod
+    def _is_invalid_blocks_error(exc: Exception) -> bool:
+        return "invalid_blocks" in str(exc)
 
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.

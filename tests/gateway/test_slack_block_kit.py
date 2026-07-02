@@ -159,10 +159,21 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
+        # left is default -> empty object placeholder; center/right emitted
+        assert cs[0] == {}
         assert cs[1] == {"align": "center"}
         assert cs[2] == {"align": "right"}
+
+    def test_column_settings_omit_trailing_default_columns(self):
+        md = (
+            "| Item | Status | Note |\n"
+            "|---|---:|---|\n"
+            "| Hermes | ok | default-left trailing column |"
+        )
+        blocks = render_blocks(md)
+        cs = blocks[0]["column_settings"]
+        assert cs == [{}, {"align": "right"}]
+        assert all(isinstance(setting, dict) for setting in cs)
 
     def test_inline_formatting_inside_cells(self):
         md = (

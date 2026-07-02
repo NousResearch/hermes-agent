@@ -53,6 +53,27 @@ class TestSendMessageBlocks:
         assert "divider" in types
 
     @pytest.mark.asyncio
+    async def test_invalid_blocks_retries_once_without_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage.side_effect = [
+            RuntimeError("invalid_blocks: must provide an object"),
+            {"ts": "111.333"},
+        ]
+
+        result = await adapter.send(
+            "C1", RICH_MD, metadata={"slack_team_id": "T_OTHER"}
+        )
+
+        assert result.success
+        assert client.chat_postMessage.await_count == 2
+        first = client.chat_postMessage.await_args_list[0].kwargs
+        second = client.chat_postMessage.await_args_list[1].kwargs
+        assert "blocks" in first
+        assert "blocks" not in second
+        assert second["text"]
+        adapter._get_client.assert_called_once_with("C1", team_id="T_OTHER")
+
+    @pytest.mark.asyncio
     async def test_enabled_but_unrenderable_falls_back_to_text(self):
         # 60 dividers -> renderer returns None -> no blocks kwarg, text stands
         adapter, client = _make_adapter({"rich_blocks": True})
@@ -115,6 +136,31 @@ class TestEditMessageBlocks:
         kwargs = client.chat_update.await_args.kwargs
         assert "blocks" in kwargs and kwargs["blocks"]
         assert kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_final_blocks_clear_layout_on_workspace_client(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_update.side_effect = [
+            RuntimeError("invalid_blocks: must provide an object"),
+            {"ts": "111.222"},
+        ]
+
+        result = await adapter.edit_message(
+            "C1",
+            "111.222",
+            RICH_MD,
+            finalize=True,
+            metadata={"slack_team_id": "T_OTHER"},
+        )
+
+        assert result.success
+        assert client.chat_update.await_count == 2
+        first = client.chat_update.await_args_list[0].kwargs
+        second = client.chat_update.await_args_list[1].kwargs
+        assert first["blocks"]
+        assert second["blocks"] == []
+        assert second["text"]
+        adapter._get_client.assert_called_once_with("C1", team_id="T_OTHER")
 
     @pytest.mark.asyncio
     async def test_finalize_edit_gets_feedback_buttons_when_enabled(self):

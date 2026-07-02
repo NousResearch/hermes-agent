@@ -175,7 +175,8 @@ export const zhHant = defineLocale({
     showRightSidebar: '顯示右側邊欄',
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
-    openSettings: '開啟設定'
+    openSettings: '開啟設定',
+    openStarmap: '開啟記憶圖譜'
   },
 
   language: {
@@ -279,7 +280,8 @@ export const zhHant = defineLocale({
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       embedsTitle: '內嵌預覽',
-      embedsDesc: '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
+      embedsDesc:
+        '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
       embedsAsk: '詢問',
       embedsAlways: '一律',
       embedsOff: '關閉',
@@ -307,6 +309,8 @@ export const zhHant = defineLocale({
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        roamTitle: '漫遊',
+        roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
         on: '開啟',
         off: '關閉',
         chooseTitle: '選擇寵物',
@@ -833,6 +837,21 @@ export const zhHant = defineLocale({
     failedToUpdate: name => `更新 ${name} 失敗`
   },
 
+  starmap: {
+    title: '記憶圖譜',
+    subtitle: (nodes, clusters) => `${clusters} 個類別中的 ${nodes} 個技能`,
+    close: '關閉記憶圖譜',
+    refresh: '重新整理',
+    memory: '記憶',
+    filterAll: '全部',
+    filterUsed: '已使用',
+    filterLearned: '已學習',
+    viewGraph: '圖譜',
+    loadFailed: '無法載入記憶圖譜',
+    loading: '載入中…',
+    emptyTitle: '尚無學習內容',
+    emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
+  },
   agents: {
     close: '關閉代理',
     title: '派生樹',
@@ -1126,6 +1145,7 @@ export const zhHant = defineLocale({
     nameHint: '小寫字母、數字、連字號和底線。必須以字母或數字開頭。',
     title: '設定檔',
     count: count => `${count} 個設定檔`,
+    search: '搜尋設定檔…',
     loading: '正在載入設定檔…',
     newProfile: '新增設定檔',
     allProfiles: '全部設定檔',
@@ -1198,6 +1218,8 @@ export const zhHant = defineLocale({
 
   cron: {
     close: '關閉排程',
+    title: '排程工作',
+    count: count => `${count} 個工作`,
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
     states: {
@@ -1397,6 +1419,8 @@ export const zhHant = defineLocale({
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',
+      staleBackend:
+        '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
       startWork: '新增工作樹',
       newWorktreeTitle: '新增工作樹',
@@ -1496,6 +1520,8 @@ export const zhHant = defineLocale({
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
     voiceDictation: '語音聽寫',
+    speakReplies: '朗讀回覆',
+    stopSpeakingReplies: '停止朗讀回覆',
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',
@@ -1896,9 +1922,29 @@ export const zhHant = defineLocale({
       running: count => `${count} 個執行中`,
       cron: '排程',
       openCron: '開啟排程工作',
+      starmap: '記憶圖譜',
+      openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       currentTurnElapsed: '目前回合已用時間',
       contextUsage: '上下文使用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '對話',
+          mcp: 'MCP',
+          memory: '記憶',
+          rules: '規則',
+          skills: '技能',
+          subagent_definitions: '子代理定義',
+          system_prompt: '系統提示詞',
+          tool_definitions: '工具定義'
+        },
+        empty: '尚無上下文資料',
+        loading: '正在載入明細…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文使用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
@@ -1942,6 +1988,10 @@ export const zhHant = defineLocale({
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
     terminalHide: '隱藏終端機',
+    terminalsAria: '終端機',
+    terminalNew: '新增終端機',
+    terminalCloseOthers: '關閉其他',
+    terminalCloseAll: '全部關閉',
     addToChat: '新增至聊天'
   },
 

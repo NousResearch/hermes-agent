@@ -41,6 +41,7 @@ import type {
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -48,6 +49,15 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// prompt.submit is effectively fire-and-forget: turn completion is signaled by
+// stream / message.complete events, NOT by the RPC return. A long turn (MoA
+// presets running references + aggregator in series, deep reasoning, large tool
+// chains) can legitimately take minutes to ACK, so bounding the ack by the
+// generic 30s default surfaces a false "request timed out" toast while the turn
+// is still running and will succeed (issue #55024). Match the backend's
+// agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
+// ever fires when the turn itself would have been abandoned server-side.
+export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export type {
   ActionResponse,
@@ -113,6 +123,7 @@ export type {
   SessionSearchResult,
   SkillInfo,
   StaleAuxAssignment,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -486,6 +497,47 @@ export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...profileScoped(),
     path: '/api/skills'
+  })
+}
+
+export function getStarmapGraph(): Promise<StarmapGraph> {
+  return window.hermesDesktop.api<StarmapGraph>({
+    ...profileScoped(),
+    // Backend REST contract — stays /api/learning even though the UI feature is
+    // now "star map". Renaming this would break against an un-upgraded backend.
+    path: '/api/learning/graph'
+  })
+}
+
+export interface LearningNodeDetail {
+  content: string
+  kind: 'memory' | 'skill'
+  label: string
+  ok: boolean
+}
+
+export function getLearningNode(id: string): Promise<LearningNodeDetail> {
+  return window.hermesDesktop.api<LearningNodeDetail>({
+    ...profileScoped(),
+    path: `/api/learning/node?id=${encodeURIComponent(id)}`
+  })
+}
+
+export function deleteLearningNode(id: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'DELETE',
+    body: { id }
+  })
+}
+
+export function editLearningNode(id: string, content: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'PUT',
+    body: { content, id }
   })
 }
 

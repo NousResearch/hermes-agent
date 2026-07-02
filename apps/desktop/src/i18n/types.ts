@@ -223,6 +223,7 @@ export interface Translations {
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
+    openStarmap: string
     openKeybinds: string
   }
 
@@ -331,6 +332,8 @@ export interface Translations {
         off: string
         scaleTitle: string
         scaleDesc: string
+        roamTitle: string
+        roamDesc: string
         chooseTitle: string
         chooseDesc: string
         searchPlaceholder: string
@@ -647,6 +650,33 @@ export interface Translations {
     failedToUpdate: (name: string) => string
   }
 
+  starmap: {
+    title: string
+    subtitle: (nodes: number, clusters: number) => string
+    close: string
+    refresh: string
+    memory: string
+    filterAll: string
+    filterUsed: string
+    filterLearned: string
+    viewGraph: string
+    loadFailed: string
+    loading: string
+    emptyTitle: string
+    emptyDesc: string
+    share: string
+    shareHint: string
+    shareTitle: string
+    sharePlaceholder: string
+    copy: string
+    copied: string
+    importMap: string
+    importBtn: string
+    importEmpty: string
+    importSuccess: (nodes: number) => string
+    importedBadge: string
+    resetToMine: string
+  }
   agents: {
     close: string
     title: string
@@ -844,6 +874,7 @@ export interface Translations {
     nameHint: string
     title: string
     count: (count: number) => string
+    search: string
     loading: string
     newProfile: string
     allProfiles: string
@@ -916,6 +947,8 @@ export interface Translations {
 
   cron: {
     close: string
+    title: string
+    count: (count: number) => string
     search: string
     loading: string
     states: Record<string, string>
@@ -1071,6 +1104,7 @@ export interface Translations {
       copyPath: string
       removeFromSidebar: string
       createFailed: string
+      staleBackend: string
       deleteConfirm: string
       startWork: string
       newWorktreeTitle: string
@@ -1157,6 +1191,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    speakReplies: string
+    stopSpeakingReplies: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string
@@ -1491,9 +1527,29 @@ export interface Translations {
       running: (count: number) => string
       cron: string
       openCron: string
+      starmap: string
+      openStarmap: string
       turnRunning: string
       currentTurnElapsed: string
       contextUsage: string
+      contextUsagePanel: {
+        categories: {
+          conversation: string
+          mcp: string
+          memory: string
+          rules: string
+          skills: string
+          subagent_definitions: string
+          system_prompt: string
+          tool_definitions: string
+        }
+        empty: string
+        loading: string
+        percentFull: (percent: number) => string
+        title: string
+        tokenSummary: (used: string, max: string) => string
+      }
+      openContextUsage: string
       session: string
       runtimeSessionElapsed: string
       yoloOn: string
@@ -1537,6 +1593,10 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalsAria: string
+    terminalNew: string
+    terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 
@@ -1650,6 +1710,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      expandMessage: string
       scrollToBottom: string
       stop: string
       restorePrevious: string

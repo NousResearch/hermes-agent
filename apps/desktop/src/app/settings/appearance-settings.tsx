@@ -17,7 +17,8 @@ import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
-import { isUserTheme, removeUserTheme } from '@/themes/user-themes'
+import type { DesktopTheme } from '@/themes/types'
+import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
@@ -82,18 +83,17 @@ const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', ma
  */
 function MarketplaceThemeResults({
   query,
-  installedExtIds,
+  installs,
   onInstalled
 }: {
   query: string
-  installedExtIds: Set<string>
+  installs: ReadonlyMap<string, DesktopTheme>
   onInstalled: (name: string) => void
 }) {
   const { t } = useI18n()
   const copy = t.commandCenter.installTheme
   const debounced = useDebounced(query.trim(), 300)
   const [installingId, setInstallingId] = useState<string | null>(null)
-  const [installedHere, setInstalledHere] = useState<Record<string, true>>({})
   const [error, setError] = useState<string | null>(null)
 
   const search = useQuery({
@@ -102,6 +102,20 @@ function MarketplaceThemeResults({
     queryKey: ['marketplace-themes-settings', debounced],
     staleTime: 5 * 60 * 1000
   })
+
+  // Already installed → just re-activate it; never re-download what we have.
+  const select = (item: DesktopMarketplaceSearchItem) => {
+    const owned = installs.get(item.extensionId)
+
+    if (owned) {
+      triggerHaptic('crisp')
+      onInstalled(owned.name)
+
+      return
+    }
+
+    void install(item)
+  }
 
   const install = async (item: DesktopMarketplaceSearchItem) => {
     if (installingId) {
@@ -115,7 +129,6 @@ function MarketplaceThemeResults({
       const theme = await installVscodeThemeFromMarketplace(item.extensionId)
 
       triggerHaptic('crisp')
-      setInstalledHere(prev => ({ ...prev, [item.extensionId]: true }))
       onInstalled(theme.name)
     } catch (e) {
       setError(e instanceof Error ? e.message : copy.error)
@@ -173,7 +186,7 @@ function MarketplaceThemeResults({
       <div className="grid gap-2 sm:grid-cols-2">
         {results.map(item => {
           const busy = installingId === item.extensionId
-          const done = installedHere[item.extensionId] || installedExtIds.has(item.extensionId)
+          const done = installs.has(item.extensionId)
 
           return (
             <button
@@ -183,7 +196,7 @@ function MarketplaceThemeResults({
               )}
               disabled={Boolean(installingId) && !busy}
               key={item.extensionId}
-              onClick={() => void install(item)}
+              onClick={() => select(item)}
               type="button"
             >
               <Palette className="size-4 shrink-0 text-(--ui-text-tertiary)" />
@@ -220,6 +233,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
+  const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
@@ -241,20 +255,6 @@ export function AppearanceSettings() {
     )
     // Active theme first; stable sort keeps the rest in their original order.
     .sort((a, b) => Number(b.name === themeName) - Number(a.name === themeName))
-
-  // Marketplace imports describe themselves as "VS Code · <publisher.extension>";
-  // pull those ids back out so search results already imported show as installed.
-  const MARKETPLACE_DESC_PREFIX = 'VS Code · '
-
-  const installedExtIds = new Set(
-    availableThemes
-      .map(theme =>
-        theme.description.startsWith(MARKETPLACE_DESC_PREFIX)
-          ? theme.description.slice(MARKETPLACE_DESC_PREFIX.length)
-          : ''
-      )
-      .filter(Boolean)
-  )
 
   // Themes save per profile. Surface that only when the user actually has more
   // than one profile (single-profile installs never see the distinction).
@@ -365,11 +365,7 @@ export function AppearanceSettings() {
                       })}
                     </div>
                   )}
-                  <MarketplaceThemeResults
-                    installedExtIds={installedExtIds}
-                    onInstalled={name => setTheme(name)}
-                    query={query}
-                  />
+                  <MarketplaceThemeResults installs={installs} onInstalled={name => setTheme(name)} query={query} />
                 </div>
                 {showProfileNote && (
                   <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">

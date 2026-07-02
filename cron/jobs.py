@@ -744,6 +744,24 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_job_max_turns(value: Any) -> Optional[int]:
+    """Normalize a per-job ``max_turns`` (agent tool-iteration ceiling).
+
+    A positive integer caps how many tool-use iterations THIS scheduled job may
+    run before the agent stops — bounding a runaway job's cost independently of
+    the global ``agent.max_turns`` default. Anything else (None, absent,
+    non-integer, zero, or negative) normalizes to ``None`` = "unset", so the
+    scheduler falls back to the config-level cap or the built-in default.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -865,6 +883,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    max_turns: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -909,6 +928,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        max_turns: Optional per-job ceiling on agent tool-use iterations for THIS
+                job. A positive integer; the job stops after that many iterations
+                instead of the global ``agent.max_turns`` default (90), bounding a
+                runaway job's cost. Omit (None) to inherit the config/global cap.
 
     Returns:
         The created job dict
@@ -941,6 +964,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_max_turns = _normalize_job_max_turns(max_turns)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1022,6 +1046,10 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Same byte-identical rule for max_turns: only stamp the key when a positive
+    # cap was given (absent key => the scheduler uses the config/global default).
+    if normalized_max_turns is not None:
+        job["max_turns"] = normalized_max_turns
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1111,6 +1139,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize a max_turns update: a positive int caps this job; 0 /
+            # negative / junk / None clears it (stored as None → the scheduler
+            # falls back to the config/global cap), same shape as workdir clears.
+            if "max_turns" in updates:
+                updates["max_turns"] = _normalize_job_max_turns(updates["max_turns"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

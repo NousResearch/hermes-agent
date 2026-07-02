@@ -201,8 +201,12 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
-def test_ref_with_default_sibling_stripped():
-    """Strict backends reject ``default`` alongside ``$ref``."""
+def test_ref_with_default_sibling_inlined():
+    """Strict backends reject ``default`` alongside ``$ref``.
+
+    After inlining, the $ref is replaced with the definition and ``default``
+    is carried over as a sibling of the inlined schema (where it is legal).
+    """
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -217,11 +221,16 @@ def test_ref_with_default_sibling_stripped():
     })]
     out = sanitize_tool_schemas(tools)
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
-    assert payload == {"$ref": "#/$defs/Payload"}
+    # $ref should be inlined — no more $ref pointer.
+    assert "$ref" not in payload
+    assert payload["type"] == "object"
+    assert "q" in payload["properties"]
+    # $defs should be removed after inlining.
+    assert "$defs" not in out[0]["function"]["parameters"]
 
 
-def test_nullable_union_collapse_does_not_leave_default_on_ref():
-    """Nullable anyOf collapse must not attach ``default`` to a ``$ref`` branch."""
+def test_nullable_union_collapse_inlines_ref():
+    """Nullable anyOf collapse + $ref inlining produces a self-contained schema."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -242,13 +251,16 @@ def test_nullable_union_collapse_does_not_leave_default_on_ref():
     })]
     out = sanitize_tool_schemas(tools)
     prop = out[0]["function"]["parameters"]["properties"]["input"]
-    assert prop["$ref"] == "#/$defs/Payload"
-    assert "default" not in prop
+    # After nullable collapse + inlining: no $ref, has the actual schema.
+    assert "$ref" not in prop
+    assert prop["type"] == "object"
+    assert "q" in prop["properties"]
     assert prop.get("nullable") is True
+    assert "$defs" not in out[0]["function"]["parameters"]
 
 
-def test_ref_description_preserved():
-    """Annotation siblings that strict backends allow should survive."""
+def test_ref_description_carried_to_inlined():
+    """Description on a $ref node is carried over to the inlined definition."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -264,7 +276,9 @@ def test_ref_description_preserved():
     out = sanitize_tool_schemas(tools)
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
     assert payload["description"] == "The payload"
-    assert payload["$ref"] == "#/$defs/Payload"
+    assert "$ref" not in payload
+    assert payload["type"] == "object"
+    assert "$defs" not in out[0]["function"]["parameters"]
 
 
 def test_empty_tools_list_returns_empty():
@@ -700,3 +714,179 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# _inline_defs_refs — $ref inlining for strict backends (Fireworks, etc.)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_defs_ref_inlined_basic():
+    """$ref to $defs/X is replaced with the actual definition."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "cookie": {"$ref": "#/$defs/SetCookieParam"},
+        },
+        "$defs": {
+            "SetCookieParam": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                "required": ["name", "value"],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    cookie = params["properties"]["cookie"]
+    assert "$ref" not in cookie
+    assert cookie["type"] == "object"
+    assert "name" in cookie["properties"]
+    assert "value" in cookie["properties"]
+    assert cookie["required"] == ["name", "value"]
+    assert "$defs" not in params
+
+
+def test_defs_ref_inlined_nested():
+    """$ref nested inside properties is also inlined."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "request": {
+                "type": "object",
+                "properties": {
+                    "cookie": {"$ref": "#/$defs/Cookie"},
+                },
+            },
+        },
+        "$defs": {
+            "Cookie": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    inner = out[0]["function"]["parameters"]["properties"]["request"]["properties"]["cookie"]
+    assert "$ref" not in inner
+    assert inner["type"] == "object"
+    assert "name" in inner["properties"]
+
+
+def test_defs_ref_inlined_legacy_definitions():
+    """Legacy ``definitions`` key (draft-07) is also inlined."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "item": {"$ref": "#/definitions/Item"},
+        },
+        "definitions": {
+            "Item": {"type": "string"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    item = params["properties"]["item"]
+    assert "$ref" not in item
+    assert item["type"] == "string"
+    assert "definitions" not in params
+
+
+def test_defs_ref_inlined_multiple_refs():
+    """Multiple distinct $ref pointers are all inlined."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/$defs/A"},
+            "b": {"$ref": "#/$defs/B"},
+        },
+        "$defs": {
+            "A": {"type": "string"},
+            "B": {"type": "integer"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["a"] == {"type": "string"}
+    assert props["b"] == {"type": "integer"}
+    assert "$defs" not in out[0]["function"]["parameters"]
+
+
+def test_defs_ref_unknown_ref_preserved():
+    """$ref pointing to a non-existent definition is left as-is."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "x": {"$ref": "#/$defs/NonExistent"},
+        },
+        "$defs": {
+            "Real": {"type": "string"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    x = out[0]["function"]["parameters"]["properties"]["x"]
+    # Unknown ref preserved — can't inline what doesn't exist.
+    assert x["$ref"] == "#/$defs/NonExistent"
+
+
+def test_defs_ref_external_ref_preserved():
+    """$ref to an external schema (not #/$defs/) is left untouched."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "x": {"$ref": "https://json-schema.org/draft-07/schema"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    x = out[0]["function"]["parameters"]["properties"]["x"]
+    assert x["$ref"] == "https://json-schema.org/draft-07/schema"
+
+
+def test_no_defs_no_change():
+    """Schema without $defs is returned unchanged by inlining."""
+    schema = {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+    }
+    tools = [_tool("t", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["x"] == {"type": "string"}
+
+
+def test_defs_ref_fireworks_set_cookie_param():
+    """Regression test for #56979: Fireworks rejects $ref to $defs/SetCookieParam."""
+    tools = [_tool("browser_set_cookie", {
+        "type": "object",
+        "properties": {
+            "cookie": {"$ref": "#/$defs/SetCookieParam", "description": "The cookie to set"},
+        },
+        "$defs": {
+            "SetCookieParam": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Cookie name"},
+                    "value": {"type": "string", "description": "Cookie value"},
+                    "domain": {"type": "string", "description": "Cookie domain"},
+                    "path": {"type": "string", "description": "Cookie path"},
+                },
+                "required": ["name", "value"],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    cookie = params["properties"]["cookie"]
+    # Fireworks can't resolve $ref — verify it's inlined.
+    assert "$ref" not in cookie
+    assert cookie["type"] == "object"
+    assert "name" in cookie["properties"]
+    assert "value" in cookie["properties"]
+    assert cookie["description"] == "The cookie to set"
+    assert cookie["required"] == ["name", "value"]
+    # $defs removed.
+    assert "$defs" not in params
+    # Input not mutated.
+    assert "SetCookieParam" in tools[0]["function"]["parameters"].get("$defs", {})

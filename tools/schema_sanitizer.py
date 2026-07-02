@@ -97,6 +97,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"], path=fn.get("name", "<tool>")
     )
     fn["parameters"] = _strip_ref_siblings(fn["parameters"])
+    fn["parameters"] = _inline_defs_refs(fn["parameters"], path=fn.get("name", "<tool>"))
     return out
 
 
@@ -126,6 +127,99 @@ def _strip_ref_siblings(node: Any) -> Any:
             if key in out:
                 out.pop(key, None)
     return out
+
+
+def _inline_defs_refs(node: Any, *, path: str = "<tool>") -> Any:
+    """Inline ``$ref`` pointers into ``$defs`` / ``definitions``.
+
+    Strict OpenAI-compatible backends (Fireworks, some JSON-Schema draft-07
+    validators) fail tool requests when the schema contains ``$ref``::
+
+        Error resolving schema reference '#/$defs/SetCookieParam'
+
+    This function resolves every ``{"$ref": "#/$defs/X"}`` (and the legacy
+    ``#/definitions/X`` form) by replacing the ``$ref`` node with a copy of
+    the referenced definition.  After inlining, the now-unused ``$defs`` /
+    ``definitions`` block is removed from the top-level parameters object so
+    the emitted schema is fully self-contained.
+
+    Circular references are guarded by a depth limit (max 8 expansions of
+    the same ref path); tool schemas from MCP servers are tree-structured
+    in practice so this never fires on real input.
+    """
+    # Collect all $defs / definitions blocks reachable from the root.
+    defs: dict[str, Any] = {}
+    if isinstance(node, dict):
+        for defs_key in ("$defs", "definitions"):
+            block = node.get(defs_key)
+            if isinstance(block, dict):
+                defs.update(block)
+
+    if not defs:
+        return node
+
+    result = _do_inline_refs(node, defs, path=path, _seen=set())
+
+    # Strip the now-inlined $defs / definitions from the top level.
+    if isinstance(result, dict):
+        for defs_key in ("$defs", "definitions"):
+            if defs_key in result:
+                logger.debug(
+                    "schema_sanitizer[%s]: removed %s after inlining refs",
+                    path, defs_key,
+                )
+                result.pop(defs_key, None)
+
+    return result
+
+
+def _do_inline_refs(
+    node: Any,
+    defs: dict[str, Any],
+    *,
+    path: str,
+    _seen: set[str],
+    _depth: int = 0,
+) -> Any:
+    """Recursively walk *node*, replacing ``$ref`` with the definition."""
+    if _depth > 8:
+        return node
+
+    if isinstance(node, list):
+        return [_do_inline_refs(item, defs, path=f"{path}[{i}]", _seen=_seen, _depth=_depth)
+                for i, item in enumerate(node)]
+    if not isinstance(node, dict):
+        return node
+
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/"):
+        # Accept both #/$defs/X and #/definitions/X
+        parts = ref.lstrip("#/").split("/", 1)
+        if len(parts) == 2 and parts[0] in ("$defs", "definitions") and parts[1] in defs:
+            ref_key = parts[1]
+            if ref_key in _seen:
+                # Circular — return the ref as-is rather than infinite loop.
+                return node
+            _seen.add(ref_key)
+            logger.debug(
+                "schema_sanitizer[%s]: inlining $ref %r", path, ref,
+            )
+            replacement = copy.deepcopy(defs[ref_key])
+            # Carry over sibling keywords (description, title, etc.) that
+            # were on the $ref node — but NOT $ref itself.
+            for k, v in node.items():
+                if k == "$ref":
+                    continue
+                if k not in replacement:
+                    replacement[k] = v
+            result = _do_inline_refs(replacement, defs, path=path, _seen=_seen, _depth=_depth + 1)
+            _seen.discard(ref_key)
+            return result
+
+    # Not a $ref — recurse into children.
+    return {k: _do_inline_refs(v, defs, path=f"{path}.{k}", _seen=_seen, _depth=_depth)
+            if isinstance(v, (dict, list)) else v
+            for k, v in node.items()}
 
 
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")

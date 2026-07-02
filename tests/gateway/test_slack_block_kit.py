@@ -71,6 +71,20 @@ class TestNestedLists:
         assert "ordered" in styles
         assert "bullet" in styles
 
+    def test_ordered_list_with_blank_lines_stays_one_numbered_group(self):
+        md = "1. Alpha\n\n2. Beta\n\n3. Gamma"
+        blocks = render_blocks(md)
+        assert blocks is not None
+        rich = [b for b in blocks if b["type"] == "rich_text"]
+        ordered_lists = [
+            e
+            for b in rich
+            for e in b["elements"]
+            if e["type"] == "rich_text_list" and e["style"] == "ordered"
+        ]
+        assert len(ordered_lists) == 1
+        assert len(ordered_lists[0]["elements"]) == 3
+
 
 class TestInlineFormatting:
     def test_link_becomes_link_element(self):

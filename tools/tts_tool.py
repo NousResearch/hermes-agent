@@ -394,6 +394,19 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "piper",
 })
 
+# Providers in this set do not produce native Ogg/Opus for Telegram voice
+# bubbles.  Even if they were asked to write a .ogg file, it may be MP3 bytes
+# or Ogg/Vorbis, so post-process through ffmpeg/libopus before tagging it as a
+# native voice message.
+BUILTIN_TTS_OPUS_TRANSCODE_PROVIDERS = frozenset({
+    "edge",
+    "minimax",
+    "xai",
+    "neutts",
+    "kittentts",
+    "piper",
+})
+
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
@@ -891,12 +904,23 @@ def _has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def _convert_to_opus(mp3_path: str) -> Optional[str]:
+def _is_ogg_container(path: str) -> bool:
+    """Return True when *path* starts with the Ogg container magic bytes."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"OggS"
+    except OSError:
+        return False
+
+
+def _convert_to_opus(input_path: str, output_path: Optional[str] = None) -> Optional[str]:
     """
-    Convert an MP3 file to OGG Opus format for Telegram voice bubbles.
+    Convert an audio file to OGG Opus format for Telegram voice bubbles.
 
     Args:
-        mp3_path: Path to the input MP3 file.
+        input_path: Path to the input audio file.
+        output_path: Optional explicit .ogg destination. Defaults to replacing
+            the input suffix with .ogg.
 
     Returns:
         Path to the .ogg file, or None if conversion fails.
@@ -904,10 +928,10 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     if not _has_ffmpeg():
         return None
 
-    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+    ogg_path = output_path or input_path.rsplit(".", 1)[0] + ".ogg"
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
+            ["ffmpeg", "-i", input_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
@@ -917,8 +941,9 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
             logger.warning("ffmpeg conversion failed with return code %d: %s", 
                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
             return None
-        if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
+        if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0 and _is_ogg_container(ogg_path):
             return ogg_path
+        logger.warning("ffmpeg conversion did not produce a valid OGG file: %s", ogg_path)
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg OGG conversion timed out after 30s")
     except FileNotFoundError:
@@ -926,6 +951,47 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     except Exception as e:
         logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
     return None
+
+
+def _ensure_opus_voice_file(input_path: str, output_path: Optional[str] = None) -> Optional[str]:
+    """Convert *input_path* to an Ogg/Opus voice file.
+
+    Unlike ``_convert_to_opus``, this helper safely handles the common
+    adapter-auto-TTS case where the provider was already asked to write the
+    final ``.ogg`` path.  Those bytes may still be MP3 or Ogg/Vorbis, and
+    ffmpeg cannot reliably read and write the same path in-place, so copy the
+    source and replace the final path only after a successful libopus encode.
+    """
+    final_path = output_path or input_path.rsplit(".", 1)[0] + ".ogg"
+    if os.path.abspath(input_path) != os.path.abspath(final_path):
+        if output_path is None:
+            return _convert_to_opus(input_path)
+        return _convert_to_opus(input_path, final_path)
+
+    source_tmp: Optional[str] = None
+    output_tmp: Optional[str] = None
+    try:
+        fd, source_tmp = tempfile.mkstemp(
+            prefix="hermes_tts_opus_src_",
+            suffix=Path(input_path).suffix or ".audio",
+        )
+        os.close(fd)
+        shutil.copyfile(input_path, source_tmp)
+
+        fd, output_tmp = tempfile.mkstemp(prefix="hermes_tts_opus_out_", suffix=".ogg")
+        os.close(fd)
+        converted = _convert_to_opus(source_tmp, output_tmp)
+        if not converted:
+            return None
+        shutil.move(converted, final_path)
+        return final_path if _is_ogg_container(final_path) else None
+    finally:
+        for tmp_path in (source_tmp, output_tmp):
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
 
 # ===========================================================================
@@ -953,8 +1019,30 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
         pct = round((speed - 1.0) * 100)
         kwargs["rate"] = f"{pct:+d}%"
 
+    edge_output_path = output_path
+    temp_mp3: Optional[str] = None
+    if output_path.lower().endswith(".ogg"):
+        fd, temp_mp3 = tempfile.mkstemp(prefix="hermes_edge_tts_", suffix=".mp3")
+        os.close(fd)
+        edge_output_path = temp_mp3
+
     communicate = _edge_tts.Communicate(text, **kwargs)
-    await communicate.save(output_path)
+    try:
+        await communicate.save(edge_output_path)
+
+        if temp_mp3 is not None:
+            converted = _convert_to_opus(temp_mp3, output_path)
+            if not converted:
+                raise RuntimeError(
+                    "Edge TTS produced MP3 audio, but ffmpeg could not convert it "
+                    "to Ogg/Opus for the requested .ogg output_path"
+                )
+    finally:
+        if temp_mp3 is not None:
+            try:
+                os.remove(temp_mp3)
+            except OSError:
+                pass
     return output_path
 
 
@@ -2397,12 +2485,8 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif (
-            want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-            and not file_str.endswith(".ogg")
-        ):
-            opus_path = _convert_to_opus(file_str)
+        elif want_opus and provider in BUILTIN_TTS_OPUS_TRANSCODE_PROVIDERS:
+            opus_path = _ensure_opus_voice_file(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True

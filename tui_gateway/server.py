@@ -11237,6 +11237,10 @@ def _(rid, params: dict) -> dict:
 
         for name, desc, cat in _TUI_EXTRA:
             all_pairs.append([name, desc])
+            # TUI-local commands intentionally win over CLI aliases in the TUI
+            # catalog. Example: CLI exposes /compact as an alias for /compress,
+            # while the TUI has a local /compact display toggle.
+            canon[name.lower()] = name
             if cat not in cat_map:
                 cat_map[cat] = []
                 cat_order.append(cat)

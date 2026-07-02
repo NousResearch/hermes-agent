@@ -4242,6 +4242,21 @@ def test_commands_catalog_includes_tui_mouse_command():
     assert "/mouse" in tui_pairs
 
 
+def test_commands_catalog_tui_local_commands_override_cli_aliases():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    assert resp is not None
+    result = resp["result"]
+    assert result is not None
+    pairs = dict(result["pairs"])
+    canon = result["canon"]
+
+    assert pairs["/compact"] == "Toggle compact display mode"
+    assert canon["/compact"] == "/compact"
+
+
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

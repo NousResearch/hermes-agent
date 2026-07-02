@@ -6,9 +6,10 @@ Telegram (where Bot-API sendAudio only accepts MP3/M4A and .ogg/.opus
 only renders as a voice bubble when explicitly flagged) and via
 ``GatewayRunner._deliver_media_from_response``.
 """
-
+import json
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -118,6 +119,43 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         audio_path=str(media_file),
         metadata={"notify": True},
     )
+    adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_auto_tts_requests_telegram_ogg_voice_output(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter()
+    adapter._auto_tts_enabled_chats.add("chat-1")
+    adapter._message_handler = AsyncMock(return_value="hello from voice reply")
+    adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    event = _event()
+    event.message_type = MessageType.VOICE
+    requested_paths: list[str] = []
+
+    def fake_tts(*, text, output_path):
+        requested_paths.append(output_path)
+        assert text == "hello from voice reply"
+        assert output_path.endswith(".ogg")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"OggS fake opus")
+        return json.dumps({
+            "success": True,
+            "file_path": output_path,
+            "provider": "edge",
+            "voice_compatible": True,
+        })
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), \
+            patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert requested_paths
+    adapter.send_voice.assert_awaited_once()
+    send_voice_args = adapter.send_voice.await_args
+    assert send_voice_args is not None
+    assert send_voice_args.kwargs["audio_path"].endswith(".ogg")
     adapter.send_document.assert_not_awaited()
 
 

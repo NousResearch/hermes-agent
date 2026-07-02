@@ -573,7 +573,11 @@ def init_agent(
     # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
     # (which creates a new AIAgent per message) won't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    # Resolve HERMES_HOME at agent-construction time rather than reusing
+    # run_agent's import-time snapshot. Pytest redirects HERMES_HOME after
+    # collection, so the frozen snapshot can otherwise attach log handlers to
+    # the user's real profile (#57118).
+    setup_logging()
 
     if agent.verbose_logging:
         setup_verbose_logging()

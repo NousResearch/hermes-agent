@@ -451,6 +451,17 @@ def render_blocks(
                     elif om:
                         items.append((_indent_level(om.group(1)), True, om.group(3)))
                         i += 1
+                    elif lines[i].strip() == "" and items:
+                        # Slack restarts numbering for each rich_text_list block.
+                        # Keep markdown lists grouped across blank spacer lines
+                        # when the next nonblank line is another list marker.
+                        j = i + 1
+                        while j < n and lines[j].strip() == "":
+                            j += 1
+                        if j < n and (_BULLET_RE.match(lines[j]) or _ORDERED_RE.match(lines[j])):
+                            i = j
+                        else:
+                            break
                     elif lines[i].strip() and lines[i].startswith((" ", "\t")) and items:
                         # continuation line of the previous item
                         indent, ordered, txt = items[-1]

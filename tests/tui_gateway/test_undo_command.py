@@ -42,12 +42,15 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
+        methods_snapshot = dict(mod._methods)
         yield mod
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
         mod._methods.clear()
-        importlib.reload(mod)
+        mod._methods.update(methods_snapshot)
+        setattr(mod, "_db", None)
+        setattr(mod, "_db_error", None)
 
 
 @pytest.fixture()

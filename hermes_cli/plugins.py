@@ -2137,9 +2137,10 @@ def get_budget_check_verdict(**context: Any) -> Optional[Dict[str, Any]]:
 
     Only ``status`` (``ok``/``soft``/``hard``) is required; ``message`` is the
     plugin-authored notice the core surfaces. The most-severe verdict across
-    all registered plugins wins. Non-dict results and results without a valid
-    ``status`` are ignored. Returns ``None`` when no plugin returns a valid
-    verdict (including when no plugin registers the hook).
+    all registered plugins wins; ties (equal severity) are broken by hook
+    registration order — the first is kept. Non-dict results and results
+    without a valid ``status`` are ignored. Returns ``None`` when no plugin
+    returns a valid verdict (including when no plugin registers the hook).
     """
     results = invoke_hook("on_budget_check", **context)
     best: Optional[Dict[str, Any]] = None

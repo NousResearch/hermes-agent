@@ -58,6 +58,24 @@ class TestGetBudgetCheckVerdict:
 
         assert get_budget_check_verdict() is None
 
+    def test_ok_only_verdict_returns_dict_not_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kw: [{"status": "ok"}],
+        )
+        from hermes_cli.plugins import get_budget_check_verdict
+
+        assert get_budget_check_verdict() == {"status": "ok"}
+
+    def test_null_status_is_invalid(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kw: [{"status": None, "message": "x"}],
+        )
+        from hermes_cli.plugins import get_budget_check_verdict
+
+        assert get_budget_check_verdict() is None
+
 
 class TestBootstrapNotice:
     def test_notice_when_no_hook_registered(self, monkeypatch):

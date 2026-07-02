@@ -6,7 +6,8 @@
 __pycache__/
 .venv/
 .venv
-.vscode/
+.vscode/*
+!.vscode/launch.json
 .env
 .env.local
 .env.development.local

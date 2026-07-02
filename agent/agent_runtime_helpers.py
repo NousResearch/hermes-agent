@@ -384,6 +384,14 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
          so no user input is lost.
+      3. ``assistant`` messages whose ``tool_calls`` are missing all
+         ``tool`` results (``tool_call_id`` never seen) — the orphan
+         calls are stripped, leaving the assistant text intact. This
+         occurs after context compaction, partial session resume, or
+         retry loops that drop tool results. Without this pass,
+         strict providers (DeepSeek v4, Kimi) return HTTP 400
+         "insufficient tool messages following tool_calls message".
+         Refs #56980.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
     pairs that precede a user message — that pattern IS valid when the
@@ -518,6 +526,36 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 repairs += 1
                 continue
         merged.append(msg)
+
+    # Pass 3: strip orphan tool_calls from assistant messages that have
+    # no matching tool results.  After Pass 1 dropped stray tool msgs,
+    # an ``assistant(tool_calls)`` that originally had results may now
+    # reference ids that were never seen — its tool calls are dangled.
+    # Strict providers (DeepSeek v4, Kimi) reject such histories with
+    # HTTP 400 "insufficient tool messages following tool_calls message".
+    # Fix: build a set of every tool_call_id actually present in tool
+    # messages, then strip tool_calls whose ids are absent.  Refs #56980.
+    seen_tool_ids: set = set()
+    for msg in merged:
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id")
+            if tc_id:
+                seen_tool_ids.add(tc_id)
+    for msg in merged:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        calls = msg.get("tool_calls")
+        if not calls:
+            continue
+        orphan_calls = [tc for tc in calls if not (isinstance(tc, dict) and tc.get("id") in seen_tool_ids)]
+        if not orphan_calls:
+            continue
+        kept = [tc for tc in calls if tc not in orphan_calls]
+        if kept:
+            msg["tool_calls"] = kept
+        else:
+            del msg["tool_calls"]
+        repairs += len(orphan_calls)
 
     if repairs > 0:
         # Rewrite in place so downstream paths (persistence, return

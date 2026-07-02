@@ -201,6 +201,79 @@ def test_repair_preserves_system_messages():
     assert messages == original
 
 
+def test_repair_strips_orphan_tool_calls_at_end():
+    """assistant(tool_calls) at end with no tool results → strip tool_calls."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "c1", "type": "function",
+                         "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "file content"},
+        {"role": "assistant", "content": "checking more",
+         "tool_calls": [{"id": "c2", "type": "function",
+                         "function": {"name": "terminal", "arguments": "{}"}}]},
+        # c2 has no tool result — context compaction stripped it
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    # The last assistant message must have its orphan tool_calls stripped
+    last = messages[-1]
+    assert last["role"] == "assistant"
+    assert "tool_calls" not in last
+    assert last["content"] == "checking more"
+
+
+def test_repair_strips_orphan_parallel_tool_calls():
+    """assistant with parallel tool_calls where some results are missing."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "c1", "type": "function",
+              "function": {"name": "read_file", "arguments": "{}"}},
+             {"id": "c2", "type": "function",
+              "function": {"name": "terminal", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "file content"},
+        # c2 result is missing
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    # c2 should be stripped, c1 kept
+    assistant = messages[1]
+    assert assistant["role"] == "assistant"
+    remaining_ids = [tc["id"] for tc in assistant.get("tool_calls", [])]
+    assert "c1" in remaining_ids
+    assert "c2" not in remaining_ids
+
+
+def test_repair_preserves_complete_tool_calls():
+    """Complete tool_calls with matching results must NOT be stripped."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "c1", "type": "function",
+                         "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "file content"},
+        {"role": "assistant", "content": "done"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    # No repairs expected — sequence is valid
+    assert repairs == 0
+    # tool_calls should be preserved
+    assert "tool_calls" in messages[1]
+
+
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
 
 from agent.agent_runtime_helpers import repair_message_sequence_with_cursor

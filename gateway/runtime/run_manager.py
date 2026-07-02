@@ -13,6 +13,7 @@ from gateway.runtime.models import (
     RuntimeEvent,
     RuntimeStatus,
     RUN_STATUS_QUEUED,
+    RUN_STATUS_RUNNING,
     RUN_STATUS_AWAITING_APPROVAL,
     RUN_STATUS_AWAITING_CLARIFY,
     RUN_STATUS_CANCELLING,
@@ -213,6 +214,44 @@ class RunManager:
                 "terminal": status.terminal,
                 "controls": status.controls,
             }
+
+    def list_runs(self) -> Dict[str, "RuntimeStatus"]:
+        """Return a snapshot of all internal run status objects.
+
+        Primarily for executor polling.  Returns the raw
+        ``RuntimeStatus`` objects so callers can inspect status
+        without serialization overhead.
+        """
+        with self._lock:
+            return dict(self._runs)
+
+    def claim_queued_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Atomically claim a queued run for execution.
+
+        Transitions status from 'queued' to 'running' only when the run
+        exists, is not terminal, and is currently queued.  Returns None
+        if the run is not in a claimable state.
+
+        Designed for worker-safe use: concurrent callers cannot both
+        claim the same queued run.
+        """
+        with self._lock:
+            status = self._runs.get(run_id)
+            if status is None:
+                return None
+            if status.terminal:
+                return None
+            if status.status != RUN_STATUS_QUEUED:
+                return None
+            status.status = RUN_STATUS_RUNNING
+            status.updated_at = time.time()
+            self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_RUN_STATUS,
+                payload={"status": RUN_STATUS_RUNNING, "previous": RUN_STATUS_QUEUED},
+            )
+            return status.to_dict()
 
     def transition_status(self, run_id: str, new_status: str) -> Optional[Dict[str, Any]]:
         with self._lock:

@@ -45,6 +45,12 @@ from gateway.runtime.models import (
 from gateway.runtime.run_manager import RunManager
 from gateway.runtime.routes import register_runtime_routes
 from gateway.runtime.control_bridge import RuntimeControlBridge
+from gateway.runtime.executor import (
+    RuntimeExecutor,
+    AgentFactory,
+    FakeAgentFactory,
+    SessionKeyFactory,
+)
 
 __all__ = [
     "RuntimeEvent",
@@ -84,4 +90,8 @@ __all__ = [
     "redact_secrets",
     "register_runtime_routes",
     "RuntimeControlBridge",
+    "RuntimeExecutor",
+    "AgentFactory",
+    "FakeAgentFactory",
+    "SessionKeyFactory",
 ]

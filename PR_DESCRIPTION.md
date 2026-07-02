@@ -100,7 +100,7 @@ WebUI tests: no changes needed (Agent response shape unchanged)
 - 10 live smoke tests passed
 - All Phase 11B-13 tests continue to pass
 
-## Phase 15 Changes (this PR)
+## Phase 15 Changes
 
 ### Cross-Repo Integration Verification
 
@@ -109,7 +109,6 @@ Phase 15 audits the runtime architecture gap and adds integration contract tests
 **Execution-plane gap audit:**
 - POST /v1/runs in the standalone `gateway/runtime/routes.py` module is control-plane-only
 - The API server adapter has its OWN execution handler (separate route registration)
-- No safe implementation exists for adding execution to the standalone routes module without an architecture change
 - Missing primitives documented: execute flag, AIAgent factory, background task manager, event streaming, live agent notification wiring
 - Option B selected — execution explicitly deferred to a future "runtime executor" service
 
@@ -121,7 +120,80 @@ Phase 15 audits the runtime architecture gap and adds integration contract tests
 - 345 tests passed, 0 failed across 12 runtime test files
 - WebUI: 138 passed, 0 failed (default mode); 130 passed, 8 expected failures (agent-runs mode)
 - All prior Phases 11B-14 behavior preserved
-- No regressions in runtime, API server, or messaging paths
+
+## Phase 16 Changes (this PR)
+
+### Runtime Executor Service
+
+Implements a dedicated runtime executor service that processes queued runs from RunManager through a configurable AgentFactory.
+
+**New: `gateway/runtime/executor.py`**
+- `RuntimeExecutor` — `execute_run(run_id)`, `run_once()`, `start()`/`stop()` (background poll), `cancel_run(run_id)`
+- `AgentFactory` (Protocol) — pluggable agent creation interface
+- `FakeAgentFactory` — deterministic fake for unit tests
+- `SessionKeyFactory` — generates session keys for executor-owned runs
+- Error redaction via `agent.redact.redact_sensitive_text`
+- Resource cleanup in `finally` blocks
+
+**Modified: `gateway/runtime/run_manager.py`**
+- `claim_queued_run(run_id)` — atomic worker-safe claim (queued → running)
+- `list_runs()` — internal snapshot for executor polling
+
+**Modified: `gateway/runtime/routes.py`**
+- Added optional `executor` parameter to `register_runtime_routes()`
+- POST /v1/runs with `execute: true` body flag spawns background executor task
+- Backward compatible: without executor or execute flag, route stays control-plane-only
+
+**Modified: `gateway/runtime/__init__.py`**
+- Exported `RuntimeExecutor`, `AgentFactory`, `FakeAgentFactory`, `SessionKeyFactory`
+
+### Key Design Decisions
+
+1. **Executor is optional** — routes work without it, existing behavior unchanged
+2. **AgentFactory is a pluggable protocol** — tests use FakeAgentFactory, production needs DefaultAgentFactory with credentials
+3. **POST /v1/runs default is still control-plane-only** — caller must opt in with `execute: true`
+4. **Executor uses RunManager as source of truth** — status/events driven through RunManager, never bypassed
+5. **Executor uses RuntimeControlBridge** for live binding and stop/cancel
+6. **Resource cleanup in finally** — unbind always fires even on failure/cancellation
+7. **Secrets redacted** — all error messages pass through `redact_sensitive_text`
+
+### New Tests
+
+- `tests/gateway/test_runtime_executor.py` — 30 tests (construction, lifecycle, bindings, events, cancellation, approval/clarify, background loop, factories)
+- `tests/gateway/test_runtime_executor_routes.py` — 8 tests (opt-in routes, backward compat, failure events, stop, approval/clarify via routes)
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — updated (asyncio.create_task now expected)
+
+### Test Results
+
+```
+14 runtime test files: 383 passed, 0 failed
+  - test_runtime_models.py: 20 tests
+  - test_runtime_run_manager.py: 40 tests
+  - test_runtime_routes.py: 23 tests
+  - test_runtime_server_mount.py: 42 tests
+  - test_runtime_approval_clarify.py: 38 tests
+  - test_runtime_control_bridge.py: 33 tests
+  - test_runtime_gateway_binding.py: 38 tests
+  - test_runtime_messaging_binding.py: 36 tests
+  - test_runtime_non_api_execution.py: 17 tests
+  - test_runtime_slash_approval.py: 17 tests
+  - test_runtime_cross_repo_contract.py: 25 tests
+  - test_runtime_v1_runs_execution_gap.py: 16 tests
+  - test_runtime_executor.py: 30 tests (new)
+  - test_runtime_executor_routes.py: 8 tests (new)
+```
+
+### Smoke Test Results
+
+8/8 deterministic smoke tests passed:
+1. POST /v1/runs execute=true → queued
+2. GET /v1/runs/{run_id} → completed
+3. GET events → 3 events
+4. Backward compat: no execute flag stays queued
+5. Failure path: no traceback leak
+6. Stop/cancel: cancelled
+7. Approval: mechanism works
+8. No secret leak
 
 ## Rollback Plan
 

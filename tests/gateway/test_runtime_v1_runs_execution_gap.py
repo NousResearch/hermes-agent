@@ -239,14 +239,15 @@ class TestExecutionGapDocumentation:
                 pytest.fail("_handle_create_run uses StreamResponse")
         assert True
 
-    def test_routes_have_no_event_loop_integration(self):
-        """The routes module does not create asyncio tasks or threads
-        for background execution.
+    def test_routes_have_optional_executor_event_loop(self):
+        """The routes module uses asyncio.create_task only for the optional
+        RuntimeExecutor path.  This confirms the executor integration is
+        present but routes don't use threading.Thread or run_in_executor.
         """
         import inspect
         from gateway.runtime import routes
         source = inspect.getsource(routes)
-        assert "asyncio.create_task" not in source
+        assert "asyncio.create_task" in source
         assert "threading.Thread" not in source
         assert "run_in_executor" not in source
 

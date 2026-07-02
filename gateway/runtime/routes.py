@@ -12,8 +12,14 @@ parameter, approval / clarify / stop handlers delegate through the
 bridge so live AIAgent execution can be interrupted or unblocked.
 Without a bridge the handlers fall back to standalone ``RunManager``
 behaviour (Phase 11B).
+
+When a ``RuntimeExecutor`` is supplied via the *executor* parameter,
+POST /v1/runs with ``execute: true`` in the body will hand the
+created run to the executor for background processing.  Without an
+executor, the route remains control-plane-only (backward compatible).
 """
 
+import asyncio
 import json
 from typing import Any, Callable, Dict, Optional
 
@@ -42,6 +48,7 @@ def register_runtime_routes(
     run_manager: Optional[RunManager] = None,
     error_formatter: Optional[Callable[..., Dict[str, Any]]] = None,
     control_bridge: Optional[Any] = None,
+    executor: Optional[Any] = None,
     register_create: bool = True,
     register_status: bool = True,
     register_events: bool = True,
@@ -64,6 +71,11 @@ def register_runtime_routes(
         approval / clarify / stop handlers delegate through the bridge
         so live AIAgent execution can be interrupted or unblocked.
         Without it, handlers use standalone ``RunManager`` only.
+    executor:
+        Optional ``RuntimeExecutor`` instance.  When provided and the
+        request body includes ``execute: true``, the created run is
+        handed to the executor for background processing.  Without an
+        executor the route remains control-plane-only.
     register_create:
         When ``False``, the ``POST /v1/runs`` create endpoint is
         skipped.  Callers that want to own run creation (e.g. the
@@ -100,6 +112,8 @@ def register_runtime_routes(
     app["runtime_run_manager"] = run_manager
     if control_bridge is not None:
         app["runtime_control_bridge"] = control_bridge
+    if executor is not None:
+        app["runtime_executor"] = executor
 
     async def _handle_create_run(request: web.Request) -> web.Response:
         try:
@@ -144,10 +158,17 @@ def register_runtime_routes(
             metadata=metadata,
         )
 
+        run_id = result["run_id"]
+        execute_flag = body.get("execute", False)
+        executor_instance = request.app.get("runtime_executor")
+
+        if execute_flag and executor_instance is not None:
+            asyncio.create_task(executor_instance.execute_run(run_id))
+
         return web.json_response(
             {
                 "object": "hermes.run",
-                "run_id": result["run_id"],
+                "run_id": run_id,
                 "session_id": result["session_id"],
                 "status": result["status"],
                 "events_url": result["events_url"],

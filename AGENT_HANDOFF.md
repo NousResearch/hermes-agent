@@ -846,18 +846,59 @@ Contract-level verification performed via 345 Agent runtime tests + 138 WebUI te
 - No code changes needed — existing tests already cover agent-runs adapter comprehensively
 - Documentation updated
 
-### Remaining Deferred Items
-1. **/v1/runs execution-plane** — POST /v1/runs remains control-plane-only. A future "runtime executor" service could pick up queued runs and execute them via AIAgent. The `register_create=True` parameter exists for integration.
-2. **Real messaging-platform adapter live smoke** — Requires external credentials (Telegram bot token, etc.). Not performed in this phase.
-3. **Cross-repo live HTTP smoke** — Requires AIAgent credentials for real agent execution.
+### Phase 16 — Runtime Executor Service (completed)
 
-### Files with line-level changes
-- Created: `tests/gateway/test_runtime_cross_repo_contract.py` (318 lines)
-- Created: `tests/gateway/test_runtime_v1_runs_execution_gap.py` (280 lines)
-- Updated: `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md`
+**Design:**
+The `RuntimeExecutor` is an optional service that processes queued runs from `RunManager` through a pluggable `AgentFactory`. It is deliberately separate from the HTTP route layer — routes remain thin and the executor can be enabled/disabled per-deployment.
+
+**Key components:**
+- `gateway/runtime/executor.py` — `RuntimeExecutor`, `AgentFactory` (Protocol), `FakeAgentFactory`, `SessionKeyFactory`
+- `gateway/runtime/run_manager.py` — `claim_queued_run()` + `list_runs()` primitives
+- `gateway/runtime/routes.py` — optional `executor` parameter, `execute: true` body flag on POST /v1/runs
+
+**Status lifecycle (executor-owned runs):**
+queued → running → completed / failed / cancelled
+
+**Executor features:**
+1. `execute_run(run_id)` — claim, create agent, bind, execute, complete/fail, unbind
+2. `run_once()` — dequeue and execute first queued run
+3. `start()` / `stop()` — background polling loop
+4. `cancel_run(run_id)` — stop/cancel via RuntimeControlBridge
+5. Agent factory protocol for testability (FakeAgentFactory)
+6. Error redaction via `agent.redact.redact_sensitive_text`
+7. Resource cleanup in `finally` blocks (unbind always fires)
+
+**Integration with routes:**
+- `register_runtime_routes(app, executor=executor)` wires executor into the app
+- POST /v1/runs with `execute: true` in body spawns background task
+- Without executor or without execute flag: route stays control-plane-only (backward compatible)
+
+**Approval/clarify compatibility:**
+- Works with executor-owned agents via existing RuntimeControlBridge
+- Fake agents can simulate approval/clarify request lifecycle
+- POST /v1/runs/{run_id}/approval and /clarify resolve through bridge as before
+
+**Stop/cancel compatibility:**
+- POST /v1/runs/{run_id}/stop interrupts executor-owned agents via bridge
+- Terminal runs are not interrupted
+- Synthetic cancellation (RouteManager-only) works without executor
+
+**Gap remains:** Real AIAgent execution requires model credentials (API keys) — executor works with fake agents in tests but needs `DefaultAgentFactory` with credentialed config for production use.
+
+### Files Changed in Phase 16
+
+**Agent (`hermes-agent`):**
+- `gateway/runtime/executor.py` — new (330 lines)
+- `gateway/runtime/run_manager.py` — added `claim_queued_run()` + `list_runs()`
+- `gateway/runtime/routes.py` — added optional `executor` parameter + `execute` body flag
+- `gateway/runtime/__init__.py` — exported RuntimeExecutor, AgentFactory, FakeAgentFactory, SessionKeyFactory
+- `tests/gateway/test_runtime_executor.py` — new (30 tests)
+- `tests/gateway/test_runtime_executor_routes.py` — new (8 tests)
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — updated (asyncio.create_task now expected in routes)
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+**WebUI (`hermes-webui`):**
+- No changes needed — response shape unchanged, no new statuses
 
 ### Next task
-**Phase discussion required** — remaining deferred items involve either:
-1. A dedicated runtime executor service to close the /v1/runs execution gap
-2. Real cross-repo live smoke with AIAgent credentials
-3. Real messaging-platform adapter integration tests
+**Real AIAgent smoke** — deploy the executor with a `DefaultAgentFactory` wired to gateway config and run a live execution. This requires model API credentials and is deferred for the same reason as earlier deferred items.

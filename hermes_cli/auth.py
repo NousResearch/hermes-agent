@@ -4610,12 +4610,89 @@ def _refresh_xai_oauth_tokens(
     return updated_tokens
 
 
+def _import_grok_cli_tokens() -> Optional[Dict[str, Any]]:
+    """Borrow the Grok CLI's OAuth token from ~/.grok/auth.json.
+
+    The hermes ``xai-oauth`` provider shares its OAuth client_id with the Grok
+    CLI; xAI revokes the entire grant on refresh-token reuse, so hermes must
+    CONSUME the CLI's token rather than maintain a competing grant. The Grok CLI
+    is the single owner/refresher of ~/.grok/auth.json. Returns a hermes-shaped
+    tokens dict if a valid, unexpired token is present; None otherwise. Does NOT
+    write to the shared file. Mirrors ``_import_codex_cli_tokens`` for Codex.
+    """
+    grok_home = os.getenv("GROK_HOME", "").strip() or str(Path.home() / ".grok")
+    auth_path = Path(grok_home).expanduser() / "auth.json"
+    if not auth_path.is_file():
+        return None
+    try:
+        payload = json.loads(auth_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    entry = None
+    for key, value in payload.items():
+        if not isinstance(value, dict) or not value.get("key"):
+            continue
+        if (
+            str(key).endswith(XAI_OAUTH_CLIENT_ID)
+            or value.get("oidc_client_id") == XAI_OAUTH_CLIENT_ID
+            or str(value.get("oidc_issuer", "")).startswith("https://auth.x.ai")
+        ):
+            entry = value
+            break
+    if entry is None:
+        return None
+    access_token = str(entry.get("key", "") or "").strip()
+    refresh_token = str(entry.get("refresh_token", "") or "").strip()
+    if not access_token:
+        return None
+    if _xai_access_token_is_expiring(access_token, 0):
+        logger.debug("Grok CLI token at %s is expired - skipping import.", auth_path)
+        return None
+    expires_in = None
+    try:
+        _p = access_token.split(".")[1]
+        _p += "=" * (-len(_p) % 4)
+        _claims = json.loads(base64.urlsafe_b64decode(_p.encode("ascii")).decode("utf-8"))
+        _exp = _claims.get("exp")
+        if isinstance(_exp, (int, float)):
+            expires_in = max(0, int(_exp - time.time()))
+    except Exception:
+        expires_in = None
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "id_token": "",
+        "expires_in": expires_in,
+        "token_type": "Bearer",
+    }
+
+
 def resolve_xai_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
+    # --- Grok CLI token bridge (StartiaOS) ---------------------------------
+    # xAI shares its OAuth client_id with the Grok CLI and revokes the whole
+    # grant on refresh-token reuse, so hermes CONSUMES the CLI's token rather
+    # than refresh its own. The Grok CLI is the single owner/refresher of
+    # ~/.grok/auth.json. Import up front so a missing/revoked stored token is
+    # replaced before the read below raises. If no valid CLI token exists,
+    # fall through to the original store/refresh behaviour.
+    if os.getenv("HERMES_XAI_GROK_CLI_IMPORT", "1") != "0":
+        _imported = _import_grok_cli_tokens()
+        if _imported:
+            try:
+                _cur = str((_read_xai_oauth_tokens().get("tokens") or {}).get("access_token", "") or "")
+            except Exception:
+                _cur = ""
+            if _imported["access_token"] != _cur:
+                _now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                _save_xai_oauth_tokens(_imported, last_refresh=_now)
+    # -----------------------------------------------------------------------
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4638,6 +4715,26 @@ def resolve_xai_oauth_runtime_credentials(
             should_refresh = bool(force_refresh)
             if (not should_refresh) and refresh_if_expiring:
                 should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
+            if should_refresh and os.getenv("HERMES_XAI_GROK_CLI_IMPORT", "1") != "0":
+                # Grok CLI bridge: NEVER rotate the shared xAI grant (reuse-revoke).
+                # Re-import from the CLI; if it has no valid token, fail safe (this
+                # card retries) instead of refreshing and revoking the grant.
+                _reimport = _import_grok_cli_tokens()
+                if _reimport:
+                    _now2 = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    _save_xai_oauth_tokens(_reimport, last_refresh=_now2)
+                    tokens = _reimport
+                    access_token = str(_reimport.get("access_token", "") or "").strip()
+                    should_refresh = False
+                else:
+                    raise AuthError(
+                        "xAI Grok CLI token expired; hermes refresh suppressed to "
+                        "avoid revoking the shared OAuth grant. Refresh "
+                        "~/.grok/auth.json (run a grok command / the refresher cron).",
+                        provider="xai-oauth",
+                        code="xai_bridge_cli_token_expired",
+                        relogin_required=False,
+                    )
             if should_refresh:
                 if not token_endpoint:
                     token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]

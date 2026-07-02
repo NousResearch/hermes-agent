@@ -48,7 +48,7 @@ For repo files, use `search_files` and `read_file` first. Trace symbol definitio
 4. **Edit with repo style.** Prefer `patch` for focused edits; use `write_file` for new files or deliberate whole-file rewrites. Completion: diff is focused and every modified file is intentional.
 5. **Verify.** Run the narrowest useful test, lint, compile, dry-run, or temporary ad-hoc script. Completion: real tool output backs the claim, or a concrete blocker is reported.
 6. **Review the diff.** Check `git diff`/`git status` before finalizing. Completion: no secrets, generated churn, or unrelated changes are included.
-7. **Commit completed repo changes incrementally.** After each complete, verified unit of repo work, stage only the intended files and create a focused conventional commit before moving to the next unit. Completion: the commit SHA, verification command, and any intentionally uncommitted files are known.
+7. **Honor repo-specific commit policy.** If the active repo’s project context asks for local commits, stage only intended files and create focused conventional commits after complete, verified units. Completion: commit SHA(s), verification command(s), and intentionally uncommitted files are known.
 8. **Capture reusable knowledge.** If the task reveals a stable workflow, schema behavior, or codepath fact, add it to `yallaplay-wiki/` or a skill rather than memory. Completion: reusable fact is saved or intentionally skipped as one-off.
 
 ## Profile, Bot, and Scheduler State
@@ -80,8 +80,7 @@ See `references/legacy-capability-audit.md` for the compact inventory and report
 
 - Refuse broad deletion of repos, Hermes homes, wiki content, tool directories, credentials, or generated operational state.
 - Do not read or print secrets (`vars.toml`, `.env`, tokens, OAuth caches) unless explicitly required and scoped.
-- Do not push or rewrite history unless asked; do not branch unless task scope requires it or the user asks.
-- For user-requested repo changes, focused local commits are allowed and expected after each complete, verified unit of work.
+- Do not commit, branch, push, or rewrite history unless asked or the active repo's project context explicitly requires local commits.
 - Avoid production writes unless a documented gated workflow exists and the user confirms the exact action.
 - Before destructive commands, narrow the path and prefer reversible file moves over deletion.
 
@@ -101,5 +100,5 @@ See `references/legacy-capability-audit.md` for the compact inventory and report
 - [ ] No secrets or unrelated profile/runtime state were committed or exposed.
 - [ ] A focused test/lint/compile/dry-run/ad-hoc verification was run, or the blocker is explicit.
 - [ ] `git status`/`git diff` was reviewed before final response.
-- [ ] Each complete, verified repo-change unit was committed with a focused conventional commit, or the reason for leaving it uncommitted is explicit.
+- [ ] The active repo's commit policy was followed, including focused local commits when project context requires them.
 - [ ] Reusable engineering knowledge was captured in `yallaplay-wiki/` or a skill when applicable.

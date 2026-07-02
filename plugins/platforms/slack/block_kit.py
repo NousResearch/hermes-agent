@@ -451,6 +451,10 @@ def render_blocks(
                         indent, ordered, txt = items[-1]
                         items[-1] = (indent, ordered, txt + " " + lines[i].strip())
                         i += 1
+                    elif not lines[i].strip():
+                        # blank line — soft separator within a list run;
+                        # skip so that ordered items stay in one rich_text_list.
+                        i += 1
                     else:
                         break
                 blocks.append(_list_block(items))

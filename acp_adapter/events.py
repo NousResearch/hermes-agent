@@ -231,6 +231,17 @@ def make_step_cb(
                     tool_name = tool_info.get("name") or tool_info.get("function_name")
                     result = tool_info.get("result") or tool_info.get("output")
                     function_args = tool_info.get("arguments") or tool_info.get("args")
+                    # OpenAI tool_call arguments arrive as a JSON string
+                    # (e.g. '{"path":"/foo","offset":1}'), not a dict.
+                    # build_tool_complete() → _format_read_file_result()
+                    # calls .get("path") on it → AttributeError. Parse here
+                    # the same way _tool_progress does on line 138.
+                    if isinstance(function_args, str):
+                        try:
+                            function_args = json.loads(function_args)
+                        except (json.JSONDecodeError, TypeError):
+                            function_args = {}
+                        tool_info["arguments"] = function_args
                 elif isinstance(tool_info, str):
                     tool_name = tool_info
 

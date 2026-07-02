@@ -53,9 +53,25 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
+// Model ids write versions with dashes (claude-opus-4-8); after dash→space
+// those segments read as "Opus 4 8". Join consecutive all-digit tokens with
+// dots so they render as versions: "opus 4 8" → "opus 4.8". Tokens with
+// trailing letters (70b) stay separate ("llama 3.1 70b").
+function joinVersionDigits(text: string): string {
+  let prev = ''
+  let out = text
+
+  while (out !== prev) {
+    prev = out
+    out = out.replace(/(^|\s)(\d+) (\d+)(?=\s|$)/g, '$1$2.$3')
+  }
+
+  return out
+}
+
 function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
-    return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
+    return titleCase(joinVersionDigits(base.replace(/^claude-/i, '').replace(/-/g, ' ')))
   }
 
   if (/^gpt-/i.test(base)) {
@@ -63,10 +79,10 @@ function prettifyBase(base: string): string {
   }
 
   if (/^gemini-/i.test(base)) {
-    return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
+    return joinVersionDigits(base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' '))
   }
 
-  return titleCase(base.replace(/-/g, ' '))
+  return titleCase(joinVersionDigits(base.replace(/-/g, ' ')))
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant

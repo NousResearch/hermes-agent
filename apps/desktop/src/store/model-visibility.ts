@@ -84,12 +84,14 @@ export function compareModelFamilies(a: ModelFamily, b: ModelFamily): number {
     const x = ta[i]
     const y = tb[i]
 
+    // One id is a prefix of the other: the LONGER one carries a more specific
+    // (newer) version, so it leads — opus-4-8 above the bare opus-4 alias.
     if (x === undefined) {
-      return -1
+      return 1
     }
 
     if (y === undefined) {
-      return 1
+      return -1
     }
 
     if (typeof x === 'number' && typeof y === 'number') {

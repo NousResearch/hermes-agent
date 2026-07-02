@@ -232,22 +232,28 @@ describe('compareModelFamilies', () => {
   it('clusters families alphabetically with the newest version first', () => {
     const sorted = [
       fam('claude-sonnet-4-6'),
+      fam('claude-opus-4'),
       fam('claude-opus-4-6'),
       fam('claude-fable-5'),
       fam('claude-haiku-4-5'),
       fam('claude-opus-4-8'),
+      fam('claude-sonnet-4'),
       fam('claude-sonnet-5')
     ]
       .sort(compareModelFamilies)
       .map(f => f.id)
 
+    // A bare major alias (opus-4) sorts BELOW its point releases — it's the
+    // least specific/oldest of its line.
     expect(sorted).toEqual([
       'claude-fable-5',
       'claude-haiku-4-5',
       'claude-opus-4-8',
       'claude-opus-4-6',
+      'claude-opus-4',
       'claude-sonnet-5',
-      'claude-sonnet-4-6'
+      'claude-sonnet-4-6',
+      'claude-sonnet-4'
     ])
   })
 

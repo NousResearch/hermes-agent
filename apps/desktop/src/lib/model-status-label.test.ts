@@ -16,8 +16,11 @@ describe('model-status-label', () => {
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+    expect(displayModelName('claude-opus-4-8')).toBe('Opus 4.8')
+    expect(displayModelName('claude-fable-5')).toBe('Fable 5')
+    expect(displayModelName('meta/llama-3-1-70b')).toBe('Llama 3.1 70b')
   })
 
   it('maps reasoning effort to compact labels', () => {

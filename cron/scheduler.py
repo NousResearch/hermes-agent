@@ -1931,7 +1931,12 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+def _build_job_prompt(
+    job: dict,
+    prerun_script: Optional[tuple] = None,
+    *,
+    extra_context: Optional[str] = None,
+) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
@@ -1941,6 +1946,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+        extra_context: Optional run-specific context supplied by a manual
+            ``cronjob(action="run", prompt=...)`` trigger. This is injected for
+            this execution only and is not persisted on the stored job.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -1951,6 +1959,17 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # pastes `rm -rf /`), so it must not be scanned with the strict
     # user-prompt pattern set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+
+    manual_context = str(extra_context or "").strip()
+    if manual_context:
+        prompt = (
+            "## Manual Run Context\n"
+            "The following context was supplied only for this manual cron run. "
+            "Use it as run-specific input. It is not persisted on the job.\n\n"
+            f"```\n{manual_context}\n```\n\n"
+            f"{prompt}"
+        )
+        has_injected_data = True
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -2250,7 +2269,11 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(
+    job: dict,
+    *,
+    extra_context: Optional[str] = None,
+) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -2403,7 +2426,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             return True, silent_doc, SILENT_MARKER, None
 
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        prompt = _build_job_prompt(
+            job,
+            prerun_script=prerun_script,
+            extra_context=extra_context,
+        )
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -3084,7 +3111,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    extra_context: Optional[str] = None,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3114,7 +3148,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
-        success, output, final_response, error = run_job(job)
+        success, output, final_response, error = run_job(job, extra_context=extra_context)
 
         output_file = save_job_output(job["id"], output)
         if verbose:

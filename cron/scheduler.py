@@ -2439,9 +2439,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Use a per-job ContextVar (NOT a process-global env var) so the flag is
+    # task-local: concurrent interactive gateway sessions in the same process
+    # never inherit it (#56771).
+    from gateway.session_context import set_cron_session as _set_cron_session
+    _set_cron_session(True)
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -3041,6 +3043,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        # Reset the per-job cron-session flag (#56771).
+        try:
+            from gateway.session_context import clear_cron_session
+            clear_cron_session()
+        except Exception:
+            pass
         if _session_db:
             # Title the cron session from the job (name → short prompt → id) so
             # sidebars/history show a meaningful label instead of the injected

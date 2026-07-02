@@ -113,6 +113,25 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Per-job cron-session flag (issue #56771).
+#
+# The scheduler used to set ``os.environ["HERMES_CRON_SESSION"] = "1"``
+# process-wide at job start and never clear it. When the gateway and scheduler
+# share a process (the normal architecture) the env var leaked into every
+# concurrent interactive session, causing the approval system to treat user
+# chats as cron and block ``execute_code`` / dangerous commands.
+#
+# This ContextVar replaces that process-global env var. It is task-local:
+# only the asyncio task / worker thread that runs the cron job sees it.
+# Concurrent interactive sessions never inherit it.
+#
+# Tri-state semantics (mirrors the _UNSET pattern of the session vars):
+#   _UNSET — never set in this context → fall back to os.environ for backward
+#            compat (tests, CLI cron that sets the env var directly).
+#   True   — this task is running a cron job → approval applies cron_mode.
+#   False  — explicitly not a cron job (overrides a stale env var leak).
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
@@ -333,3 +352,47 @@ def async_delivery_supported() -> bool:
     if value is _UNSET:
         return True
     return bool(value)
+
+
+# ---------------------------------------------------------------------------
+# Cron-session flag (issue #56771)
+# ---------------------------------------------------------------------------
+
+def set_cron_session(value: bool = True) -> None:
+    """Mark the current task as running (or not running) a cron job.
+
+    Called by ``cron/scheduler.py::run_job()`` before the agent starts so the
+    approval system applies ``approvals.cron_mode``. Because this is a
+    ContextVar, the flag is visible only within the scheduler's task/thread —
+    concurrent interactive sessions in the same process never inherit it.
+    """
+    _CRON_SESSION.set(bool(value))
+
+
+def clear_cron_session() -> None:
+    """Reset the cron-session flag to the "never set" sentinel.
+
+    Called in the ``run_job()`` finally block so a re-entrant or reused context
+    does not retain the flag after the job completes.
+    """
+    _CRON_SESSION.set(_UNSET)
+
+
+def is_cron_session() -> bool:
+    """Whether the current task is running a cron job.
+
+    Resolution order:
+    1. ContextVar — if explicitly set (True/False), that value is authoritative.
+    2. ``HERMES_CRON_SESSION`` env var — fallback when the ContextVar was never
+       bound in this context (tests, CLI cron that sets the env var directly).
+       In production the scheduler no longer sets this env var, so interactive
+       sessions fall through to ``False``.
+    """
+    import os
+
+    value = _CRON_SESSION.get()
+    if value is not _UNSET:
+        return bool(value)
+    return os.getenv("HERMES_CRON_SESSION", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )

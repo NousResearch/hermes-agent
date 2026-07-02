@@ -817,6 +817,34 @@ class TestRunDebugShareRedaction:
                 "redaction banner missing from upload-bound content"
             )
 
+    def test_default_share_skips_nonessential_logger_write(
+        self, hermes_home_with_secret, capsys
+    ):
+        """Debug share should not depend on a writable log file to upload."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.nous = False
+        args.no_redact = False
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload), \
+             patch("hermes_cli.debug.logger.info", side_effect=AssertionError("logger.info should not be called")):
+            run_debug_share(args)
+
+        assert len(captured) >= 1
+        assert "redacted at upload time" in captured[0]
+
     def test_no_redact_flag_disables_redaction_and_banner(
         self, hermes_home_with_secret, capsys
     ):
@@ -1762,4 +1790,3 @@ class TestShareConsentGate:
 
         mock_upload.assert_not_called()
         assert "Aborted" not in capsys.readouterr().out
-

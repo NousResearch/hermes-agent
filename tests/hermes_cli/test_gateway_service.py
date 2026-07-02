@@ -2476,6 +2476,52 @@ class TestProfileArg:
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
+    def test_launchd_user_home_falls_back_to_home_when_uid_lookup_fails(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", "/Users/example")
+
+        def fail_getpwuid(uid):
+            raise KeyError("uid not found")
+
+        monkeypatch.setattr(pwd, "getpwuid", fail_getpwuid)
+
+        assert gateway_cli._launchd_user_home() == Path("/Users/example")
+
+    def test_launchd_user_home_uses_explicit_override_before_uid_lookup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path))
+
+        def fail_getpwuid(uid):
+            raise AssertionError("override should not call pwd.getpwuid")
+
+        monkeypatch.setattr(pwd, "getpwuid", fail_getpwuid)
+
+        assert gateway_cli._launchd_user_home() == tmp_path
+
+    def test_launchd_user_home_derives_account_home_from_hermes_home(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", "/Users/example/.hermes/profiles/work/home")
+        monkeypatch.setenv("HERMES_HOME", "/Users/example/.hermes/profiles/work")
+
+        def fail_getpwuid(uid):
+            raise KeyError("uid not found")
+
+        monkeypatch.setattr(pwd, "getpwuid", fail_getpwuid)
+
+        assert gateway_cli._launchd_user_home() == Path("/Users/example")
+
+    def test_launchd_user_home_rejects_unusable_fallbacks(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", "/Users/example/.hermes/profiles/work/home")
+        monkeypatch.setenv("HERMES_HOME", ".hermes/profiles/work")
+
+        def fail_getpwuid(uid):
+            raise KeyError("uid not found")
+
+        monkeypatch.setattr(pwd, "getpwuid", fail_getpwuid)
+
+        with pytest.raises(RuntimeError, match="HERMES_REAL_HOME=/Users/<user>"):
+            gateway_cli._launchd_user_home()
+
 
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""

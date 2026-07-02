@@ -2413,11 +2413,41 @@ def _launchd_user_home() -> Path:
     """Return the real macOS user home for launchd artifacts.
 
     Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
-    launchd user agents still live under the actual account home.
+    launchd user agents still live under the actual account home. Some
+    app-hosted shells expose a UID that ``pwd.getpwuid`` cannot resolve, so
+    use conservative fallbacks instead of crashing launchd commands.
     """
     import pwd
 
-    return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    real_home = os.environ.get("HERMES_REAL_HOME")
+    if real_home:
+        return Path(real_home).expanduser()
+
+    try:
+        return Path(pwd.getpwuid(uid).pw_dir)
+    except KeyError as exc:
+        home = os.environ.get("HOME")
+        if home:
+            home_path = Path(home).expanduser()
+            if (
+                home_path.is_absolute()
+                and len(home_path.parts) >= 3
+                and home_path.parts[1] == "Users"
+                and ".hermes" not in home_path.parts
+            ):
+                return home_path
+
+        hermes_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            hermes_path = Path(hermes_home).expanduser()
+            if hermes_path.is_absolute() and ".hermes" in hermes_path.parts:
+                return Path(*hermes_path.parts[: hermes_path.parts.index(".hermes")])
+
+        raise RuntimeError(
+            f"could not resolve launchd home for uid {uid}; "
+            "set HERMES_REAL_HOME=/Users/<user>"
+        ) from exc
 
 
 def get_launchd_plist_path() -> Path:

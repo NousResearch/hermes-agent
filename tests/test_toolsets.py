@@ -291,3 +291,70 @@ class TestResolveToolsetIncludeRegistry:
 
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
+
+
+class TestBundledPlatformBundles:
+    """Every bundled platform plugin must ship a static ``hermes-<platform>`` bundle.
+
+    ``_get_platform_tools`` falls back to ``hermes-<platform>`` for any platform
+    missing from config's ``platform_toolsets``, and ``resolve_toolset`` returns
+    ``[]`` for an unknown name. The runtime auto-generate path only fires once
+    ``gateway.platform_registry`` has the platform registered, so outside the
+    gateway process (cron, kanban dispatch, ``hermes tools``, doctor) — and in
+    the explicit-config composite expansion, which skips names absent from
+    ``TOOLSETS`` — a bundled platform plugin without a static bundle silently
+    degrades to ZERO tools. LINE shipped this way (#23197): every platform
+    listed in ``plugins/platforms/`` must have a matching static bundle.
+    """
+
+    def test_every_bundled_platform_plugin_has_a_static_bundle(self):
+        import pathlib
+
+        platforms_dir = (
+            pathlib.Path(__file__).resolve().parent.parent / "plugins" / "platforms"
+        )
+        missing = []
+        for child in sorted(platforms_dir.iterdir()):
+            if not child.is_dir() or not (child / "plugin.yaml").exists():
+                continue
+            bundle = f"hermes-{child.name}"
+            if bundle not in TOOLSETS or not resolve_toolset(
+                bundle, include_registry=False
+            ):
+                missing.append(bundle)
+        assert not missing, (
+            f"Bundled platform plugins without a static toolset bundle: {missing}. "
+            f"Add a 'hermes-<platform>' entry to TOOLSETS in toolsets.py — without "
+            f"it the platform silently resolves to zero tools (see #38798 shape)."
+        )
+
+    def test_new_platform_bundles_resolve_to_core_tools(self):
+        for platform in (
+            "line",
+            "google_chat",
+            "teams",
+            "irc",
+            "ntfy",
+            "photon",
+            "simplex",
+            "raft",
+        ):
+            tools = resolve_toolset(f"hermes-{platform}", include_registry=False)
+            for core_tool in ("terminal", "read_file", "memory", "web_search", "todo"):
+                assert core_tool in tools, (
+                    f"hermes-{platform} is missing core tool {core_tool!r}"
+                )
+
+    def test_gateway_composite_includes_all_platform_bundles(self):
+        gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
+        for platform in (
+            "line",
+            "google_chat",
+            "teams",
+            "irc",
+            "ntfy",
+            "photon",
+            "simplex",
+            "raft",
+        ):
+            assert f"hermes-{platform}" in gateway_includes

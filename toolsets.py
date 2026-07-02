@@ -574,10 +574,64 @@ TOOLSETS = {
         "includes": []
     },
 
+    # Bundled platform plugins added without a matching ``hermes-<platform>``
+    # bundle used to silently resolve to ZERO tools: ``_get_platform_tools``
+    # falls back to ``hermes-<platform>`` for any platform missing from
+    # ``platform_toolsets``, and ``resolve_toolset`` returns ``[]`` for an
+    # unknown name (#38798 shape). Every bundled platform plugin below now has
+    # an explicit core bundle, mirroring hermes-telegram/hermes-signal.
+    "hermes-line": {
+        "description": "LINE bot toolset - personal messaging via LINE Messaging API (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-google_chat": {
+        "description": "Google Chat bot toolset - workspace messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-teams": {
+        "description": "Microsoft Teams bot toolset - workspace messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-irc": {
+        "description": "IRC bot toolset - classic internet relay chat (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-ntfy": {
+        "description": "ntfy toolset - push notification channel (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-photon": {
+        "description": "Photon toolset - Lemmy client messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-simplex": {
+        "description": "SimpleX Chat bot toolset - private messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-raft": {
+        "description": "Raft toolset - Hermes-to-Hermes relay platform (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao", "hermes-line", "hermes-google_chat", "hermes-teams", "hermes-irc", "hermes-ntfy", "hermes-photon", "hermes-simplex", "hermes-raft"]
     }
 }
 

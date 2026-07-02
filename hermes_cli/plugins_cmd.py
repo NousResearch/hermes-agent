@@ -810,6 +810,57 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
+# Plugin kinds that the general loader does NOT gate on plugins.enabled /
+# plugins.disabled: model providers register through providers/__init__.py's
+# own discovery (selected via `hermes model` / model.provider), and exclusive
+# category plugins (memory providers) activate via `<category>.provider`.
+# `plugins enable`/`disable` used to accept these and print a success message
+# while having zero effect — the flag was written but nothing ever read it,
+# which misled users into thinking they had switched something on or off.
+_PASSIVE_PLUGIN_KINDS = {"model-provider", "exclusive"}
+
+
+def _plugin_kind(key: str) -> str:
+    """Manifest ``kind`` for a discovered plugin key (default: ``standalone``)."""
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        if entry[5] == key:
+            d = Path(entry[4])
+            for fname in ("plugin.yaml", "plugin.yml"):
+                mf = d / fname
+                if mf.exists():
+                    try:
+                        import yaml
+
+                        data = yaml.safe_load(mf.read_text(encoding="utf-8")) or {}
+                        return str(data.get("kind", "standalone"))
+                    except Exception:
+                        return "standalone"
+    return "standalone"
+
+
+def _print_passive_kind_hint(console, key: str, kind: str) -> None:
+    """Explain how a passive-kind plugin is actually controlled."""
+    if kind == "model-provider":
+        console.print(
+            f"[yellow]![/yellow] [bold]{key}[/bold] is a model provider — it is "
+            "not controlled by plugins.enabled/disabled (providers register "
+            "automatically at startup).\n"
+            "  To use it:       run [bold]hermes model[/bold] and pick it, or set "
+            "[dim]model.provider[/dim] in config.yaml.\n"
+            "  To stop using it: select a different provider; remove its API key "
+            "from ~/.hermes/.env to make it unselectable.\n"
+            "Nothing was changed."
+        )
+    else:  # exclusive
+        console.print(
+            f"[yellow]![/yellow] [bold]{key}[/bold] is an exclusive category "
+            "plugin — it is activated by its category's provider key (e.g. "
+            "[dim]memory.provider[/dim]), not by plugins.enabled/disabled.\n"
+            "Nothing was changed."
+        )
+
+
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
@@ -830,6 +881,11 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
+
+    kind = _plugin_kind(key)
+    if kind in _PASSIVE_PLUGIN_KINDS:
+        _print_passive_kind_hint(console, key, kind)
+        return
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
@@ -909,6 +965,11 @@ def cmd_disable(name: str) -> None:
     if key is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
+
+    kind = _plugin_kind(key)
+    if kind in _PASSIVE_PLUGIN_KINDS:
+        _print_passive_kind_hint(console, key, kind)
+        return
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()

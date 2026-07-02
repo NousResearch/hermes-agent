@@ -361,12 +361,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     xai: {
       voiceId: 'xAI (Grok) Voice',
       language: 'xAI Language',
-      speed: 'Playback Speed',
-      autoSpeechTags: 'Auto Speech Tags',
-      textNormalization: 'Text Normalization',
-      optimizeStreamingLatency: 'Streaming Latency Optimization',
-      sampleRate: 'Sample Rate',
-      bitRate: 'Bit Rate'
+      speed: 'xAI Playback Speed',
+      autoSpeechTags: 'xAI Auto Speech Tags',
+      textNormalization: 'xAI Text Normalization',
+      optimizeStreamingLatency: 'xAI Streaming Latency Optimization',
+      sampleRate: 'xAI Sample Rate',
+      bitRate: 'xAI Bit Rate'
     },
     minimax: {
       model: 'MiniMax TTS Model',

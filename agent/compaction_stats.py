@@ -25,6 +25,8 @@ Bucket model::
 
 from __future__ import annotations
 
+import hashlib
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -480,9 +482,8 @@ def build_hygiene_stats(
     # Priority kept > folded ensures a row LCM kept verbatim is counted ONCE in
     # `kept`, never double-counted in `cleared`/`folded`. Each bucket's tokens
     # are then an INDEPENDENT estimator call over its own rows.
-    from collections import Counter as _Counter
-    _kept_want = _Counter(_row_signature(m) for m in kept_compressed_rows)
-    _elig_want = _Counter(_row_signature(m) for m in elig)
+    _kept_want = Counter(_row_signature(m) for m in kept_compressed_rows)
+    _elig_want = Counter(_row_signature(m) for m in elig)
     kept_rows: List[dict] = []
     folded_rows: List[dict] = []
     cleared_rows: List[dict] = []
@@ -575,8 +576,6 @@ def _row_signature(m: dict) -> Tuple[Optional[str], str]:
     bounds key size vs. carrying multi-KB strings as dict keys; SHA-1 is for
     de-dup, not security, so it's fine here.)
     """
-    import hashlib
-
     content = m.get("content")
     if not isinstance(content, str):
         # tool-call-only / structured content → stringify deterministically
@@ -596,7 +595,6 @@ def _disjoint_remainder(whole: List[dict], subset: List[dict]) -> List[dict]:
     if len(rem) == len(whole) - len(subset):
         return rem
     # identity didn't line up (copies); fall back to signature subtraction
-    from collections import Counter
     want = Counter(_row_signature(m) for m in subset)
     out = []
     for m in whole:
@@ -614,7 +612,6 @@ def _fold_rows(eligible: List[dict], kept: List[dict]) -> List[dict]:
     rem = [m for m in eligible if id(m) not in kept_ids]
     if len(rem) == len(eligible) - len(kept):
         return rem
-    from collections import Counter
     want = Counter(_row_signature(m) for m in kept)
     out = []
     for m in eligible:
@@ -652,7 +649,6 @@ def _partition_pre_by_comp_kept(
     exactly. The caller labels A-floor renders as approximate and measures the
     gross bound (degrade-to-two-line above threshold).
     """
-    from collections import Counter
 
     kept_ids = {id(m) for m in kept}
     matched = [m for m in eligible if id(m) in kept_ids]

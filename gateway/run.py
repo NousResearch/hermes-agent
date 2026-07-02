@@ -4525,11 +4525,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # safe-reboot quiescence wait (`active_agents==0`) unreachable.
     #
     # The reaper evicts ONLY entries whose turn TASK is genuinely done()/cancelled
-    # — an unambiguous dead-vs-alive signal. It NEVER uses the idle/wall-age
-    # heuristic the `:8861` predicate uses, because `_touch_activity` is dead code
-    # (the "idle" signal is fake — it grows monotonically from agent init), so a
-    # long LIVE delegated turn looks "idle" and would be amputated. A live task
-    # (`not task.done()`) is never reaped, regardless of age.
+    # — an unambiguous dead-vs-alive signal. It deliberately does NOT reuse the
+    # idle-heuristic the stale-eviction predicate uses (`get_activity_summary()` /
+    # `_touch_activity`, run_agent.py — a REAL signal updated on every API call,
+    # tool call, and stream delta; an earlier revision of this comment wrongly
+    # called it dead code). The reaper avoids it anyway because idleness is the
+    # wrong QUESTION here: a leaked slot's agent object may be garbage-collected
+    # (no tracker to ask), and a long-running-but-quiet delegated turn can look
+    # idle while its task is alive. Task-liveness is strictly less ambiguous:
+    # a live task (`not task.done()`) is never reaped, regardless of age.
     # ------------------------------------------------------------------
     _REAP_GRACE_SECS: float = 30.0  # a non-sentinel entry with no recorded task survives
     # this long before being treated as a genuine leak — covers the microscopic window

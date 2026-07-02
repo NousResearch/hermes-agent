@@ -279,6 +279,9 @@ function ProjectTreeRow({
         node.isSelected && 'bg-(--ui-row-active-background) text-foreground',
         isPlaceholder && 'pointer-events-none italic text-muted-foreground/70'
       )}
+      data-hermes-file-tree-is-directory={isFolder ? 'true' : 'false'}
+      data-hermes-file-tree-name={node.data.name}
+      data-hermes-file-tree-path={node.data.id}
       draggable={!isPlaceholder && !editing}
       onClick={event => {
         event.stopPropagation()

@@ -38,6 +38,7 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
+const { buildFileTreeContextLookupScript, normalizeFileTreeContext } = require('./context-menu-utils.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
@@ -4144,9 +4145,24 @@ function installZoomShortcuts(window) {
   })
 }
 
+async function readFileTreeContextAt(window, params) {
+  try {
+    const raw = await window.webContents.executeJavaScript(
+      buildFileTreeContextLookupScript(params?.x, params?.y),
+      true
+    )
+
+    return normalizeFileTreeContext(raw)
+  } catch (error) {
+    rememberLog(`[context-menu] file-tree lookup failed: ${error?.message || error}`)
+    return null
+  }
+}
+
 function installContextMenu(window) {
-  window.webContents.on('context-menu', (_event, params) => {
+  window.webContents.on('context-menu', async (_event, params) => {
     const template = []
+    const fileTreeContext = await readFileTreeContextAt(window, params)
     const hasSelection = Boolean(params.selectionText?.trim())
     const hasImage = params.mediaType === 'image' && Boolean(params.srcURL)
     const hasLink = Boolean(params.linkURL)
@@ -4233,8 +4249,19 @@ function installContextMenu(window) {
       }
     }
 
+    const wasEmptyBeforeFileTreeItems = template.length === 0
+    if (fileTreeContext?.path) {
+      if (template.length) template.push({ type: 'separator' })
+      template.push({
+        label: 'Copy Path',
+        click: () => clipboard.writeText(fileTreeContext.path)
+      })
+    }
+
     if (!template.length) {
       template.push({ role: 'selectAll' })
+    } else if (wasEmptyBeforeFileTreeItems && fileTreeContext?.path) {
+      template.push({ type: 'separator' }, { role: 'selectAll' })
     }
 
     Menu.buildFromTemplate(template).popup({ window })

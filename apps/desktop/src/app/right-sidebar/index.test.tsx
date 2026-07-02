@@ -46,6 +46,35 @@ describe('RightSidebarPane', () => {
     expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull()
   })
 
+  it('marks file tree rows with metadata for the native context menu', async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 240,
+      height: 240,
+      left: 0,
+      right: 320,
+      toJSON: () => ({}),
+      top: 0,
+      width: 320,
+      x: 0,
+      y: 0
+    })
+
+    try {
+      setCurrentCwd('/repo')
+
+      render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+      const label = await screen.findByText('README.md')
+      const row = label.closest('[data-hermes-file-tree-path]')
+
+      expect(row?.getAttribute('data-hermes-file-tree-path')).toBe('/repo/README.md')
+      expect(row?.getAttribute('data-hermes-file-tree-name')).toBe('README.md')
+      expect(row?.getAttribute('data-hermes-file-tree-is-directory')).toBe('false')
+    } finally {
+      rect.mockRestore()
+    }
+  })
+
   it('shows no tree for a detached chat (no working dir)', async () => {
     setCurrentCwd('')
 

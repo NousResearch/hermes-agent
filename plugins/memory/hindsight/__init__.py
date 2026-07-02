@@ -174,9 +174,9 @@ def _meets_minimum_version(actual: str | None, required: str) -> bool:
         return False
 
 
-def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
-                                 timeout: float = 5.0) -> str | None:
-    """GET ``<api_url>/version`` and return the version string (or None on failure).
+def _fetch_hindsight_version_info(api_url: str, api_key: str | None = None,
+                                  timeout: float = 5.0) -> dict | None:
+    """GET ``<api_url>/version`` and return the parsed payload (or None on failure).
 
     Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
     Any failure (timeout, 404, malformed JSON, missing key) → None, which
@@ -197,6 +197,13 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     except Exception as exc:
         logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
         return None
+    return data if isinstance(data, dict) else None
+
+
+def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
+                                 timeout: float = 5.0) -> str | None:
+    """GET ``<api_url>/version`` and return the version string (or None on failure)."""
+    data = _fetch_hindsight_version_info(api_url, api_key, timeout)
     if not isinstance(data, dict):
         return None
     version = data.get("version") or data.get("api_version")
@@ -216,8 +223,21 @@ def _check_api_supports_update_mode_append(api_url: str,
     with _append_capability_lock:
         if api_url in _append_capability_cache:
             return _append_capability_cache[api_url]
-    version = _fetch_hindsight_api_version(api_url, api_key)
-    supported = _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+    info = _fetch_hindsight_version_info(api_url, api_key) or {}
+    version = info.get("version") or info.get("api_version")
+    version = str(version) if version else None
+    # update_mode='append' additionally requires the server to keep raw
+    # document text: deployments with HINDSIGHT_API_STORE_DOCUMENT_TEXT
+    # disabled reject append retains outright (400), so treat append as
+    # unsupported there and use the per-process document_id fallback.
+    # Servers too old to report `features` predate the opt-out and are
+    # assumed to store text.
+    features = info.get("features")
+    store_text = True
+    if isinstance(features, dict):
+        store_text = bool(features.get("store_document_text", True))
+    supported = (_meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+                 and store_text)
     with _append_capability_lock:
         # Re-check after acquiring the lock in case a concurrent probe filled it.
         cached = _append_capability_cache.get(api_url)
@@ -226,6 +246,16 @@ def _check_api_supports_update_mode_append(api_url: str,
         else:
             supported = cached
     if not supported:
+        if not store_text:
+            logger.warning(
+                "Hindsight API at %s (version %r) has store_document_text "
+                "disabled; update_mode='append' retains would be rejected. "
+                "Falling back to per-process document_id.",
+                api_url, version,
+            )
+            with _append_capability_lock:
+                _append_capability_cache.setdefault(api_url, supported)
+            return supported
         logger.warning(
             "Hindsight API at %s reports version %r, older than %s. "
             "Falling back to per-process document_id — retains across "

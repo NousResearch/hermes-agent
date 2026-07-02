@@ -86,6 +86,59 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     )
 
 
+def _codex_gpt55_autoraise_notice_marker():
+    """Path to the per-profile marker recording that the autoraise notice ran.
+
+    Lives under ``$HERMES_HOME`` (which is profile-scoped) alongside the other
+    internal markers like ``.container-mode`` — so it is not a user-facing config
+    key, and every profile tracks its own notice state independently.
+    """
+    return get_hermes_home() / ".codex_gpt55_autoraise_notice"
+
+
+def _codex_gpt55_autoraise_notice_state(autoraise: Dict[str, float]) -> str:
+    """Stable identity for one autoraise notice, keyed on what it displays.
+
+    Uses the same from→to percentages the notice text shows, so an unchanged
+    threshold stays silent across restarts while a later change (e.g. the user
+    edits their global ``threshold``) re-notifies once.
+    """
+    from_pct = int(round(float(autoraise["from"]) * 100))
+    to_pct = int(round(float(autoraise["to"]) * 100))
+    return f"{from_pct}:{to_pct}"
+
+
+def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, float]) -> bool:
+    """True if this exact autoraise notice was already shown for this profile.
+
+    A missing/unreadable marker (or one recording a different threshold) reads
+    as unseen, so the notice shows.
+    """
+    try:
+        current = _codex_gpt55_autoraise_notice_state(autoraise)
+        return _codex_gpt55_autoraise_notice_marker().read_text(
+            encoding="utf-8"
+        ).strip() == current
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> None:
+    """Persist that the autoraise notice was shown for this profile/config state.
+
+    Best-effort: a read-only or missing ``$HERMES_HOME`` just means the notice
+    may show again next init, which is preferable to breaking agent init.
+    """
+    try:
+        marker = _codex_gpt55_autoraise_notice_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            _codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8"
+        )
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -1826,17 +1879,27 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # Codex gpt-5.5 autoraise notice: show at most once per profile/config
+    # state. Without the persisted marker the notice re-fires on every agent
+    # init — and the gateway rebuilds the agent per inbound message, so Discord
+    # etc. saw it repeatedly (#54432). A change in the raised threshold updates
+    # the marker state and re-notifies once.
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    _show_autoraise_notice = (
+        bool(_autoraise)
+        and compression_enabled
+        and not _codex_gpt55_autoraise_notice_seen(_autoraise)
+    )
+
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
-        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        # Notice with the exact opt-back-out command. Printed inline at startup
+        # for CLI users; gateway users get the same text replayed via
+        # _compression_warning on turn 1 (set below).
+        if _show_autoraise_notice:
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
@@ -1846,9 +1909,14 @@ def init_agent(
     # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _show_autoraise_notice:
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+
+    # Mark shown so repeated inits in this profile (e.g. every gateway message)
+    # stay silent. Recorded once, whether the notice went to the CLI print or
+    # the gateway replay slot.
+    if _show_autoraise_notice:
+        _record_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

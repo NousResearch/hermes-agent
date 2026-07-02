@@ -41,14 +41,14 @@ def test_description_matches_skill_standard(frontmatter: dict[str, object]) -> N
 
 
 def test_required_api_key_setup_metadata_present(skill_text: str) -> None:
-    assert "required_environment_variables:" in skill_text
-    assert "name: YDC_API_KEY" in skill_text
-    assert "required_for: Research and Finance Research API access" in skill_text
+    assert "hermes mcp install youdotcom" in skill_text
+    assert "YDC_API_KEY" in skill_text
+    assert "free search-only mode" in skill_text
 
 
 def test_modern_section_order(skill_text: str) -> None:
     headings = [
-        "# You.com Research Skill",
+        "# You.com MCP Research Skill",
         "## When to Use",
         "## Prerequisites",
         "## How to Run",
@@ -62,13 +62,13 @@ def test_modern_section_order(skill_text: str) -> None:
 
 
 def test_terminal_tool_is_the_direct_api_surface(skill_text: str) -> None:
-    assert "Use the `terminal` tool for direct HTTPS requests" in skill_text
-    assert "called directly via curl" not in skill_text
-    assert "### Using via terminal" not in skill_text
+    assert "Use the registered MCP tools directly" in skill_text
+    assert "do not require the `ydc` CLI" in skill_text
+    assert "curl" not in skill_text
 
 
-def test_research_and_finance_endpoints_documented(skill_text: str) -> None:
-    assert "https://api.you.com/v1/research" in skill_text
-    assert "https://api.you.com/v1/finance_research" in skill_text
-    assert "`output_schema`" in skill_text
-    assert "`source_control`" in skill_text
+def test_mcp_tool_names_documented(skill_text: str) -> None:
+    assert "mcp_youdotcom_you_search" in skill_text
+    assert "mcp_youdotcom_you_contents" in skill_text
+    assert "mcp_youdotcom_you_research" in skill_text
+    assert "you-search" in skill_text

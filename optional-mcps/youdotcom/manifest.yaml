@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: youdotcom
+description: Search, extract, and research current web content with You.com.
+source: https://you.com/docs/build-with-agents/mcp-server.md
+
+transport:
+  type: http
+  # Free profile exposes unauthenticated you-search only.
+  url: https://api.you.com/mcp?profile=free
+  # When YDC_API_KEY is present, switch to the full remote endpoint and send
+  # the bearer token. The server then exposes you-search, you-contents, and
+  # you-research by default.
+  url_env_overrides:
+    YDC_API_KEY: https://api.you.com/mcp
+  headers:
+    Authorization: "Bearer ${YDC_API_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: YDC_API_KEY
+      prompt: "You.com API key (optional; blank uses free search-only mode)"
+      required: false
+      secret: true
+
+post_install: |
+  Without YDC_API_KEY, You.com runs in the free search-only profile.
+  Add YDC_API_KEY from https://you.com/platform and reinstall this catalog entry
+  to enable content extraction and research tools.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure youdotcom

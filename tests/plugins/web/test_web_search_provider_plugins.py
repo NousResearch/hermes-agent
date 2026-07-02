@@ -2,8 +2,8 @@
 
 Covers:
 
-- All bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, youdotcom, firecrawl, xai) instantiate and self-report the expected
+- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -44,8 +44,6 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
-        "YDC_API_KEY",
-        "YDC_CRAWL_TIMEOUT",
         "XAI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
@@ -70,9 +68,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """Bundled web plugins discover and register correctly."""
+    """All eight bundled web plugins discover and register correctly."""
 
-    def test_all_plugins_present_in_registry(self) -> None:
+    def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -86,7 +84,6 @@ class TestBundledPluginsRegister:
             "searxng",
             "tavily",
             "xai",
-            "youdotcom",
         ]
 
     @pytest.mark.parametrize(
@@ -98,7 +95,6 @@ class TestBundledPluginsRegister:
             ("exa", True, True),
             ("parallel", True, True),
             ("tavily", True, True),
-            ("youdotcom", True, True),
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
@@ -120,7 +116,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "youdotcom", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -133,7 +129,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "youdotcom", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -154,7 +150,7 @@ class TestBundledPluginsRegister:
 
 
 class TestIsAvailable:
-    """Each plugin's ``is_available()`` reports cheap local availability."""
+    """Each plugin's ``is_available()`` returns False without env config."""
 
     def test_brave_free_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
@@ -204,14 +200,6 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("PARALLEL_API_KEY", "real")
-        assert p.is_available() is True
-
-    def test_youdotcom_search_available_without_api_key(self) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("youdotcom")
-        assert p is not None
         assert p.is_available() is True
 
     def test_firecrawl_requires_either_key_or_url(
@@ -508,87 +496,3 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
-
-
-class TestYoudotcomSearchErrors:
-    """You.com search free-tier failures return actionable errors."""
-
-    class _Response:
-        def __init__(self, status_code: int, payload: dict) -> None:
-            self.status_code = status_code
-            self._payload = payload
-            self.text = str(payload)
-            self.is_success = 200 <= status_code < 300
-
-        def json(self) -> dict:
-            return self._payload
-
-    def test_free_tier_limit_error_prompts_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from plugins.web.youdotcom import provider as youdotcom_provider
-
-        def fake_get(*args, **kwargs):
-            return self._Response(
-                402,
-                {
-                    "error": "free_tier_limit_exceeded",
-                    "message": "You've used all your free searches.",
-                    "limit": 100,
-                    "used": 100,
-                    "period": "day",
-                    "reset_at": "2026-06-11T00:00:00+00:00",
-                },
-            )
-
-        monkeypatch.setattr("httpx.get", fake_get)
-
-        result = youdotcom_provider._ydc_search("test", limit=5)
-
-        assert result["success"] is False
-        assert result["error_code"] == "free_tier_limit_exceeded"
-        assert result["limit"] == 100
-        assert result["used"] == 100
-        assert result["period"] == "day"
-        assert result["reset_at"] == "2026-06-11T00:00:00+00:00"
-        assert "keep searching for free" in result["error"]
-        assert "set it as `YDC_API_KEY`" in result["error"]
-        assert "YDC_API_KEY" in result["error"]
-        assert "https://you.com/platform" in result["error"]
-
-    def test_free_tier_search_caps_count_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from plugins.web.youdotcom import provider as youdotcom_provider
-
-        captured = {}
-
-        def fake_get(*args, **kwargs):
-            captured.update(kwargs)
-            return self._Response(200, {"results": {"web": []}})
-
-        monkeypatch.setattr("httpx.get", fake_get)
-
-        result = youdotcom_provider._ydc_search("test", limit=100)
-
-        assert result["success"] is True
-        assert captured["params"]["count"] == 50
-        assert "X-API-Key" not in captured["headers"]
-
-    def test_authenticated_search_uses_requested_count_and_livecrawl(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from plugins.web.youdotcom import provider as youdotcom_provider
-
-        captured = {}
-
-        def fake_get(*args, **kwargs):
-            captured.update(kwargs)
-            return self._Response(200, {"results": {"web": []}})
-
-        monkeypatch.setenv("YDC_API_KEY", "ydc-test")
-        monkeypatch.setattr("httpx.get", fake_get)
-
-        result = youdotcom_provider._ydc_search("test", limit=100)
-
-        assert result["success"] is True
-        assert captured["params"]["count"] == 100
-        assert captured["params"]["livecrawl"] == "web"
-        assert captured["headers"]["X-API-Key"] == "ydc-test"

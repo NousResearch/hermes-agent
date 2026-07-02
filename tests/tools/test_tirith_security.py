@@ -1246,7 +1246,7 @@ class TestSpawnWarningDedup:
         """``FileNotFoundError`` and ``PermissionError`` are distinct
         failure modes and each deserves its own first-occurrence log
         line; the dedupe key includes the exception class.
-
+        
         After _CRASH_LIMIT consecutive failures the circuit breaker opens
         and subsequent calls short-circuit without spawning, so we only
         see the warnings from the first batch."""

@@ -698,16 +698,7 @@ class TestOptionalEnvVarsRegistry:
         metadata = OPTIONAL_ENV_VARS["YDC_API_KEY"]
         assert metadata["category"] == "tool"
         assert metadata["password"] is True
-
-    def test_youdotcom_crawl_timeout_config_set_writes_env(self, tmp_path):
-        """YDC_CRAWL_TIMEOUT is read from .env, so config set must write there."""
-        from hermes_cli.config import set_config_value
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            set_config_value("YDC_CRAWL_TIMEOUT", "15")
-
-            assert load_env()["YDC_CRAWL_TIMEOUT"] == "15"
-            assert not (tmp_path / "config.yaml").exists()
+        assert metadata["tools"] == ["mcp_youdotcom"]
 
     def test_tavily_api_key_has_url(self):
         """TAVILY_API_KEY has a URL."""
@@ -721,6 +712,12 @@ class TestOptionalEnvVarsRegistry:
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
+
+    def test_youdotcom_in_env_vars_by_version(self):
+        """YDC_API_KEY is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+
+        assert "YDC_API_KEY" in ENV_VARS_BY_VERSION[34]
 
     def test_max_iterations_not_offered_as_env_var(self):
         """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).

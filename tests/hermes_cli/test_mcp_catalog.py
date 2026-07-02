@@ -143,6 +143,28 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_http_transport_headers_and_url_env_overrides(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp?profile=free",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+                "url_env_overrides": {"DEMO_KEY": "https://api.example.com/mcp"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "API key", "required": False}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.type == "http"
+        assert e.transport.headers == {"Authorization": "Bearer ${DEMO_KEY}"}
+        assert e.transport.url_env_overrides == {"DEMO_KEY": "https://api.example.com/mcp"}
+        assert e.auth.env[0].required is False
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -281,14 +303,14 @@ class TestInstall:
 
         from hermes_cli import mcp_catalog
 
-        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "placeholder-value")
 
         from hermes_cli.mcp_catalog import install_entry
         from hermes_cli.config import get_env_value, load_config
 
         install_entry(_entry("demo"), enable=True)
 
-        assert get_env_value("DEMO_KEY") == "secret-val"
+        assert get_env_value("DEMO_KEY") == "placeholder-value"
         assert "demo" in load_config()["mcp_servers"]
 
     def test_install_http_oauth_writes_auth_marker(self, catalog_dir):
@@ -306,6 +328,61 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_optional_key_uses_free_url_without_header(
+        self, catalog_dir, monkeypatch
+    ):
+        monkeypatch.delenv("DEMO_KEY", raising=False)
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp?profile=free",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+                "url_env_overrides": {"DEMO_KEY": "https://api.example.com/mcp"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "required": False}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import install_entry
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "")
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://api.example.com/mcp?profile=free"
+        assert "headers" not in server
+
+    def test_install_http_optional_key_uses_full_url_with_header(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp?profile=free",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+                "url_env_overrides": {"DEMO_KEY": "https://api.example.com/mcp"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "required": False}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.config import read_raw_config, save_env_value
+        from hermes_cli.mcp_catalog import install_entry
+
+        save_env_value("DEMO_KEY", "placeholder-value")
+        install_entry(_entry("demo"), enable=True)
+
+        server = read_raw_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://api.example.com/mcp"
+        assert server["headers"] == {"Authorization": "Bearer ${DEMO_KEY}"}
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

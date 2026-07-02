@@ -1,7 +1,0 @@
-name: web-youdotcom
-version: 1.0.0
-description: "You.com web search + content extraction. Search supports 100 free searches/day without an API key; extraction requires YDC_API_KEY from https://you.com/platform."
-author: youdotcom-oss
-kind: backend
-provides_web_providers:
-  - youdotcom

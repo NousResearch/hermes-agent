@@ -5548,6 +5548,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
+        if not active:
+            # With no running agents the "your current task will be
+            # interrupted" warning is false, so the home-channel ping is pure
+            # noise — scheduled systemd/cron restarts of an idle gateway hit
+            # this on every cycle (#20103, #29846). Mirrors the idle in-chat
+            # /restart suppression above. The drain-marker gate below still
+            # covers force-interrupt drains, which reach here with active
+            # sessions.
+            logger.info(
+                "Skipping home-channel shutdown notification: no active sessions to interrupt"
+            )
+            return
+
         # Suppress ONLY the home-channel broadcast when the drain that is ending
         # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
         # migration — drain-gated, then the machine is recreated). On the

@@ -248,6 +248,22 @@ async def test_idle_in_chat_restart_does_not_send_interruption_warning():
 
 
 @pytest.mark.asyncio
+async def test_idle_external_shutdown_skips_home_channel_notification():
+    """External stop/restart (systemd, cron) with no running agents must not
+    broadcast the interruption warning to home channels (#20103, #29846)."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Telegram Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent_calls == []
+
+
+@pytest.mark.asyncio
 async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()

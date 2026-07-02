@@ -134,7 +134,9 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     Gateway/Telegram sessions routinely ship ~15–25k tokens of tools +
     instructions before the first user message. Subscription-backed Codex can
     legitimately spend several minutes in backend admission/prefill at that
-    size; the generic 90s non-stream stale default aborts healthy calls.
+    size; the generic 90s non-stream stale default aborts healthy calls. The
+    floor engages above 10k estimated tokens so those gateway-scale payloads
+    are covered; smaller requests keep the generic default.
     """
     if est_tokens > 100_000:
         return 1200.0

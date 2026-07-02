@@ -465,6 +465,25 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             source="hermes",
         )
 
+    # 3. Plugin registry — providers registered via plugins/model-providers/
+    #    (e.g. vertex, bedrock).  These are not in models.dev or HERMES_OVERLAYS
+    #    but are first-class providers at runtime.
+    try:
+        from providers import get_provider_profile as _get_plugin_profile
+        _plugin_profile = _get_plugin_profile(canonical)
+        if _plugin_profile is not None:
+            return ProviderDef(
+                id=canonical,
+                name=_plugin_profile.display_name or _plugin_profile.name,
+                transport=_plugin_profile.api_mode or "openai_chat",
+                api_key_env_vars=_plugin_profile.env_vars,
+                base_url=_plugin_profile.base_url,
+                auth_type=_plugin_profile.auth_type,
+                source="plugin",
+            )
+    except Exception:
+        pass
+
     return None
 
 

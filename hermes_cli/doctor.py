@@ -753,6 +753,15 @@ def run_doctor(args):
             except Exception:
                 _resolve_auth_provider = None
                 pass
+            # Include plugin-registered providers (e.g. vertex, bedrock)
+            # that are not in PROVIDER_REGISTRY but are first-class at runtime.
+            try:
+                from providers import list_providers as _list_plugin_providers
+                for _pp in _list_plugin_providers():
+                    known_providers.add(_pp.name)
+                    known_providers.update(_pp.aliases)
+            except Exception:
+                pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
@@ -845,6 +854,7 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                "vertex",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

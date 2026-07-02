@@ -2219,6 +2219,28 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
+def _canonical_model_key(model_id: str, provider: str) -> str:
+    """Canonical dedup key for a model id within ONE provider's catalog.
+
+    Curated plugin catalogs often namespace their entries with the provider's
+    own slug (``my-proxy/model-a``) so the ``/model`` picker shows a
+    fully-qualified id, while the provider's live ``/models`` endpoint returns
+    bare ids (``model-a``). Both spellings are the SAME model for merge/dedup
+    purposes, so strip the provider's own ``<slug>/`` prefix (case-insensitive)
+    before comparing.
+
+    Deliberately narrow: ONLY the provider's own slug is stripped, matched on
+    the ``/`` boundary. A blanket namespace strip would wrongly collapse
+    vendor-namespaced aggregator entries (``openai/gpt-5`` vs ``azure/gpt-5``)
+    that merely share a trailing name.
+    """
+    low = str(model_id).lower()
+    own_prefix = str(provider).lower() + "/"
+    if low.startswith(own_prefix):
+        return low[len(own_prefix):]
+    return low
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -2470,12 +2492,26 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                             primary, secondary = live, curated
                         else:
                             primary, secondary = curated, live
+                        # Plugin catalogs may namespace curated ids with the
+                        # provider's own slug ("my-proxy/model-a") while the
+                        # live /models endpoint returns bare ids ("model-a").
+                        # A naive exact compare never matches the two, so every
+                        # model appears TWICE in /model pickers (adapters
+                        # display the bare tail, so both rows render
+                        # identically). Canonicalize on the provider's OWN
+                        # "<slug>/" prefix only — never a blanket prefix strip,
+                        # which would wrongly collapse vendor-namespaced
+                        # aggregator entries ("openai/gpt-5" vs "azure/gpt-5")
+                        # that merely share a trailing name.
                         merged = list(primary)
-                        merged_lower = {m.lower() for m in primary}
+                        merged_keys = {
+                            _canonical_model_key(m, normalized) for m in primary
+                        }
                         for m in secondary:
-                            if m.lower() not in merged_lower:
+                            key = _canonical_model_key(m, normalized)
+                            if key not in merged_keys:
                                 merged.append(m)
-                                merged_lower.add(m.lower())
+                                merged_keys.add(key)
                         return merged
                     return live
             # Use profile's fallback_models if defined

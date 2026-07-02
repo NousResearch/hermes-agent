@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 from urllib.parse import urlparse
@@ -34,6 +35,8 @@ from hermes_cli.auth import (
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_int
+
+_LOCAL_MODELS_MAX_BYTES = 1_000_000
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -254,9 +257,9 @@ def _auto_detect_local_model(base_url: str) -> str:
         url = base_url.rstrip("/")
         if not url.endswith("/v1"):
             url += "/v1"
-        resp = requests.get(url + "/models", timeout=5)
+        resp = requests.get(url + "/models", timeout=5, stream=True)
         if resp.ok:
-            models = resp.json().get("data", [])
+            models = _read_local_models_json(resp).get("data", [])
             if len(models) == 1:
                 model_id = models[0].get("id", "")
                 if model_id:
@@ -266,6 +269,46 @@ def _auto_detect_local_model(base_url: str) -> str:
         # local model auto-detection fails unexpectedly.
         logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
     return ""
+
+
+def _read_local_models_json(resp: Any) -> Dict[str, Any]:
+    """Read a bounded OpenAI-compatible /models JSON response."""
+    content_length = resp.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _LOCAL_MODELS_MAX_BYTES:
+                close = getattr(resp, "close", None)
+                if close:
+                    close()
+                raise RuntimeError(
+                    f"/models response too large ({content_length} bytes; "
+                    f"limit {_LOCAL_MODELS_MAX_BYTES})"
+                )
+        except ValueError:
+            pass
+
+    chunks = []
+    total = 0
+    try:
+        for chunk in resp.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _LOCAL_MODELS_MAX_BYTES:
+                raise RuntimeError(f"/models response too large (>{_LOCAL_MODELS_MAX_BYTES} bytes)")
+            chunks.append(chunk)
+    finally:
+        close = getattr(resp, "close", None)
+        if close:
+            close()
+
+    raw = b"".join(chunks).decode(getattr(resp, "encoding", None) or "utf-8")
+    if not raw.strip():
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("/models response must be a JSON object")
+    return data
 
 
 def _get_model_config() -> Dict[str, Any]:

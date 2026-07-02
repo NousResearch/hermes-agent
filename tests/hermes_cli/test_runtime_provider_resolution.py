@@ -1,11 +1,24 @@
 import base64
 import json
 import time
+from unittest.mock import MagicMock
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import runtime_provider as rp
+
+
+def _streaming_response(payload: dict, *, ok: bool = True):
+    raw = json.dumps(payload).encode("utf-8")
+    resp = MagicMock()
+    resp.ok = ok
+    resp.headers = {"content-length": str(len(raw))}
+    resp.encoding = "utf-8"
+    resp.iter_content.return_value = [raw]
+    resp.json.side_effect = AssertionError("/models response must be streamed")
+    resp.close = MagicMock()
+    return resp
 
 
 def _fake_invoke_jwt(ttl_seconds=3600):
@@ -19,6 +32,41 @@ def _fake_invoke_jwt(ttl_seconds=3600):
         ).encode()
     ).decode().rstrip("=")
     return f"{header}.{payload}.sig"
+
+
+def test_auto_detect_local_model_streams_models_response(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return _streaming_response({"data": [{"id": "local-model"}]})
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert rp._auto_detect_local_model("http://localhost:11434") == "local-model"
+    assert calls == [
+        ("http://localhost:11434/v1/models", {"timeout": 5, "stream": True})
+    ]
+
+
+def test_auto_detect_local_model_returns_empty_for_oversized_response(monkeypatch):
+    resp = MagicMock()
+    resp.ok = True
+    resp.headers = {"content-length": str(rp._LOCAL_MODELS_MAX_BYTES + 1)}
+    resp.iter_content.side_effect = AssertionError("oversized body should not be read")
+    resp.json.side_effect = AssertionError("/models response must be streamed")
+    resp.close = MagicMock()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: resp)
+
+    assert rp._auto_detect_local_model("http://localhost:11434") == ""
+    resp.iter_content.assert_not_called()
+    resp.json.assert_not_called()
+    resp.close.assert_called_once()
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):

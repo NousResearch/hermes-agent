@@ -10,8 +10,21 @@ from hermes_cli.config import (
     _normalize_custom_provider_entry,
     apply_custom_provider_extra_headers_to_client_kwargs,
     get_custom_provider_extra_headers,
+    normalize_extra_headers,
 )
 from hermes_cli import models as models_mod
+
+
+def test_normalize_extra_headers_stringifies_and_drops_none():
+    assert normalize_extra_headers({"X-Int": 7, "X-Str": "v", "X-None": None}) == {
+        "X-Int": "7",
+        "X-Str": "v",
+    }
+
+
+def test_normalize_extra_headers_rejects_non_dict_and_empty():
+    for bad in (None, "x", 42, ["a"], {}):
+        assert normalize_extra_headers(bad) == {}
 
 
 def test_normalize_entry_keeps_extra_headers():

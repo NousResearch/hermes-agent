@@ -360,6 +360,10 @@ _E2EE_INSTALL_HINT = (
     "(requires libolm C library)"
 )
 
+_PERMANENT_AUTH_HTTP_STATUSES = frozenset({401, 403})
+_PERMANENT_AUTH_ERRCODES = frozenset({"M_UNKNOWN_TOKEN", "M_UNAUTHORIZED", "M_FORBIDDEN"})
+_TOKEN_INTROSPECTION_ERROR = "unable to introspect the access token"
+
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg",
     ".jpeg",
@@ -372,6 +376,29 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".heif",
     ".avif",
 })
+
+
+def _is_permanent_auth_error(error: Any) -> bool:
+    """Classify Matrix auth failures without matching proxy/body substrings."""
+    if getattr(error, "http_status", None) in _PERMANENT_AUTH_HTTP_STATUSES:
+        return True
+
+    errcode = getattr(error, "errcode", None)
+    if isinstance(errcode, str) and errcode.upper() in _PERMANENT_AUTH_ERRCODES:
+        return True
+
+    text = error if isinstance(error, str) else getattr(error, "message", None)
+    if text is None and isinstance(error, BaseException):
+        text = str(error)
+    if not isinstance(text, str):
+        return False
+
+    normalized = text.strip().lower()
+    return (
+        normalized.startswith("m_unknown_token")
+        or normalized.startswith("unknown_token")
+        or normalized.startswith(_TOKEN_INTROSPECTION_ERROR)
+    )
 
 _MATRIX_MODEL_PICKER_REACTIONS = (
     "1\ufe0f\u20e3",
@@ -2291,14 +2318,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 # nio returns SyncError objects (not exceptions) for auth
                 # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
                 _sync_msg = getattr(sync_data, "message", None)
-                if _sync_msg and isinstance(_sync_msg, str):
-                    _lower = _sync_msg.lower()
-                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
-                        logger.error(
-                            "Matrix: permanent auth error from sync: %s — stopping",
-                            _sync_msg,
-                        )
-                        return
+                if _is_permanent_auth_error(sync_data):
+                    logger.error(
+                        "Matrix: permanent auth error from sync: %s — stopping",
+                        _sync_msg,
+                    )
+                    return
 
                 if isinstance(sync_data, dict):
                     self._last_sync_ts = time.time()
@@ -2333,13 +2358,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if self._closing:
                     return
                 # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
-                ):
+                if _is_permanent_auth_error(exc):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc
                     )

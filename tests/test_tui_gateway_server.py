@@ -195,8 +195,11 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     assert server._completion_cwd({}) == str(stale)
 
 
-def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
-    """An explicit client-provided cwd still beats the profile config."""
+def test_completion_cwd_profile_cwd_wins_over_client_sent(monkeypatch, tmp_path):
+    """Issue #54990: when a profile is specified, the profile's terminal.cwd
+    takes precedence over the client-sent cwd.  On a profile switch the desktop
+    races the gateway swap, so the client-sent cwd can be stale from the
+    previous profile.  The profile config is the ground-truth workspace."""
     explicit = tmp_path / "explicit"
     explicit.mkdir()
     profile_b = tmp_path / "configured"
@@ -205,7 +208,7 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
     result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
-    assert result == str(explicit)
+    assert result == str(profile_b)
 
 
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
@@ -8588,3 +8591,40 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_completion_cwd_profile_switch_discards_stale_cwd(monkeypatch, tmp_path):
+    """Issue #54990 regression: when the desktop switches from default to a
+    named profile, the client-sent cwd is stale from the default profile's
+    project tree.  The profile's configured terminal.cwd must take precedence."""
+    default_project = tmp_path / "default_project"
+    default_project.mkdir()
+    profile_project = tmp_path / "sinan_project"
+    profile_project.mkdir()
+    home = _write_profile_cfg(tmp_path / "sinan-home", str(profile_project))
+
+    # Simulate: desktop sends default profile's CWD but targets sinan profile.
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    result = server._completion_cwd({
+        "cwd": str(default_project),
+        "profile": "sinan",
+    })
+    assert result == str(profile_project)
+
+
+def test_completion_cwd_profile_no_configured_cwd_falls_back(monkeypatch, tmp_path):
+    """When a profile has no terminal.cwd configured, fall back to the
+    client-sent cwd (or other sources)."""
+    client_cwd = tmp_path / "client_chose"
+    client_cwd.mkdir()
+    home = tmp_path / "bare-home"
+    home.mkdir()
+    (home / "state.db").touch()
+    # No config.yaml → _profile_configured_cwd returns None.
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    result = server._completion_cwd({
+        "cwd": str(client_cwd),
+        "profile": "bare",
+    })
+    assert result == str(client_cwd)

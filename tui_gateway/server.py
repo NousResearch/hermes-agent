@@ -1357,12 +1357,20 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    # When a *profile* is specified (desktop app-global remote mode), the
+    # profile's own ``terminal.cwd`` takes precedence over whatever the client
+    # sent as ``cwd``.  On a profile switch the desktop races the gateway
+    # swap: ``$currentCwd`` is seeded from the *previous* profile's project
+    # tree before ``ensureGatewayProfile`` completes, so the client-sent cwd
+    # can be stale.  The profile's config is always the ground-truth workspace
+    # for a cross-profile session, so honour it first.  (issue #54990)
+    profile_home = _profile_home(params.get("profile"))
+    profile_cwd = _profile_configured_cwd(profile_home) if profile_home else None
     raw = (
-        params.get("cwd")
+        (profile_cwd if profile_home else None)
+        or params.get("cwd")
         or _sessions.get(params.get("session_id") or "", {}).get("cwd")
-        # A session bound to another profile resolves its workspace from THAT
-        # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
+        or profile_cwd
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )

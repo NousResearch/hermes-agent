@@ -8405,6 +8405,9 @@ class GatewayRunner(_WABridgeMixin, GatewayAuthorizationMixin, GatewayKanbanWatc
     def _apply_bridge_status_target(self, source: SessionSource, status_adapter, status_chat_id: str, status_metadata) -> tuple:
         return status_adapter, status_chat_id, status_metadata
 
+    def _resolve_approval_session_key(self, session_key: str) -> str:
+        return session_key
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.

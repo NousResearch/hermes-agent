@@ -210,6 +210,23 @@ class WABridgeMixin:
         if bridge_session_key:
             self._wa_bridge_approval_redirects.pop(bridge_session_key, None)
 
+    def _resolve_approval_session_key(self, session_key: str) -> str:
+        """Remap session key through the WA bridge approval-redirect table.
+
+        Called by /approve and /deny handlers when the primary session key has
+        no blocking approval — checks whether a WA self-chat session was
+        bridged and its pending approval is actually under a different key.
+        """
+        redirect_key = self._wa_bridge_approval_redirects.get(session_key)
+        if redirect_key:
+            try:
+                from tools.approval import has_blocking_approval
+                if has_blocking_approval(redirect_key):
+                    return redirect_key
+            except ImportError:
+                pass
+        return session_key
+
     def _apply_bridge_progress_context(
         self,
         source: "SessionSource",

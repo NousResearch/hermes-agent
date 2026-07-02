@@ -260,6 +260,23 @@ class TestWindowsMsysPathconvDefaults:
         run_env = _make_run_env({"MSYS_NO_PATHCONV": "0"})
         assert run_env.get("MSYS_NO_PATHCONV") == "0"
 
+    def test_msys2_arg_conv_excl_set_on_windows(self, monkeypatch):
+        # MSYS2-proper / Cygwin bash ignore MSYS_NO_PATHCONV; they honor
+        # MSYS2_ARG_CONV_EXCL. Both must be set on every env builder.
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _make_run_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert _sanitize_subprocess_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert hermes_subprocess_env().get("MSYS2_ARG_CONV_EXCL") == "*"
+
+    def test_msys2_arg_conv_excl_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS2_ARG_CONV_EXCL" not in _make_run_env({})
+
+    def test_msys2_arg_conv_excl_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS2_ARG_CONV_EXCL": "/custom"})
+        assert run_env.get("MSYS2_ARG_CONV_EXCL") == "/custom"
+
 
 # ---------------------------------------------------------------------------
 # Command wrapping — native Windows cwd must be Git Bash-friendly for cd

@@ -759,10 +759,18 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
     runs terminal commands through bash on Windows, so set the standard MSYS
     opt-out by default.  Users who need conversion can override in their env.
     Refs #56700.
+
+    ``MSYS_NO_PATHCONV`` is honored by Git for Windows bash only.  MSYS2-proper
+    and Cygwin bash (which ``_find_bash`` can still return via the final
+    ``shutil.which`` fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL``
+    instead, so set both.  ``*`` disables all argv conversion — the semantic
+    equivalent of ``MSYS_NO_PATHCONV=1``.  Also fixes ``cmd /c`` mangling
+    (#56147).
     """
     if not _IS_WINDOWS:
         return
     env.setdefault("MSYS_NO_PATHCONV", "1")
+    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
 
 
 def _path_env_key(run_env: dict) -> str | None:

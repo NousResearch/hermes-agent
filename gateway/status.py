@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import shlex
 import signal
@@ -36,6 +37,8 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_logger = logging.getLogger(__name__)
+_state_home_fallback_warned = False
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -61,12 +64,60 @@ def _get_runtime_status_path() -> Path:
     return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
 
 
+def _state_dir_is_writable(state_home: Path) -> bool:
+    """Return True when *state_home* can be created and written by this process."""
+    try:
+        state_home.mkdir(parents=True, exist_ok=True)
+        probe = state_home / f".hermes-write-probe-{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _home_derived_state_dir() -> Path:
+    """Default XDG state dir derived from ``HOME`` / ``Path.home()``."""
+    override = os.getenv("XDG_STATE_HOME", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "state"
+
+
+def _resolve_state_home_for_locks() -> Path:
+    """Pick a writable XDG-style state directory for machine-local gateway locks.
+
+    Container/reconciler launches can inherit ``HOME=/root`` from the init
+    context while the gateway process runs as a non-root UID. In that case
+    ``$HOME/.local/state`` is not writable and scoped platform locks (e.g.
+    Telegram bot tokens) fail silently (#56402). Fall back to
+    ``$HERMES_HOME/.local/state`` when the HOME-derived path is unusable.
+    """
+    global _state_home_fallback_warned
+
+    home_state = _home_derived_state_dir()
+    if _state_dir_is_writable(home_state):
+        return home_state
+
+    hermes_state = get_hermes_home() / ".local" / "state"
+    if not _state_home_fallback_warned:
+        _logger.warning(
+            "HOME-derived state dir %s is not writable; falling back to %s "
+            "for gateway-locks (issue #56402). Set HERMES_GATEWAY_LOCK_DIR "
+            "or XDG_STATE_HOME to override.",
+            home_state,
+            hermes_state,
+        )
+        _state_home_fallback_warned = True
+    return hermes_state
+
+
 def _get_lock_dir() -> Path:
     """Return the machine-local directory for token-scoped gateway locks."""
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    state_home = _resolve_state_home_for_locks()
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 

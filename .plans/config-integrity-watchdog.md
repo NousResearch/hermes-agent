@@ -46,3 +46,10 @@ All 8 issues above are complete. The mutable `.sha256` sidecar is replaced end-t
 - 50 tests (29 skill-level + 21 CLI integration) all pass
 - Config Integrity Watchdog cron job (MacBook Pro, `fbe11786e4d1`) confirmed calling `hermes config verify` — verified 2026-07-02
 - `restore_deepseek_config.py` confirmed absent from all machines — fully retired
+
+**Follow-ups (merged):**
+
+- PR #68 — docs(agents): update config integrity section for git-backed seal system (AGENTS.md documents `hermes config seal/verify/restore`, env vars, and CLI-first guidance)
+- PR #69 — fix(devops): unsigned-commit fallback for config integrity log (explicit "follow-up to #67"; `git_commit()` retries with `--no-gpg-sign` when the 1Password ssh-agent signer is locked, so an unattended Mac no longer gets stuck at `hermes config verify` exit 2)
+
+No further follow-ups are open. This arc is complete — PRs #67, #68, #69 are all merged and no related threads remain open. (Note: PRs #71/#72, shipped the same day, fix an unrelated cron-ticker heartbeat/stall issue — not part of this project — and are tracked separately.)

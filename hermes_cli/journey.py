@@ -206,7 +206,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if getattr(args, "play", False):
         return _play(console, payload, cols=cols, rows=rows, color=color, fps=getattr(args, "fps", 12))
 
-    reveal = _clamp(float(getattr(args, "reveal", 1.0) or 1.0), 0.0, 1.0)
+    # NOT ``or 1.0``: an explicit ``--reveal 0`` ("0=oldest" per the help
+    # text) is falsy and would silently render the fully-revealed frame.
+    reveal_arg = getattr(args, "reveal", None)
+    reveal = _clamp(1.0 if reveal_arg is None else float(reveal_arg), 0.0, 1.0)
     console.print(_frame_renderable(payload, cols=cols, rows=rows, reveal=reveal, color=color))
     return 0
 

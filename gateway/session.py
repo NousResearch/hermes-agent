@@ -853,6 +853,10 @@ def build_session_key(
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = [ns, platform, source.chat_type]
 
+    scope = source.scope_id or source.guild_id
+    if scope and source.platform in {Platform.DISCORD, Platform.SLACK, Platform.MATRIX}:
+        key_parts.append(f"scope={scope}")
+
     if source.chat_id:
         key_parts.append(source.chat_id)
     if source.thread_id:

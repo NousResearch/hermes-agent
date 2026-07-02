@@ -629,7 +629,7 @@ def session_search(
     # Discovery shape
     sort: str = None,
     # Cross-profile (any shape)
-    profile: str = None,
+    profile: Optional[str] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 

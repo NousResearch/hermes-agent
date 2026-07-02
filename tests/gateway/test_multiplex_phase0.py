@@ -101,6 +101,25 @@ class TestSessionKeyNamespacedWhenOn:
         assert d[1] == "main" and n[1] == "coder"
         assert d[2:] == n[2:]  # everything after the namespace is identical
 
+    def test_scope_id_isolates_workspace_local_channel_ids(self):
+        a = _src(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="channel",
+            user_id="u1",
+            scope_id="guild-a",
+        )
+        b = _src(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="channel",
+            user_id="u1",
+            scope_id="guild-b",
+        )
+
+        assert build_session_key(a) != build_session_key(b)
+        assert build_session_key(a) == "agent:main:discord:channel:scope=guild-a:c1:u1"
+
 
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""

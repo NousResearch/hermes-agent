@@ -161,6 +161,30 @@ class TestGatewayQuickCommands:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_exec_command_reports_nonzero_exit_with_stderr(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "boom": {
+                    "type": "exec",
+                    "command": "python -c 'import sys; print(\"OUT\"); print(\"ERR\", file=sys.stderr); sys.exit(7)'",
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("boom")
+        result = await runner._handle_message(event)
+
+        assert result is not None
+        assert "exited with code 7" in result
+        assert "ERR" in result
+        assert "OUT" in result
+
+    @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
         from gateway.run import GatewayRunner

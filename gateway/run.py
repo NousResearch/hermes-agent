@@ -2315,24 +2315,36 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
+    ``agent:{namespace}:{platform}:{chat_type}[:scope={scope_id}]:{chat_id}[:{extra}...]``.
     Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
-    The 6th element is only returned as ``thread_id`` for chat types where
-    it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
-    the suffix may be a user_id (per-user isolation) rather than a
-    thread_id, so we leave ``thread_id`` out to avoid mis-routing.
+    A scoped key has an explicit ``scope=`` segment before ``chat_id`` so it
+    can be decoded without confusing scope with chat/thread/user IDs.  The
+    first suffix after chat_id is only returned as ``thread_id`` for chat
+    types where it is unambiguous (``dm`` and ``thread``).  For group/channel
+    sessions the suffix may be a user_id (per-user isolation) rather than a
+    thread_id, so it is exposed as ``participant_id`` to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent":
+        chat_index = 4
         result = {
+            "namespace": parts[1],
             "platform": parts[2],
             "chat_type": parts[3],
-            "chat_id": parts[4],
         }
-        if len(parts) > 5 and parts[3] in {"dm", "thread"}:
-            result["thread_id"] = parts[5]
+        if parts[chat_index].startswith("scope="):
+            result["scope_id"] = parts[chat_index][len("scope="):]
+            chat_index += 1
+            if len(parts) <= chat_index:
+                return None
+        result["chat_id"] = parts[chat_index]
+        if len(parts) > chat_index + 1:
+            if parts[3] in {"dm", "thread"}:
+                result["thread_id"] = parts[chat_index + 1]
+            elif parts[3] in {"group", "channel"}:
+                result["participant_id"] = parts[chat_index + 1]
         return result
     return None
 
@@ -9524,7 +9536,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 env=sanitized_env,
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
+                            stdout_text = (stdout or b"").decode(errors="replace").strip()
+                            stderr_text = (stderr or b"").decode(errors="replace").strip()
+                            if proc.returncode:
+                                details = []
+                                if stderr_text:
+                                    details.append(stderr_text)
+                                if stdout_text:
+                                    details.append(stdout_text)
+                                output = "\n".join(details).strip()
+                                if output:
+                                    output = f"Quick command exited with code {proc.returncode}:\n{output}"
+                                else:
+                                    output = f"Quick command exited with code {proc.returncode}."
+                            else:
+                                output = stdout_text or stderr_text
                             # Redact any remaining sensitive patterns in output
                             if output:
                                 from agent.redact import redact_sensitive_text

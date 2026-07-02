@@ -2050,6 +2050,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    _generic_registry_dispatch = False
+
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
@@ -2077,6 +2079,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    profile=next_args.get("profile"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 ),
@@ -2137,6 +2140,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
+        _generic_registry_dispatch = True
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(
                 function_name, next_args, effective_task_id,
@@ -2151,6 +2155,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+
+    if _generic_registry_dispatch:
+        return _execute(function_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 

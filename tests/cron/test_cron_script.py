@@ -109,6 +109,18 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_script_can_run_from_configured_workdir(self, cron_env, tmp_path):
+        from cron.scheduler import _run_job_script
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        script = cron_env / "scripts" / "cwd.py"
+        script.write_text("import os; print(os.getcwd())\n")
+
+        success, output = _run_job_script("cwd.py", cwd=workdir)
+        assert success is True
+        assert Path(output).resolve() == workdir.resolve()
+
     def test_script_not_found(self, cron_env):
         from cron.scheduler import _run_job_script
 

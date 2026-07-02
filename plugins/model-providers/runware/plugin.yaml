@@ -1,0 +1,5 @@
+name: runware-provider
+kind: model-provider
+version: 1.0.0
+description: Runware (OpenAI-compatible LLM API)
+author: Artem Malakhov (@teith), Hermes Agent

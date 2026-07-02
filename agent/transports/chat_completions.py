@@ -15,6 +15,7 @@ from typing import Any, Dict
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from agent.runware_schema import is_runware_provider, sanitize_runware_tools
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
@@ -496,10 +497,12 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
+        # Tools — apply Moonshot/Kimi and Runware schema sanitization regardless of path
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            if is_runware_provider(profile):
+                tools = sanitize_runware_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default

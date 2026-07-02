@@ -844,8 +844,13 @@ def fetch_endpoint_model_metadata(
             response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
             response.raise_for_status()
             payload = response.json()
+            # Most OpenAI-compatible /models endpoints wrap the list as
+            # {"data": [...]}, but some (e.g. Runware) return a bare
+            # top-level array. Mirror the isinstance guard already used in
+            # ProviderProfile.fetch_models().
+            items = payload if isinstance(payload, list) else payload.get("data", [])
             cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
+            for model in items:
                 if not isinstance(model, dict):
                     continue
                 model_id = model.get("id")
@@ -866,7 +871,7 @@ def fetch_endpoint_model_metadata(
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
                 m.get("owned_by") == "llamacpp"
-                for m in payload.get("data", []) if isinstance(m, dict)
+                for m in items if isinstance(m, dict)
             )
             if is_llamacpp:
                 try:
@@ -2070,9 +2075,12 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
-    if effective_provider == "gmi" and base_url:
-        # GMI exposes authoritative context_length via /models, but it is not
-        # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+    if effective_provider in {"gmi", "runware"} and base_url:
+        # GMI and Runware both expose authoritative context_length via
+        # /models but neither is in models.dev yet, and Runware's flat
+        # model IDs (e.g. "openai-gpt-5-4") partially match the wrong
+        # DEFAULT_CONTEXT_LENGTHS substring key ("gpt-5" -> 400k instead
+        # of the real 1.05M). Prefer the higher-fidelity endpoint lookup.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

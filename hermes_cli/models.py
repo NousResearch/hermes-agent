@@ -1215,6 +1215,8 @@ _PROVIDER_ALIASES = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
+    "runware-ai": "runware",
+    "runwareai": "runware",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
     "minimax-global": "minimax-oauth",
@@ -1502,7 +1504,12 @@ def fetch_models_with_pricing(
         return {}
 
     result: dict[str, dict[str, str]] = {}
-    for item in payload.get("data", []):
+    # Most OpenAI-compatible /models endpoints wrap the list as
+    # {"data": [...]}, but some (e.g. Runware) return a bare top-level
+    # array. Mirror the isinstance guard ProviderProfile.fetch_models()
+    # already uses.
+    items = payload if isinstance(payload, list) else payload.get("data", [])
+    for item in items:
         mid = item.get("id")
         pricing = item.get("pricing")
         if mid and isinstance(pricing, dict):
@@ -1551,7 +1558,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, novita)."""
+    """Return live pricing for providers that support it (openrouter, nous, novita, runware)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -1561,6 +1568,19 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
         )
     if normalized == "novita":
         return _fetch_novita_pricing(force_refresh=force_refresh)
+    if normalized == "runware":
+        api_key = os.getenv("RUNWARE_API_KEY", "").strip()
+        if not api_key:
+            return {}
+        base_url = os.getenv("RUNWARE_BASE_URL", "").strip() or "https://api.runware.ai/v1"
+        stripped = base_url.rstrip("/")
+        if stripped.endswith("/v1"):
+            stripped = stripped[:-3]
+        return fetch_models_with_pricing(
+            api_key=api_key,
+            base_url=stripped,
+            force_refresh=force_refresh,
+        )
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:

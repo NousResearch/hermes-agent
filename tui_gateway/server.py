@@ -4340,6 +4340,18 @@ def _make_agent(
             "target_model": model or None,
         })
     _pr = _load_provider_routing()
+    # Checkpoints: env var override wins (CLI parity: --checkpoints > config),
+    # then fall back to config.yaml ``checkpoints.enabled``.  The TUI previously
+    # only read the env var, so users who set ``checkpoints.enabled: true`` in
+    # config saw "checkpoints are not enabled" in the TUI while the classic CLI
+    # honoured the same config.  Mirrors cli.py's merge logic.
+    _cp_cfg = cfg.get("checkpoints", {})
+    if isinstance(_cp_cfg, bool):
+        _cp_cfg = {"enabled": _cp_cfg}
+    _cp_enabled = (
+        is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS"))
+        or _cp_cfg.get("enabled", False)
+    )
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -4380,7 +4392,7 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_cp_enabled,
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),

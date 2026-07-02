@@ -53,7 +53,12 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -321,7 +326,7 @@ function MessageBubble({
         )}
         {msg.timestamp && (
           <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp)}
+            {timeAgo(msg.timestamp, t.common.timeAgo)}
           </span>
         )}
       </div>
@@ -462,14 +467,12 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={t.sessions.renameSession ?? "Rename session"}
+        title={t.sessions.renameSession ?? "Rename session"}
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
+            session.title && session.title !== "Untitled" ? session.title : "",
           );
           setRenaming(true);
         }}
@@ -481,8 +484,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={t.sessions.exportSession ?? "Export session JSON"}
+        title={t.sessions.exportSession ?? "Export session JSON"}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -564,7 +567,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={t.sessions.sessionTitle ?? "Session title"}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -572,8 +575,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={t.sessions.saveTitle ?? "Save title"}
+                      title={t.sessions.saveTitle ?? "Save title"}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -587,8 +590,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={t.sessions.cancelRename ?? "Cancel rename"}
+                      title={t.sessions.cancelRename ?? "Cancel rename"}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -630,7 +633,9 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="shrink-0">
+                  {timeAgo(session.last_active, t.common.timeAgo)}
+                </span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
@@ -809,13 +814,13 @@ export default function SessionsPage() {
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
-        Prune old sessions
+        {t.sessions.pruneTitle ?? "Prune old sessions"}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd]);
+  }, [setEnd, t]);
 
   const loadSessions = useCallback((p: number, silent = false) => {
     // ``silent`` skips the loading spinner so background refreshes
@@ -1053,8 +1058,7 @@ export default function SessionsPage() {
         // visible list — in those cases fall through to a plain toggle
         // (the click also resets the anchor below).
         if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
-          const [lo, hi] =
-            anchor <= index ? [anchor, index] : [index, anchor];
+          const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
           for (let i = lo; i <= hi; i++) {
             const rowId = visibleList[i]?.id;
             if (!rowId) continue;
@@ -1175,13 +1179,16 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast("Session renamed", "success");
+        showToast(t.sessions.sessionRenamed ?? "Session renamed", "success");
         loadStats();
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(
+          t.sessions.renameFailed ?? "Failed to rename session",
+          "error",
+        );
       }
     },
-    [showToast, loadStats],
+    [t.sessions, showToast, loadStats],
   );
 
   const handleExport = useCallback(
@@ -1204,23 +1211,32 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast("Failed to export session", "error");
+        showToast(
+          t.sessions.exportFailed ?? "Failed to export session",
+          "error",
+        );
       }
     },
-    [showToast],
+    [t.sessions, showToast],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
+      showToast(
+        t.sessions.invalidPruneDays ?? "Enter a valid number of days",
+        "error",
+      );
       return;
     }
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
       showToast(
-        `Pruned ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
+        (t.sessions.prunedSessions ?? "Pruned {count} session(s)").replace(
+          "{count}",
+          String(resp.removed),
+        ),
         "success",
       );
       setPruneOpen(false);
@@ -1228,11 +1244,11 @@ export default function SessionsPage() {
       setPage(0);
       loadStats();
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(t.sessions.pruneFailed ?? "Failed to prune sessions", "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [pruneDays, t.sessions, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1356,10 +1372,12 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
+            <DialogTitle>
+              {t.sessions.pruneTitle ?? "Prune old sessions"}
+            </DialogTitle>
             <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
+              {t.sessions.pruneDescription ??
+                "Permanently remove archived sessions whose last activity is older than the given number of days. Active sessions are never pruned."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
@@ -1367,7 +1385,7 @@ export default function SessionsPage() {
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              Older than (days)
+              {t.sessions.olderThanDays ?? "Older than (days)"}
             </label>
             <Input
               id="prune-days"
@@ -1396,7 +1414,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.sessions.prune ?? "Prune"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1408,25 +1426,33 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-xs text-muted-foreground">
+              {t.sessions.total ?? "Total"}
+            </span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">
+              {t.sessions.activeInStore ?? "Active in store"}
+            </span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-xs text-muted-foreground">
+              {t.sessions.archived ?? "Archived"}
+            </span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-xs text-muted-foreground">
+              {t.sessions.messages ?? "Messages"}
+            </span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
@@ -1761,7 +1787,7 @@ export default function SessionsPage() {
                           {(s.model ?? t.common.unknown).split("/").pop()}
                         </span>{" "}
                         · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        {timeAgo(s.last_active, t.common.timeAgo)}
                       </span>
 
                       {s.preview && (

@@ -43,6 +43,8 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
+import { useI18n } from "@/i18n/context";
+import { en } from "@/i18n/en";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
@@ -67,13 +69,26 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function formatDuration(seconds: number): string {
+function formatDuration(
+  seconds: number,
+  units: { day: string; hour: string; minute: string },
+): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  if (d > 0) return `${d}${units.day} ${h}${units.hour} ${m}${units.minute}`;
+  if (h > 0) return `${h}${units.hour} ${m}${units.minute}`;
+  return `${m}${units.minute}`;
+}
+
+function interpolate(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return Object.entries(values).reduce(
+    (result, [key, value]) => result.replaceAll(`{${key}}`, String(value)),
+    template,
+  );
 }
 
 type BackupImportTarget =
@@ -104,6 +119,8 @@ function ActionLogViewer({
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
+  const { t } = useI18n();
+  const copy = t.systemPage ?? en.systemPage!;
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -144,19 +161,26 @@ function ActionLogViewer({
             <Terminal className="h-4 w-4 text-muted-foreground" />
             <span className="font-mono text-sm">{action}</span>
             {running ? (
-              <Badge tone="warning">running</Badge>
+              <Badge tone="warning">{copy.actionRunning}</Badge>
             ) : (
               <Badge tone={exitCode === 0 ? "success" : "destructive"}>
-                {exitCode === 0 ? "done" : `exit ${exitCode}`}
+                {exitCode === 0
+                  ? copy.actionDone
+                  : interpolate(copy.actionExit, { code: exitCode ?? "—" })}
               </Badge>
             )}
           </div>
-          <Button ghost size="icon" onClick={onClose} aria-label="Close log">
+          <Button
+            ghost
+            size="icon"
+            onClick={onClose}
+            aria-label={copy.closeLog}
+          >
             <X />
           </Button>
         </div>
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-muted-foreground">
-          {lines.length ? lines.join("\n") : "Starting…"}
+          {lines.length ? lines.join("\n") : copy.actionStarting}
         </pre>
       </CardContent>
     </Card>
@@ -191,6 +215,8 @@ const MEMORY_STATUS_TONE: Record<
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
+  const copy = t.systemPage ?? en.systemPage!;
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -297,10 +323,29 @@ export default function SystemPage() {
         await api.restartGateway();
         setActiveAction("gateway-restart");
       }
-      showToast(`Gateway ${verb} started`, "success");
+      const localizedVerb = {
+        start: copy.gatewayVerbStart,
+        stop: copy.gatewayVerbStop,
+        restart: copy.gatewayVerbRestart,
+      }[verb];
+      showToast(
+        interpolate(copy.gatewayStarted, { verb: localizedVerb }),
+        "success",
+      );
       setTimeout(loadAll, 3000);
     } catch (e) {
-      showToast(`Gateway ${verb} failed: ${e}`, "error");
+      const localizedVerb = {
+        start: copy.gatewayVerbStart,
+        stop: copy.gatewayVerbStop,
+        restart: copy.gatewayVerbRestart,
+      }[verb];
+      showToast(
+        interpolate(copy.gatewayFailed, {
+          verb: localizedVerb,
+          error: String(e),
+        }),
+        "error",
+      );
     }
   };
 
@@ -309,10 +354,16 @@ export default function SystemPage() {
     if (!curator) return;
     try {
       await api.setCuratorPaused(!curator.paused);
-      showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
+      showToast(
+        curator.paused ? copy.curatorResumed : copy.curatorPaused,
+        "success",
+      );
       loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.curatorToggleFailed, { error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -327,21 +378,29 @@ export default function SystemPage() {
           const res = await api.resetMemory(
             target as "all" | "memory" | "user",
           );
-          showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
+          showToast(
+            interpolate(copy.resetResult, {
+              items: res.deleted.join(", ") || copy.nothing,
+            }),
+            "success",
+          );
           loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${e}`, "error");
+          showToast(
+            interpolate(copy.resetFailed, { error: String(e) }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [copy, loadAll, showToast],
     ),
   });
 
   // ── Credential pool ────────────────────────────────────────────────
   const addCredential = async () => {
     if (!credProvider.trim() || !credKey.trim()) {
-      showToast("Provider and API key required", "error");
+      showToast(copy.providerKeyRequired, "error");
       return;
     }
     setAddingCred(true);
@@ -351,12 +410,15 @@ export default function SystemPage() {
         credKey.trim(),
         credLabel.trim() || undefined,
       );
-      showToast("Credential added", "success");
+      showToast(copy.credentialAdded, "success");
       setCredKey("");
       setCredLabel("");
       loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${e}`, "error");
+      showToast(
+        interpolate(copy.credentialAddFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setAddingCred(false);
     }
@@ -368,14 +430,17 @@ export default function SystemPage() {
         const [provider, idxStr] = key.split("|");
         try {
           await api.removeCredentialPoolEntry(provider, Number(idxStr));
-          showToast("Credential removed", "success");
+          showToast(copy.credentialRemoved, "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${e}`, "error");
+          showToast(
+            interpolate(copy.removeFailed, { error: String(e) }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [copy, loadAll, showToast],
     ),
   });
 
@@ -384,9 +449,12 @@ export default function SystemPage() {
     try {
       const res = await fn();
       setActiveAction(res.name);
-      showToast(`${label} started`, "success");
+      showToast(interpolate(copy.operationStarted, { label }), "success");
     } catch (e) {
-      showToast(`${label} failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.operationFailed, { label, error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -482,10 +550,10 @@ export default function SystemPage() {
           1500,
         );
       } catch {
-        showToast("Couldn't copy to clipboard", "error");
+        showToast(copy.copyFailed, "error");
       }
     },
-    [showToast],
+    [copy, showToast],
   );
 
   const runDebugShare = useCallback(async () => {
@@ -496,18 +564,21 @@ export default function SystemPage() {
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
-        `Uploaded ${n} paste${n === 1 ? "" : "s"}${
-          res.redacted ? " (redacted)" : ""
-        }`,
+        interpolate(copy.pastesUploaded, {
+          count: n,
+          redacted: res.redacted ? copy.redactedSuffix : "",
+        }),
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.debugShareFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setSharing(false);
     }
-  }, [shareRedact, showToast]);
-
+  }, [copy, shareRedact, showToast]);
 
   // ── Update check / apply ───────────────────────────────────────────
   const checkForUpdate = useCallback(
@@ -521,23 +592,28 @@ export default function SystemPage() {
           if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
-                ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
-                : "Update available",
+                ? interpolate(copy.updateAvailableBehind, {
+                    count: info.behind,
+                  })
+                : copy.updateAvailable,
               "success",
             );
           } else if (info.behind === 0) {
-            showToast("You're on the latest version", "success");
+            showToast(copy.latestVersion, "success");
           } else if (info.message) {
             showToast(info.message, "error");
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${e}`, "error");
+        showToast(
+          interpolate(copy.updateCheckFailed, { error: String(e) }),
+          "error",
+        );
       } finally {
         setCheckingUpdate(false);
       }
     },
-    [showToast, status?.can_update_hermes],
+    [copy, showToast, status?.can_update_hermes],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
@@ -546,7 +622,7 @@ export default function SystemPage() {
     setUpdateConfirmOpen(false);
     if (status?.can_update_hermes === false) {
       showToast(
-        "Hermes updates are managed outside this dashboard.",
+        copy.updateManagedExternally,
         "success",
       );
       return;
@@ -555,16 +631,15 @@ export default function SystemPage() {
       const resp = await api.updateHermes();
       if (!resp.ok) {
         showToast(
-          resp.message ??
-            "Updates don't apply from this dashboard.",
-          "success",
+          resp.message ?? copy.dockerUpdateUnsupported,
+          resp.error === "docker_update_unsupported" ? "error" : "success",
         );
         return;
       }
       setActiveAction(resp.name ?? "hermes-update");
-      showToast("Update started", "success");
+      showToast(copy.updateStarted, "success");
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(interpolate(copy.updateFailed, { error: String(e) }), "error");
     }
   };
 
@@ -573,18 +648,18 @@ export default function SystemPage() {
       try {
         const res = await api.pruneCheckpoints();
         setActiveAction(res.name);
-        showToast("Checkpoint prune started", "success");
+        showToast(copy.pruneStarted, "success");
       } catch (e) {
-        showToast(`Prune failed: ${e}`, "error");
+        showToast(interpolate(copy.pruneFailed, { error: String(e) }), "error");
         throw e;
       }
-    }, [showToast]),
+    }, [copy, showToast]),
   });
 
   // ── Hooks ──────────────────────────────────────────────────────────
   const createHook = async () => {
     if (!hookCommand.trim()) {
-      showToast("Command is required", "error");
+      showToast(copy.commandRequired, "error");
       return;
     }
     setCreatingHook(true);
@@ -596,14 +671,17 @@ export default function SystemPage() {
         timeout: hookTimeout.trim() ? Number(hookTimeout) : undefined,
         approve: hookApprove,
       });
-      showToast("Hook created", "success");
+      showToast(copy.hookCreated, "success");
       setHookCommand("");
       setHookMatcher("");
       setHookTimeout("");
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${e}`, "error");
+      showToast(
+        interpolate(copy.hookCreateFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setCreatingHook(false);
     }
@@ -617,14 +695,17 @@ export default function SystemPage() {
         const command = key.slice(sep + 1);
         try {
           await api.deleteHook(event, command);
-          showToast("Hook removed", "success");
+          showToast(copy.hookRemoved, "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${e}`, "error");
+          showToast(
+            interpolate(copy.hookRemoveFailed, { error: String(e) }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [copy, loadAll, showToast],
     ),
   });
 
@@ -662,45 +743,50 @@ export default function SystemPage() {
         open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
-        title="Update Hermes?"
+        title={copy.updateDialogTitle}
         description={
           updateInfo && updateInfo.behind && updateInfo.behind > 0
-            ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
-            : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
+            ? interpolate(copy.updateDialogBehind, {
+                command: updateInfo.update_command,
+                count: updateInfo.behind,
+              })
+            : interpolate(copy.updateDialogDefault, {
+                command: updateInfo?.update_command ?? "hermes update",
+              })
         }
-        confirmLabel="Update now"
+        confirmLabel={copy.updateNow}
       />
 
       <DeleteConfirmDialog
         open={memoryReset.isOpen}
         onCancel={memoryReset.cancel}
         onConfirm={memoryReset.confirm}
-        title="Reset memory"
-        description="This permanently erases the selected built-in memory files. This cannot be undone."
+        title={copy.resetMemoryTitle}
+        description={copy.resetMemoryDescription}
         loading={memoryReset.isDeleting}
       />
       <DeleteConfirmDialog
         open={credDelete.isOpen}
         onCancel={credDelete.cancel}
         onConfirm={credDelete.confirm}
-        title="Remove credential"
-        description="Remove this pooled API key? The agent will no longer rotate through it."
+        title={copy.removeCredentialTitle}
+        description={copy.removeCredentialDescription}
         loading={credDelete.isDeleting}
       />
       <DeleteConfirmDialog
         open={checkpointsPrune.isOpen}
         onCancel={checkpointsPrune.cancel}
         onConfirm={checkpointsPrune.confirm}
-        title="Prune checkpoints"
-        description="Delete the rollback checkpoint shadow store? Existing /rollback points will be lost."
+        title={copy.pruneCheckpointsTitle}
+        description={copy.pruneCheckpointsDescription}
         loading={checkpointsPrune.isDeleting}
       />
       <DeleteConfirmDialog
         open={hookDelete.isOpen}
         onCancel={hookDelete.cancel}
         onConfirm={hookDelete.confirm}
-        title="Remove shell hook"
-        description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
+        title={copy.removeHookTitle}
+        description={copy.removeHookDescription}
         loading={hookDelete.isDeleting}
       />
       <HermesConsoleModal
@@ -717,24 +803,29 @@ export default function SystemPage() {
           role="dialog"
           aria-modal="true"
         >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col")}>
+          <div
+            className={cn(
+              themedBody,
+              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col",
+            )}
+          >
             <Button
               ghost
               size="icon"
               onClick={() => setHookModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label={copy.close}
             >
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
               <h2 className="font-mondwest text-display text-base tracking-wider">
-                New shell hook
+                {copy.newShellHook}
               </h2>
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="hook-event">Event</Label>
+                <Label htmlFor="hook-event">{copy.event}</Label>
                 <Select
                   id="hook-event"
                   value={hookEvent}
@@ -748,7 +839,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{copy.commandAbsolute}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -759,16 +850,16 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{copy.matcherOptional}</Label>
                   <Input
                     id="hook-matcher"
-                    placeholder="e.g. terminal"
+                    placeholder={copy.matcherPlaceholder}
                     value={hookMatcher}
                     onChange={(e) => setHookMatcher(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{copy.timeoutSeconds}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -783,19 +874,14 @@ export default function SystemPage() {
                   id="hook-approve"
                   onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
-
                 <Label
                   className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
                   htmlFor="hook-approve"
                 >
-                  Approve now (grant consent so it fires; otherwise it stays
-                  configured but inactive)
+                  {copy.approveNow}
                 </Label>
               </div>
-              <p className="text-xs text-warning">
-                Shell hooks run arbitrary commands on this host. Only add scripts
-                you trust. Takes effect on the next gateway/session restart.
-              </p>
+              <p className="text-xs text-warning">{copy.hookSafety}</p>
               <div className="flex justify-end">
                 <Button
                   className="uppercase"
@@ -804,7 +890,7 @@ export default function SystemPage() {
                   disabled={creatingHook}
                   prefix={creatingHook ? <Spinner /> : undefined}
                 >
-                  {creatingHook ? "Creating" : "Create hook"}
+                  {creatingHook ? copy.creating : copy.createHook}
                 </Button>
               </div>
             </div>
@@ -823,30 +909,47 @@ export default function SystemPage() {
 
       {/* ── Host / system stats ───────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Server className="h-4 w-4" /> Host
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Server className="h-4 w-4" /> {copy.host}
         </H2>
         <Card>
           <CardContent className="py-4">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-6 text-sm">
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">OS</div>
-                <div>{stats?.os} {stats?.os_release}</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {copy.os}
+                </div>
+                <div>
+                  {stats?.os} {stats?.os_release}
+                </div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Arch</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {copy.arch}
+                </div>
                 <div>{stats?.arch}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Host</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {copy.host}
+                </div>
                 <div className="truncate">{stats?.hostname}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Python</div>
-                <div>{stats?.python_impl} {stats?.python_version}</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {copy.python}
+                </div>
+                <div>
+                  {stats?.python_impl} {stats?.python_version}
+                </div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {copy.hermes}
+                </div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
                   {canUpdateHermes &&
@@ -854,20 +957,22 @@ export default function SystemPage() {
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
-                          ? `${updateInfo.behind} behind`
-                          : "update available"}
+                          ? interpolate(copy.behind, {
+                              count: updateInfo.behind,
+                            })
+                          : copy.updateAvailable}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
-                      <Badge tone="success">latest</Badge>
+                      <Badge tone="success">{copy.latest}</Badge>
                     ) : null)}
                 </div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Cpu className="h-3 w-3" /> CPU
+                  <Cpu className="h-3 w-3" /> {copy.cpu}
                 </div>
                 <div>
-                  {stats?.cpu_count ?? "—"} cores
+                  {stats?.cpu_count ?? "—"} {copy.cores}
                   {typeof stats?.cpu_percent === "number"
                     ? ` · ${stats.cpu_percent.toFixed(0)}%`
                     : ""}
@@ -875,39 +980,54 @@ export default function SystemPage() {
               </div>
               {stats?.memory && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Memory</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {copy.memory}
+                  </div>
                   <div>
-                    {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
+                    {formatBytes(stats.memory.used)} /{" "}
+                    {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
                   </div>
                 </div>
               )}
               {stats?.disk && (
                 <div>
                   <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                    <HardDrive className="h-3 w-3" /> Disk
+                    <HardDrive className="h-3 w-3" /> {copy.disk}
                   </div>
                   <div>
-                    {formatBytes(stats.disk.used)} / {formatBytes(stats.disk.total)} ({stats.disk.percent}%)
+                    {formatBytes(stats.disk.used)} /{" "}
+                    {formatBytes(stats.disk.total)} ({stats.disk.percent}%)
                   </div>
                 </div>
               )}
               {typeof stats?.uptime_seconds === "number" && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Uptime</div>
-                  <div>{formatDuration(stats.uptime_seconds)}</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {copy.uptime}
+                  </div>
+                  <div>
+                    {formatDuration(stats.uptime_seconds, {
+                      day: copy.dayUnit,
+                      hour: copy.hourUnit,
+                      minute: copy.minuteUnit,
+                    })}
+                  </div>
                 </div>
               )}
               {stats?.load_avg && stats.load_avg.length >= 3 && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Load avg</div>
-                  <div>{stats.load_avg.map((n) => n.toFixed(2)).join(" / ")}</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {copy.loadAverage}
+                  </div>
+                  <div>
+                    {stats.load_avg.map((n) => n.toFixed(2)).join(" / ")}
+                  </div>
                 </div>
               )}
             </div>
             {stats && !stats.psutil && (
               <p className="mt-3 text-xs text-muted-foreground">
-                Install the <span className="font-mono">psutil</span> extra for
-                CPU / memory / disk metrics.
+                {copy.psutilHint}
               </p>
             )}
             {canUpdateHermes && (
@@ -925,7 +1045,7 @@ export default function SystemPage() {
                   }
                   onClick={() => void checkForUpdate(true)}
                 >
-                  Check for updates
+                  {copy.checkUpdates}
                 </Button>
                 {updateInfo?.update_available && updateInfo.can_apply && (
                   <Button
@@ -933,14 +1053,14 @@ export default function SystemPage() {
                     prefix={<Download className="h-3.5 w-3.5" />}
                     onClick={() => setUpdateConfirmOpen(true)}
                   >
-                    Update now
+                    {copy.updateNow}
                   </Button>
                 )}
                 {updateInfo &&
                   !updateInfo.can_apply &&
                   updateInfo.update_available && (
                     <span className="text-xs text-muted-foreground">
-                      Update with{" "}
+                      {copy.updateWith}{" "}
                       <span className="font-mono">{updateInfo.update_command}</span>
                     </span>
                   )}
@@ -957,36 +1077,47 @@ export default function SystemPage() {
 
       {/* ── Portal ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Globe className="h-4 w-4" /> Nous Portal
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Globe className="h-4 w-4" /> {copy.nousPortal}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
               <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in ? "logged in" : "not logged in"}
+                {portal?.logged_in ? copy.loggedIn : copy.notLoggedIn}
               </Badge>
               {portal?.provider && (
                 <span className="text-sm text-muted-foreground">
-                  inference provider: {portal.provider}
+                  {interpolate(copy.inferenceProvider, {
+                    provider: portal.provider,
+                  })}
                 </span>
               )}
               <a
-                href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
+                href={
+                  portal?.subscription_url ||
+                  "https://portal.nousresearch.com/manage-subscription"
+                }
                 target="_blank"
                 rel="noreferrer"
-                className="ml-auto text-xs text-primary underline"
+                className="ms-auto text-xs text-primary underline"
               >
-                Manage subscription
+                {copy.manageSubscription}
               </a>
             </div>
             {portal?.features && portal.features.length > 0 && (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Tool Gateway routing
+                  {copy.toolGatewayRouting}
                 </span>
                 {portal.features.map((f) => (
-                  <div key={f.label} className="flex items-center justify-between text-sm">
+                  <div
+                    key={f.label}
+                    className="flex items-center justify-between text-sm"
+                  >
                     <span>{f.label}</span>
                     <span className="text-muted-foreground">{f.state}</span>
                   </div>
@@ -995,7 +1126,7 @@ export default function SystemPage() {
             )}
             {!portal?.logged_in && (
               <p className="text-xs text-muted-foreground">
-                Log in with <span className="font-mono">hermes portal</span>.
+                {copy.portalLoginHint}
               </p>
             )}
           </CardContent>
@@ -1004,31 +1135,54 @@ export default function SystemPage() {
 
       {/* ── Curator ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Sparkles className="h-4 w-4" /> Skill curator
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Sparkles className="h-4 w-4" /> {copy.skillCurator}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
-              <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
+              <Badge
+                tone={
+                  curator?.paused
+                    ? "warning"
+                    : curator?.enabled
+                      ? "success"
+                      : "secondary"
+                }
+              >
+                {curator?.paused
+                  ? copy.paused
+                  : curator?.enabled
+                    ? copy.active
+                    : copy.disabled}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
-                {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
+                {curator?.interval_hours
+                  ? interpolate(copy.everyHours, {
+                      count: curator.interval_hours,
+                    })
+                  : ""}
+                {curator?.last_run_at
+                  ? ` · ${interpolate(copy.lastRun, {
+                      date: new Date(curator.last_run_at).toLocaleString(),
+                    })}`
+                  : ` · ${copy.neverRun}`}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused ? "Resume" : "Pause"}
+                {curator?.paused ? copy.resume : copy.pause}
               </Button>
               <Button
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
+                onClick={() => runOp(api.runCurator, copy.curatorReview)}
               >
-                Run now
+                {copy.runNow}
               </Button>
             </div>
           </CardContent>
@@ -1037,18 +1191,25 @@ export default function SystemPage() {
 
       {/* ── Gateway ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Power className="h-4 w-4" /> Gateway
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Power className="h-4 w-4" /> {copy.gateway}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? "running" : "stopped"}
+                {gatewayRunning ? copy.running : copy.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {status?.gateway_state ?? "—"}
-                {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
+                {status?.gateway_pid
+                  ? ` · ${interpolate(copy.pid, {
+                      value: status.gateway_pid,
+                    })}`
+                  : ""}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1059,7 +1220,7 @@ export default function SystemPage() {
                 disabled={gatewayRunning}
                 prefix={<Play className="h-3.5 w-3.5" />}
               >
-                Start
+                {copy.start}
               </Button>
               <Button
                 size="sm"
@@ -1067,7 +1228,7 @@ export default function SystemPage() {
                 onClick={() => runGateway("restart")}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
               >
-                Restart
+                {copy.restart}
               </Button>
               <Button
                 size="sm"
@@ -1077,7 +1238,7 @@ export default function SystemPage() {
                 disabled={!gatewayRunning}
                 prefix={<Power className="h-3.5 w-3.5" />}
               >
-                Stop
+                {copy.stop}
               </Button>
             </div>
           </CardContent>
@@ -1086,16 +1247,19 @@ export default function SystemPage() {
 
       {/* ── Memory ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Brain className="h-4 w-4" /> Memory
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Brain className="h-4 w-4" /> {copy.memory}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>
-                External provider:{" "}
+                {copy.externalProvider}{" "}
                 <span className="font-mono text-foreground">
-                  {memory?.active || "built-in only"}
+                  {memory?.active || copy.builtInOnly}
                 </span>
               </span>
               {activeMemoryProvider && (
@@ -1104,37 +1268,52 @@ export default function SystemPage() {
                 </Badge>
               )}
               <Link to="/plugins" className="underline">
-                Change in Plugins →
+                {copy.changeInPlugins}
               </Link>
-              <span className="ml-auto">
-                Provider setup:{" "}
+              <span className="ms-auto">
+                {copy.providerSetup}{" "}
                 <Link to="/plugins" className="underline">
-                  configure in Plugins
+                  {copy.configureInPlugins}
                 </Link>
               </span>
             </div>
 
             {activeMemoryProvider?.status === "missing" && (
               <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+                {copy.providerUninstalled}
               </p>
             )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                Built-in files — MEMORY.md:{" "}
+                {copy.builtInFiles} — MEMORY.md:{" "}
                 {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
                 {formatBytes(memory?.builtin_files.user ?? 0)}
               </span>
-              <div className="flex items-center gap-2 ml-auto">
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
-                  Reset MEMORY.md
+              <div className="flex items-center gap-2 ms-auto">
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-destructive"
+                  onClick={() => memoryReset.requestDelete("memory")}
+                >
+                  {copy.resetMemoryFile}
                 </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  Reset USER.md
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-destructive"
+                  onClick={() => memoryReset.requestDelete("user")}
+                >
+                  {copy.resetUserFile}
                 </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  Reset all
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-destructive"
+                  onClick={() => memoryReset.requestDelete("all")}
+                >
+                  {copy.resetAll}
                 </Button>
               </div>
             </div>
@@ -1144,33 +1323,58 @@ export default function SystemPage() {
 
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <KeyRound className="h-4 w-4" /> Credential pool
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <KeyRound className="h-4 w-4" /> {copy.credentialPool}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
-                <Label htmlFor="cred-provider">Provider</Label>
-                <Input id="cred-provider" value={credProvider} onChange={(e) => setCredProvider(e.target.value)} placeholder="openrouter" />
+                <Label htmlFor="cred-provider">{copy.provider}</Label>
+                <Input
+                  id="cred-provider"
+                  value={credProvider}
+                  onChange={(e) => setCredProvider(e.target.value)}
+                  placeholder="openrouter"
+                />
               </div>
               <div className="grid gap-2 sm:col-span-2">
-                <Label htmlFor="cred-key">API key</Label>
-                <Input id="cred-key" type="password" value={credKey} onChange={(e) => setCredKey(e.target.value)} placeholder="sk-…" />
+                <Label htmlFor="cred-key">{copy.apiKey}</Label>
+                <Input
+                  id="cred-key"
+                  type="password"
+                  value={credKey}
+                  onChange={(e) => setCredKey(e.target.value)}
+                  placeholder="sk-…"
+                />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="cred-label">Label</Label>
-                <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder="optional" />
+                <Label htmlFor="cred-label">{copy.label}</Label>
+                <Input
+                  id="cred-label"
+                  value={credLabel}
+                  onChange={(e) => setCredLabel(e.target.value)}
+                  placeholder={copy.optional}
+                />
               </div>
             </div>
             <div className="flex justify-end">
-              <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
-                Add key
+              <Button
+                size="sm"
+                className="uppercase"
+                onClick={addCredential}
+                disabled={addingCred}
+                prefix={addingCred ? <Spinner /> : undefined}
+              >
+                {copy.addKey}
               </Button>
             </div>
             {pool.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                No pooled credentials. Add one above to enable key rotation.
+                {copy.noPooledCredentials}
               </p>
             )}
             {pool.map((prov) => (
@@ -1179,12 +1383,29 @@ export default function SystemPage() {
                   {prov.provider}
                 </span>
                 {prov.entries.map((entry) => (
-                  <div key={`${prov.provider}-${entry.index}`} className="flex items-center gap-3 border border-border bg-background/40 px-3 py-2">
+                  <div
+                    key={`${prov.provider}-${entry.index}`}
+                    className="flex items-center gap-3 border border-border bg-background/40 px-3 py-2"
+                  >
                     <span className="text-sm font-medium">{entry.label}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {entry.token_preview}
+                    </span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
-                    {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    {entry.last_status && (
+                      <Badge tone="secondary">{entry.last_status}</Badge>
+                    )}
+                    <Button
+                      ghost
+                      size="icon"
+                      className="ms-auto text-destructive"
+                      aria-label={copy.removeCredential}
+                      onClick={() =>
+                        credDelete.requestDelete(
+                          `${prov.provider}|${entry.index}`,
+                        )
+                      }
+                    >
                       <Trash2 />
                     </Button>
                   </div>
@@ -1197,31 +1418,59 @@ export default function SystemPage() {
 
       {/* ── Operations ────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Activity className="h-4 w-4" /> Operations
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Activity className="h-4 w-4" /> {copy.operations}
         </H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
-              Open console
+              {copy.openConsole}
             </Button>
-            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
-              Run doctor
+            <Button
+              size="sm"
+              ghost
+              prefix={<Stethoscope className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runDoctor, copy.doctor)}
+            >
+              {copy.runDoctor}
             </Button>
-            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
-              Security audit
+            <Button
+              size="sm"
+              ghost
+              prefix={<ShieldCheck className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runSecurityAudit, copy.securityAudit)}
+            >
+              {copy.securityAudit}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
-              Update skills
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, copy.skillsUpdate)}>
+              {copy.updateSkills}
             </Button>
-            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, "Prompt size")}>
-              Prompt size
+            <Button
+              size="sm"
+              ghost
+              prefix={<Activity className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runPromptSize, copy.promptSize)}
+            >
+              {copy.promptSize}
             </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, "Support dump")}>
-              Support dump
+            <Button
+              size="sm"
+              ghost
+              prefix={<Database className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runDump, copy.supportDump)}
+            >
+              {copy.supportDump}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
-              Migrate config
+            <Button
+              size="sm"
+              ghost
+              prefix={<RotateCw className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runConfigMigrate, copy.configMigrate)}
+            >
+              {copy.migrateConfig}
             </Button>
           </CardContent>
         </Card>
@@ -1351,11 +1600,11 @@ export default function SystemPage() {
               <div className="flex items-start gap-2">
                 <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">Share debug report</span>
+                  <span className="text-sm font-medium">
+                    {copy.shareDebugReport}
+                  </span>
                   <span className="text-xs text-muted-foreground max-w-prose">
-                    Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    {copy.shareDebugDescription}
                   </span>
                 </div>
               </div>
@@ -1371,7 +1620,7 @@ export default function SystemPage() {
                 }
                 onClick={() => void runDebugShare()}
               >
-                {sharing ? "Uploading…" : "Generate share link"}
+                {sharing ? copy.uploading : copy.generateShareLink}
               </Button>
             </div>
 
@@ -1382,12 +1631,11 @@ export default function SystemPage() {
                 id="share-redact"
                 onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
-
               <Label
                 className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
                 htmlFor="share-redact"
               >
-                Redact credential-shaped tokens before upload (recommended)
+                {copy.redactBeforeUpload}
               </Label>
             </div>
 
@@ -1395,16 +1643,19 @@ export default function SystemPage() {
               <div className="flex flex-col gap-2 border-t border-border pt-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Badge tone="success">uploaded</Badge>
+                    <Badge tone="success">{copy.uploaded}</Badge>
                     {shareResult.redacted ? (
-                      <Badge tone="outline">redacted</Badge>
+                      <Badge tone="outline">{copy.redacted}</Badge>
                     ) : (
-                      <Badge tone="warning">not redacted</Badge>
+                      <Badge tone="warning">{copy.notRedacted}</Badge>
                     )}
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      auto-deletes in{" "}
-                      {Math.round(shareResult.auto_delete_seconds / 3600)}h
+                      {interpolate(copy.autoDeletesHours, {
+                        count: Math.round(
+                          shareResult.auto_delete_seconds / 3600,
+                        ),
+                      })}
                     </span>
                   </div>
                   {Object.keys(shareResult.urls).length > 1 && (
@@ -1427,7 +1678,7 @@ export default function SystemPage() {
                         )
                       }
                     >
-                      Copy all
+                      {copy.copyAll}
                     </Button>
                   )}
                 </div>
@@ -1452,7 +1703,7 @@ export default function SystemPage() {
                     <Button
                       ghost
                       size="icon"
-                      aria-label={`Copy ${label} link`}
+                      aria-label={interpolate(copy.copyLink, { label })}
                       onClick={() => void copyToClipboard(url, label)}
                     >
                       {copiedLabel === label ? <Check /> : <Copy />}
@@ -1462,7 +1713,9 @@ export default function SystemPage() {
 
                 {shareResult.failures.length > 0 && (
                   <span className="text-xs text-destructive">
-                    Some logs failed to upload: {shareResult.failures.join("; ")}
+                    {interpolate(copy.logsUploadFailed, {
+                      errors: shareResult.failures.join("; "),
+                    })}
                   </span>
                 )}
               </div>
@@ -1473,17 +1726,29 @@ export default function SystemPage() {
 
       {/* ── Checkpoints ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Database className="h-4 w-4" /> Checkpoints
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
+          <Database className="h-4 w-4" /> {copy.checkpoints}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <span className="text-sm text-muted-foreground">
-              {checkpoints?.sessions.length ?? 0} session(s) ·{" "}
-              {formatBytes(checkpoints?.total_bytes ?? 0)}
+              {interpolate(copy.sessionsCount, {
+                count: checkpoints?.sessions.length ?? 0,
+              })}{" "}
+              · {formatBytes(checkpoints?.total_bytes ?? 0)}
             </span>
-            <Button size="sm" ghost className="text-destructive" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
-              Prune
+            <Button
+              size="sm"
+              ghost
+              className="text-destructive"
+              disabled={!checkpoints?.sessions.length}
+              prefix={<Trash2 className="h-3.5 w-3.5" />}
+              onClick={() => checkpointsPrune.requestDelete("all")}
+            >
+              {copy.prune}
             </Button>
           </CardContent>
         </Card>
@@ -1492,17 +1757,25 @@ export default function SystemPage() {
       {/* ── Shell hooks ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
+          <H2
+            variant="sm"
+            className="flex items-center gap-2 text-muted-foreground"
+          >
+            <Terminal className="h-4 w-4" /> {copy.shellHooks}
           </H2>
-          <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
-            New hook
+          <Button
+            size="sm"
+            className="uppercase"
+            prefix={<Plus className="h-3.5 w-3.5" />}
+            onClick={() => setHookModalOpen(true)}
+          >
+            {copy.newHook}
           </Button>
         </div>
         {(!hooks || hooks.hooks.length === 0) && (
           <Card>
             <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No shell hooks configured.
+              {copy.noHooks}
             </CardContent>
           </Card>
         )}
@@ -1511,20 +1784,24 @@ export default function SystemPage() {
             <CardContent className="flex items-center gap-3 py-3">
               <Badge tone="outline">{h.event}</Badge>
               {h.matcher && (
-                <span className="text-xs text-muted-foreground">matcher: {h.matcher}</span>
+                <span className="text-xs text-muted-foreground">
+                  {interpolate(copy.matcher, { value: h.matcher })}
+                </span>
               )}
-              <span className="font-mono text-xs truncate flex-1">{h.command}</span>
+              <span className="font-mono text-xs truncate flex-1">
+                {h.command}
+              </span>
               {h.executable === false && (
-                <Badge tone="destructive">not executable</Badge>
+                <Badge tone="destructive">{copy.notExecutable}</Badge>
               )}
               <Badge tone={h.allowed ? "success" : "warning"}>
-                {h.allowed ? "allowed" : "not approved"}
+                {h.allowed ? copy.allowed : copy.notApproved}
               </Badge>
               <Button
                 ghost
                 size="icon"
                 className="text-destructive"
-                aria-label="Remove hook"
+                aria-label={copy.removeHook}
                 onClick={() =>
                   hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)
                 }

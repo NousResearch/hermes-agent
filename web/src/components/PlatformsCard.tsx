@@ -80,7 +80,8 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
 
                   {info.updated_at && (
                     <span className="font-mondwest normal-case text-xs text-muted-foreground">
-                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
+                      {t.status.lastUpdate}:{" "}
+                      {isoTimeAgo(info.updated_at, t.common.timeAgo)}
                     </span>
                   )}
                 </div>

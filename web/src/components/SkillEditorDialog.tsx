@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 /* ------------------------------------------------------------------ */
 /*  SkillEditorDialog — create or edit a SKILL.md from the dashboard   */
@@ -23,16 +25,6 @@ import {
 /*  same path the agent's skill_manage tool uses, so errors come back  */
 /*  as actionable messages rendered inline.                            */
 /* ------------------------------------------------------------------ */
-
-const CREATE_TEMPLATE = `---
-name: my-skill
-description: One-line description of when to use this skill.
----
-
-# My Skill
-
-Numbered steps, exact commands, and pitfalls go here.
-`;
 
 export interface SkillEditorDialogProps {
   open: boolean;
@@ -78,10 +70,12 @@ function EditorBody({
   onClose,
   onSaved,
 }: Omit<SkillEditorDialogProps, "open">) {
+  const { t } = useI18n();
+  const copy = t.skillEditor ?? en.skillEditor!;
   const isEdit = editName !== null;
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
-  const [content, setContent] = useState(isEdit ? "" : CREATE_TEMPLATE);
+  const [content, setContent] = useState(isEdit ? "" : copy.template);
   const [loading, setLoading] = useState(isEdit);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,11 +96,11 @@ function EditorBody({
   const handleSave = async () => {
     setError(null);
     if (!isEdit && !name.trim()) {
-      setError("Skill name is required.");
+      setError(copy.nameRequired);
       return;
     }
     if (!content.trim()) {
-      setError("SKILL.md content is required.");
+      setError(copy.contentRequired);
       return;
     }
     setSaving(true);
@@ -138,12 +132,10 @@ function EditorBody({
     <>
       <DialogHeader>
         <DialogTitle>
-          {isEdit ? `Edit skill: ${editName}` : "New skill"}
+          {isEdit ? copy.editTitle.replace("{name}", editName) : copy.newTitle}
         </DialogTitle>
         <DialogDescription>
-          {isEdit
-            ? "Rewrite this skill's SKILL.md. Frontmatter (name, description) is validated on save."
-            : "Author a custom skill — YAML frontmatter plus markdown instructions. It becomes available to the agent and attachable to cron jobs."}
+          {isEdit ? copy.editDescription : copy.newDescription}
         </DialogDescription>
       </DialogHeader>
 
@@ -151,7 +143,7 @@ function EditorBody({
         {!isEdit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-name">Name</Label>
+              <Label htmlFor="skill-editor-name">{copy.name}</Label>
               <Input
                 id="skill-editor-name"
                 autoFocus
@@ -161,7 +153,9 @@ function EditorBody({
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-category">Category (optional)</Label>
+              <Label htmlFor="skill-editor-category">
+                {copy.categoryOptional}
+              </Label>
               <Input
                 id="skill-editor-category"
                 placeholder="devops"
@@ -197,7 +191,7 @@ function EditorBody({
 
         <div className="flex items-center justify-end gap-2">
           <Button ghost size="sm" onClick={onClose} disabled={saving}>
-            Cancel
+            {copy.cancel}
           </Button>
           <Button
             size="sm"
@@ -206,7 +200,11 @@ function EditorBody({
             disabled={saving || loading}
             prefix={saving ? <Spinner /> : undefined}
           >
-            {saving ? "Saving…" : isEdit ? "Save changes" : "Create skill"}
+            {saving
+              ? copy.saving
+              : isEdit
+                ? copy.saveChanges
+                : copy.createSkill}
           </Button>
         </div>
       </div>

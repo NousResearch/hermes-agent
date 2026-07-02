@@ -33,6 +33,8 @@ import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -50,14 +52,6 @@ interface RpcEnvelope {
   method?: string;
   params?: { type?: string; payload?: unknown };
 }
-
-const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
 
 const STATE_TONE: Record<
   ConnectionState,
@@ -101,6 +95,15 @@ export function ChatSidebar({
   onDashboardNewSessionRequest,
   onSessionTitleChange,
 }: ChatSidebarProps) {
+  const { t } = useI18n();
+  const copy = { ...en.chatPage!, ...(t.chatPage ?? {}) };
+  const stateLabel: Record<ConnectionState, string> = {
+    idle: copy.stateIdle,
+    connecting: copy.stateConnecting,
+    open: copy.stateLive,
+    closed: copy.stateClosed,
+    error: copy.stateError,
+  };
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -314,7 +317,12 @@ export function ChatSidebar({
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
   const modelName = effectiveModel || info.model || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  // The gateway client throws English messages; map the known token error to
+  // the catalog so the panel matches the page banner's language.
+  const rawBanner = error ?? info.credential_warning ?? null;
+  const banner = rawBanner?.startsWith("Session token not available")
+    ? copy.tokenMissingPanel
+    : rawBanner;
 
   return (
     <aside
@@ -326,7 +334,7 @@ export function ChatSidebar({
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
-            model
+            {copy.sidebarModel}
           </div>
 
           <Button
@@ -338,7 +346,7 @@ export function ChatSidebar({
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}
-            title={modelName === "—" ? "switch model" : modelName}
+            title={modelName === "—" ? copy.switchModel : modelName}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
@@ -349,7 +357,7 @@ export function ChatSidebar({
         </div>
 
         <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
+          {stateLabel[state]}
         </Badge>
       </Card>
 
@@ -393,7 +401,7 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect tools feed
+                {copy.reconnect}
               </Button>
             )}
           </div>

@@ -1,5 +1,6 @@
 export type Locale =
   | "en"
+  | "ar"
   | "zh"
   | "zh-hant"
   | "ja"
@@ -64,6 +65,22 @@ export interface Translations {
     // component until translated, matching the enriched-profiles keys.
     gateway?: string;
     gatewayHint?: string;
+    configure?: string;
+    /** Analytics/Models period buttons (7d / 30d / 90d). */
+    periods?: {
+      d7: string;
+      d30: string;
+      d90: string;
+    };
+    /** Relative-time strings consumed by lib/utils timeAgo/isoTimeAgo. */
+    timeAgo?: {
+      justNow: string;
+      minutesAgo: string;
+      hoursAgo: string;
+      yesterday: string;
+      daysAgo: string;
+      unknown: string;
+    };
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -78,6 +95,10 @@ export interface Translations {
       org: string;
     };
     activeSessionsLabel: string;
+    authStatusUnavailable?: string;
+    loggedInAs?: string;
+    logout?: string;
+    via?: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
       failed: string;
@@ -92,13 +113,19 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      files?: string;
       keys: string;
       logs: string;
+      mcp?: string;
       models: string;
+      channels?: string;
+      pairing?: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      system?: string;
+      webhooks?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -190,6 +217,25 @@ export interface Translations {
     newChat: string;
     previousPage: string;
     nextPage: string;
+    renameSession?: string;
+    exportSession?: string;
+    sessionTitle?: string;
+    saveTitle?: string;
+    cancelRename?: string;
+    sessionRenamed?: string;
+    renameFailed?: string;
+    exportFailed?: string;
+    invalidPruneDays?: string;
+    prunedSessions?: string;
+    pruneFailed?: string;
+    pruneTitle?: string;
+    pruneDescription?: string;
+    olderThanDays?: string;
+    prune?: string;
+    total?: string;
+    activeInStore?: string;
+    archived?: string;
+    messages?: string;
     roles: {
       user: string;
       assistant: string;
@@ -197,6 +243,201 @@ export interface Translations {
       tool: string;
     };
   };
+
+  filesPage?: {
+    title: string;
+    refresh: string;
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    uploaded: string;
+    uploadFailed: string;
+    downloadFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    path: string;
+    go: string;
+    upload: string;
+    create: string;
+    uploadFiles: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    loading: string;
+    chooseFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    loadingFiles: string;
+    noFiles: string;
+    open: string;
+    download: string;
+    delete: string;
+    createFolder: string;
+    target: string;
+    folderName: string;
+    cancel: string;
+    deleteItem: string;
+    /** Optional — fall back to the English literal until translated. */
+    deleteNamed?: string;
+    deleteFolderDescription: string;
+    deleteFileDescription: string;
+  };
+
+  pairingPage?: {
+    loadFailed: string;
+    missingCode: string;
+    approved: string;
+    /** Optional named-toast templates — fall back to English literals. */
+    approvedNamed?: string;
+    revokedNamed?: string;
+    clearConfirm: string;
+    cleared: string;
+    error: string;
+    revoked: string;
+    clearPending: string;
+    revokeAccess: string;
+    revokeNamedDescription: string;
+    revokeDescription: string;
+    revoke: string;
+    pendingRequests: string;
+    noPending: string;
+    minutesAgo: string;
+    approve: string;
+    approvedUsers: string;
+    noApproved: string;
+  };
+
+  channelsPage?: Record<
+    | "connected"
+    | "restartToApply"
+    | "gatewayStopped"
+    | "startFailed"
+    | "disconnected"
+    | "notConfigured"
+    | "disabled"
+    | "error"
+    | "expired"
+    | "nothingToSave"
+    | "required"
+    | "saved"
+    | "saveFailed"
+    | "gatewayRestarting"
+    | "restartFailed"
+    | "restarting"
+    | "restartGateway"
+    | "changesSaved"
+    | "restartNow"
+    | "gatewayNotRunning"
+    | "configuredCount"
+    | "close"
+    | "configure"
+    | "setupGuide"
+    | "keepExisting"
+    | "cancel"
+    | "saving"
+    | "saveEnable"
+    | "enable"
+    | "test"
+    | "pairingExpired"
+    | "stillWaiting"
+    | "invalidTelegramId"
+    | "restartManually"
+    | "addTelegramId"
+    | "telegramSavedRestarting"
+    | "telegramRestartFailed"
+    | "starting"
+    | "setupQr"
+    | "telegramConfigured"
+    | "ready"
+    | "allowedUsers"
+    | "ownerDetected"
+    | "telegramId"
+    | "add"
+    | "saveRestart"
+    | "qrAlt"
+    | "waiting"
+    | "openTelegram",
+    string
+  >;
+
+  webhooksPage?: Record<
+    | "copy"
+    | "loadFailed"
+    | "gatewayRestarting"
+    | "restartFailedExit"
+    | "restartManually"
+    | "webhooksEnabledRestarting"
+    | "gatewayRestartFailed"
+    | "enableFailed"
+    | "nameRequired"
+    | "created"
+    | "createFailed"
+    | "enabled"
+    | "enabledNamed"
+    | "disabled"
+    | "disabledNamed"
+    | "error"
+    | "deleted"
+    | "deletedNamed"
+    | "newSubscription"
+    | "deleteWebhook"
+    | "deleteNamedDescription"
+    | "deleteDescription"
+    | "close"
+    | "createdDescription"
+    | "webhookUrl"
+    | "secretOnce"
+    | "done"
+    | "name"
+    | "namePlaceholder"
+    | "description"
+    | "descriptionPlaceholder"
+    | "events"
+    | "eventsPlaceholder"
+    | "deliverTo"
+    | "log"
+    | "telegram"
+    | "discord"
+    | "slack"
+    | "email"
+    | "githubComment"
+    | "deliverOnly"
+    | "deliverOnlyDescription"
+    | "prompt"
+    | "promptPlaceholder"
+    | "creating"
+    | "create"
+    | "receiverDisabled"
+    | "receiverDescription"
+    | "enabling"
+    | "enableWebhooks"
+    | "restartRequired"
+    | "restarting"
+    | "restartGateway"
+    | "subscriptions"
+    | "subscriptionsDescription"
+    | "noSubscriptions"
+    | "deliverOnlyBadge"
+    | "disabledBadge"
+    | "all"
+    | "disable"
+    | "enable"
+    | "delete",
+    string
+  >;
+
+  systemPage?: Record<string, string>;
+  profileBuilderPage?: Record<string, string>;
+  mcpPage?: Record<string, string>;
+  modelsPage?: Record<string, string>;
+  chatPage?: Record<string, string>;
+  toolsetDrawer?: Record<string, string>;
+  skillEditor?: Record<string, string>;
+  skillsHub?: Record<string, string>;
 
   // ── Analytics page ──
   analytics: {
@@ -223,6 +464,11 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    hiddenTitle?: string;
+    hiddenBody1?: string;
+    hiddenBody2?: string;
+    hiddenBody3?: string;
+    hiddenConfigLink?: string;
   };
 
   // ── Models page ──
@@ -302,6 +548,72 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    jobs?: string;
+    blueprints?: string;
+    profile?: string;
+    skillsOptional?: string;
+    skills?: string;
+    skillsHint?: string;
+    saveChanges?: string;
+    allProfiles?: string;
+    noSkillsProfile?: string;
+    close?: string;
+    editJob?: string;
+    requiredFields?: string;
+    savedChanges?: string;
+    setupBlueprint?: string;
+    cancelBlueprint?: string;
+    scheduleBlueprint?: string;
+    blueprintLoadFailed?: string;
+    blueprintLoading?: string;
+    noBlueprints?: string;
+    blueprintScheduled?: string;
+    /** Fallback title for unnamed jobs — falls back to the English literal. */
+    jobFallback?: string;
+    /** "{count} skills" badge — falls back to the English literal. */
+    skillsCount?: string;
+    /** "{count} toolsets" badge — falls back to the English literal. */
+    toolsetsCount?: string;
+    /** Empty state for the toolset picker — falls back to the English literal. */
+    noToolsets?: string;
+    /** "repeat" label in the job meta row — falls back to the English literal. */
+    repeat?: string;
+    /** "delivery" label prefixing a delivery error — falls back to the English literal. */
+    deliveryError?: string;
+    /** "model" badge label — falls back to the English literal. */
+    modelBadge?: string;
+    /** Advanced-fields section summary — falls back to the English literal. */
+    advancedFields?: string;
+    /** Provider field label — falls back to the English literal. */
+    providerLabel?: string;
+    /** Model field label — falls back to the English literal. */
+    modelLabel?: string;
+    /** "Default" select option — falls back to the English literal. */
+    defaultOption?: string;
+    /** Base URL override field label — falls back to the English literal. */
+    baseUrlLabel?: string;
+    /** Base URL override placeholder — falls back to the English literal. */
+    baseUrlPlaceholder?: string;
+    /** no_agent checkbox description — falls back to the English literal. */
+    noAgentLabel?: string;
+    /** Script field label — falls back to the English literal. */
+    scriptLabel?: string;
+    /** Script field placeholder — falls back to the English literal. */
+    scriptPlaceholder?: string;
+    /** Workdir field label — falls back to the English literal. */
+    workdirLabel?: string;
+    /** Workdir field placeholder — falls back to the English literal. */
+    workdirPlaceholder?: string;
+    /** context_from field label — falls back to the English literal. */
+    contextFromLabel?: string;
+    /** context_from field placeholder — falls back to the English literal. */
+    contextFromPlaceholder?: string;
+    /** enabled_toolsets field label — falls back to the English literal. */
+    toolsetsLabel?: string;
+    /** Validation toast when a no_agent job has no script — falls back to the English literal. */
+    noAgentScriptRequired?: string;
+    /** Raw job-state → label map for the state badge (unknown states render raw). */
+    states?: Record<string, string>;
     delivery: {
       local: string;
       telegram: string;
@@ -443,6 +755,23 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+    browseHub?: string;
+    editSkill?: string;
+    saved?: string;
+    newSkill?: string;
+    /** "Learn a skill" dialog — optional; falls back to English literals. */
+    learnTitle?: string;
+    learnDesc?: string;
+    learnLocalLabel?: string;
+    learnLocalPlaceholder?: string;
+    learnUrlLabel?: string;
+    learnUrlPlaceholder?: string;
+    learnElseLabel?: string;
+    learnElsePlaceholder?: string;
+    learnCancel?: string;
+    learnSubmit?: string;
+    /** Category-slug → display-name map; unknown slugs are title-cased. */
+    categoryLabels?: Record<string, string>;
   };
 
   // ── Config page ──
@@ -514,6 +843,11 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    oauthSection?: string;
+    providersSection?: string;
+    toolsSection?: string;
+    settingsSection?: string;
+    jumpToSection?: string;
   };
 
   // ── OAuth ──
@@ -541,6 +875,13 @@ export interface Translations {
     connectedClosing: string;
     loginFailed: string;
     sessionExpired: string;
+    connectedToast?: string;
+    startFailed?: string;
+    submitFailed?: string;
+    tokenExchangeFailed?: string;
+    loginStatusFailed?: string;
+    pollingFailed?: string;
+    retryFailed?: string;
     reOpenAuth: string;
     reOpenVerification: string;
     submitCode: string;
@@ -574,6 +915,13 @@ export interface Translations {
     fontSans?: string;
     fontSerif?: string;
     fontMono?: string;
+    /**
+     * Optional localized names/blurbs for built-in themes, keyed by preset
+     * name. Locales without them keep the English label/description from the
+     * preset itself.
+     */
+    names?: Record<string, string>;
+    descriptions?: Record<string, string>;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

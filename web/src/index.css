@@ -100,6 +100,27 @@ html {
   overflow: hidden;
 }
 
+/* Declared on body — not html — because the theme engine writes the font
+   variables inline on <html>, which would shadow any html-level rule; a
+   body-level declaration wins for the whole rendered tree. LTR locales keep
+   the theme's own stacks. */
+html[dir="rtl"] body {
+  --theme-font-sans: Tahoma, "Geeza Pro", "Noto Sans Arabic", Arial, sans-serif;
+  /* Mono faces carry no Arabic glyphs; without an explicit Arabic fallback
+     before the generic `monospace`, Arabic text in mono badges renders as
+     disconnected, cell-spaced letters. Latin/digits still use the real mono. */
+  --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
+    Consolas, Tahoma, "Geeza Pro", "Noto Sans Arabic", monospace;
+  letter-spacing: 0;
+}
+
+/* The html-level reset above doesn't beat element-level `tracking-*`
+   utilities; letter-spacing breaks Arabic ligatures, so zero it for any
+   tracked element while the document is RTL. */
+html[dir="rtl"] [class*="tracking-"] {
+  letter-spacing: 0 !important;
+}
+
 body {
   font-family: var(--theme-font-sans);
   min-height: 0;
@@ -110,6 +131,18 @@ body {
 
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
+}
+
+html[dir="rtl"] code,
+html[dir="rtl"] kbd,
+html[dir="rtl"] pre,
+html[dir="rtl"] samp,
+html[dir="rtl"] .font-mono,
+html[dir="rtl"] .font-mono-ui,
+html[dir="rtl"] .xterm {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: embed;
 }
 
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS

@@ -273,6 +273,8 @@ class _VikingClient:
             "Trusted mode requests must include X-OpenViking-Account" in message
             or "Trusted mode requests must include X-OpenViking-User" in message
             or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+            or "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account" in message
+            or "ROOT requests to tenant-scoped APIs must include X-OpenViking-User" in message
         )
 
     def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:

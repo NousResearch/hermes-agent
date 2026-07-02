@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import {
+  getMessagingPlatforms,
+  getSessionMessages,
+  listAllProfileSessions,
+  listSessions,
+  setApiRequestProfile,
+  testMessagingPlatform,
+  updateMessagingPlatform
+} from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -13,6 +21,7 @@ describe('Hermes REST session helpers', () => {
   let api: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    setApiRequestProfile(null)
     api = vi.fn().mockResolvedValue(emptySessionsResponse)
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -21,6 +30,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -55,6 +65,45 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('routes messaging platform reads through the selected API profile', async () => {
+    api.mockResolvedValue({ platforms: [] })
+    setApiRequestProfile('clean-room')
+
+    await getMessagingPlatforms()
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/messaging/platforms',
+      profile: 'clean-room'
+    })
+  })
+
+  it('routes messaging platform updates through the selected API profile', async () => {
+    api.mockResolvedValue({ ok: true, platform: 'telegram' })
+    setApiRequestProfile('clean-room')
+
+    await updateMessagingPlatform('telegram', { enabled: true })
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/messaging/platforms/telegram',
+      method: 'PUT',
+      body: { enabled: true },
+      profile: 'clean-room'
+    })
+  })
+
+  it('routes messaging platform tests through the selected API profile', async () => {
+    api.mockResolvedValue({ ok: true, message: 'ready' })
+    setApiRequestProfile('clean-room')
+
+    await testMessagingPlatform('telegram')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/messaging/platforms/telegram/test',
+      method: 'POST',
+      profile: 'clean-room'
     })
   })
 })

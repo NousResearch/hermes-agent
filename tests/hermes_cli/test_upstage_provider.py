@@ -68,6 +68,26 @@ class TestUpstageOverlay:
         assert get_label("upstage") == "Upstage Solar"
 
 
+class TestUpstageEnvCatalog:
+    """The dashboard/desktop Providers page lists only OPTIONAL_ENV_VARS keys
+    whose category is "provider". Without these entries UPSTAGE_API_KEY /
+    UPSTAGE_BASE_URL never reach the frontend and Upstage stays invisible even
+    though EnvPage.tsx has a matching PROVIDER_GROUPS prefix.
+    """
+
+    def test_optional_env_vars_include_upstage(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert "UPSTAGE_API_KEY" in OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["UPSTAGE_API_KEY"]["category"] == "provider"
+        assert OPTIONAL_ENV_VARS["UPSTAGE_API_KEY"]["password"] is True
+        assert OPTIONAL_ENV_VARS["UPSTAGE_API_KEY"]["url"]
+
+        assert "UPSTAGE_BASE_URL" in OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["UPSTAGE_BASE_URL"]["category"] == "provider"
+        assert OPTIONAL_ENV_VARS["UPSTAGE_BASE_URL"]["password"] is False
+
+
 class TestUpstageConfigProviderWins:
     """End-to-end: an explicit config provider must beat env auto-detect.
 

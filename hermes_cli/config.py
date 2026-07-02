@@ -3707,6 +3707,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "UPSTAGE_API_KEY": {
+        "description": "Upstage API key for Solar LLM models",
+        "prompt": "Upstage API Key",
+        "url": "https://console.upstage.ai/api-keys",
+        "password": True,
+        "category": "provider",
+    },
+    "UPSTAGE_BASE_URL": {
+        "description": "Upstage base URL override (default: https://api.upstage.ai/v1)",
+        "prompt": "Upstage base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

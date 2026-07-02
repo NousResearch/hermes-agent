@@ -157,6 +157,14 @@ def realign_markdown_tables(*args, **kwargs):
     from agent.markdown_tables import realign_markdown_tables as _realign_markdown_tables
 
     return _realign_markdown_tables(*args, **kwargs)
+
+
+# ── OpenRouter credit cache for status bar display ────────────────────────
+_or_credits_cache: dict = {
+    "balance": None, "label": None, "quota_pct": None, "timestamp": 0.0
+}
+_OR_CREDITS_CACHE_TTL = 300.0  # seconds
+
 # NOTE: `from agent.account_usage import ...` is deliberately NOT at module
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
@@ -4467,6 +4475,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _or_credit_style(balance: Optional[float]) -> str:
+        """Return a style class reflecting OpenRouter credit health."""
+        if balance is None:
+            return "class:status-bar-dim"
+        if balance <= 1.0:
+            return "class:status-bar-critical"
+        if balance <= 10.0:
+            return "class:status-bar-bad"
+        if balance <= 50.0:
+            return "class:status-bar-warn"
+        return "class:status-bar-good"
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -4626,6 +4647,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        # ── OpenRouter credits (cached, 5-min TTL) ───────────────
+        _or_provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        if _or_provider and _or_provider.strip() == "openrouter":
+            _now = time.time()
+            if _now - _or_credits_cache["timestamp"] > _OR_CREDITS_CACHE_TTL:
+                try:
+                    _or_base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+                    _or_api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+                    from agent.account_usage import fetch_account_usage
+                    _or_snap = fetch_account_usage(
+                        _or_provider, base_url=_or_base_url, api_key=_or_api_key
+                    )
+                    if _or_snap and _or_snap.details:
+                        _balance_label = str(_or_snap.details[0])
+                        _m = re.search(r'\$(\d+\.?\d*)', _balance_label)
+                        _balance_num = float(_m.group(1)) if _m else None
+                        _or_credits_cache["balance"] = _balance_num
+                        _or_credits_cache["label"] = None
+                        if _balance_num is not None:
+                            _or_credits_cache["label"] = f"${_balance_num:,.2f}"
+                        _or_credits_cache["quota_pct"] = None
+                        for _w in _or_snap.windows:
+                            if getattr(_w, "label", "") == "API key quota" and getattr(_w, "used_percent", None) is not None:
+                                _or_credits_cache["quota_pct"] = _w.used_percent
+                                break
+                        _or_credits_cache["timestamp"] = _now
+                except Exception:
+                    pass
+            if _or_credits_cache["balance"] is not None:
+                snapshot["or_credits_balance"] = _or_credits_cache["balance"]
+                snapshot["or_credits_label"] = _or_credits_cache["label"]
 
         return snapshot
 
@@ -5049,6 +5102,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                _or_label = snapshot.get("or_credits_label")
+                if _or_label:
+                    parts.append(_or_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5075,6 +5131,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            _or_label = snapshot.get("or_credits_label")
+            if _or_label:
+                parts.append(f"💳 {_or_label}")
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5138,6 +5197,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    _or_label = snapshot.get("or_credits_label")
+                    if _or_label:
+                        _or_bal = snapshot.get("or_credits_balance")
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((self._or_credit_style(_or_bal), _or_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5181,6 +5245,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    _or_label = snapshot.get("or_credits_label")
+                    if _or_label:
+                        _or_bal = snapshot.get("or_credits_balance")
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((self._or_credit_style(_or_bal), f"💳 {_or_label}"))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

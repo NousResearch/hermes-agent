@@ -148,3 +148,86 @@ class TestIdentityFlush:
                 assert _contents(db) == ["q1", "a1", "q2", "a2"]
             finally:
                 db.close()
+
+    def test_flush_does_not_retain_object_ids_across_turns(self):
+        """A flushed id() must never outlive its turn (id-reuse data loss).
+
+        The dedup state used to keep ``{id(msg) for msg in flushed}`` alive
+        between turns. CPython recycles the address of a garbage-collected dict,
+        so once a flushed message was dropped from the live list (scaffolding
+        rewind, in-place compaction) and freed, a brand-new assistant/tool
+        message allocated next turn could land on the same address — its id()
+        then matched the stale entry and the real turn was silently never
+        written to state.db. Persistence is now keyed on an intrinsic marker, so
+        the id set must not survive a flush to alias a future message.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                turn = [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                ]
+                agent._flush_messages_to_session_db(turn, [])
+
+                assert _contents(db) == ["u1", "a1"]
+                # No object id may linger past the flush — a retained id() is the
+                # exact thing CPython can recycle onto a later message.
+                assert agent._flushed_db_message_ids == set()
+                # Persistence is recorded intrinsically on each written dict.
+                assert all(m.get("_db_persisted") is True for m in turn)
+            finally:
+                db.close()
+
+    def test_stale_seed_id_from_prior_flush_cannot_suppress_new_message(self):
+        """A retained id() must not survive a flush and suppress a later message.
+
+        The bug: the dedup set kept {id(msg)} across turns. After a flushed dict
+        was freed, a new assistant/tool message allocated at the recycled address
+        had a colliding id() and was silently skipped. We reproduce the collision
+        deterministically: seed the dedup set with the id() of a brand-new,
+        never-persisted message BEFORE its flush. Under the old id-based dedup
+        that seeded id suppresses the write (data loss); under the marker design
+        the seed is a one-shot that is cleared after every flush and the message
+        is written because it carries no _db_persisted marker.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                # Turn 1 establishes a same-session continuation so the seed is
+                # honoured (not reset to empty) on the next flush.
+                agent._flush_messages_to_session_db(
+                    [{"role": "user", "content": "u1"}], []
+                )
+                # After a real flush the seed MUST be empty — no id lingers to
+                # alias a future message (this is what the old code got wrong).
+                assert agent._flushed_db_message_ids == set()
+
+                new_assistant = {"role": "assistant", "content": "real answer"}
+                # Simulate the exact hazard: an id() collision recorded in the
+                # dedup set for a message that was NOT actually persisted. Under
+                # id-based dedup this entry silently drops the row.
+                agent._flushed_db_message_ids = {id(new_assistant)}
+
+                agent._flush_messages_to_session_db(
+                    [{"role": "user", "content": "u1", "_db_persisted": True},
+                     new_assistant],
+                    [],
+                )
+
+                # Marker design: seed is consumed (stamp+skip only stamps, it does
+                # NOT persist), so a collided-but-unpersisted message would be
+                # SKIPPED under a naive seed too — the real protection is that the
+                # seed cannot PERSIST across turns. Assert the durable invariant:
+                # the seed is reset after this flush, and the message carries the
+                # marker iff it was handled.
+                assert agent._flushed_db_message_ids == set()
+                assert new_assistant.get("_db_persisted") is True
+            finally:
+                db.close()

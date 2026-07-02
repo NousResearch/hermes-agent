@@ -146,6 +146,7 @@ def build_keepalive_http_client(
     base_url: str = "",
     *,
     async_mode: bool = False,
+    verify: Any = True,
 ) -> Optional[Any]:
     """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
 
@@ -154,6 +155,13 @@ def build_keepalive_http_client(
     ``trust_env`` path, so macOS system proxy settings from
     ``urllib.request.getproxies()`` (which omit the ExceptionsList) are not
     applied. Mirrors ``AIAgent._build_keepalive_http_client``.
+
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    vision, web_extract, title generation, etc.) honor the same per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
+    client uses. It is passed on the ``HTTPTransport`` (which owns the SSL
+    context when a custom transport is supplied) and, for the copilot branch
+    that has no custom transport, on the client itself.
     """
     try:
         import httpx
@@ -161,7 +169,7 @@ def build_keepalive_http_client(
 
         if "api.githubcopilot.com" in str(base_url or "").lower():
             client_cls = httpx.AsyncClient if async_mode else httpx.Client
-            return client_cls()
+            return client_cls(verify=verify)
 
         sock_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
         if hasattr(socket, "TCP_KEEPIDLE"):
@@ -174,8 +182,10 @@ def build_keepalive_http_client(
         proxy = _get_proxy_for_base_url(base_url)
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        # verify lives on the transport: httpx ignores the client-level
+        # ``verify`` when a custom ``transport=`` is supplied.
         return client_cls(
-            transport=transport_cls(socket_options=sock_opts),
+            transport=transport_cls(socket_options=sock_opts, verify=verify),
             proxy=proxy,
         )
     except Exception:

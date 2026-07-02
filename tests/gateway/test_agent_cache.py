@@ -12,6 +12,8 @@ Verifies that the agent cache correctly:
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 def _make_runner():
@@ -1565,8 +1567,11 @@ class TestAgentCacheMessageCountRebaseline:
     """
 
     def _runner_with_db(self, db):
+        from hermes_state import AsyncSessionDB
+
         runner = _make_runner()
-        runner._session_db = db
+        # The gateway holds the async facade; the production refresh awaits it.
+        runner._session_db = AsyncSessionDB(db)
         return runner
 
     @staticmethod
@@ -1577,7 +1582,7 @@ class TestAgentCacheMessageCountRebaseline:
         the cached agent (or either side is None / it's a legacy 2-tuple).
         """
         try:
-            row = runner._session_db.get_session(session_id)
+            row = runner._session_db._db.get_session(session_id)
             live = row.get("message_count", 0) if row else None
         except Exception:
             live = None
@@ -1591,7 +1596,8 @@ class TestAgentCacheMessageCountRebaseline:
         )
         return not invalidate
 
-    def test_same_process_turns_preserve_cached_agent(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_same_process_turns_preserve_cached_agent(self, tmp_path):
         """The regression guard: consecutive same-process turns must REUSE
         the cached agent (prompt cache preserved), not rebuild every turn.
 
@@ -1619,7 +1625,7 @@ class TestAgentCacheMessageCountRebaseline:
             db.append_message("s1", role="user", content="u")
             db.append_message("s1", role="assistant", content="a")
             # Post-turn re-baseline (the fix).
-            runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+            await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
             # Next turn's guard decision.
             if self._guard_would_reuse(runner, "telegram:s1", "s1"):
                 reuses += 1
@@ -1630,7 +1636,8 @@ class TestAgentCacheMessageCountRebaseline:
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
 
-    def test_cross_process_write_still_invalidates(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_cross_process_write_still_invalidates(self, tmp_path):
         """After the re-baseline, a DIFFERENT process appending to the same
         session must still flip the guard to rebuild (the #45966 fix holds).
         """
@@ -1650,7 +1657,7 @@ class TestAgentCacheMessageCountRebaseline:
         # Our own turn + re-baseline -> reuse next turn.
         db.append_message("s1", role="user", content="u")
         db.append_message("s1", role="assistant", content="a")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
@@ -1660,10 +1667,11 @@ class TestAgentCacheMessageCountRebaseline:
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
-    def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
         """Re-baseline must never crash and must leave legacy 2-tuples and
         pending-sentinel entries untouched."""
-        from hermes_state import SessionDB
+        from hermes_state import AsyncSessionDB, SessionDB
         from gateway.run import _AGENT_PENDING_SENTINEL
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
@@ -1673,24 +1681,24 @@ class TestAgentCacheMessageCountRebaseline:
 
         # No session_db -> no-op, no crash.
         runner._session_db = None
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-        runner._session_db = db
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        runner._session_db = AsyncSessionDB(db)
 
         # Falsy session_id -> no-op.
-        runner._refresh_agent_cache_message_count("telegram:s1", "")
-        runner._refresh_agent_cache_message_count("telegram:s1", None)
+        await runner._refresh_agent_cache_message_count("telegram:s1", "")
+        await runner._refresh_agent_cache_message_count("telegram:s1", None)
 
         # Legacy 2-tuple is left untouched (it opts out of the guard).
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert len(runner._agent_cache["telegram:s1"]) == 2
 
         # Pending sentinel entry is left untouched.
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
             assert runner._agent_cache["telegram:s1"][2] == 0
@@ -1700,13 +1708,87 @@ class TestAgentCacheMessageCountRebaseline:
             def get_session(self, _sid):
                 raise RuntimeError("db locked")
 
-        runner._session_db = _BoomDB()  # type: ignore[assignment]
+        runner._session_db = AsyncSessionDB(_BoomDB())  # type: ignore[assignment]
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig", 5)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
 
+    @pytest.mark.asyncio
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+        """Behavioral regression for the in-band queued (/queue) follow-up.
+
+        #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
+        (in ``_handle_message_with_agent``, after the whole ``_run_agent``
+        chain unwinds).  The recursive in-band follow-up re-enters the cache
+        guard MID-CHAIN — while the cache still holds the build-time snapshot
+        and the first turn has already flushed its own rows — so without a
+        re-baseline at the follow-up boundary the guard sees the grown count
+        and rebuilds the agent on THIS process's own writes, re-introducing
+        the every-turn rebuild #46237 set out to fix, on the follow-up path.
+
+        Pins both halves at that boundary: WITHOUT the re-baseline the in-band
+        follow-up would rebuild; WITH it the follow-up REUSES the warm agent.
+        The guard's reuse decision (``_guard_would_reuse``) mirrors the real
+        cache-hit guard, which reads ``get_session(session_id)`` with the same
+        ``session_id`` the recursive ``_run_agent`` call is given.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        # First turn: cache miss -> build. Snapshot is the pre-turn count.
+        _row = db.get_session("s1")
+        build_count = _row.get("message_count", 0) if _row else 0
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+
+        # First turn flushes its own user + assistant rows.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+
+        # Bug reproduction: re-entering the guard at the in-band follow-up
+        # boundary WITHOUT the re-baseline sees the grown count and rebuilds.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+        # The fix: re-baseline at the follow-up boundary.
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+
+        # The in-band follow-up now REUSES the cached, warm-prefix agent.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is agent
+
+    def test_in_band_followup_rebaseline_precedes_recursion(self):
+        """Pin the FIX PLACEMENT in the production source.
+
+        The behavioral test above proves the re-baseline makes the in-band
+        follow-up reuse the cached agent, but it calls the helper directly —
+        it would still pass if the production call were deleted.  This guards
+        the actual call site: the queued (/queue) follow-up recurses via
+        ``followup_result = await self._run_agent(...)`` inside
+        ``_run_agent_inner`` and the re-baseline MUST run BEFORE that
+        recursion (running it only after, like the external-turn site, is too
+        late for the in-band path — the follow-up would already have rebuilt).
+        """
+        import inspect
+        from gateway.run import GatewayRunner
+
+        # The recursion + pre-recursion re-baseline live in the extracted
+        # ``_run_agent_inner`` (older trees had them inline in ``_run_agent``).
+        src = inspect.getsource(GatewayRunner._run_agent_inner)
+        marker = "followup_result = await self._run_agent("
+        assert marker in src, "in-band queued follow-up recursion not found in _run_agent_inner"
+        before_recursion = src[: src.index(marker)]
+        assert "_refresh_agent_cache_message_count" in before_recursion, (
+            "the in-band queued follow-up recursion must be preceded by a "
+            "_refresh_agent_cache_message_count re-baseline, else the follow-up "
+            "rebuilds the agent on this process's own first-turn writes"
+        )
 
 class TestCrossProcessInvalidationDefersCleanup:
     """#52197: cross-process cache invalidation must NOT run agent cleanup

@@ -71,6 +71,25 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_typing_indicator_defaults_true(self):
+        assert PlatformConfig().typing_indicator is True
+        assert PlatformConfig.from_dict({}).typing_indicator is True
+
+    def test_typing_indicator_roundtrip_false(self):
+        pc = PlatformConfig(enabled=True, typing_indicator=False)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_coerces_quoted_false(self):
+        restored = PlatformConfig.from_dict({"typing_indicator": "false"})
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_resolved_from_extra(self):
+        # The shared-key loop in load_gateway_config bridges the flag into
+        # extra; from_dict must honor it there too (mirrors _grn fallback).
+        restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
+        assert restored.typing_indicator is False
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -501,6 +520,42 @@ class TestLoadGatewayConfig:
 
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_bridges_discord_bots_require_inline_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.bots_require_inline_mention should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
+
+    def test_bots_require_inline_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml for inline bot mention gating."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""

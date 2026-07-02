@@ -741,14 +741,26 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.provider_data_collection:
         _prefs["data_collection"] = agent.provider_data_collection
 
-    # Claude max-output override on aggregators
+    # Anthropic-compatible max-output fallback (last resort only — applied in
+    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
+    # an explicit value).  Model-gated, not URL-gated: any chat-completions
+    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
+    # Anthropic Messages API treats it as mandatory and proxies that omit it
+    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
+    # as 4096 output tokens — easily exhausted by thinking + large tool calls
+    # like write_file/patch.  OpenRouter/Nous were the only routes covered
+    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
     _ant_max = None
-    if (_is_or or _is_nous) and "claude" in (agent.model or "").lower():
-        try:
-            from agent.anthropic_adapter import _get_anthropic_max_output
+    try:
+        from agent.anthropic_adapter import (
+            _get_anthropic_max_output,
+            _ANTHROPIC_OUTPUT_LIMITS,
+        )
+        _model_norm = (agent.model or "").lower().replace(".", "-")
+        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
             _ant_max = _get_anthropic_max_output(agent.model)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Qwen session metadata
     _qwen_meta = None
@@ -1112,6 +1124,35 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
+    return (
+        str(fb.get("provider") or "").strip().lower(),
+        str(fb.get("model") or "").strip(),
+        str(fb.get("base_url") or "").strip().rstrip("/"),
+    )
+
+
+def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
+    """Return a skip reason for fallback entries known to be unusable locally."""
+    fb_provider = (fb.get("provider") or "").strip().lower()
+    if fb_provider != "nous":
+        return None
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("nous") or {}
+    except Exception as exc:
+        return f"nous_auth_unreadable:{type(exc).__name__}"
+    access_value = state.get("access_token")
+    refresh_value = state.get("refresh_token")
+    has_access = isinstance(access_value, str) and bool(access_value.strip())
+    has_refresh = isinstance(refresh_value, str) and bool(refresh_value.strip())
+    if not (has_access or has_refresh):
+        return "nous_token_missing"
+    return None
+
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1152,10 +1193,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    fb_key = _fallback_entry_key(fb)
+    unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+    if unavailable is None:
+        unavailable = set()
+        agent._unavailable_fallback_keys = unavailable
+    if fb_key in unavailable:
+        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback()  # skip invalid, try next
+        return agent._try_activate_fallback(reason)  # skip invalid, try next
+
+    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
+    if local_skip_reason:
+        unavailable.add(fb_key)
+        logger.warning(
+            "Fallback skip: %s/%s is not locally usable (%s); suppressing for this session",
+            fb_provider,
+            fb_model,
+            local_skip_reason,
+        )
+        return agent._try_activate_fallback(reason)
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1170,7 +1230,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1181,7 +1241,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1212,7 +1272,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            return agent._try_activate_fallback()  # try next in chain
+            unavailable.add(fb_key)
+            return agent._try_activate_fallback(reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1229,7 +1290,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+        elif (
+            fb_provider == "anthropic"
+            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
+            or base_url_hostname(fb_base_url) == "api.anthropic.com"
+        ):
+            # Custom providers (e.g. cron-anthropic) point at the native
+            # api.anthropic.com host with no "/anthropic" path suffix, so the
+            # name/suffix checks above miss them and they default to
+            # chat_completions → POST /v1/chat/completions → 404. Match the
+            # host the same way determine_api_mode() and _detect_api_mode_for_url()
+            # do on the primary path. (#32243, #49247)
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
@@ -1403,8 +1474,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return True
     except Exception as e:
+        if fb_provider == "nous":
+            unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback()  # try next in chain
+        return agent._try_activate_fallback(reason)  # try next in chain
 
 
 
@@ -1943,6 +2016,49 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
+        # openai-codex aggregator) accept stream=True but still return a
+        # completed response object rather than an iterator of chunks.  Treat
+        # that as "streaming unsupported" for the rest of this session instead
+        # of crashing on ``for chunk in stream`` with ``'types.SimpleNamespace'
+        # object is not iterable`` (#11732, #55933).
+        #
+        # Discriminate on the mere PRESENCE of a ``choices`` attribute, not on
+        # it being a non-empty list: an adapter may hand back a completed
+        # response whose ``choices`` is ``None`` or empty (an error /
+        # content-filter / terminal frame), and every such shape is still a
+        # whole response — not a token stream — that would crash iteration just
+        # the same.  A genuine provider stream (SDK ``Stream`` object,
+        # generator) exposes no ``choices`` attribute, so it is left untouched.
+        if hasattr(stream, "choices"):
+            logger.info(
+                "Streaming request returned a final response object instead of "
+                "an iterator; switching %s/%s to non-streaming for this session.",
+                agent.provider or "unknown",
+                agent.model or "unknown",
+            )
+            agent._disable_streaming = True
+            # An empty/None ``choices`` carries no message to surface; return the
+            # completed object as-is so the outer loop's normal invalid-response
+            # validation (conversation_loop.py) handles it via the retry path,
+            # never ``for chunk in stream``.
+            choices = stream.choices
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            message = getattr(first_choice, "message", None)
+            if message is not None:
+                reasoning_text = (
+                    getattr(message, "reasoning_content", None)
+                    or getattr(message, "reasoning", None)
+                )
+                if isinstance(reasoning_text, str) and reasoning_text:
+                    _fire_first_delta()
+                    agent._fire_reasoning_delta(reasoning_text)
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            return stream
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx

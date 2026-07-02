@@ -7,6 +7,9 @@ export type StatusCapsuleRoute = 'Auto Session' | 'Hermes' | 'MoA'
 export type StatusCapsuleState = 'delegating' | 'error' | 'idle' | 'interrupted' | 'running' | 'session_starting' | 'tooling'
 export type StatusCapsuleTokenSource = 'context_window' | 'provider_usage' | 'unknown'
 export type StatusCapsuleElapsedSource = 'local_wall_clock' | 'unknown'
+export type StatusMechanismKind = 'delegate' | 'moa' | 'mode' | 'provider' | 'runtime' | 'skill' | 'tool'
+export type StatusMechanismScope = 'session' | 'turn'
+export type StatusMechanismPhase = 'active' | 'complete' | 'start'
 
 export interface StatusCapsuleObserved {
   deep: StatusCapsuleObservation
@@ -20,8 +23,22 @@ export interface StatusCapsulePrecisionBlock {
   tokens: StatusCapsulePrecision
 }
 
+export interface StatusMechanismObservation {
+  eventId?: string
+  key: string
+  kind: StatusMechanismKind
+  label: string
+  name: string
+  observedAt?: number
+  phase?: StatusMechanismPhase
+  scope: StatusMechanismScope
+  source: string
+  turnId?: string
+}
+
 export interface StatusCapsule {
   elapsedSource: StatusCapsuleElapsedSource
+  mechanisms: StatusMechanismObservation[]
   observed: StatusCapsuleObserved
   precision: StatusCapsulePrecisionBlock
   route: StatusCapsuleRoute
@@ -79,6 +96,70 @@ const tokenSourceFromUsage = (usage?: Partial<Usage> | null): StatusCapsuleToken
 
 const isAutoSessionStatus = (status: string): boolean => /forging|resuming|recovering|starting agent/i.test(status)
 
+const observedFromMechanisms = (mechanisms: StatusMechanismObservation[], base: StatusCapsuleObserved = { ...UNKNOWN_OBSERVED }): StatusCapsuleObserved => {
+  const observed = { ...base }
+
+  for (const mechanism of mechanisms) {
+    const name = mechanism.name.toLowerCase()
+
+    if (mechanism.kind === 'skill' && name === 'deep') {
+      observed.deep = 'observed'
+    }
+  }
+
+  return observed
+}
+
+const mechanismString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
+const normalizeMechanism = (payload: unknown): StatusMechanismObservation | null => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null
+  }
+
+  const raw = payload as Record<string, unknown>
+  const kind = mechanismString(raw.kind) as StatusMechanismKind
+  const name = mechanismString(raw.name).toLowerCase()
+  const scope = mechanismString(raw.scope) as StatusMechanismScope
+  const source = mechanismString(raw.source)
+  const validKind = ['delegate', 'moa', 'mode', 'provider', 'runtime', 'skill', 'tool'].includes(kind)
+
+  if (!validKind || !name || !source || (scope !== 'session' && scope !== 'turn')) {
+    return null
+  }
+
+  const key = mechanismString(raw.key) || `${kind}:${name}`
+  const label = mechanismString(raw.label) || name
+  const phaseValue = mechanismString(raw.phase) as StatusMechanismPhase
+  const phase = phaseValue === 'active' || phaseValue === 'complete' || phaseValue === 'start' ? phaseValue : undefined
+  const eventId = mechanismString(raw.event_id) || mechanismString(raw.eventId)
+  const turnId = mechanismString(raw.turn_id) || mechanismString(raw.turnId)
+  const observedAtRaw = raw.observed_at ?? raw.observedAt
+  const observedAt = typeof observedAtRaw === 'number' && Number.isFinite(observedAtRaw) ? observedAtRaw : undefined
+
+  return {
+    ...(eventId ? { eventId } : {}),
+    key,
+    kind,
+    label,
+    name,
+    ...(observedAt ? { observedAt } : {}),
+    ...(phase ? { phase } : {}),
+    scope,
+    source,
+    ...(turnId ? { turnId } : {})
+  }
+}
+
+const appendMechanism = (items: StatusMechanismObservation[], item: StatusMechanismObservation): StatusMechanismObservation[] => {
+  const withoutSame = items.filter(existing => !(existing.key === item.key && existing.scope === item.scope))
+  const next = [...withoutSame, item]
+  const sessionItems = next.filter(existing => existing.scope === 'session')
+  const turnItems = next.filter(existing => existing.scope === 'turn').slice(-8)
+
+  return [...sessionItems, ...turnItems]
+}
+
 const routeFrom = (input: BuildStatusCapsuleInput): StatusCapsuleRoute => {
   if (input.autoSession || isAutoSessionStatus(input.status)) {
     return 'Auto Session'
@@ -113,6 +194,7 @@ const stateFrom = (input: BuildStatusCapsuleInput, prior: StatusCapsule): Status
 
 export const initialStatusCapsule = (): StatusCapsule => ({
   elapsedSource: 'unknown',
+  mechanisms: [],
   observed: { ...UNKNOWN_OBSERVED },
   precision: { elapsed: 'unknown', tokens: 'unknown' },
   route: 'Hermes',
@@ -131,14 +213,18 @@ export function buildStatusCapsule(input: BuildStatusCapsuleInput): StatusCapsul
 
   const delegate = (input.usage.active_subagents ?? 0) > 0 ? 'observed' : prior.observed.delegate
   const route = routeFrom(input)
+  const mechanisms = prior.mechanisms ?? []
+
+  const observed = observedFromMechanisms(mechanisms, {
+    ...prior.observed,
+    delegate,
+    moa: route === 'MoA' ? 'observed' : prior.observed.moa
+  })
 
   return {
     elapsedSource: elapsed === 'observed' ? 'local_wall_clock' : 'unknown',
-    observed: {
-      ...prior.observed,
-      delegate,
-      moa: route === 'MoA' ? 'observed' : prior.observed.moa
-    },
+    mechanisms,
+    observed,
     precision: { elapsed, tokens },
     route,
     schemaVersion: 1,
@@ -149,20 +235,27 @@ export function buildStatusCapsule(input: BuildStatusCapsuleInput): StatusCapsul
 }
 
 export function foldStatusCapsuleEvent(previous: StatusCapsule | null | undefined, event: Pick<GatewayEvent, 'payload' | 'type'>): StatusCapsule {
-  const next: StatusCapsule = previous ? { ...previous, observed: { ...previous.observed }, precision: { ...previous.precision }, tools: [...previous.tools] } : initialStatusCapsule()
+  const next: StatusCapsule = previous
+    ? { ...previous, mechanisms: [...(previous.mechanisms ?? [])], observed: { ...previous.observed }, precision: { ...previous.precision }, tools: [...previous.tools] }
+    : initialStatusCapsule()
 
   switch (event.type) {
-    case 'message.start':
+    case 'message.start': {
+      const sessionMechanisms = next.mechanisms.filter(mechanism => mechanism.scope === 'session')
+
       return {
         ...next,
         elapsedSource: 'local_wall_clock',
-        observed: { ...UNKNOWN_OBSERVED },
+        mechanisms: sessionMechanisms,
+        observed: observedFromMechanisms(sessionMechanisms),
         precision: { elapsed: 'observed', tokens: 'unknown' },
         route: 'Hermes',
         state: 'running',
         tokenSource: 'unknown',
         tools: []
       }
+    }
+
     case 'tool.start': {
       const payload = (event.payload ?? {}) as { name?: unknown }
       const name = typeof payload.name === 'string' ? payload.name : 'tool'
@@ -210,6 +303,22 @@ export function foldStatusCapsuleEvent(previous: StatusCapsule | null | undefine
         route: 'MoA',
         state: next.state === 'idle' ? 'running' : next.state
       }
+    case 'mechanism.observed': {
+      const mechanism = normalizeMechanism(event.payload)
+
+      if (!mechanism) {
+        return next
+      }
+
+      const mechanisms = appendMechanism(next.mechanisms, mechanism)
+
+      return {
+        ...next,
+        mechanisms,
+        observed: observedFromMechanisms(mechanisms, next.observed)
+      }
+    }
+
     case 'message.complete': {
       const usage = event.payload && 'usage' in event.payload ? event.payload.usage : undefined
       const status = event.payload && 'status' in event.payload ? String(event.payload.status ?? '') : ''

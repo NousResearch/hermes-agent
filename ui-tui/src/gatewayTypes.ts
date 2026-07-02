@@ -614,6 +614,19 @@ export interface SpawnTreeLoadResponse {
   subagents?: unknown[]
 }
 
+export interface MechanismObservedPayload {
+  event_id?: string
+  key: string
+  kind: 'delegate' | 'moa' | 'mode' | 'provider' | 'runtime' | 'skill' | 'tool'
+  label?: string
+  name: string
+  observed_at?: number
+  phase?: 'active' | 'complete' | 'start'
+  scope: 'session' | 'turn'
+  source: string
+  turn_id?: string
+}
+
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
@@ -659,6 +672,7 @@ export type GatewayEvent =
       session_id?: string
       type: 'reasoning.delta' | 'reasoning.available'
     }
+  | { payload: MechanismObservedPayload; session_id?: string; type: 'mechanism.observed' }
   | {
       payload: { count?: number; index?: number; label?: string; text?: string }
       session_id?: string

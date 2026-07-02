@@ -722,6 +722,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'mechanism.observed':
+        patchMechanismCapsule(ev)
+
+        return
+
       case 'moa.reference':
         patchMechanismCapsule(ev)
         turnController.recordMoaReference(

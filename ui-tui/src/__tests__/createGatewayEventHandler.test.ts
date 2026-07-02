@@ -231,6 +231,47 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('folds typed deep mechanism observations and clears only turn-scoped observations', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchUiState({ mechanismStatusBar: false, sid: 'sess-1' } as any)
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        key: 'skill:deep',
+        kind: 'skill',
+        label: 'deep',
+        name: 'deep',
+        phase: 'start',
+        scope: 'turn',
+        source: 'explicit_skill_invocation'
+      },
+      type: 'mechanism.observed'
+    } as any)
+
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      mechanisms: [expect.objectContaining({ key: 'skill:deep', name: 'deep', scope: 'turn' })],
+      observed: { deep: 'observed' }
+    })
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      mechanisms: [],
+      observed: { deep: 'unknown' }
+    })
+
+    onEvent({
+      payload: { key: 'skill:deep', kind: 'skill', name: 'deep', scope: 'session', source: 'preloaded_skill' },
+      type: 'mechanism.observed'
+    } as any)
+    onEvent({ payload: {}, type: 'message.start' } as any)
+
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      mechanisms: [expect.objectContaining({ key: 'skill:deep', name: 'deep', scope: 'session' })],
+      observed: { deep: 'observed' }
+    })
+  })
+
   it('surfaces self-improvement review summaries as a persistent system line', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

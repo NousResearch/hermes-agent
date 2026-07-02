@@ -113,6 +113,84 @@ describe('StatusCapsule runtime event folding', () => {
     expect(formatStatusCapsule(capsule)).not.toContain('delegate')
   })
 
+  it('folds explicit deep mechanism observations without inferring from plain text', () => {
+    let capsule = initialStatusCapsule()
+
+    capsule = foldStatusCapsuleEvent(capsule, { type: 'message.start' })
+    capsule = foldStatusCapsuleEvent(capsule, {
+      payload: {
+        key: 'skill:deep',
+        kind: 'skill',
+        label: 'deep',
+        name: 'deep',
+        phase: 'start',
+        scope: 'turn',
+        source: 'explicit_skill_invocation'
+      },
+      type: 'mechanism.observed'
+    })
+
+    expect(capsule.observed.deep).toBe('observed')
+    expect(capsule.mechanisms).toEqual([
+      expect.objectContaining({ key: 'skill:deep', kind: 'skill', name: 'deep', scope: 'turn', source: 'explicit_skill_invocation' })
+    ])
+    expect(formatStatusCapsule(capsule)).toContain('deep')
+
+    capsule = foldStatusCapsuleEvent(capsule, {
+      payload: { text: 'deep analysis is mentioned as prose only' },
+      type: 'message.delta'
+    })
+
+    expect(capsule.observed.deep).toBe('observed')
+    expect(capsule.mechanisms).toHaveLength(1)
+  })
+
+  it('clears turn-scoped deep observations on the next message start while preserving session-scoped ones', () => {
+    let capsule = initialStatusCapsule()
+
+    capsule = foldStatusCapsuleEvent(capsule, { type: 'message.start' })
+    capsule = foldStatusCapsuleEvent(capsule, {
+      payload: { key: 'skill:deep', kind: 'skill', name: 'deep', scope: 'turn', source: 'slash_command' },
+      type: 'mechanism.observed'
+    })
+    capsule = foldStatusCapsuleEvent(capsule, { type: 'message.start' })
+
+    expect(capsule.observed.deep).toBe('unknown')
+    expect(capsule.mechanisms).toEqual([])
+
+    capsule = foldStatusCapsuleEvent(capsule, {
+      payload: { key: 'skill:deep', kind: 'skill', name: 'deep', scope: 'session', source: 'preloaded_skill' },
+      type: 'mechanism.observed'
+    })
+    capsule = foldStatusCapsuleEvent(capsule, { type: 'message.start' })
+
+    expect(capsule.observed.deep).toBe('observed')
+    expect(capsule.mechanisms).toEqual([
+      expect.objectContaining({ key: 'skill:deep', name: 'deep', scope: 'session', source: 'preloaded_skill' })
+    ])
+  })
+
+  it('does not evict session-scoped deep when a long turn records many observations', () => {
+    let capsule = initialStatusCapsule()
+
+    capsule = foldStatusCapsuleEvent(capsule, {
+      payload: { key: 'skill:deep', kind: 'skill', name: 'deep', scope: 'session', source: 'preloaded_skill' },
+      type: 'mechanism.observed'
+    })
+
+    for (let i = 0; i < 12; i += 1) {
+      capsule = foldStatusCapsuleEvent(capsule, {
+        payload: { key: `runtime:${i}`, kind: 'runtime', name: `probe-${i}`, scope: 'turn', source: 'runtime_event' },
+        type: 'mechanism.observed'
+      })
+    }
+
+    expect(capsule.mechanisms).toContainEqual(expect.objectContaining({ key: 'skill:deep', scope: 'session' }))
+    capsule = foldStatusCapsuleEvent(capsule, { type: 'message.start' })
+    expect(capsule.observed.deep).toBe('observed')
+    expect(capsule.mechanisms).toEqual([expect.objectContaining({ key: 'skill:deep', scope: 'session' })])
+  })
+
   it('preserves folded live states when the render path rebuilds from usage and timing', () => {
     let capsule = initialStatusCapsule()
 

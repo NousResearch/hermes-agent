@@ -243,6 +243,151 @@ class TestCreateJobSnapshot:
         assert job["model_snapshot"] is None
 
 
+class TestUpdateJobRecomputesSnapshots:
+    """`update_job` must rewrite provider/model snapshots whenever the caller
+    explicitly passes any inference-routing field, even when the new value
+    equals the old. Re-applying the same pin is a common UI pattern (form
+    auto-loads current values, user saves without changing) and must not
+    leave stale snapshots in place.
+    """
+
+    @staticmethod
+    def _isolate_storage(monkeypatch):
+        import contextlib
+        import cron.jobs as jobs
+
+        @contextlib.contextmanager
+        def _noop_lock():
+            yield
+
+        monkeypatch.setattr(jobs, "_jobs_lock", _noop_lock, raising=True)
+
+        store = []
+
+        def _load():
+            return list(store)
+
+        def _save(jobs_list):
+            store.clear()
+            store.extend(jobs_list)
+
+        monkeypatch.setattr(jobs, "load_jobs", _load, raising=True)
+        monkeypatch.setattr(jobs, "save_jobs", _save, raising=True)
+        return jobs, store
+
+    def test_update_explicit_pin_clears_snapshot(self, monkeypatch, tmp_path):
+        """A pinned job's snapshot must be None; re-applying the same pin must
+        still rewrite the (previously stale) snapshot to None."""
+        jobs, store = self._isolate_storage(monkeypatch)
+        (tmp_path / "config.yaml").write_text("model:\n  default: old-global\n")
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+
+        # Job created when it was still following global defaults.
+        store.append(
+            {
+                "id": "upd-1",
+                "name": "stale pin",
+                "prompt": "x",
+                "provider": "openrouter",
+                "model": "old-model",
+                "provider_snapshot": "openrouter",
+                "model_snapshot": "old-global",
+                "base_url": None,
+                "no_agent": False,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 1 hour"},
+                "enabled": True,
+                "state": "scheduled",
+            }
+        )
+
+        # Re-apply the same explicit pin values. Without the fix this leaves
+        # the stale snapshots in place; with the fix, the re-applied explicit
+        # pin (provider != None, model != None) must clear both snapshots
+        # because pinned axes have no snapshot.
+        result = jobs.update_job(
+            "upd-1",
+            {"provider": "openrouter", "model": "old-model"},
+        )
+
+        assert result["provider"] == "openrouter"
+        assert result["model"] == "old-model"
+        assert result["provider_snapshot"] is None
+        assert result["model_snapshot"] is None
+
+    def test_update_unpin_captures_fresh_snapshot(self, monkeypatch, tmp_path):
+        """Clearing a pinned field must capture the current global default
+        into the snapshot, even if the surrounding pinned fields are unchanged.
+        """
+        jobs, store = self._isolate_storage(monkeypatch)
+        (tmp_path / "config.yaml").write_text("model:\n  default: fresh-global\n")
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+
+        store.append(
+            {
+                "id": "upd-2",
+                "name": "pinning provider only",
+                "prompt": "x",
+                "provider": "openrouter",
+                "model": None,
+                "provider_snapshot": None,
+                "model_snapshot": None,
+                "base_url": None,
+                "no_agent": False,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 1 hour"},
+                "enabled": True,
+                "state": "scheduled",
+            }
+        )
+
+        # Caller un-pins the provider by passing None. model stays None too,
+        # so both are unpinned and the call must capture the fresh global
+        # values into snapshots.
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            result = jobs.update_job(
+                "upd-2",
+                {"provider": None},
+            )
+
+        # provider remains effectively unpinned (None), snapshot is the
+        # currently-resolved provider, and model_snapshot matches config.yaml.
+        assert result["provider"] is None
+        assert result["provider_snapshot"] == "openrouter"
+        assert result["model_snapshot"] == "fresh-global"
+
+    def test_update_without_inference_fields_leaves_snapshots(self, monkeypatch, tmp_path):
+        """When the caller doesn't touch provider/model/base_url/no_agent at
+        all, snapshots must be untouched (no churn, no surprise behavior)."""
+        jobs, store = self._isolate_storage(monkeypatch)
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+
+        store.append(
+            {
+                "id": "upd-3",
+                "name": "no-op update",
+                "prompt": "x",
+                "provider": "openrouter",
+                "model": None,
+                "provider_snapshot": "openrouter",
+                "model_snapshot": "old-global",
+                "base_url": None,
+                "no_agent": False,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 1 hour"},
+                "enabled": True,
+                "state": "scheduled",
+            }
+        )
+
+        result = jobs.update_job("upd-3", {"name": "renamed"})
+
+        assert result["name"] == "renamed"
+        # snapshots untouched because the caller didn't ask about inference.
+        assert result["provider_snapshot"] == "openrouter"
+        assert result["model_snapshot"] == "old-global"
+
+
 def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path):
     """Drive run_job with resolved provider pinned and config.yaml model.default
     set to ``current_model`` (the unpinned-model fire-time source)."""

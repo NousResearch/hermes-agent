@@ -1115,9 +1115,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
+            # Recompute provider/model snapshots whenever the caller explicitly
+            # passes any inference-routing field. We intentionally do NOT gate
+            # this on a "axes actually changed" comparison: re-applying the
+            # same pin values must still rewrite the stored snapshots so they
+            # match what is now persisted (e.g. moving from an unpinned job
+            # whose creation-time snapshot captured an old global default, to
+            # an explicitly pinned job whose snapshot must be None).
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
-            ) and _normalized_inference_axes(updated) != previous_inference_axes
+            )
 
             if "skills" in updates or "skill" in updates:
                 normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))

@@ -214,7 +214,15 @@ class A2AAdapter(BasePlatformAdapter):
         """
         text = protocol.extract_text(params)
         peer = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "remote-agent")
-        context_id = (params.get("message", {}) or {}).get("contextId") or protocol.new_context_id()
+        # A2A spec: contextId lives at top level of params. The original code
+        # only looked inside params.message (non-standard placement) so
+        # every turn got a fresh contextId, breaking multi-turn memory.
+        # Falls back to params.message.contextId for legacy callers.
+        context_id = (
+            params.get("contextId")                                   # A2A spec: top-level
+            or (params.get("message", {}) or {}).get("contextId")    # legacy/non-standard
+            or protocol.new_context_id()
+        )
         task_id = protocol.new_task_id()
 
         if not text:

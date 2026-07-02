@@ -427,3 +427,125 @@ class TestInboundRoundTrip:
             await adapter.disconnect()
 
         asyncio.run(run())
+
+class TestContextIdExtraction:
+    """Tests for PR #53756: A2A spec puts contextId at top level of params.
+
+    These tests exercise the actual production code path in
+    A2AAdapter._handle_inbound_task by patching its external dependencies
+    (persist_message, security, build_source, etc.) and capturing the
+    context_id that flows through to persistence. The fix lives at the
+    context_id assignment; the test verifies the value reaches persist_message
+    with the caller's contextId (not a freshly-generated one).
+    """
+
+    def test_top_level_context_id_reaches_persistence(self, monkeypatch):
+        """Top-level params.contextId should be used as the persistence key."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from unittest.mock import MagicMock, patch
+
+        captured = {}
+
+        def fake_persist(context_id, role, text, task_id):
+            captured.setdefault("calls", []).append({
+                "context_id": context_id, "role": role, "text": text, "task_id": task_id
+            })
+
+        # Build adapter with mocked gateway deps so _handle_inbound_task reaches
+        # the persist_message call without needing a real HTTP server / agent.
+        with patch.object(adapter_mod.protocol, "persist_message", side_effect=fake_persist), \
+             patch.object(adapter_mod.protocol, "new_context_id", return_value="FRESH-CTX-SHOULD-NOT-APPEAR"), \
+             patch.object(adapter_mod.protocol, "new_task_id", return_value="task-test-1"), \
+             patch.object(adapter_mod.security, "wrap_inbound", side_effect=lambda peer, text: text), \
+             patch.object(adapter_mod.security, "audit"), \
+             patch.object(adapter_mod.security, "redact_outbound", side_effect=lambda s: s), \
+             patch.object(adapter_mod.protocol, "build_task",
+                          side_effect=lambda tid, ctx, state, *a, **kw: {"task_id": tid, "context_id": ctx, "state": state}):
+
+            adapter = adapter_mod.A2AAdapter.__new__(adapter_mod.A2AAdapter)
+            adapter._loop = None  # empty-text path early-exits; we want to verify contextId
+            adapter._message_handler = None
+            adapter._pending_replies = {}
+            adapter._pending_lock = __import__("threading").Lock()
+
+            params = {
+                "contextId": "ctx-from-caller-T1",
+                "message": protocol.text_message("user", "hello"),
+            }
+            result = adapter._handle_inbound_task(params)
+
+        # Two persist_message calls (user + agent, but agent may not happen if no loop)
+        # At minimum, the USER call should have the caller's contextId.
+        user_calls = [c for c in captured["calls"] if c["role"] == "user"]
+        assert len(user_calls) == 1
+        assert user_calls[0]["context_id"] == "ctx-from-caller-T1", (
+            f"Top-level contextId not propagated to persistence. "
+            f"Got: {user_calls[0]['context_id']!r}. "
+            f"Expected: 'ctx-from-caller-T1'. "
+            f"This means the fix in _handle_inbound_task is missing."
+        )
+
+    def test_legacy_message_context_id_still_works(self, monkeypatch):
+        """Legacy callers putting contextId inside params.message should still work."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from unittest.mock import patch
+
+        captured = {}
+
+        def fake_persist(context_id, role, text, task_id):
+            captured.setdefault("calls", []).append({"context_id": context_id, "role": role})
+
+        with patch.object(adapter_mod.protocol, "persist_message", side_effect=fake_persist), \
+             patch.object(adapter_mod.protocol, "new_context_id", return_value="FRESH"), \
+             patch.object(adapter_mod.protocol, "new_task_id", return_value="task-test-2"), \
+             patch.object(adapter_mod.security, "wrap_inbound", side_effect=lambda peer, text: text), \
+             patch.object(adapter_mod.security, "audit"), \
+             patch.object(adapter_mod.security, "redact_outbound", side_effect=lambda s: s), \
+             patch.object(adapter_mod.protocol, "build_task",
+                          side_effect=lambda tid, ctx, state, *a, **kw: {"task_id": tid, "context_id": ctx, "state": state}):
+
+            adapter = adapter_mod.A2AAdapter.__new__(adapter_mod.A2AAdapter)
+            adapter._loop = None
+            adapter._message_handler = None
+            adapter._pending_replies = {}
+            adapter._pending_lock = __import__("threading").Lock()
+
+            legacy_msg = protocol.text_message("user", "hello")
+            legacy_msg["contextId"] = "ctx-legacy"
+
+            params = {"message": legacy_msg}
+            adapter._handle_inbound_task(params)
+
+        user_calls = [c for c in captured["calls"] if c["role"] == "user"]
+        assert user_calls[0]["context_id"] == "ctx-legacy"
+
+    def test_no_context_id_generates_fresh(self, monkeypatch):
+        """When no contextId is provided, a fresh one should be generated."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from unittest.mock import patch
+
+        captured = {}
+
+        def fake_persist(context_id, role, text, task_id):
+            captured.setdefault("calls", []).append({"context_id": context_id, "role": role})
+
+        with patch.object(adapter_mod.protocol, "persist_message", side_effect=fake_persist), \
+             patch.object(adapter_mod.protocol, "new_context_id", return_value="FRESH-CTX-12345"), \
+             patch.object(adapter_mod.protocol, "new_task_id", return_value="task-test-3"), \
+             patch.object(adapter_mod.security, "wrap_inbound", side_effect=lambda peer, text: text), \
+             patch.object(adapter_mod.security, "audit"), \
+             patch.object(adapter_mod.security, "redact_outbound", side_effect=lambda s: s), \
+             patch.object(adapter_mod.protocol, "build_task",
+                          side_effect=lambda tid, ctx, state, *a, **kw: {"task_id": tid, "context_id": ctx, "state": state}):
+
+            adapter = adapter_mod.A2AAdapter.__new__(adapter_mod.A2AAdapter)
+            adapter._loop = None
+            adapter._message_handler = None
+            adapter._pending_replies = {}
+            adapter._pending_lock = __import__("threading").Lock()
+
+            params = {"message": protocol.text_message("user", "hello")}
+            adapter._handle_inbound_task(params)
+
+        user_calls = [c for c in captured["calls"] if c["role"] == "user"]
+        assert user_calls[0]["context_id"] == "FRESH-CTX-12345"

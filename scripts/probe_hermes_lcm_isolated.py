@@ -127,6 +127,10 @@ def _new_engine(LCMEngine, LCMConfig, profile_dir: Path, name: str, *, leaf_chun
         fresh_tail_count=4,
         leaf_chunk_tokens=leaf_chunk_tokens,
         database_path=str(db_dir / f"{name}.db"),
+        # This probe pins a tiny fixed tail to force compaction on a toy
+        # corpus; the token-budgeted tail would (correctly) widen past the
+        # whole fixture, so pin the legacy fixed-count regime.
+        fresh_tail_token_budget_enabled=False,
     )
     engine = LCMEngine(config=cfg, hermes_home=str(profile_dir))
     engine.context_length = 200_000

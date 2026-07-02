@@ -160,6 +160,64 @@ def _hermes_compression_float(key: str, default: float) -> float:
         return default
 
 
+def _hermes_lcm_value(key: str):
+    """Read ``lcm.<key>`` from ~/.hermes/config.yaml; None on absence/failure."""
+    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    cfg_path = home / "config.yaml"
+    try:
+        if yaml is None:
+            return None
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        return (cfg.get("lcm") or {}).get(key)
+    except Exception:
+        return None
+
+
+def _hermes_lcm_int(key: str, default: int) -> int:
+    """Read ``lcm.<key>`` as a non-negative int; ``default`` on any failure."""
+    val = _hermes_lcm_value(key)
+    if val is None:
+        return default
+    try:
+        parsed = int(val)
+        return parsed if parsed >= 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _lcm_config_bool(env_key: str, cfg_key: str, default: bool) -> bool:
+    """Resolve a boolean knob: env override → lcm.<cfg_key> config → default.
+
+    Fail-safe: only explicit falsy values ("0", "false", "no", "off") disable;
+    unrecognized/garbage values keep the default (same doctrine as
+    LCM_IDENTIFIER_FIDELITY — never silently drop a production behavior on a
+    typo).
+    """
+    falsy = {"0", "false", "no", "off"}
+    truthy = {"1", "true", "yes", "on"}
+
+    raw_env = os.environ.get(env_key)
+    if raw_env is not None:
+        lowered = raw_env.strip().lower()
+        if lowered in falsy:
+            return False
+        if lowered in truthy:
+            return True
+        return default
+
+    val = _hermes_lcm_value(cfg_key)
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    lowered = str(val).strip().lower()
+    if lowered in falsy:
+        return False
+    if lowered in truthy:
+        return True
+    return default
+
+
 def _hermes_auxiliary_compression_timeout_ms(default: int) -> int:
     """Read Hermes auxiliary.compression.timeout when no LCM override is present.
 
@@ -229,6 +287,23 @@ class LCMConfig:
 
     # -- Fresh tail: recent messages never compacted ---
     fresh_tail_count: int = 32
+    # Token-budgeted fresh tail (compression.target_ratio support).
+    # When enabled and a context window is known, the fresh tail is sized
+    # dynamically: keep the most recent messages whose estimated tokens fit
+    # ``target_ratio × threshold_tokens`` (floored at ``fresh_tail_count``
+    # messages, capped at ``fresh_tail_max_tokens``). Disabled or degenerate
+    # inputs reproduce the legacy fixed-count tail exactly.
+    fresh_tail_token_budget_enabled: bool = True
+    # 0 = derive from target_ratio × threshold_tokens; >0 = explicit budget.
+    fresh_tail_token_budget: int = 0
+    # Hard cap on the derived/explicit budget (guards 1M-window models).
+    fresh_tail_max_tokens: int = 60_000
+    # Fleet-standard kept-tail ratio, sourced from compression.target_ratio
+    # (config.yaml) exactly like skew_floor — the LCM engine is a process-global
+    # singleton, so this is read ONCE at construction (Greptile #111 discipline).
+    # NOTE: the fleet key is compression.target_ratio; an ``lcm.target_ratio``
+    # key is intentionally NOT read.
+    target_ratio: float = 0.20
 
     # -- Compaction thresholds ---
     # Max source tokens in a leaf chunk before summarization triggers
@@ -383,6 +458,27 @@ class LCMConfig:
         _str = lambda key, default: os.environ.get(key, default)
 
         c.fresh_tail_count = _int("LCM_FRESH_TAIL_COUNT", c.fresh_tail_count)
+        c.fresh_tail_token_budget_enabled = _lcm_config_bool(
+            "LCM_FRESH_TAIL_TOKEN_BUDGET_ENABLED",
+            "fresh_tail_token_budget_enabled",
+            c.fresh_tail_token_budget_enabled,
+        )
+        c.fresh_tail_token_budget = _int(
+            "LCM_FRESH_TAIL_TOKEN_BUDGET",
+            _hermes_lcm_int("fresh_tail_token_budget", c.fresh_tail_token_budget),
+        )
+        c.fresh_tail_max_tokens = _int(
+            "LCM_FRESH_TAIL_MAX_TOKENS",
+            _hermes_lcm_int("fresh_tail_max_tokens", c.fresh_tail_max_tokens),
+        )
+        c.target_ratio = _float(
+            "LCM_TARGET_RATIO",
+            _hermes_compression_float("target_ratio", c.target_ratio),
+        )
+        # Same (0, 1] range guard as the config-file path — an out-of-range
+        # env override must not defeat the clamp (Greptile PR review).
+        if not (0.0 < c.target_ratio <= 1.0):
+            c.target_ratio = 0.20
         c.leaf_chunk_tokens = _int("LCM_LEAF_CHUNK_TOKENS", c.leaf_chunk_tokens)
         c.context_threshold = _float(
             "LCM_CONTEXT_THRESHOLD",

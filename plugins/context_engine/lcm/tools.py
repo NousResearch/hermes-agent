@@ -1640,6 +1640,11 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
         },
         "config": {
             "fresh_tail_count": engine._config.fresh_tail_count,
+            "fresh_tail_token_budget_enabled": engine._config.fresh_tail_token_budget_enabled,
+            "fresh_tail_token_budget": getattr(engine, "_fresh_tail_token_budget", 0),
+            "fresh_tail_max_tokens": engine._config.fresh_tail_max_tokens,
+            "target_ratio": engine._config.target_ratio,
+            "last_fresh_tail_count": getattr(engine, "_last_fresh_tail_count", 0),
             "leaf_chunk_tokens": engine._config.leaf_chunk_tokens,
             "dynamic_leaf_chunk_enabled": engine._config.dynamic_leaf_chunk_enabled,
             "dynamic_leaf_chunk_max": engine._config.dynamic_leaf_chunk_max,

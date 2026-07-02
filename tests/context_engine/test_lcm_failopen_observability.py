@@ -14,6 +14,9 @@ def _engine(tmp_path, *, context_length=100_000):
         fresh_tail_count=1,
         leaf_chunk_tokens=1,
         context_threshold=0.01,
+        # Legacy fixed-count tail: this test forces compaction on a tiny
+        # corpus; the token-budgeted tail would widen past the fixture.
+        fresh_tail_token_budget_enabled=False,
     )
     engine = LCMEngine(config=config, hermes_home=str(tmp_path))
     engine.update_model("unit-test-model", context_length, provider="unit-test")

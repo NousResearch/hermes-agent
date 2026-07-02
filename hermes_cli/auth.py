@@ -1578,30 +1578,15 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         return ""
 
 
-def resolve_provider(
-    requested: Optional[str] = None,
-    *,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-) -> str:
-    """
-    Determine which inference provider to use.
+def build_provider_alias_map() -> dict[str, str]:
+    """Build the canonical provider alias map.
 
-    Priority (when requested="auto" or None) — explicit user intent wins over a
-    stale logged-in OAuth provider (#29285):
-    1. Explicit CLI api_key/base_url -> "openrouter"
-    2. config.yaml `model.provider`
-    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
-    4. OpenRouter credential pool
-    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
-    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
-    7. AWS Bedrock credential chain
-    8. Error (no provider configured)
+    Shared between ``resolve_provider()`` and ``auth_commands._normalize_provider()``
+    so that CLI sub-commands accept the same aliases as model/provider selection.
+    Plugin providers extend the map via their existing ``aliases`` field.
     """
-    normalized = (requested or "auto").strip().lower()
-
-    # Normalize provider aliases
-    _PROVIDER_ALIASES = {
+    aliases: dict[str, str] = {
+        "or": "openrouter", "open-router": "openrouter",
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
@@ -1621,7 +1606,7 @@ def resolve_provider(
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+        "qwen": "qwen-oauth", "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
@@ -1642,11 +1627,44 @@ def resolve_provider(
         from providers import list_providers as _lp
         for _pp in _lp():
             for _alias in _pp.aliases:
-                if _alias not in _PROVIDER_ALIASES:
-                    _PROVIDER_ALIASES[_alias] = _pp.name
+                if _alias not in aliases:
+                    aliases[_alias] = _pp.name
     except Exception:
         pass
-    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+    return aliases
+
+
+def normalize_provider_alias(name: str) -> str:
+    """Resolve a provider alias to its canonical provider name.
+
+    Returns the canonical name if the alias is recognized, otherwise returns
+    *name* unchanged.  This is the single source of truth shared between
+    ``resolve_provider()`` and ``auth_commands._normalize_provider()``.
+    """
+    return build_provider_alias_map().get(name.strip().lower(), name.strip().lower())
+
+
+def resolve_provider(
+    requested: Optional[str] = None,
+    *,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> str:
+    """
+    Determine which inference provider to use.
+
+    Priority (when requested="auto" or None) — explicit user intent wins over a
+    stale logged-in OAuth provider (#29285):
+    1. Explicit CLI api_key/base_url -> "openrouter"
+    2. config.yaml `model.provider`
+    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
+    4. OpenRouter credential pool
+    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
+    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
+    7. AWS Bedrock credential chain
+    8. Error (no provider configured)
+    """
+    normalized = normalize_provider_alias(requested or "auto")
 
     if normalized == "openrouter":
         return "openrouter"

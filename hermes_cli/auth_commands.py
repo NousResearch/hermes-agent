@@ -28,7 +28,7 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import PROVIDER_REGISTRY, normalize_provider_alias
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -76,10 +76,9 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    if normalized in {"or", "open-router"}:
-        return "openrouter"
-    if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
-        return "xai-oauth"
+    # Use the canonical alias map from auth.py so that CLI sub-commands
+    # accept the same aliases as model/provider selection (#57309).
+    normalized = normalize_provider_alias(normalized)
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

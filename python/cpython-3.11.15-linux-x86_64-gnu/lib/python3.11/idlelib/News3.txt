@@ -1,0 +1,1360 @@
+What's New in IDLE 3.11.z
+(since 3.11.0)
+Released after 2022-10-24
+=========================
+
+
+gh-96905: In idlelib code, stop redefining built-ins 'dict' and 'object'.
+
+gh-72284: Improve the lists of features, editor key bindings,
+and shell key bingings in the IDLE doc.
+
+gh-113903: Fix rare failure of test.test_idle, in test_configdialog.
+
+gh-113729: Fix the "Help -> IDLE Doc" menu bug in 3.11.7 and 3.12.1.
+
+gh-57795: Enter selected text into the Find box when opening
+a Replace dialog.  Patch by  Roger Serwy and Zackery Spytz.
+
+gh-113269: Fix test_editor hang on macOS Catalina.
+Patch by Terry Reedy.
+
+gh-112939: Fix processing unsaved files when quitting IDLE on macOS.
+Patch by Ronald Oussoren and Christopher Chavez.
+
+gh-79871: Add docstrings to debugger.py.  Fix two bugs in test_debugger and expand coverage by 47%.  Patch by Anthony Shaw.
+
+gh-104719: Remove IDLE's modification of tokenize.tabsize and test
+other uses of tokenize data and methods.
+
+gh-104499: Fix completions for Tk Aqua 8.7 (currently blank).
+
+gh-104486: Make About print both tcl and tk versions if different,
+as is expected someday.
+
+gh-88496 Fix IDLE test hang on macOS.
+
+gh-103314 Support sys.last_exc after exceptions in Shell.
+Patch by Irit Katriel.
+
+
+What's New in IDLE 3.11.0
+(since 3.10.0)
+Released on 2022-10-24
+=========================
+
+gh-97527: Fix a bug in the previous bugfix that caused IDLE to not
+start when run with 3.10.8, 3.12.0a1, and at least Microsoft Python
+3.10.2288.0 installed without the Lib/test package.  3.11.0 was never
+affected.
+
+gh-65802: Document handling of extensions in Save As dialogs.
+
+gh-95191: Include prompts when saving Shell (interactive input/output).
+
+gh-95511: Fix the Shell context menu copy-with-prompts bug of copying
+an extra line when one selects whole lines.
+
+gh-95471: Tweak Edit menu. Move 'Select All' above 'Cut' as it is used
+with 'Cut' and 'Copy' but not 'Paste'.  Add a separator between 'Replace'
+and 'Go to Line' to help IDLE issue triagers.
+
+gh-95411: Enable using IDLE's module browser with .pyw files.
+
+gh-89610: Add .pyi as a recognized extension for IDLE on macOS.  This allows
+opening stub files by double clicking on them in the Finder.
+
+bpo-28950: Apply IDLE syntax highlighting to `.pyi` files.  Add util.py
+for common components.  Patch by Alex Waygood and Terry Jan Reedy.
+
+bpo-46630: Make query dialogs on Windows start with a cursor in the
+entry box.
+
+bpo-46591: Make the IDLE doc URL on the About IDLE dialog clickable.
+
+bpo-45296: Clarify close, quit, and exit in IDLE.  In the File menu,
+'Close' and 'Exit' are now 'Close Window' (the current one) and 'Exit'
+is now 'Exit IDLE' (by closing all windows).  In Shell, 'quit()' and
+'exit()' mean 'close Shell'.  If there are no other windows,
+this also exits IDLE.
+
+bpo-45495: Add context keywords 'case' and 'match' to completions list.
+
+bpo-45296: On Windows, change exit/quit message to suggest Ctrl-D, which
+works, instead of <Ctrl-Z Return>, which does not work in IDLE.
+
+
+What's New in IDLE 3.10.0
+(since 3.9.0)
+Released on 2021-10-04
+=========================
+
+bpo-45193: Make completion boxes appear on Ubuntu again.
+
+bpo-40128: Mostly fix completions on macOS when not using tcl/tk 8.6.11
+(as with 3.9).
+
+bpo-33962: Move the indent space setting from the Font tab to the new Windows
+tab. Patch by Mark Roseman and Terry Jan Reedy.
+
+bpo-40468: Split the settings dialog General tab into Windows and Shell/Ed
+tabs. Move help sources, which extend the Help menu, to the Extensions tab.
+Make space for new options and shorten the dialog. The latter makes the
+dialog better fit small screens.
+
+bpo-44010: Highlight the new match statement's soft keywords: match, case,
+and _. This highlighting is not perfect and will be incorrect in some rare
+cases, especially for some _s in case patterns.
+
+bpo-44026: Include interpreter's typo fix suggestions in message line
+for NameErrors and AttributeErrors.  Patch by E. Paine.
+
+bpo-41611: Avoid occasional uncaught exceptions and freezing when using
+completions on macOS.
+
+bpo-37903: Add mouse actions to the shell sidebar.  Left click and
+optional drag selects one or more lines of text, as with the
+editor line number sidebar.  Right click after selecting text lines
+displays a context menu with 'copy with prompts'.  This zips together
+prompts from the sidebar with lines from the selected text.  This option
+also appears on the context menu for the text.
+
+bpo-43981: Fix reference leaks in test_sidebar and test_squeezer.
+Patches by Terry Jan Reedy and Pablo Galindo
+
+bpo-37892: Change Shell input indents from tabs to spaces.  Shell input
+now 'looks right'.  Making this feasible motivated the shell sidebar.
+
+bpo-37903: Move the Shell input prompt to a side bar.
+
+bpo-43655: Make window managers on macOS and X Window recognize
+IDLE dialog windows as dialogs.
+
+bpo-42225: Document that IDLE can fail on Unix either from misconfigured IP
+masquerade rules or failure displaying complex colored (non-ascii) characters.
+
+bpo-43283: Document why printing to IDLE's Shell is often slower than
+printing to a system terminal and that it can be made faster by
+pre-formatting a single string before printing.
+
+bpo-23544: Disable Debug=>Stack Viewer when user code is running or
+Debugger is active, to prevent hang or crash.  Patch by Zackery Spytz.
+
+bpo-43008: Make IDLE invoke :func:`sys.excepthook` in normal,
+2-process mode.  User hooks were previously ignored.
+Patch by Ken Hilton.
+
+bpo-33065: Fix problem debugging user classes with __repr__ method.
+
+bpo-32631: Finish zzdummy example extension module: make menu entries
+work; add docstrings and tests with 100% coverage.
+
+bpo-42508: Keep IDLE running on macOS.  Remove obsolete workaround
+that prevented running files with shortcuts when using new universal2
+installers built on macOS 11.
+
+bpo-42426: Fix reporting offset of the RE error in searchengine.
+
+bpo-42416: Display docstrings in IDLE calltips in more cases,
+by using inspect.getdoc.
+
+bpo-33987: Mostly finish using ttk widgets, mainly for editor,
+settings, and searches.  Some patches by Mark Roseman.
+
+bpo-40511: Stop unnecessary "flashing" when typing opening and closing
+parentheses inside the parentheses of a function call.
+
+bpo-38439: Add a 256x256 pixel IDLE icon to the Windows .ico file. Created by
+Andrew Clover. Remove the low-color gif variations from the .ico file.
+
+bpo-41775: Make 'IDLE Shell' the shell title.
+
+bpo-35764: Rewrite the Calltips doc section.
+
+bpo-40181: In calltips, stop reminding that '/' marks the end of
+positional-only arguments.
+
+
+What's New in IDLE 3.9.0 (since 3.8.0)
+Released on 2020-10-05?
+======================================
+
+bpo-41468: Improve IDLE run crash error message (which users should
+never see).
+
+bpo-41373: Save files loaded with no line ending, as when blank, or
+different line endings, by setting its line ending to the system
+default. Fix regression in 3.8.4 and 3.9.0b4.
+
+bpo-41300: Save files with non-ascii chars.  Fix regression in
+3.9.0b4 and 3.8.4.
+
+bpo-37765: Add keywords to module name completion list.  Rewrite
+Completions section of IDLE doc.
+
+bpo-41152: The encoding of ``stdin``, ``stdout`` and ``stderr`` in IDLE
+is now always UTF-8.
+
+bpo-41144: Make Open Module open a special module such as os.path.
+
+bpo-40723: Make test_idle pass when run after import.
+Patch by Florian Dahlitz.
+
+bpo-38689: IDLE will no longer freeze when inspect.signature fails
+when fetching a calltip.
+
+bpo-27115: For 'Go to Line', use a Query entry box subclass with
+IDLE standard behavior and improved error checking.
+
+bpo-39885: When a context menu is invoked by right-clicking outside
+of a selection, clear the selection and move the cursor.  Cut and
+Copy require that the click be within the selection.
+
+bpo-39852: Edit "Go to line" now clears any selection, preventing
+accidental deletion.  It also updates Ln and Col on the status bar.
+
+bpo-39781: Selecting code context lines no longer causes a jump.
+
+bpo-39663: Add tests for pyparse find_good_parse_start().
+
+bpo-39600: Remove duplicate font names from configuration list.
+
+bpo-38792: Close a shell calltip if a :exc:`KeyboardInterrupt`
+or shell restart occurs.  Patch by Zackery Spytz.
+
+bpo-30780: Add remaining configdialog tests for buttons and
+highlights and keys tabs.
+
+bpo-39388: Settings dialog Cancel button cancels pending changes.
+
+bpo-39050: Settings dialog Help button again displays help text.
+
+bpo-32989: Add tests for editor newline_and_indent_event method.
+Remove unneeded arguments and dead code from pyparse
+find_good_parse_start method.
+
+bpo-38943: Fix autocomplete windows not always appearing on some
+systems.  Patch by Johnny Najera.
+
+bpo-38944: Escape key now closes IDLE completion windows.  Patch by
+Johnny Najera.
+
+bpo-38862: 'Strip Trailing Whitespace' on the Format menu removes extra
+newlines at the end of non-shell files.
+
+bpo-38636: Fix IDLE Format menu tab toggle and file indent width. These
+functions (default shortcuts Alt-T and Alt-U) were mistakenly disabled
+in 3.7.5 and 3.8.0.
+
+bpo-4630: Add an option to toggle IDLE's cursor blink for shell,
+editor, and output windows.  See Settings, General, Window Preferences,
+Cursor Blink.  Patch by Zackery Spytz.
+
+bpo-26353: Stop adding newline when saving an IDLE shell window.
+
+bpo-38598: Do not try to compile IDLE shell or output windows.
+
+
+What's New in IDLE 3.8.0 (since 3.7.0)
+Released on 2019-10-14
+======================================
+
+bpo-36698: IDLE no longer fails when writing non-encodable characters
+to stderr.  It now escapes them with a backslash, like the regular
+Python interpreter.  Add an errors field to the standard streams.
+
+bpo-13153: Improve tkinter's handing of non-BMP (astral) unicode
+characters, such as 'rocket \U0001f680'.  Whether a proper glyph or
+replacement char is displayed depends on the OS and font.  For IDLE,
+astral chars in code interfere with editing.
+
+bpo-35379: When exiting IDLE, catch any AttributeError.  One happens
+when EditorWindow.close is called twice.  Printing a traceback, when
+IDLE is run from a terminal, is useless and annoying.
+
+bpo-38183: To avoid test issues, test_idle ignores the user config
+directory.  It no longer tries to create or access .idlerc or any files
+within.  Users must run IDLE to discover problems with saving settings.
+
+bpo-38077: IDLE no longer adds 'argv' to the user namespace when
+initializing it.  This bug only affected 3.7.4 and 3.8.0b2 to 3.8.0b4.
+
+bpo-38401: Shell restart lines now fill the window width, always start
+with '=', and avoid wrapping unnecessarily. The line will still wrap
+if the included file name is long relative to the width.
+
+bpo-37092: Add mousewheel scrolling for IDLE module, path, and stack
+browsers.  Patch by George Zhang.
+
+bpo-35771: To avoid occasional spurious test_idle failures on slower
+machines, increase the ``hover_delay`` in test_tooltip.
+
+bpo-37824: Properly handle user input warnings in IDLE shell.
+Cease turning SyntaxWarnings into SyntaxErrors.
+
+bpo-37929: IDLE Settings dialog now closes properly when there is no
+shell window.
+
+bpo-37849: Fix completions list appearing too high or low when shown
+above the current line.
+
+bpo-36419: Refactor autocompete and improve testing.
+
+bpo-37748: Reorder the Run menu.  Put the most common choice,
+Run Module, at the top.
+
+bpo-37692: Improve highlight config sample with example shell
+interaction and better labels for shell elements.
+
+bpo-37628: Settings dialog no longer expands with font size.
+The font and highlight sample boxes gain scrollbars instead.
+
+bpo-17535: Add optional line numbers for IDLE editor windows.
+
+bpo-37627: Initialize the Customize Run dialog with the command line
+arguments most recently entered before.  The user can optionally edit
+before submitting them.
+
+bpo-33610: Code context always shows the correct context when toggled on.
+
+bpo-36390: Gather Format menu functions into format.py.  Combine
+paragraph.py, rstrip.py, and format methods from editor.py.
+
+bpo-37530: Optimize code context to reduce unneeded background activity.
+Font and highlight changes now occur along with text changes instead
+of after a random delay.
+
+bpo-27452: Cleanup config.py by inlining RemoveFile and simplifying
+the handling of __file__ in CreateConfigHandlers/
+
+bpo-26806: To compensate for stack frames added by IDLE and avoid
+possible problems with low recursion limits, add 30 to limits in the
+user code execution process.  Subtract 30 when reporting recursion
+limits to make this addition mostly transparent.
+
+bpo-37325: Fix tab focus traversal order for help source and custom
+run dialogs.
+
+bpo-37321: Both subprocess connection error messages now refer to
+the 'Startup failure' section of the IDLE doc.
+
+bpo-37177: Properly attach search dialogs to their main window so
+that they behave like other dialogs and do not get hidden behind
+their main window.
+
+bpo-37039: Adjust "Zoom Height" to individual screens by momentarily
+maximizing the window on first use with a particular screen.  Changing
+screen settings may invalidate the saved height.  While a window is
+maximized, "Zoom Height" has no effect.
+
+bpo-35763: Make calltip reminder about '/' meaning positional-only less
+obtrusive by only adding it when there is room on the first line.
+
+bpo-5680: Add 'Run Customized' to the Run menu to run a module with
+customized settings. Any command line arguments entered are added
+to sys.argv. One can suppress the normal Shell main module restart.
+
+bpo-35610: Replace now redundant editor.context_use_ps1 with
+.prompt_last_line.  This finishes change started in bpo-31858.
+
+bpo-32411: Stop sorting dict created with desired line order.
+
+bpo-37038: Make idlelib.run runnable; add test clause.
+
+bpo-36958: Print any argument other than None or int passed to
+SystemExit or sys.exit().
+
+bpo-36807: When saving a file, call file.flush() and os.fsync()
+so bits are flushed to e.g. a USB drive.
+
+bpo-36429: Fix starting IDLE with pyshell.
+Add idlelib.pyshell alias at top; remove pyshell alias at bottom.
+Remove obsolete __name__=='__main__' command.
+
+bpo-30348: Increase test coverage of idlelib.autocomplete by 30%.
+Patch by Louie Lu.
+
+bpo-23205: Add tests and refactor grep's findfiles.
+
+bpo-36405: Use dict unpacking in idlelib.
+
+bpo-36396: Remove fgBg param of idlelib.config.GetHighlight().
+This param was only used twice and changed the return type.
+
+bpo-23216: IDLE: Add docstrings to search modules.
+
+bpo-36176: Fix IDLE autocomplete & calltip popup colors.
+Prevent conflicts with Linux dark themes
+(and slightly darken calltip background).
+
+bpo-36152: Remove colorizer.ColorDelegator.close_when_done and the
+corresponding argument of .close().  In IDLE, both have always been
+None or False since 2007.
+
+bpo-36096: Make colorizer state variables instance-only.
+
+bpo-32129: Avoid blurry IDLE application icon on macOS with Tk 8.6.
+Patch by Kevin Walzer.
+
+bpo-24310: Document settings dialog font tab sample.
+
+bpo-35689: Add docstrings and tests for colorizer.
+
+bpo-35833: Revise IDLE doc for control codes sent to Shell.
+Add a code example block.
+
+bpo-35770: IDLE macosx deletes Options => Configure IDLE.
+It previously deleted Window => Zoom Height by mistake.
+(Zoom Height is now on the Options menu).  On Mac, the settings
+dialog is accessed via Preferences on the IDLE menu.
+
+bpo-35769: Change new file name from 'Untitled' to 'untitled'.
+
+bpo-35660: Fix imports in window module.
+
+bpo-35641: Properly format calltip for function without docstring.
+
+bpo-33987: Use ttk Frame for ttk widgets.
+
+bpo-34055: Fix erroneous 'smart' indents and newlines in IDLE Shell.
+
+bpo-28097: Add Previous/Next History entries to Shell menu.
+
+bpo-35591: Find Selection now works when selection not found.
+
+bpo-35598: Update config_key: use PEP 8 names and ttk widgets,
+make some objects global, and add tests.
+
+bpo-35196: Speed up squeezer line counting.
+
+bpo-35208: Squeezer now counts wrapped lines before newlines.
+
+bpo-35555: Gray out Code Context menu entry when it's not applicable.
+
+bpo-22703: Improve the Code Context and Zoom Height menu labels.
+The Code Context menu label now toggles between Show/Hide Code Context.
+The Zoom Height menu now toggles between Zoom/Restore Height.
+Zoom Height has moved from the Window menu to the Options menu.
+
+bpo-35521: Document the editor code context feature.
+Add some internal references within the IDLE doc.
+
+bpo-34864: When starting IDLE on MacOS, warn if the system setting
+"Prefer tabs when opening documents" is "Always".  As previous
+documented for this issue, running IDLE with this setting causes
+problems.  If the setting is changed while IDLE is running,
+there will be no warning until IDLE is restarted.
+
+bpo-35213: Where appropriate, use 'macOS' in idlelib.
+
+bpo-34864: Document two IDLE on MacOS issues.  The System Preferences
+Dock "prefer tabs always" setting disables some IDLE features.
+Menus are a bit different than as described for Windows and Linux.
+
+bpo-35202: Remove unused imports in idlelib.
+
+bpo-33000: Document that IDLE's shell has no line limit.
+A program that runs indefinitely can overfill memory.
+
+bpo-23220: Explain how IDLE's Shell displays output.
+Add new subsection "User output in Shell".
+
+bpo-35099: Improve the doc about IDLE running user code.
+"IDLE -- console differences" is renamed "Running user code".
+It mostly covers the implications of using custom sys.stdxxx objects.
+
+bpo-35097: Add IDLE doc subsection explaining editor windows.
+Topics include opening, title and status bars, .py* extension, and running.
+
+Issue 35093: Document the IDLE document viewer in the IDLE doc.
+Add a paragraph in "Help and preferences", "Help sources" subsection.
+
+bpo-1529353: Explain Shell text squeezing in the IDLE doc.
+
+bpo-35088: Update idlelib.help.copy_string docstring.
+We now use git and backporting instead of hg and forward merging.
+
+bpo-35087: Update idlelib help files for the current doc build.
+The main change is the elimination of chapter-section numbers.
+
+bpo-1529353: Output over N lines (50 by default) is squeezed down to a button.
+N can be changed in the PyShell section of the General page of the
+Settings dialog.  Fewer, but possibly extra long, lines can be squeezed by
+right clicking on the output.  Squeezed output can be expanded in place
+by double-clicking the button or into the clipboard or a separate window
+by right-clicking the button.
+
+bpo-34548: Use configured color theme for read-only text views.
+
+bpo-33839: Refactor ToolTip and CallTip classes; add documentation
+and tests.
+
+bpo-34047: Fix mouse wheel scrolling direction on macOS.
+
+bpo-34275: Make calltips always visible on Mac.
+Patch by Kevin Walzer.
+
+bpo-34120: Fix freezing after closing some dialogs on Mac.
+This is one of multiple regressions from using newer tcl/tk.
+
+bpo-33975: Avoid small type when running htests.
+Since part of the purpose of human-viewed tests is to determine that
+widgets look right, it is important that they look the same for
+testing as when running IDLE.
+
+bpo-33905: Add test for idlelib.stackview.StackBrowser.
+
+bpo-33924: Change mainmenu.menudefs key 'windows' to 'window'.
+Every other menudef key is the lowercase version of the
+corresponding main menu entry (in this case, 'Window').
+
+bpo-33906: Rename idlelib.windows as window
+Match Window on the main menu and remove last plural module name.
+Change imports, test, and attribute references to match new name.
+
+bpo-33917: Fix and document idlelib/idle_test/template.py.
+The revised file compiles, runs, and tests OK.  idle_test/README.txt
+explains how to use it to create new IDLE test files.
+
+bpo-33904: In rstrip module, rename class RstripExtension as Rstrip.
+
+bpo-33907: For consistency and clarity, rename calltip objects.
+Module calltips and its class CallTips are now calltip and Calltip.
+In module calltip_w, class CallTip is now CalltipWindow.
+
+bpo-33855: Minimally test all IDLE modules.
+Standardize the test file format.  Add missing test files that import
+the tested module and perform at least one test.  Check and record the
+coverage of each test.
+
+bpo-33856: Add 'help' to Shell's initial welcome message.
+
+
+What's New in IDLE 3.7.0 (since 3.6.0)
+Released on 2018-06-27
+======================================
+
+bpo-33656: On Windows, add API call saying that tk scales for DPI.
+On Windows 8.1+ or 10, with DPI compatibility properties of the Python
+binary unchanged, and a monitor resolution greater than 96 DPI, this
+should make text and lines sharper and some colors brighter.
+On other systems, it should have no effect.  If you have a custom theme,
+you may want to adjust a color or two.  If perchance it make text worse
+on your monitor, you can disable the ctypes.OleDLL call near the top of
+pyshell.py and report the problem on python-list or idle-dev@python.org.
+
+bpo-33768: Clicking on a context line moves that line to the top
+of the editor window.
+
+bpo-33763: Replace the code context label widget with a text widget.
+
+bpo-33664: Scroll IDLE editor text by lines.
+(Previously, the mouse wheel and scrollbar slider moved text by a fixed
+number of pixels, resulting in partial lines at the top of the editor
+box.)  This change also applies to the shell and grep output windows,
+but currently not to read-only text views.
+
+bpo-33679: Enable theme-specific color configuration for Code Context.
+(Previously, there was one code context foreground and background font
+color setting, default or custom, on the extensions tab, that applied
+to all themes.)  For built-in themes, the foreground is the same as
+normal text and the background is a contrasting gray.  Context colors for
+custom themes are set on the Hightlights tab along with other colors.
+When one starts IDLE from a console and loads a custom theme without
+definitions for 'context', one will see a warning message on the
+console.
+
+bpo-33642: Display up to maxlines non-blank lines for Code Context.
+If there is no current context, show a single blank line.  (Previously,
+the Code Contex had numlines lines, usually with some blank.)  The use
+of a new option, 'maxlines' (default 15), avoids possible interference
+with user settings of the old option, 'numlines' (default 3).
+
+bpo-33628: Cleanup codecontext.py and its test.
+
+bpo-32831: Add docstrings and tests for codecontext.py.
+Coverage is 100%.  Patch by Cheryl Sabella.
+
+bpo-33564: Code context now recognizes async as a block opener.
+
+bpo-21474: Update word/identifier definition from ascii to unicode.
+In text and entry boxes, this affects selection by double-click,
+movement left/right by control-left/right, and deletion left/right
+by control-BACKSPACE/DEL.
+
+bpo-33204: Consistently color invalid string prefixes.
+A 'u' string prefix cannot be paired with either 'r' or 'f'.
+IDLE now consistently colors as much of the prefix, starting at the
+right, as is valid.  Revise and extend colorizer test.
+
+bpo-32984: Set __file__ while running a startup file.
+Like Python, IDLE optionally runs 1 startup file in the Shell window
+before presenting the first interactive input prompt.  For IDLE,
+option -s runs a file named in environmental variable IDLESTARTUP or
+PYTHONSTARTUP; -r file runs file.  Python sets __file__ to the startup
+file name before running the file and unsets it before the first
+prompt.  IDLE now does the same when run normally, without the -n
+option.
+
+bpo-32940: Replace StringTranslatePseudoMapping with faster code.
+
+bpo-32916: Change 'str' to 'code' in idlelib.pyparse and users.
+
+bpo-32905: Remove unused code in pyparse module.
+
+bpo-32874: IDLE - add pyparse tests with 97% coverage.
+
+bpo-32837: IDLE - require encoding argument for textview.view_file.
+Using the system and place-dependent default encoding for open()
+is a bad idea for IDLE's system and location-independent files.
+
+bpo-32826: Add "encoding=utf-8" to open() in IDLE's test_help_about.
+GUI test test_file_buttons() only looks at initial ascii-only lines,
+but failed on systems where open() defaults to 'ascii' because
+readline() internally reads and decodes far enough ahead to encounter
+a non-ascii character in CREDITS.txt.
+
+bpo-32765: Update configdialog General tab create page docstring.
+Add new widgets to the widget list.
+
+bpo-32207: Improve tk event exception tracebacks in IDLE.
+When tk event handling is driven by IDLE's run loop, a confusing
+and distracting queue.EMPTY traceback context is no longer added
+to tk event exception tracebacks.  The traceback is now the same
+as when event handling is driven by user code.  Patch based on
+a suggestion by Serhiy Storchaka.
+
+bpo-32164: Delete unused file idlelib/tabbedpages.py.
+Use of TabbedPageSet in configdialog was replaced by ttk.Notebook.
+
+bpo-32100: Fix old and new bugs in pathbrowser; improve tests.
+Patch mostly by Cheryl Sabella.
+
+bpo-31860: The font sample in the settings dialog is now editable.
+Edits persist while IDLE remains open.
+Patch by Serhiy Storchake and Terry Jan Reedy.
+
+bpo-31858: Restrict shell prompt manipulation to the shell.
+Editor and output windows only see an empty last prompt line.  This
+simplifies the code and fixes a minor bug when newline is inserted.
+Sys.ps1, if present, is read on Shell start-up, but is not set or changed.
+Patch by Terry Jan Reedy.
+
+bpo-28603: Fix a TypeError that caused a shell restart when printing
+a traceback that includes an exception that is unhashable.
+Patch by Zane Bitter.
+
+bpo-13802: Use non-Latin characters in the Font settings sample.
+Even if one selects a font that defines a limited subset of the unicode
+Basic Multilingual Plane, tcl/tk will use other fonts that define a
+character.  The expanded example give users of non-Latin characters
+a better idea of what they might see in the shell and editors.
+
+To make room for the expanded sample, frames on the Font tab are
+re-arranged.  The Font/Tabs help explains a bit about the additions.
+Patch by Terry Jan Reedy
+
+bpo-31460: Simplify the API of IDLE's Module Browser.
+Passing a widget instead of an flist with a root widget opens the
+option of creating a browser frame that is only part of a window.
+Passing a full file name instead of pieces assumed to come from a
+.py file opens the possibility of browsing python files that do not
+end in .py.
+
+bpo-31649: Make _htest and _utest parameters keyword-only.
+These are used to adjust code for human and unit tests.
+
+bpo-31459: Rename module browser from Class Browser to Module Browser.
+The original module-level class and method browser became a module
+browser, with the addition of module-level functions, years ago.
+Nested classes and functions were added yesterday.  For back-
+compatibility, the virtual event <<open-class-browser>>, which
+appears on the Keys tab of the Settings dialog, is not changed.
+Patch by Cheryl Sabella.
+
+bpo-1612262: Module browser now shows nested classes and functions.
+Original patches for code and tests by Guilherme Polo and
+Cheryl Sabella, respectively.  Revisions by Terry Jan Reedy.
+
+bpo-31500: Tk's default fonts now are scaled on HiDPI displays.
+This affects all dialogs.  Patch by Serhiy Storchaka.
+
+bpo-31493: Fix code context update and font update timers.
+Canceling timers prevents a warning message when test_idle completes.
+
+bpo-31488: Update non-key options in former extension classes.
+When applying configdialog changes, call .reload for each feature class.
+Change ParenMatch so updated options affect existing instances attached
+to existing editor windows.
+
+bpo-31477: Improve rstrip entry in IDLE doc.
+Strip Trailing Whitespace strips more than blank spaces.
+Multiline string literals are not skipped.
+
+bpo-31480: fix tests to pass with zzdummy extension disabled. (#3590)
+To see the example in action, enable it on options extensions tab.
+
+bpo-31421: Document how IDLE runs tkinter programs.
+IDLE calls tcl/tk update in the background in order to make live
+interaction and experimentation with tkinter applications much easier.
+
+bpo-31414: Fix tk entry box tests by deleting first.
+Adding to an int entry is not the same as deleting and inserting
+because int('') will fail.  Patch by Terry Jan Reedy.
+
+bpo-27099: Convert IDLE's built-in 'extensions' to regular features.
+  About 10 IDLE features were implemented as supposedly optional
+extensions.  Their different behavior could be confusing or worse for
+users and not good for maintenance.  Hence the conversion.
+  The main difference for users is that user configurable key bindings
+for builtin features are now handled uniformly.  Now, editing a binding
+in a keyset only affects its value in the keyset.  All bindings are
+defined together in the system-specific default keysets in config-
+extensions.def.  All custom keysets are saved as a whole in config-
+extension.cfg.  All take effect as soon as one clicks Apply or Ok.
+   The affected events are '<<force-open-completions>>',
+'<<expand-word>>', '<<force-open-calltip>>', '<<flash-paren>>',
+'<<format-paragraph>>', '<<run-module>>', '<<check-module>>', and
+'<<zoom-height>>'.  Any (global) customizations made before 3.6.3 will
+not affect their keyset-specific customization after 3.6.3. and vice
+versa.
+  Initial patch by Charles Wohlganger, revised by Terry Jan Reedy.
+
+bpo-31051:  Rearrange condigdialog General tab.
+Sort non-Help options into Window (Shell+Editor) and Editor (only).
+Leave room for the addition of new options.
+Patch by Terry Jan Reedy.
+
+bpo-30617: Add docstrings and tests for outwin subclass of editor.
+Move some data and functions from the class to module level.
+Patch by Cheryl Sabella.
+
+bpo-31287: Do not modify tkinter.messagebox in test_configdialog.
+Instead, mask it with an instance mock that can be deleted.
+Patch by Terry Jan Reedy.
+
+bpo-30781: Use ttk widgets in ConfigDialog pages.
+These should especially look better on MacOSX.
+Patches by Terry Jan Reedy and Cheryl Sabella.
+
+bpo-31206: Factor HighPage(Frame) class from ConfigDialog.
+Patch by Cheryl Sabella.
+
+bp0-31001: Add tests for configdialog highlight tab.
+Patch by Cheryl Sabella.
+
+bpo-31205: Factor KeysPage(Frame) class from ConfigDialog.
+The slightly modified tests continue to pass.
+Patch by Cheryl Sabella.
+
+bpo-31002: Add tests for configdialog keys tab.
+Patch by Cheryl Sabella.
+
+bpo-19903: Change calltipes to use inspect.signature.
+Idlelib.calltips.get_argspec now uses inspect.signature instead of
+inspect.getfullargspec, like help() does.  This improves the signature
+in the call tip in a few different cases, including builtins converted
+to provide a signature.  A message is added if the object is not
+callable, has an invalid signature, or if it has positional-only
+parameters.  Patch by Louie Lu.
+
+bop-31083: Add an outline of a TabPage class in configdialog.
+Add template as comment. Update existing classes to match outline.
+Initial patch by Cheryl Sabella.
+
+bpo-31050: Factor GenPage(Frame) class from ConfigDialog.
+The slightly modified tests for the General tab continue to pass.
+Patch by Cheryl Sabella.
+
+bpo-31004: Factor FontPage(Frame) class from ConfigDialog.
+The slightly modified tests continue to pass. The General test
+broken by the switch to ttk.Notebook is fixed.
+Patch mostly by Cheryl Sabella.
+
+bpo-30781: IDLE - Use ttk Notebook in ConfigDialog.
+This improves navigation by tabbing.
+Patch by Terry Jan Reedy.
+
+bpo-31060: IDLE - Finish rearranging methods of ConfigDialog.
+Grouping methods pertaining to each tab and the buttons will aid
+writing tests and improving the tabs and will enable splitting the
+groups into classes.
+Patch by Terry Jan Reedy.
+
+bpo-30853: IDLE -- Factor a VarTrace class out of ConfigDialog.
+Instance tracers manages pairs consisting of a tk variable and a
+callback function.  When tracing is turned on, setting the variable
+calls the function.  Test coverage for the new class is 100%.
+Patch by Terry Jan Reedy.
+
+bpo-31003: IDLE: Add more tests for General tab.
+Patch by Terry Jan Reedy.
+
+bpo-30993: IDLE - Improve configdialog font page and tests.
+*In configdialog: Document causal pathways in create_font_tab
+docstring.  Simplify some attribute names. Move set_samples calls to
+var_changed_font (idea from Cheryl Sabella).  Move related functions to
+positions after the create widgets function.
+* In test_configdialog: Fix test_font_set so not order dependent.  Fix
+renamed test_indent_scale so it tests the widget.  Adjust tests for
+movement of set_samples call.  Add tests for load functions.  Put all
+font tests in one class and tab indent tests in another.  Except for
+two lines, these tests completely cover the related functions.
+Patch by Terry Jan Reedy.
+
+bpo-30981: IDLE -- Add more configdialog font page tests.
+
+bpo-28523: IDLE: replace 'colour' with 'color' in configdialog.
+
+bpo-30917: Add tests for idlelib.config.IdleConf.
+Increase coverage from 46% to 96%.
+Patch by Louie Lu.
+
+bpo-30913: Document ConfigDialog tk Vars, methods, and widgets in docstrings
+This will facilitate improving the dialog and splitting up the class.
+Original patch by Cheryl Sabella.
+
+bpo-30899: Add tests for ConfigParser subclasses in config.
+Coverage is 100% for those classes and ConfigChanges.
+Patch by Louie Lu.
+
+bpo-30881: Add docstrings to browser.py.
+Patch by Cheryl Sabella.
+
+bpo-30851: Remove unused tk variables in configdialog.
+One is a duplicate, one is set but cannot be altered by users.
+Patch by Cheryl Sabella.
+
+bpo-30870: Select font option with Up and Down keys, as well as with mouse.
+Added test increases configdialog coverage to 60%
+Patches mostly by Louie Lu.
+
+bpo-8231: Call config.IdleConf.GetUserCfgDir only once per process.
+
+bpo-30779: Factor ConfigChanges class from configdialog, put in config; test.
+* In config, put dump test code in a function; run it and unittest in
+  'if __name__ == '__main__'.
+* Add class config.ConfigChanges based on changes_class_v4.py on bpo issue.
+* Add class test_config.ChangesTest, partly using configdialog_tests_v1.py.
+* Revise configdialog to use ConfigChanges; see tracker msg297804.
+* Revise test_configdialog to match configdialog changes.
+* Remove configdialog functions unused or moved to ConfigChanges.
+Cheryl Sabella contributed parts of the patch.
+
+bpo-30777: Configdialog - add docstrings and improve comments.
+Patch by Cheryl Sabella.
+
+bpo-30495: Improve textview with docstrings, PEP8 names, and more tests.
+Split TextViewer class into ViewWindow, ViewFrame, and TextFrame classes
+so that instances of the latter two can be placed with other widgets
+within a multiframe window.
+Patches by Cheryl Sabella and Terry Jan Reedy.
+
+bpo-30723: Make several improvements to parenmatch.
+* Add 'parens' style to highlight both opener and closer.
+* Make 'default' style, which is not default, a synonym for 'opener'.
+* Make time-delay work the same with all styles.
+* Add help for config dialog extensions tab, including parenmatch.
+* Add new tests.
+Original patch by Charles Wohlganger.  Revisions by Terry Jan Reedy
+
+bpo-30674: Grep -- Add docstrings.  Patch by Cheryl Sabella.
+
+bpo-21519: IDLE's basic custom key entry dialog now detects
+duplicates properly. Original patch by Saimadhav Heblikar.
+
+bpo-29910: IDLE no longer deletes a character after commenting out a
+region by a key shortcut.  Add "return 'break'" for this and other
+potential conflicts between IDLE and default key bindings.
+Patch by Serhiy Storchaka.
+
+bpo-30728: Modernize idlelib.configdialog:
+* replace import * with specific imports;
+* lowercase method and attribute lines.
+Patch by Cheryl Sabella.
+
+bpo-6739: Verify user-entered key sequences by trying to bind them
+with to a tk widget.  Add tests for all 3 validation functions.
+Original patch by G Polo.  Tests added by Cheryl Sabella.
+Code revised and more tests added by Terry Jan Reedy
+
+bpo-24813: Add icon to help_about and make other changes.
+
+bpo-15786: Fix several problems with IDLE's autocompletion box.
+The following should now work: clicking on selection box items;
+using the scrollbar; selecting an item by hitting Return.
+Hangs on MacOSX should no longer happen. Patch by Louie Lu.
+
+bpo-25514: Add doc subsubsection about IDLE failure to start.
+Popup no-connection message directs users to this section.
+
+bpo-30642: Fix reference leaks in IDLE tests.
+Patches by Louie Lu and Terry Jan Reedy.
+
+bpo-30495: Add docstrings for textview.py and use PEP8 names.
+Patches by Cheryl Sabella and Terry Jan Reedy.
+
+bpo-30290: Help-about: use pep8 names and add tests.
+Increase coverage to 100%.
+Patches by Louie Lu, Cheryl Sabella, and Terry Jan Reedy.
+
+bpo-30303: Add _utest option to textview; add new tests.
+Increase coverage to 100%.
+Patches by Louie Lu and Terry Jan Reedy.
+
+Issue #29071: IDLE colors f-string prefixes but not invalid ur prefixes.
+
+Issue #28572: Add 10% to coverage of IDLE's test_configdialog.
+Update and augment description of the configuration system.
+
+
+What's New in IDLE 3.6.0 (since 3.5.0)
+Released on 2016-12-23
+======================================
+
+- Issue #15308: Add 'interrupt execution' (^C) to Shell menu.
+  Patch by Roger Serwy, updated by Bayard Randel.
+
+- Issue #27922: Stop IDLE tests from 'flashing' gui widgets on the screen.
+
+- Issue #27891: Consistently group and sort imports within idlelib modules.
+
+- Issue #17642: add larger font sizes for classroom projection.
+
+- Add version to title of IDLE help window.
+
+- Issue #25564: In section on IDLE -- console differences, mention that
+  using exec means that __builtins__ is defined for each statement.
+
+- Issue #27821: Fix 3.6.0a3 regression that prevented custom key sets
+  from being selected when no custom theme was defined.
+
+- Issue #27714: text_textview and test_autocomplete now pass when re-run
+  in the same process.  This occurs when test_idle fails when run with the
+  -w option but without -jn.  Fix warning from test_config.
+
+- Issue #27621: Put query response validation error messages in the query
+  box itself instead of in a separate messagebox.  Redo tests to match.
+  Add Mac OSX refinements.  Original patch by Mark Roseman.
+
+- Issue #27620: Escape key now closes Query box as cancelled.
+
+- Issue #27609: IDLE: tab after initial whitespace should tab, not
+  autocomplete. This fixes problem with writing docstrings at least
+  twice indented.
+
+- Issue #27609: Explicitly return None when there are also non-None
+  returns. In a few cases, reverse a condition and eliminate a return.
+
+- Issue #25507: IDLE no longer runs buggy code because of its tkinter imports.
+  Users must include the same imports required to run directly in Python.
+
+- Issue #27173: Add 'IDLE Modern Unix' to the built-in key sets.
+  Make the default key set depend on the platform.
+  Add tests for the changes to the config module.
+
+- Issue #27452: add line counter and crc to IDLE configHandler test dump.
+
+- Issue #27477: IDLE search dialogs now use ttk widgets.
+
+- Issue #27173: Add 'IDLE Modern Unix' to the built-in key sets.
+  Make the default key set depend on the platform.
+  Add tests for the changes to the config module.
+
+- Issue #27452: make command line "idle-test> python test_help.py" work.
+  __file__ is relative when python is started in the file's directory.
+
+- Issue #27452: add line counter and crc to IDLE configHandler test dump.
+
+- Issue #27380: IDLE: add query.py with base Query dialog and ttk widgets.
+  Module had subclasses SectionName, ModuleName, and HelpSource, which are
+  used to get information from users by configdialog and file =>Load Module.
+  Each subclass has itw own validity checks.  Using ModuleName allows users
+  to edit bad module names instead of starting over.
+  Add tests and delete the two files combined into the new one.
+
+- Issue #27372: Test_idle no longer changes the locale.
+
+- Issue #27365: Allow non-ascii chars in IDLE NEWS.txt, for contributor names.
+
+- Issue #27245: IDLE: Cleanly delete custom themes and key bindings.
+  Previously, when IDLE was started from a console or by import, a cascade
+  of warnings was emitted.  Patch by Serhiy Storchaka.
+
+- Issue #24137: Run IDLE, test_idle, and htest with tkinter default root disabled.
+  Fix code and tests that fail with this restriction.
+  Fix htests to not create a second and redundant root and mainloop.
+
+- Issue #27310: Fix IDLE.app failure to launch on OS X due to vestigial import.
+
+- Issue #5124: Paste with text selected now replaces the selection on X11.
+  This matches how paste works on Windows, Mac, most modern Linux apps,
+  and ttk widgets.  Original patch by Serhiy Storchaka.
+
+- Issue #24750: Switch all scrollbars in IDLE to ttk versions.
+  Where needed, minimal tests are added to cover changes.
+
+- Issue #24759: IDLE requires tk 8.5 and availability ttk widgets.
+  Delete now unneeded tk version tests and code for older versions.
+  Add test for IDLE syntax colorizer.
+
+- Issue #27239: idlelib.macosx.isXyzTk functions initialize as needed.
+
+- Issue #27262: move Aqua unbinding code, which enable context menus, to macosx.
+
+- Issue #24759: Make clear in idlelib.idle_test.__init__ that the directory
+  is a private implementation of test.test_idle and tool for maintainers.
+
+- Issue #27196: Stop 'ThemeChanged' warnings when running IDLE tests.
+  These persisted after other warnings were suppressed in #20567.
+  Apply Serhiy Storchaka's update_idletasks solution to four test files.
+  Record this additional advice in idle_test/README.txt
+
+- Issue #20567: Revise idle_test/README.txt with advice about avoiding
+  tk warning messages from tests.  Apply advice to several IDLE tests.
+
+- Issue # 24225: Update idlelib/README.txt with new file names
+  and event handlers.
+
+- Issue #27156: Remove obsolete code not used by IDLE.  Replacements:
+  1. help.txt, replaced by help.html, is out-of-date and should not be used.
+  Its dedicated viewer has be replaced by the html viewer in help.py.
+  2. 'import idlever; I = idlever.IDLE_VERSION' is the same as
+  'import sys; I = version[:version.index(' ')]'
+  3. After 'ob = stackviewer.VariablesTreeItem(*args)',
+  'ob.keys()' == 'list(ob.object.keys).
+  4. In macosc, runningAsOSXAPP == isAquaTk; idCarbonAquaTk == isCarbonTk
+
+- Issue #27117: Make colorizer htest and turtledemo work with dark themes.
+  Move code for configuring text widget colors to a new function.
+
+- Issue #24225: Rename many idlelib/*.py and idle_test/test_*.py files.
+  Edit files to replace old names with new names when the old name
+  referred to the module rather than the class it contained.
+  See the issue and IDLE section in What's New in 3.6 for more.
+
+- Issue #26673: When tk reports font size as 0, change to size 10.
+  Such fonts on Linux prevented the configuration dialog from opening.
+
+- Issue #21939: Add test for IDLE's percolator.
+  Original patch by Saimadhav Heblikar.
+
+- Issue #21676: Add test for IDLE's replace dialog.
+  Original patch by Saimadhav Heblikar.
+
+- Issue #18410: Add test for IDLE's search dialog.
+  Original patch by Westley Martínez.
+
+- Issue #21703: Add test for undo delegator.  Patch mostly by
+  Saimadhav Heblikar .
+
+- Issue #27044: Add ConfigDialog.remove_var_callbacks to stop memory leaks.
+
+- Issue #23977: Add more asserts to test_delegator.
+
+- Issue #20640: Add tests for idlelib.configHelpSourceEdit.
+  Patch by Saimadhav Heblikar.
+
+- In the 'IDLE-console differences' section of the IDLE doc, clarify
+  how running with IDLE affects sys.modules and the standard streams.
+
+- Issue #25507: fix incorrect change in IOBinding that prevented printing.
+  Augment IOBinding htest to include all major IOBinding functions.
+
+- Issue #25905: Revert unwanted conversion of ' to ’ RIGHT SINGLE QUOTATION
+  MARK in README.txt and open this and NEWS.txt with 'ascii'.
+  Re-encode CREDITS.txt to utf-8 and open it with 'utf-8'.
+
+- Issue 15348: Stop the debugger engine (normally in a user process)
+  before closing the debugger window (running in the IDLE process).
+  This prevents the RuntimeErrors that were being caught and ignored.
+
+- Issue #24455: Prevent IDLE from hanging when a) closing the shell while the
+  debugger is active (15347); b) closing the debugger with the [X] button
+  (15348); and c) activating the debugger when already active (24455).
+  The patch by Mark Roseman does this by making two changes.
+  1. Suspend and resume the gui.interaction method with the tcl vwait
+  mechanism intended for this purpose (instead of root.mainloop & .quit).
+  2. In gui.run, allow any existing interaction to terminate first.
+
+- Change 'The program' to 'Your program' in an IDLE 'kill program?' message
+  to make it clearer that the program referred to is the currently running
+  user program, not IDLE itself.
+
+- Issue #24750: Improve the appearance of the IDLE editor window status bar.
+  Patch by Mark Roseman.
+
+- Issue #25313: Change the handling of new built-in text color themes to better
+  address the compatibility problem introduced by the addition of IDLE Dark.
+  Consistently use the revised idleConf.CurrentTheme everywhere in idlelib.
+
+- Issue #24782: Extension configuration is now a tab in the IDLE Preferences
+  dialog rather than a separate dialog.   The former tabs are now a sorted
+  list.  Patch by Mark Roseman.
+
+- Issue #22726: Re-activate the config dialog help button with some content
+  about the other buttons and the new IDLE Dark theme.
+
+- Issue #24820: IDLE now has an 'IDLE Dark' built-in text color theme.
+  It is more or less IDLE Classic inverted, with a cobalt blue background.
+  Strings, comments, keywords, ... are still green, red, orange, ... .
+  To use it with IDLEs released before November 2015, hit the
+  'Save as New Custom Theme' button and enter a new name,
+  such as 'Custom Dark'.  The custom theme will work with any IDLE
+  release, and can be modified.
+
+- Issue #25224: README.txt is now an idlelib index for IDLE developers and
+  curious users.  The previous user content is now in the IDLE doc chapter.
+  'IDLE' now means 'Integrated Development and Learning Environment'.
+
+- Issue #24820: Users can now set breakpoint colors in
+  Settings -> Custom Highlighting.  Original patch by Mark Roseman.
+
+- Issue #24972: Inactive selection background now matches active selection
+  background, as configured by users, on all systems.  Found items are now
+  always highlighted on Windows.  Initial patch by Mark Roseman.
+
+- Issue #24570: Idle: make calltip and completion boxes appear on Macs
+  affected by a tk regression.  Initial patch by Mark Roseman.
+
+- Issue #24988: Idle ScrolledList context menus (used in debugger)
+  now work on Mac Aqua.  Patch by Mark Roseman.
+
+- Issue #24801: Make right-click for context menu work on Mac Aqua.
+  Patch by Mark Roseman.
+
+- Issue #25173: Associate tkinter messageboxes with a specific widget.
+  For Mac OSX, make them a 'sheet'.  Patch by Mark Roseman.
+
+- Issue #25198: Enhance the initial html viewer now used for Idle Help.
+  * Properly indent fixed-pitch text (patch by Mark Roseman).
+  * Give code snippet a very Sphinx-like light blueish-gray background.
+  * Re-use initial width and height set by users for shell and editor.
+  * When the Table of Contents (TOC) menu is used, put the section header
+  at the top of the screen.
+
+- Issue #25225: Condense and rewrite Idle doc section on text colors.
+
+- Issue #21995: Explain some differences between IDLE and console Python.
+
+- Issue #22820: Explain need for *print* when running file from Idle editor.
+
+- Issue #25224: Doc: augment Idle feature list and no-subprocess section.
+
+- Issue #25219: Update doc for Idle command line options.
+  Some were missing and notes were not correct.
+
+- Issue #24861: Most of idlelib is private and subject to change.
+  Use idleib.idle.* to start Idle. See idlelib.__init__.__doc__.
+
+- Issue #25199: Idle: add synchronization comments for future maintainers.
+
+- Issue #16893: Replace help.txt with help.html for Idle doc display.
+  The new idlelib/help.html is rstripped Doc/build/html/library/idle.html.
+  It looks better than help.txt and will better document Idle as released.
+  The tkinter html viewer that works for this file was written by Mark Roseman.
+  The now unused EditorWindow.HelpDialog class and helt.txt file are deprecated.
+
+- Issue #24199: Deprecate unused idlelib.idlever with possible removal in 3.6.
+
+- Issue #24790: Remove extraneous code (which also create 2 & 3 conflicts).
+
+
+What's New in IDLE 3.5.0?
+=========================
+*Release date: 2015-09-13*
+
+- Issue #23672: Allow Idle to edit and run files with astral chars in name.
+  Patch by Mohd Sanad Zaki Rizvi.
+
+- Issue 24745: Idle editor default font. Switch from Courier to
+  platform-sensitive TkFixedFont.  This should not affect current customized
+  font selections.  If there is a problem, edit $HOME/.idlerc/config-main.cfg
+  and remove 'fontxxx' entries from [Editor Window].  Patch by Mark Roseman.
+
+- Issue #21192: Idle editor. When a file is run, put its name in the restart bar.
+  Do not print false prompts. Original patch by Adnan Umer.
+
+- Issue #13884: Idle menus. Remove tearoff lines. Patch by Roger Serwy.
+
+- Issue #23184: remove unused names and imports in idlelib.
+  Initial patch by Al Sweigart.
+
+- Issue #20577: Configuration of the max line length for the FormatParagraph
+  extension has been moved from the General tab of the Idle preferences dialog
+  to the FormatParagraph tab of the Config Extensions dialog.
+  Patch by Tal Einat.
+
+- Issue #16893: Update Idle doc chapter to match current Idle and add new
+  information.
+
+- Issue #3068: Add Idle extension configuration dialog to Options menu.
+  Changes are written to HOME/.idlerc/config-extensions.cfg.
+  Original patch by Tal Einat.
+
+- Issue #16233: A module browser (File : Class Browser, Alt+C) requires an
+  editor window with a filename.  When Class Browser is requested otherwise,
+  from a shell, output window, or 'Untitled' editor, Idle no longer displays
+  an error box.  It now pops up an  Open Module box (Alt+M). If a valid name
+  is entered and a module is opened, a corresponding browser is also opened.
+
+- Issue #4832: Save As to type Python files automatically adds .py to the
+  name you enter (even if your system does not display it).  Some systems
+  automatically add .txt when type is Text files.
+
+- Issue #21986: Code objects are not normally pickled by the pickle module.
+  To match this, they are no longer pickled when running under Idle.
+
+- Issue #23180: Rename IDLE "Windows" menu item to "Window".
+  Patch by Al Sweigart.
+
+- Issue #17390: Adjust Editor window title; remove 'Python',
+  move version to end.
+
+- Issue #14105: Idle debugger breakpoints no longer disappear
+  when inserting or deleting lines.
+
+- Issue #17172: Turtledemo can now be run from Idle.
+  Currently, the entry is on the Help menu, but it may move to Run.
+  Patch by Ramchandra Apt and Lita Cho.
+
+- Issue #21765: Add support for non-ascii identifiers to HyperParser.
+
+- Issue #21940: Add unittest for WidgetRedirector. Initial patch by Saimadhav
+  Heblikar.
+
+- Issue #18592: Add unittest for SearchDialogBase. Patch by Phil Webster.
+
+- Issue #21694: Add unittest for ParenMatch. Patch by Saimadhav Heblikar.
+
+- Issue #21686: add unittest for HyperParser. Original patch by Saimadhav
+  Heblikar.
+
+- Issue #12387: Add missing upper(lower)case versions of default Windows key
+  bindings for Idle so Caps Lock does not disable them. Patch by Roger Serwy.
+
+- Issue #21695: Closing a Find-in-files output window while the search is
+  still in progress no longer closes Idle.
+
+- Issue #18910: Add unittest for textView. Patch by Phil Webster.
+
+- Issue #18292: Add unittest for AutoExpand. Patch by Saihadhav Heblikar.
+
+- Issue #18409: Add unittest for AutoComplete. Patch by Phil Webster.
+
+- Issue #21477: htest.py - Improve framework, complete set of tests.
+  Patches by Saimadhav Heblikar
+
+- Issue #18104: Add idlelib/idle_test/htest.py with a few sample tests to begin
+  consolidating and improving human-validated tests of Idle. Change other files
+  as needed to work with htest.  Running the module as __main__ runs all tests.
+
+- Issue #21139: Change default paragraph width to 72, the PEP 8 recommendation.
+
+- Issue #21284: Paragraph reformat test passes after user changes reformat width.
+
+- Issue #17654: Ensure IDLE menus are customized properly on OS X for
+  non-framework builds and for all variants of Tk.
+
+
+What's New in IDLE 3.4.0?
+=========================
+*Release date: 2014-03-16*
+
+- Issue #17390: Display Python version on Idle title bar.
+  Initial patch by Edmond Burnett.
+
+- Issue #5066: Update IDLE docs. Patch by Todd Rovito.
+
+- Issue #17625: Close the replace dialog after it is used.
+
+- Issue #16226: Fix IDLE Path Browser crash.
+  (Patch by Roger Serwy)
+
+- Issue #15853: Prevent IDLE crash on OS X when opening Preferences menu
+  with certain versions of Tk 8.5.  Initial patch by Kevin Walzer.
+
+
+What's New in IDLE 3.3.0?
+=========================
+*Release date: 2012-09-29*
+
+- Issue #17625: Close the replace dialog after it is used.
+
+- Issue #7163: Propagate return value of sys.stdout.write.
+
+- Issue #15318: Prevent writing to sys.stdin.
+
+- Issue #4832: Modify IDLE to save files with .py extension by
+  default on Windows and OS X (Tk 8.5) as it already does with X11 Tk.
+
+- Issue #13532, #15319: Check that arguments to sys.stdout.write are strings.
+
+- Issue # 12510: Attempt to get certain tool tips no longer crashes IDLE.
+  Erroneous tool tips have been corrected. Default added for callables.
+
+- Issue #10365: File open dialog now works instead of crashing even when
+  parent window is closed while dialog is open.
+
+- Issue 14876: use user-selected font for highlight configuration.
+
+- Issue #14937: Perform auto-completion of filenames in strings even for
+  non-ASCII filenames. Likewise for identifiers.
+
+- Issue #8515: Set __file__ when run file in IDLE.
+  Initial patch by Bruce Frederiksen.
+
+- IDLE can be launched as `python -m idlelib`
+
+- Issue #14409: IDLE now properly executes commands in the Shell window
+  when it cannot read the normal config files on startup and
+  has to use the built-in default key bindings.
+  There was previously a bug in one of the defaults.
+
+- Issue #3573: IDLE hangs when passing invalid command line args
+  (directory(ies) instead of file(s)).
+
+- Issue #14018: Update checks for unstable system Tcl/Tk versions on OS X
+  to include versions shipped with OS X 10.7 and 10.8 in addition to 10.6.
+
+
+What's New in IDLE 3.2.1?
+=========================
+*Release date: 15-May-11*
+
+- Issue #6378: Further adjust idle.bat to start associated Python
+
+- Issue #11896: Save on Close failed despite selecting "Yes" in dialog.
+
+- Issue #1028: Ctrl-space binding to show completions was causing IDLE to exit.
+  Tk < 8.5 was sending invalid Unicode null; replaced with valid null.
+
+- Issue #4676: <Home> toggle failing on Tk 8.5, causing IDLE exits and strange selection
+  behavior. Improve selection extension behaviour.
+
+- Issue #3851: <Home> toggle non-functional when NumLock set on Windows.
+
+
+What's New in IDLE 3.1b1?
+=========================
+*Release date: 06-May-09*
+
+- Issue #5707: Use of 'filter' in keybindingDialog.py was causing custom key assignment to
+  fail.  Patch by Amaury Forgeot d'Arc.
+
+- Issue #4815: Offer conversion to UTF-8 if source files have
+  no encoding declaration and are not encoded in UTF-8.
+
+- Issue #4008: Fix problems with non-ASCII source files.
+
+- Issue #4323: Always encode source as UTF-8 without asking
+  the user (unless a different encoding is declared); remove
+  user configuration of source encoding; all according to
+  PEP 3120.
+
+- Issue #2665: On Windows, an IDLE installation upgraded from an old version
+  would not start if a custom theme was defined.
+
+------------------------------------------------------------------------
+Refer to NEWS2x.txt and HISTORY.txt for information on earlier releases.
+------------------------------------------------------------------------

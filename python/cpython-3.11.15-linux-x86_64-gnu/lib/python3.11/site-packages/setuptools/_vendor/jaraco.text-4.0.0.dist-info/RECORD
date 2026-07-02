@@ -1,0 +1,14 @@
+jaraco.text-4.0.0.dist-info/INSTALLER,sha256=5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM_6ak,2
+jaraco.text-4.0.0.dist-info/LICENSE,sha256=htoPAa6uRjSKPD1GUZXcHOzN55956HdppkuNoEsqR0E,1023
+jaraco.text-4.0.0.dist-info/METADATA,sha256=XC_QkBLJVPE5sQYkl41TNaZUw0AUzQb29GbKaD28nFY,3731
+jaraco.text-4.0.0.dist-info/RECORD,,
+jaraco.text-4.0.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+jaraco.text-4.0.0.dist-info/WHEEL,sha256=Wyh-_nZ0DJYolHNn1_hMa4lM7uDedD_RGVwbmTjyItk,91
+jaraco.text-4.0.0.dist-info/top_level.txt,sha256=0JnN3LfXH4LIRfXL-QFOGCJzQWZO3ELx4R1d_louoQM,7
+jaraco/text/Lorem ipsum.txt,sha256=N_7c_79zxOufBY9HZ3yzMgOkNv-TkOTTio4BydrSjgs,1335
+jaraco/text/__init__.py,sha256=lazNYXo8IhOR1bFigLAyGiiQao6jtO3KGWh8bZZPx3c,16762
+jaraco/text/layouts.py,sha256=HTC8aSTLZ7uXipyOXapRMC158juecjK6RVwitfmZ9_w,643
+jaraco/text/show-newlines.py,sha256=jT0vp4gLhG20hX2lTB-zKo_i3NgKzj79yRAdz4eMzIM,903
+jaraco/text/strip-prefix.py,sha256=NfVXV8JVNo6nqcuYASfMV7_y4Eo8zMQqlCOGvAnRIVw,412
+jaraco/text/to-dvorak.py,sha256=36nPPsiifwv6RfpAb--3zpgbIx8ohnnI1aR29IJTO9s,118
+jaraco/text/to-qwerty.py,sha256=IQoFY9v7vLTEybcput4KBYm_5GR35pmtgZ_xyrmdTgI,118

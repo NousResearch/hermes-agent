@@ -1,0 +1,632 @@
+.TH PYTHON "1"
+
+.\" To view this file while editing, run it through groff:
+.\"   groff -Tascii -man python.man | less
+
+.SH NAME
+python \- an interpreted, interactive, object-oriented programming language
+.SH SYNOPSIS
+.B python
+[
+.B \-B
+]
+[
+.B \-b
+]
+[
+.B \-d
+]
+[
+.B \-E
+]
+[
+.B \-h
+]
+[
+.B \-i
+]
+[
+.B \-I
+]
+.br
+       [
+.B \-m
+.I module-name
+]
+[
+.B \-q
+]
+[
+.B \-O
+]
+[
+.B \-OO
+]
+[
+.B \-P
+]
+[
+.B \-s
+]
+[
+.B \-S
+]
+[
+.B \-u
+]
+.br
+       [
+.B \-v
+]
+[
+.B \-V
+]
+[
+.B \-W
+.I argument
+]
+[
+.B \-x
+]
+[
+.B \-X
+.I option
+]
+[
+.B \-?
+]
+.br
+       [
+.B \--check-hash-based-pycs
+.I default
+|
+.I always
+|
+.I never
+]
+.br
+       [
+.B \--help
+]
+[
+.B \--help-env
+]
+[
+.B \--help-xoptions
+]
+[
+.B \--help-all
+]
+.br
+       [
+.B \-c
+.I command
+|
+.I script
+|
+\-
+]
+[
+.I arguments
+]
+.SH DESCRIPTION
+Python is an interpreted, interactive, object-oriented programming
+language that combines remarkable power with very clear syntax.
+For an introduction to programming in Python, see the Python Tutorial.
+The Python Library Reference documents built-in and standard types,
+constants, functions and modules.
+Finally, the Python Reference Manual describes the syntax and
+semantics of the core language in (perhaps too) much detail.
+(These documents may be located via the
+.B "INTERNET RESOURCES"
+below; they may be installed on your system as well.)
+.PP
+Python's basic power can be extended with your own modules written in
+C or C++.
+On most systems such modules may be dynamically loaded.
+Python is also adaptable as an extension language for existing
+applications.
+See the internal documentation for hints.
+.PP
+Documentation for installed Python modules and packages can be
+viewed by running the
+.B pydoc
+program.
+.SH COMMAND LINE OPTIONS
+.TP
+.B \-B
+Don't write
+.I .pyc
+files on import. See also PYTHONDONTWRITEBYTECODE.
+.TP
+.B \-b
+Issue warnings about str(bytes_instance), str(bytearray_instance)
+and comparing bytes/bytearray with str. (-bb: issue errors)
+.TP
+.BI "\-c " command
+Specify the command to execute (see next section).
+This terminates the option list (following options are passed as
+arguments to the command).
+.TP
+.BI "\-\-check-hash-based-pycs " mode
+Configure how Python evaluates the up-to-dateness of hash-based .pyc files.
+.TP
+.B \-d
+Turn on parser debugging output (for expert only, depending on
+compilation options).
+.TP
+.B \-E
+Ignore environment variables like PYTHONPATH and PYTHONHOME that modify
+the behavior of the interpreter.
+.TP
+.B \-h ", " \-? ", "\-\-help
+Prints the usage for the interpreter executable and exits.
+.TP
+.B "\-\-help\-env"
+Prints help about Python-specific environment variables and exits.
+.TP
+.B "\-\-help\-xoptions"
+Prints help about implementation-specific \fB\-X\fP options and exits.
+.TP
+.TP
+.B "\-\-help\-all"
+Prints complete usage information and exits.
+.TP
+.B \-i
+When a script is passed as first argument or the \fB\-c\fP option is
+used, enter interactive mode after executing the script or the
+command.  It does not read the $PYTHONSTARTUP file.  This can be
+useful to inspect global variables or a stack trace when a script
+raises an exception.
+.TP
+.B \-I
+Run Python in isolated mode. This also implies \fB\-E\fP, \fB\-P\fP and \fB\-s\fP. In
+isolated mode sys.path contains neither the script's directory nor the user's
+site-packages directory. All PYTHON* environment variables are ignored, too.
+Further restrictions may be imposed to prevent the user from injecting
+malicious code.
+.TP
+.BI "\-m " module-name
+Searches
+.I sys.path
+for the named module and runs the corresponding
+.I .py
+file as a script. This terminates the option list (following options
+are passed as arguments to the module).
+.TP
+.B \-O
+Remove assert statements and any code conditional on the value of
+__debug__; augment the filename for compiled (bytecode) files by
+adding .opt-1 before the .pyc extension.
+.TP
+.B \-OO
+Do \fB-O\fP and also discard docstrings; change the filename for
+compiled (bytecode) files by adding .opt-2 before the .pyc extension.
+.TP
+.B \-P
+Don't automatically prepend a potentially unsafe path to \fBsys.path\fP such
+as the current directory, the script's directory or an empty string. See also the
+\fBPYTHONSAFEPATH\fP environment variable.
+.TP
+.B \-q
+Do not print the version and copyright messages. These messages are
+also suppressed in non-interactive mode.
+.TP
+.B \-s
+Don't add user site directory to sys.path.
+.TP
+.B \-S
+Disable the import of the module
+.I site
+and the site-dependent manipulations of
+.I sys.path
+that it entails.  Also disable these manipulations if
+.I site
+is explicitly imported later.
+.TP
+.B \-u
+Force the stdout and stderr streams to be unbuffered.
+This option has no effect on the stdin stream.
+.TP
+.B \-v
+Print a message each time a module is initialized, showing the place
+(filename or built-in module) from which it is loaded.  When given
+twice, print a message for each file that is checked for when
+searching for a module.  Also provides information on module cleanup
+at exit.
+.TP
+.B \-V ", " \-\-version
+Prints the Python version number of the executable and exits.  When given
+twice, print more information about the build.
+
+.TP
+.BI "\-W " argument
+Warning control. Python's warning machinery by default prints warning messages
+to
+.IR sys.stderr .
+
+The simplest settings apply a particular action unconditionally to all warnings
+emitted by a process (even those that are otherwise ignored by default):
+
+  -Wdefault  # Warn once per call location
+  -Werror    # Convert to exceptions
+  -Walways   # Warn every time
+  -Wmodule   # Warn once per calling module
+  -Wonce     # Warn once per Python process
+  -Wignore   # Never warn
+
+The action names can be abbreviated as desired and the interpreter will resolve
+them to the appropriate action name. For example,
+.B -Wi
+is the same as
+.B -Wignore .
+
+The full form of argument is:
+.IB action:message:category:module:lineno
+
+Empty fields match all values; trailing empty fields may be omitted. For
+example
+.B -W ignore::DeprecationWarning
+ignores all DeprecationWarning warnings.
+
+The
+.I action
+field is as explained above but only applies to warnings that match
+the remaining fields.
+
+The
+.I message
+field must match the whole printed warning message; this match is
+case-insensitive.
+
+The
+.I category
+field matches the warning category (ex: "DeprecationWarning"). This must be a
+class name; the match test whether the actual warning category of the message
+is a subclass of the specified warning category.
+
+The
+.I module
+field matches the (fully-qualified) module name; this match is case-sensitive.
+
+The
+.I lineno
+field matches the line number, where zero matches all line numbers and is thus
+equivalent to an omitted line number.
+
+Multiple
+.B -W
+options can be given; when a warning matches more than one option, the action
+for the last matching option is performed. Invalid
+.B -W
+options are ignored (though, a warning message is printed about invalid options
+when the first warning is issued).
+
+Warnings can also be controlled using the
+.B PYTHONWARNINGS
+environment variable and from within a Python program using the warnings
+module.  For example, the warnings.filterwarnings() function can be used to use
+a regular expression on the warning message.
+
+.TP
+.BI "\-X " option
+Set implementation-specific option. The following options are available:
+
+    -X faulthandler: enable faulthandler
+
+    -X showrefcount: output the total reference count and number of used
+        memory blocks when the program finishes or after each statement in the
+        interactive interpreter. This only works on debug builds
+
+    -X tracemalloc: start tracing Python memory allocations using the
+        tracemalloc module. By default, only the most recent frame is stored in a
+        traceback of a trace. Use -X tracemalloc=NFRAME to start tracing with a
+        traceback limit of NFRAME frames
+
+    -X importtime: show how long each import takes. It shows module name,
+        cumulative time (including nested imports) and self time (excluding
+        nested imports). Note that its output may be broken in multi-threaded
+        application. Typical usage is python3 -X importtime -c 'import asyncio'
+
+    -X dev: enable CPython's "development mode", introducing additional runtime
+        checks which are too expensive to be enabled by default. It will not be
+        more verbose than the default if the code is correct: new warnings are
+        only emitted when an issue is detected. Effect of the developer mode:
+           * Add default warning filter, as -W default
+           * Install debug hooks on memory allocators: see the PyMem_SetupDebugHooks()
+             C function
+           * Enable the faulthandler module to dump the Python traceback on a crash
+           * Enable asyncio debug mode
+           * Set the dev_mode attribute of sys.flags to True
+           * io.IOBase destructor logs close() exceptions
+
+    -X utf8: enable UTF-8 mode for operating system interfaces, overriding the default
+        locale-aware mode. -X utf8=0 explicitly disables UTF-8 mode (even when it would
+        otherwise activate automatically). See PYTHONUTF8 for more details
+
+    -X pycache_prefix=PATH: enable writing .pyc files to a parallel tree rooted at the
+        given directory instead of to the code tree.
+
+    -X warn_default_encoding: enable opt-in EncodingWarning for 'encoding=None'
+
+    -X no_debug_ranges: disable the inclusion of the tables mapping extra location
+       information (end line, start column offset and end column offset) to every
+       instruction in code objects. This is useful when smaller code objects and pyc
+       files are desired as well as suppressing the extra visual location indicators
+       when the interpreter displays tracebacks.
+
+    -X frozen_modules=[on|off]: whether or not frozen modules should be used.
+       The default is "on" (or "off" if you are running a local build).
+
+    -X int_max_str_digits=number: limit the size of int<->str conversions.
+       This helps avoid denial of service attacks when parsing untrusted data.
+       The default is sys.int_info.default_max_str_digits.  0 disables.
+
+.TP
+.B \-x
+Skip the first line of the source.  This is intended for a DOS
+specific hack only.  Warning: the line numbers in error messages will
+be off by one!
+.SH INTERPRETER INTERFACE
+The interpreter interface resembles that of the UNIX shell: when
+called with standard input connected to a tty device, it prompts for
+commands and executes them until an EOF is read; when called with a
+file name argument or with a file as standard input, it reads and
+executes a
+.I script
+from that file;
+when called with
+.B \-c
+.IR command ,
+it executes the Python statement(s) given as
+.IR command .
+Here
+.I command
+may contain multiple statements separated by newlines.
+Leading whitespace is significant in Python statements!
+In non-interactive mode, the entire input is parsed before it is
+executed.
+.PP
+If available, the script name and additional arguments thereafter are
+passed to the script in the Python variable
+.IR sys.argv ,
+which is a list of strings (you must first
+.I import sys
+to be able to access it).
+If no script name is given,
+.I sys.argv[0]
+is an empty string; if
+.B \-c
+is used,
+.I sys.argv[0]
+contains the string
+.I '-c'.
+Note that options interpreted by the Python interpreter itself
+are not placed in
+.IR sys.argv .
+.PP
+In interactive mode, the primary prompt is `>>>'; the second prompt
+(which appears when a command is not complete) is `...'.
+The prompts can be changed by assignment to
+.I sys.ps1
+or
+.IR sys.ps2 .
+The interpreter quits when it reads an EOF at a prompt.
+When an unhandled exception occurs, a stack trace is printed and
+control returns to the primary prompt; in non-interactive mode, the
+interpreter exits after printing the stack trace.
+The interrupt signal raises the
+.I Keyboard\%Interrupt
+exception; other UNIX signals are not caught (except that SIGPIPE is
+sometimes ignored, in favor of the
+.I IOError
+exception).  Error messages are written to stderr.
+.SH FILES AND DIRECTORIES
+These are subject to difference depending on local installation
+conventions; ${prefix} and ${exec_prefix} are installation-dependent
+and should be interpreted as for GNU software; they may be the same.
+The default for both is \fI/usr/local\fP.
+.IP \fI${exec_prefix}/bin/python\fP
+Recommended location of the interpreter.
+.PP
+.I ${prefix}/lib/python<version>
+.br
+.I ${exec_prefix}/lib/python<version>
+.RS
+Recommended locations of the directories containing the standard
+modules.
+.RE
+.PP
+.I ${prefix}/include/python<version>
+.br
+.I ${exec_prefix}/include/python<version>
+.RS
+Recommended locations of the directories containing the include files
+needed for developing Python extensions and embedding the
+interpreter.
+.RE
+.SH ENVIRONMENT VARIABLES
+.IP PYTHONSAFEPATH
+If this is set to a non-empty string, don't automatically prepend a potentially
+unsafe path to \fBsys.path\fP such as the current directory, the script's
+directory or an empty string. See also the \fB\-P\fP option.
+.IP PYTHONHOME
+Change the location of the standard Python libraries.  By default, the
+libraries are searched in ${prefix}/lib/python<version> and
+${exec_prefix}/lib/python<version>, where ${prefix} and ${exec_prefix}
+are installation-dependent directories, both defaulting to
+\fI/usr/local\fP.  When $PYTHONHOME is set to a single directory, its value
+replaces both ${prefix} and ${exec_prefix}.  To specify different values
+for these, set $PYTHONHOME to ${prefix}:${exec_prefix}.
+.IP PYTHONPATH
+Augments the default search path for module files.
+The format is the same as the shell's $PATH: one or more directory
+pathnames separated by colons.
+Non-existent directories are silently ignored.
+The default search path is installation dependent, but generally
+begins with ${prefix}/lib/python<version> (see PYTHONHOME above).
+The default search path is always appended to $PYTHONPATH.
+If a script argument is given, the directory containing the script is
+inserted in the path in front of $PYTHONPATH.
+The search path can be manipulated from within a Python program as the
+variable
+.IR sys.path .
+.IP PYTHONPLATLIBDIR
+Override sys.platlibdir.
+.IP PYTHONSTARTUP
+If this is the name of a readable file, the Python commands in that
+file are executed before the first prompt is displayed in interactive
+mode.
+The file is executed in the same name space where interactive commands
+are executed so that objects defined or imported in it can be used
+without qualification in the interactive session.
+You can also change the prompts
+.I sys.ps1
+and
+.I sys.ps2
+in this file.
+.IP PYTHONOPTIMIZE
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-O\fP option. If set to an integer, it is equivalent to
+specifying \fB\-O\fP multiple times.
+.IP PYTHONDEBUG
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-d\fP option. If set to an integer, it is equivalent to
+specifying \fB\-d\fP multiple times.
+.IP PYTHONDONTWRITEBYTECODE
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-B\fP option (don't try to write
+.I .pyc
+files).
+.IP PYTHONINSPECT
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-i\fP option.
+.IP PYTHONIOENCODING
+If this is set before running the interpreter, it overrides the encoding used
+for stdin/stdout/stderr, in the syntax
+.IB encodingname ":" errorhandler
+The
+.IB errorhandler
+part is optional and has the same meaning as in str.encode. For stderr, the
+.IB errorhandler
+ part is ignored; the handler will always be \'backslashreplace\'.
+.IP PYTHONNOUSERSITE
+If this is set to a non-empty string it is equivalent to specifying the
+\fB\-s\fP option (Don't add the user site directory to sys.path).
+.IP PYTHONUNBUFFERED
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-u\fP option.
+.IP PYTHONVERBOSE
+If this is set to a non-empty string it is equivalent to specifying
+the \fB\-v\fP option. If set to an integer, it is equivalent to
+specifying \fB\-v\fP multiple times.
+.IP PYTHONWARNINGS
+If this is set to a comma-separated string it is equivalent to
+specifying the \fB\-W\fP option for each separate value.
+.IP PYTHONHASHSEED
+If this variable is set to "random", a random value is used to seed the hashes
+of str and bytes objects.
+
+If PYTHONHASHSEED is set to an integer value, it is used as a fixed seed for
+generating the hash() of the types covered by the hash randomization.  Its
+purpose is to allow repeatable hashing, such as for selftests for the
+interpreter itself, or to allow a cluster of python processes to share hash
+values.
+
+The integer must be a decimal number in the range [0,4294967295].  Specifying
+the value 0 will disable hash randomization.
+.IP PYTHONINTMAXSTRDIGITS
+Limit the maximum digit characters in an int value
+when converting from a string and when converting an int back to a str.
+A value of 0 disables the limit.  Conversions to or from bases 2, 4, 8,
+16, and 32 are never limited.
+.IP PYTHONMALLOC
+Set the Python memory allocators and/or install debug hooks. The available
+memory allocators are
+.IR malloc
+and
+.IR pymalloc .
+The available debug hooks are
+.IR debug ,
+.IR malloc_debug ,
+and
+.IR pymalloc_debug .
+.IP
+When Python is compiled in debug mode, the default is
+.IR pymalloc_debug
+and the debug hooks are automatically used. Otherwise, the default is
+.IR pymalloc .
+.IP PYTHONMALLOCSTATS
+If set to a non-empty string, Python will print statistics of the pymalloc
+memory allocator every time a new pymalloc object arena is created, and on
+shutdown.
+.IP
+This variable is ignored if the
+.RB $ PYTHONMALLOC
+environment variable is used to force the
+.BR malloc (3)
+allocator of the C library, or if Python is configured without pymalloc support.
+.IP PYTHONASYNCIODEBUG
+If this environment variable is set to a non-empty string, enable the debug
+mode of the asyncio module.
+.IP PYTHONTRACEMALLOC
+If this environment variable is set to a non-empty string, start tracing
+Python memory allocations using the tracemalloc module.
+.IP
+The value of the variable is the maximum number of frames stored in a
+traceback of a trace. For example,
+.IB PYTHONTRACEMALLOC=1
+stores only the most recent frame.
+.IP PYTHONFAULTHANDLER
+If this environment variable is set to a non-empty string,
+.IR faulthandler.enable()
+is called at startup: install a handler for SIGSEGV, SIGFPE, SIGABRT, SIGBUS
+and SIGILL signals to dump the Python traceback.
+.IP
+This is equivalent to the \fB-X faulthandler\fP option.
+.IP PYTHONEXECUTABLE
+If this environment variable is set,
+.IB sys.argv[0]
+will be set to its value instead of the value got through the C runtime. Only
+works on Mac OS X.
+.IP PYTHONUSERBASE
+Defines the user base directory, which is used to compute the path of the user
+.IR site-packages
+directory and Distutils installation paths for
+.IR "python setup\.py install \-\-user" .
+.IP PYTHONPROFILEIMPORTTIME
+If this environment variable is set to a non-empty string, Python will
+show how long each import takes. This is exactly equivalent to setting
+\fB\-X importtime\fP on the command line.
+.IP PYTHONBREAKPOINT
+If this environment variable is set to 0, it disables the default debugger. It
+can be set to the callable of your debugger of choice.
+.SS Debug-mode variables
+Setting these variables only has an effect in a debug build of Python, that is,
+if Python was configured with the
+\fB\--with-pydebug\fP build option.
+.IP PYTHONTHREADDEBUG
+If this environment variable is set, Python will print threading debug info.
+The feature is deprecated in Python 3.10 and will be removed in Python 3.12.
+.IP PYTHONDUMPREFS
+If this environment variable is set, Python will dump objects and reference
+counts still alive after shutting down the interpreter.
+.SH AUTHOR
+The Python Software Foundation: https://www.python.org/psf/
+.SH INTERNET RESOURCES
+Main website:  https://www.python.org/
+.br
+Documentation:  https://docs.python.org/
+.br
+Developer resources:  https://devguide.python.org/
+.br
+Downloads:  https://www.python.org/downloads/
+.br
+Module repository:  https://pypi.org/
+.br
+Newsgroups:  comp.lang.python, comp.lang.python.announce
+.SH LICENSING
+Python is distributed under an Open Source license.  See the file
+"LICENSE" in the Python source distribution for information on terms &
+conditions for accessing and otherwise using Python and for a
+DISCLAIMER OF ALL WARRANTIES.

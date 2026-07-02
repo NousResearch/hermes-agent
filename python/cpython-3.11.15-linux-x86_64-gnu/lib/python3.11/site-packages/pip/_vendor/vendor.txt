@@ -1,0 +1,18 @@
+CacheControl==0.14.4
+distlib==0.4.0
+distro==1.9.0
+msgpack==1.1.2
+packaging==26.2
+platformdirs==4.5.1
+pyproject-hooks==1.2.0
+requests==2.33.1
+    certifi==2026.2.25
+    idna==3.11
+    urllib3==2.6.3
+rich==14.2.0
+    pygments==2.19.2
+resolvelib==1.2.1
+setuptools==70.3.0
+tomli==2.3.1
+tomli-w==1.2.0
+truststore==0.10.4

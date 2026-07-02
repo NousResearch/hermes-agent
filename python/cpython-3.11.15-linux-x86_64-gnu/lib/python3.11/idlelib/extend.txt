@@ -1,0 +1,83 @@
+Writing an IDLE extension
+=========================
+
+An IDLE extension can define new key bindings and menu entries for IDLE
+edit windows.  There is a simple mechanism to load extensions when IDLE
+starts up and to attach them to each edit window. (It is also possible
+to make other changes to IDLE, but this must be done by editing the IDLE
+source code.)
+
+The list of extensions loaded at startup time is configured by editing
+the file config-extensions.def.  See below for details.
+
+An IDLE extension is defined by a class.  Methods of the class define
+actions that are invoked by event bindings or menu entries. Class (or
+instance) variables define the bindings and menu additions; these are
+automatically applied by IDLE when the extension is linked to an edit
+window.
+
+An IDLE extension class is instantiated with a single argument,
+`editwin', an EditorWindow instance. The extension cannot assume much
+about this argument, but it is guaranteed to have the following instance
+variables:
+
+    text	a Text instance (a widget)
+    io		an IOBinding instance (more about this later)
+    flist	the FileList instance (shared by all edit windows)
+
+(There are a few more, but they are rarely useful.)
+
+The extension class must not directly bind Window Manager (e.g. X) events.
+Rather, it must define one or more virtual events, e.g. <<z-in>>, and
+corresponding methods, e.g. z_in_event().  The virtual events will be
+bound to the corresponding methods, and Window Manager events can then be bound
+to the virtual events. (This indirection is done so that the key bindings can
+easily be changed, and so that other sources of virtual events can exist, such
+as menu entries.)
+
+An extension can define menu entries.  This is done with a class or instance
+variable named menudefs; it should be a list of pairs, where each pair is a
+menu name (lowercase) and a list of menu entries. Each menu entry is either
+None (to insert a separator entry) or a pair of strings (menu_label,
+virtual_event).  Here, menu_label is the label of the menu entry, and
+virtual_event is the virtual event to be generated when the entry is selected.
+An underscore in the menu label is removed; the character following the
+underscore is displayed underlined, to indicate the shortcut character (for
+Windows).
+
+At the moment, extensions cannot define whole new menus; they must define
+entries in existing menus.  Some menus are not present on some windows; such
+entry definitions are then ignored, but key bindings are still applied.  (This
+should probably be refined in the future.)
+
+Extensions are not required to define menu entries for all the events they
+implement.  (They are also not required to create keybindings, but in that
+case there must be empty bindings in cofig-extensions.def)
+
+Here is a partial example from zzdummy.py:
+
+class ZzDummy:
+
+    menudefs = [
+        ('format', [
+            ('Z in', '<<z-in>>'),
+            ('Z out', '<<z-out>>'),
+        ] )
+    ]
+
+    def __init__(self, editwin):
+        self.editwin = editwin
+
+    def z_in_event(self, event=None):
+        "...Do what you want here..."
+
+The final piece of the puzzle is the file "config-extensions.def", which is
+used to configure the loading of extensions and to establish key (or, more
+generally, event) bindings to the virtual events defined in the extensions.
+
+See the comments at the top of config-extensions.def for information.  It's
+currently necessary to manually modify that file to change IDLE's extension
+loading or extension key bindings.
+
+For further information on binding refer to the Tkinter Resources web page at
+python.org and to the Tk Command "bind" man page.

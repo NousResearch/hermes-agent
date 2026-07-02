@@ -1,0 +1,62 @@
+# config-extensions.def
+#
+# The following sections are for features that are no longer extensions.
+# Their options values are left here for back-compatibility.
+
+[AutoComplete]
+popupwait= 2000
+
+[CodeContext]
+maxlines= 15
+
+[FormatParagraph]
+max-width= 72
+
+[ParenMatch]
+style= expression
+flash-delay= 500
+bell= True
+
+# IDLE reads several config files to determine user preferences.  This
+# file is the default configuration file for IDLE extensions settings.
+#
+# Each extension must have at least one section, named after the
+# extension module. This section must contain an 'enable' item (=True to
+# enable the extension, =False to disable it), it may contain
+# 'enable_editor' or 'enable_shell' items, to apply it only to editor ir
+# shell windows, and may also contain any other general configuration
+# items for the extension.  Other True/False values will also be
+# recognized as boolean by the Extension Configuration dialog.
+#
+# Each extension must define at least one section named
+# ExtensionName_bindings or ExtensionName_cfgBindings. If present,
+# ExtensionName_bindings defines virtual event bindings for the
+# extension that are not user re-configurable. If present,
+# ExtensionName_cfgBindings defines virtual event bindings for the
+# extension that may be sensibly re-configured.
+#
+# If there are no keybindings for a menus' virtual events, include lines
+# like <<toggle-code-context>>=.
+#
+# Currently it is necessary to manually modify this file to change
+# extension key bindings and default values. To customize, create
+# ~/.idlerc/config-extensions.cfg and append the appropriate customized
+# section(s).  Those sections will override the defaults in this file.
+#
+# Note: If a keybinding is already in use when the extension is loaded,
+# the extension's virtual event's keybinding will be set to ''.
+#
+# See config-keys.def for notes on specifying keys and extend.txt for
+# information on creating IDLE extensions.
+
+# A fake extension for testing and example purposes.  When enabled and
+# invoked, inserts or deletes z-text at beginning of every line.
+[ZzDummy]
+enable= False
+enable_shell = False
+enable_editor = True
+z-text= Z
+[ZzDummy_cfgBindings]
+z-in= <Control-Shift-KeyRelease-Insert>
+[ZzDummy_bindings]
+z-out= <Control-Shift-KeyRelease-Delete>

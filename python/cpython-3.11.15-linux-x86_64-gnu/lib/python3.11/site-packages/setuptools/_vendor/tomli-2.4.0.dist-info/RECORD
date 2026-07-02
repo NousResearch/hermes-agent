@@ -1,0 +1,11 @@
+tomli-2.4.0.dist-info/INSTALLER,sha256=5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM_6ak,2
+tomli-2.4.0.dist-info/METADATA,sha256=9awKH4-6kItGRs1lUwnpGq2Wm2eHYWrFccpGKjgy_84,10567
+tomli-2.4.0.dist-info/RECORD,,
+tomli-2.4.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+tomli-2.4.0.dist-info/WHEEL,sha256=G2gURzTEtmeR8nrdXUJfNiB3VYVxigPQ-bEQujpNiNs,82
+tomli-2.4.0.dist-info/licenses/LICENSE,sha256=uAgWsNUwuKzLTCIReDeQmEpuO2GSLCte6S8zcqsnQv4,1072
+tomli/__init__.py,sha256=ahtDjGJA2M_wWVvGpzx4YJtWxrWBx6qE-GH5-UYoECA,314
+tomli/_parser.py,sha256=txeATLE3zHyZ-ushXtYfrZ3LoIs7JzQF2W2KL1gwJPg,25958
+tomli/_re.py,sha256=oSNZ_ilFI6chEuQ01YRSoUydBQr_okF_mSdHTkFmv90,3396
+tomli/_types.py,sha256=-GTG2VUqkpxwMqzmVO4F7ybKddIbAnuAHXfmWQcTi3Q,254
+tomli/py.typed,sha256=8PjyZ1aVoQpRVvt71muvuq5qE-jTFZkK-GLHkhdebmc,26

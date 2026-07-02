@@ -1,0 +1,7 @@
+# Encoding file: iso2022-kr, escape-driven
+E
+name		iso2022-kr
+init		\x1b$)C
+final		{}
+iso8859-1	\x0f
+ksc5601		\x0e

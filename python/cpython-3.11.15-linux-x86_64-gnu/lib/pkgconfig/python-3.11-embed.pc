@@ -1,0 +1,13 @@
+# See: man pkg-config
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: Python
+Description: Embed Python into an application
+Requires:
+Version: 3.11
+Libs.private: -lpthread -ldl  -lutil
+Libs: -L${libdir} -lpython3.11
+Cflags: -I${includedir}/python3.11

@@ -1,0 +1,1591 @@
+Please refer to the IDLEfork and IDLE CVS repositories for
+change details subsequent to the 0.8.1 release.
+
+
+IDLEfork ChangeLog
+==================
+
+2001-07-20 11:35  elguavas
+
+	* README.txt, NEWS.txt: bring up to date for 0.8.1 release
+
+2001-07-19 16:40  elguavas
+
+	* IDLEFORK.html: replaced by IDLEFORK-index.html
+
+2001-07-19 16:39  elguavas
+
+	* IDLEFORK-index.html: updated placeholder idlefork homepage
+
+2001-07-19 14:49  elguavas
+
+	* ChangeLog, EditorWindow.py, INSTALLATION, NEWS.txt, README.txt,
+	TODO.txt, idlever.py:
+	minor tidy-ups ready for 0.8.1 alpha tarball release
+
+2001-07-17 15:12  kbk
+
+	* INSTALLATION, setup.py: INSTALLATION: Remove the coexist.patch
+	instructions
+
+	**************** setup.py:
+
+	Remove the idles script, add some words on IDLE Fork to the
+	long_description, and clean up some line spacing.
+
+2001-07-17 15:01  kbk
+
+	* coexist.patch: Put this in the attic, at least for now...
+
+2001-07-17 14:59  kbk
+
+	* PyShell.py, idle, idles: Implement idle command interface as
+	suggested by GvR [idle-dev] 16 July **************** PyShell: Added
+	functionality:
+
+	usage: idle.py [-c command] [-d] [-i] [-r script] [-s] [-t title]
+	[arg] ...
+
+	idle file(s)	(without options) edit the file(s)
+
+	-c cmd	   run the command in a shell -d	 enable the
+	debugger -i	    open an interactive shell -i file(s) open a
+	shell and also an editor window for each file -r script  run a file
+	as a script in a shell -s	  run $IDLESTARTUP or
+	$PYTHONSTARTUP before anything else -t title   set title of shell
+	window
+
+	Remaining arguments are applied to the command (-c) or script (-r).
+
+	****************** idles: Removed the idles script, not needed
+
+	****************** idle:  Removed the IdleConf references, not
+	required anymore
+
+2001-07-16 17:08  kbk
+
+	* INSTALLATION, coexist.patch: Added installation instructions.
+
+	Added a patch which modifies idlefork so that it can co-exist with
+	"official" IDLE in the site-packages directory. This patch is not
+	necessary if only idlefork IDLE is installed. See INSTALLATION for
+	further details.
+
+2001-07-16 15:50  kbk
+
+	* idles: Add a script "idles" which opens a Python Shell window.
+
+	The default behaviour of idlefork idle is to open an editor window
+	instead of a shell. Complex expressions may be run in a fresh
+	environment by selecting "run".  There are times, however, when a
+	shell is desired.  Though one can be started by "idle -t 'foo'",
+	this script is more convenient.  In addition, a shell and an editor
+	window can be started in parallel by "idles -e foo.py".
+
+2001-07-16 15:25  kbk
+
+	* PyShell.py: Call out IDLE Fork in startup message.
+
+2001-07-16 14:00  kbk
+
+	* PyShell.py, setup.py: Add a script "idles" which opens a Python
+	Shell window.
+
+	The default behaviour of idlefork idle is to open an editor window
+	instead of a shell. Complex expressions may be run in a fresh
+	environment by selecting "run".  There are times, however, when a
+	shell is desired.  Though one can be started by "idle -t 'foo'",
+	this script is more convenient.  In addition, a shell and an editor
+	window can be started in parallel by "idles -e foo.py".
+
+2001-07-15 03:06  kbk
+
+	* pyclbr.py, tabnanny.py: tabnanny and pyclbr are now found in /Lib
+
+2001-07-15 02:29  kbk
+
+	* BrowserControl.py: Remove, was retained for 1.5.2 support
+
+2001-07-14 15:48  kbk
+
+	* setup.py: Installing Idle to site-packages via Distutils does not
+	copy the Idle help.txt file.
+
+	Ref SF Python Patch 422471
+
+2001-07-14 15:26  kbk
+
+	* keydefs.py: py-cvs-2001_07_13 (Rev 1.3) merge
+
+	"Make copy, cut and paste events case insensitive.  Reported by
+	Patrick K. O'Brien on idle-dev. (Should other bindings follow
+	suit?)" --GvR
+
+2001-07-14 15:21  kbk
+
+	* idle.py: py-cvs-2001_07_13 (Rev 1.4) merge
+
+	"Move the action of loading the configuration to the IdleConf
+	module rather than the idle.py script.	This has advantages and
+	disadvantages; the biggest advantage being that we can more easily
+	have an alternative main program."  --GvR
+
+2001-07-14 15:18  kbk
+
+	* extend.txt: py-cvs-2001_07_13 (Rev 1.4) merge
+
+	"Quick update to the extension mechanism (extend.py is gone, long
+	live config.txt)" --GvR
+
+2001-07-14 15:15  kbk
+
+	* StackViewer.py: py-cvs-2001_07_13 (Rev 1.16) merge
+
+	"Refactored, with some future plans in mind. This now uses the new
+	gotofileline() method defined in FileList.py"  --GvR
+
+2001-07-14 15:10  kbk
+
+	* PyShell.py: py-cvs-2001_07_13 (Rev 1.34) merge
+
+	"Amazing.  A very subtle change in policy in descr-branch actually
+	found a bug here.  Here's the deal: Class PyShell derives from
+	class OutputWindow.  Method PyShell.close() wants to invoke its
+	parent method, but because PyShell long ago was inherited from
+	class PyShellEditorWindow, it invokes
+	PyShelEditorWindow.close(self).  Now, class PyShellEditorWindow
+	itself derives from class OutputWindow, and inherits the close()
+	method from there without overriding it.  Under the old rules,
+	PyShellEditorWindow.close would return an unbound method restricted
+	to the class that defined the implementation of close(), which was
+	OutputWindow.close.  Under the new rules, the unbound method is
+	restricted to the class whose method was requested, that is
+	PyShellEditorWindow, and this was correctly trapped as an error."
+	--GvR
+
+2001-07-14 14:59  kbk
+
+	* PyParse.py: py-cvs-2001_07_13 (Rel 1.9) merge
+
+	"Taught IDLE's autoident parser that "yield" is a keyword that
+	begins a stmt.	Along w/ the preceding change to keyword.py, making
+	all this work w/ a future-stmt just looks harder and harder."
+	--tim_one
+
+	(From Rel 1.8: "Hack to make this still work with Python 1.5.2.
+	;-( " --fdrake)
+
+2001-07-14 14:51  kbk
+
+	* IdleConf.py: py-cvs-2001_07_13 (Rel 1.7) merge
+
+	"Move the action of loading the configuration to the IdleConf
+	module rather than the idle.py script.	This has advantages and
+	disadvantages; the biggest advantage being that we can more easily
+	have an alternative main program." --GvR
+
+2001-07-14 14:45  kbk
+
+	* FileList.py: py-cvs-2000_07_13 (Rev 1.9) merge
+
+	"Delete goodname() method, which is unused. Add gotofileline(), a
+	convenience method which I intend to use in a variant. Rename
+	test() to _test()."  --GvR
+
+	This was an interesting merge. The join completely missed removing
+	goodname(), which was adjacent, but outside of, a small conflict.
+	I only caught it by comparing the 1.1.3.2/1.1.3.3 diff.  CVS ain't
+	infallible.
+
+2001-07-14 13:58  kbk
+
+	* EditorWindow.py: py-cvs-2000_07_13 (Rev 1.38) merge "Remove
+	legacy support for the BrowserControl module; the webbrowser module
+	has been included since Python 2.0, and that is the preferred
+	interface." --fdrake
+
+2001-07-14 13:32  kbk
+
+	* EditorWindow.py, FileList.py, IdleConf.py, PyParse.py,
+	PyShell.py, StackViewer.py, extend.txt, idle.py, keydefs.py: Import
+	the 2001 July 13 23:59 GMT version of Python CVS IDLE on the
+	existing 1.1.3 vendor branch named py-cvs-vendor-branch. Release
+	tag is py-cvs-2001_07_13.
+
+2001-07-14 12:02  kbk
+
+	* Icons/python.gif: py-cvs-rel2_1 (Rev 1.2) merge Copied py-cvs rev
+	1.2 changed file to idlefork MAIN
+
+2001-07-14 11:58  kbk
+
+	* Icons/minusnode.gif: py-cvs-rel2_1 (Rev 1.2) merge Copied py-cvs
+	1.2 changed file to idlefork MAIN
+
+2001-07-14 11:23  kbk
+
+	* ScrolledList.py: py-cvs-rel2_1 (rev 1.5) merge - whitespace
+	normalization
+
+2001-07-14 11:20  kbk
+
+	* Separator.py: py-cvs-rel2_1 (Rev 1.3) merge - whitespace
+	normalization
+
+2001-07-14 11:16  kbk
+
+	* StackViewer.py: py-cvs-rel2_1 (Rev 1.15) merge - whitespace
+	normalization
+
+2001-07-14 11:14  kbk
+
+	* ToolTip.py: py-cvs-rel2_1 (Rev 1.2) merge - whitespace
+	normalization
+
+2001-07-14 10:13  kbk
+
+	* PyShell.py: cvs-py-rel2_1 (Rev 1.29 - 1.33) merge
+
+	Merged the following py-cvs revs without conflict: 1.29 Reduce
+	copyright text output at startup 1.30 Delay setting sys.args until
+	Tkinter is fully initialized 1.31 Whitespace normalization 1.32
+	Turn syntax warning into error when interactive 1.33 Fix warning
+	initialization bug
+
+	Note that module is extensively modified wrt py-cvs
+
+2001-07-14 06:33  kbk
+
+	* PyParse.py: py-cvs-rel2_1 (Rev 1.6 - 1.8) merge Fix autoindent
+	bug and deflect Unicode from text.get()
+
+2001-07-14 06:00  kbk
+
+	* Percolator.py: py-cvs-rel2_1 (Rev 1.3) "move "from Tkinter import
+	*" to module level" --jhylton
+
+2001-07-14 05:57  kbk
+
+	* PathBrowser.py: py-cvs-rel2_1 (Rev 1.6) merge - whitespace
+	normalization
+
+2001-07-14 05:49  kbk
+
+	* ParenMatch.py: cvs-py-rel2_1 (Rev 1.5) merge - whitespace
+	normalization
+
+2001-07-14 03:57  kbk
+
+	* ObjectBrowser.py: py-cvs-rel2_1 (Rev 1.3) merge "Make the test
+	program work outside IDLE."  -- GvR
+
+2001-07-14 03:52  kbk
+
+	* MultiStatusBar.py: py-cvs-rel2_1 (Rev 1.2) merge - whitespace
+	normalization
+
+2001-07-14 03:44  kbk
+
+	* MultiScrolledLists.py: py-cvs-rel2_1 (Rev 1.2) merge - whitespace
+	normalization
+
+2001-07-14 03:40  kbk
+
+	* IdleHistory.py: py-cvs-rel2_1 (Rev 1.4) merge - whitespace
+	normalization
+
+2001-07-14 03:38  kbk
+
+	* IdleConf.py: py-cvs-rel2_1 (Rev 1.6) merge - whitespace
+	normalization
+
+2001-07-13 14:18  kbk
+
+	* IOBinding.py: py-cvs-rel2_1 (Rev 1.4) merge - move "import *" to
+	module level
+
+2001-07-13 14:12  kbk
+
+	* FormatParagraph.py: py-cvs-rel2_1 (Rev 1.9) merge - whitespace
+	normalization
+
+2001-07-13 14:07  kbk
+
+	* FileList.py: py-cvs-rel2_1 (Rev 1.8) merge - whitespace
+	normalization
+
+2001-07-13 13:35  kbk
+
+	* EditorWindow.py: py-cvs-rel2_1 (Rev 1.33 - 1.37) merge
+
+	VP IDLE version depended on VP's ExecBinding.py and spawn.py to get
+	the path to the Windows Doc directory (relative to python.exe).
+	Removed this conflicting code in favor of py-cvs updates which on
+	Windows use a hard coded path relative to the location of this
+	module. py-cvs updates include support for webbrowser.py.  Module
+	still has BrowserControl.py for 1.5.2 support.
+
+	At this point, the differences wrt py-cvs relate to menu
+	functionality.
+
+2001-07-13 11:30  kbk
+
+	* ConfigParser.py: py-cvs-rel2_1 merge - Remove, lives in /Lib
+
+2001-07-13 10:10  kbk
+
+	* Delegator.py: py-cvs-rel2_1 (Rev 1.3) merge - whitespace
+	normalization
+
+2001-07-13 10:07  kbk
+
+	* Debugger.py: py-cvs-rel2_1 (Rev 1.15) merge - whitespace
+	normalization
+
+2001-07-13 10:04  kbk
+
+	* ColorDelegator.py: py-cvs-rel2_1 (Rev 1.11 and 1.12) merge
+	Colorize "as" after "import" / use DEBUG instead of __debug__
+
+2001-07-13 09:54  kbk
+
+	* ClassBrowser.py: py-cvs-rel2_1 (Rev 1.12) merge - whitespace
+	normalization
+
+2001-07-13 09:41  kbk
+
+	* BrowserControl.py: py-cvs-rel2_1 (Rev 1.1) merge - New File -
+	Force HEAD to trunk with -f Note: browser.py was renamed
+	BrowserControl.py 10 May 2000. It provides a collection of classes
+	and convenience functions to control external browsers "for 1.5.2
+	support". It was removed from py-cvs 18 April 2001.
+
+2001-07-13 09:10  kbk
+
+	* CallTips.py: py-cvs-rel2_1 (Rev 1.8) merge - whitespace
+	normalization
+
+2001-07-13 08:26  kbk
+
+	* CallTipWindow.py: py-cvs-rel2_1 (Rev 1.3) merge - whitespace
+	normalization
+
+2001-07-13 08:13  kbk
+
+	* AutoExpand.py: py-cvs-rel1_2 (Rev 1.4) merge, "Add Alt-slash to
+	Unix keydefs (I somehow need it on RH 6.2).  Get rid of assignment
+	to unused self.text.wordlist."	--GvR
+
+2001-07-12 16:54  elguavas
+
+	* ReplaceDialog.py: py-cvs merge, python 1.5.2 compatibility
+
+2001-07-12 16:46  elguavas
+
+	* ScriptBinding.py: py-cvs merge, better error dialog
+
+2001-07-12 16:38  elguavas
+
+	* TODO.txt: py-cvs merge, additions
+
+2001-07-12 15:35  elguavas
+
+	* WindowList.py: py-cvs merge, correct indentation
+
+2001-07-12 15:24  elguavas
+
+	* config.txt: py-cvs merge, correct typo
+
+2001-07-12 15:21  elguavas
+
+	* help.txt: py-cvs merge, update colour changing info
+
+2001-07-12 14:51  elguavas
+
+	* idle.py: py-cvs merge, idle_dir loading changed
+
+2001-07-12 14:44  elguavas
+
+	* idlever.py: py-cvs merge, version update
+
+2001-07-11 12:53  kbk
+
+	* BrowserControl.py: Initial revision
+
+2001-07-11 12:53  kbk
+
+	* AutoExpand.py, BrowserControl.py, CallTipWindow.py, CallTips.py,
+	ClassBrowser.py, ColorDelegator.py, Debugger.py, Delegator.py,
+	EditorWindow.py, FileList.py, FormatParagraph.py, IOBinding.py,
+	IdleConf.py, IdleHistory.py, MultiScrolledLists.py,
+	MultiStatusBar.py, ObjectBrowser.py, OutputWindow.py,
+	ParenMatch.py, PathBrowser.py, Percolator.py, PyParse.py,
+	PyShell.py, RemoteInterp.py, ReplaceDialog.py, ScriptBinding.py,
+	ScrolledList.py, Separator.py, StackViewer.py, TODO.txt,
+	ToolTip.py, WindowList.py, config.txt, help.txt, idle, idle.bat,
+	idle.py, idlever.py, setup.py, Icons/minusnode.gif,
+	Icons/python.gif: Import the release 2.1 version of Python CVS IDLE
+	on the existing 1.1.3 vendor branch named py-cvs-vendor-branch,
+	with release tag py-cvs-rel2_1.
+
+2001-07-11 12:34  kbk
+
+	* AutoExpand.py, AutoIndent.py, Bindings.py, CallTipWindow.py,
+	CallTips.py, ChangeLog, ClassBrowser.py, ColorDelegator.py,
+	Debugger.py, Delegator.py, EditorWindow.py, FileList.py,
+	FormatParagraph.py, FrameViewer.py, GrepDialog.py, IOBinding.py,
+	IdleConf.py, IdleHistory.py, MultiScrolledLists.py,
+	MultiStatusBar.py, NEWS.txt, ObjectBrowser.py, OldStackViewer.py,
+	OutputWindow.py, ParenMatch.py, PathBrowser.py, Percolator.py,
+	PyParse.py, PyShell.py, README.txt, RemoteInterp.py,
+	ReplaceDialog.py, ScriptBinding.py, ScrolledList.py,
+	SearchBinding.py, SearchDialog.py, SearchDialogBase.py,
+	SearchEngine.py, Separator.py, StackViewer.py, TODO.txt,
+	ToolTip.py, TreeWidget.py, UndoDelegator.py, WidgetRedirector.py,
+	WindowList.py, ZoomHeight.py, __init__.py, config-unix.txt,
+	config-win.txt, config.txt, eventparse.py, extend.txt, help.txt,
+	idle.bat, idle.py, idle.pyw, idlever.py, keydefs.py, pyclbr.py,
+	tabnanny.py, testcode.py, Icons/folder.gif, Icons/minusnode.gif,
+	Icons/openfolder.gif, Icons/plusnode.gif, Icons/python.gif,
+	Icons/tk.gif: Import the 9 March 2000 version of Python CVS IDLE as
+	1.1.3 vendor branch named py-cvs-vendor-branch.
+
+2001-07-04 13:43  kbk
+
+	* Icons/: folder.gif, minusnode.gif, openfolder.gif, plusnode.gif,
+	python.gif, tk.gif: Null commit with -f option to force an uprev
+	and put HEADs firmly on the trunk.
+
+2001-07-04 13:15  kbk
+
+	* AutoExpand.py, AutoIndent.py, Bindings.py, CallTipWindow.py,
+	CallTips.py, ChangeLog, ClassBrowser.py, ColorDelegator.py,
+	ConfigParser.py, Debugger.py, Delegator.py, EditorWindow.py,
+	ExecBinding.py, FileList.py, FormatParagraph.py, FrameViewer.py,
+	GrepDialog.py, IDLEFORK.html, IOBinding.py, IdleConf.py,
+	IdleHistory.py, MultiScrolledLists.py, MultiStatusBar.py, NEWS.txt,
+	ObjectBrowser.py, OldStackViewer.py, OutputWindow.py,
+	ParenMatch.py, PathBrowser.py, Percolator.py, PyParse.py,
+	PyShell.py, README.txt, Remote.py, RemoteInterp.py,
+	ReplaceDialog.py, ScriptBinding.py, ScrolledList.py,
+	SearchBinding.py, SearchDialog.py, SearchDialogBase.py,
+	SearchEngine.py, Separator.py, StackViewer.py, TODO.txt,
+	ToolTip.py, TreeWidget.py, UndoDelegator.py, WidgetRedirector.py,
+	WindowList.py, ZoomHeight.py, __init__.py, config-unix.txt,
+	config-win.txt, config.txt, eventparse.py, extend.txt, help.txt,
+	idle, idle.bat, idle.py, idle.pyw, idlever.py, keydefs.py,
+	loader.py, protocol.py, pyclbr.py, setup.py, spawn.py, tabnanny.py,
+	testcode.py: Null commit with -f option to force an uprev and put
+	HEADs firmly on the trunk.
+
+2001-06-27 10:24  elguavas
+
+	* IDLEFORK.html: updated contact details
+
+2001-06-25 17:23  elguavas
+
+	* idle, RemoteInterp.py, setup.py: Initial revision
+
+2001-06-25 17:23  elguavas
+
+	* idle, RemoteInterp.py, setup.py: import current python cvs idle
+	as a vendor branch
+
+2001-06-24 15:10  elguavas
+
+	* IDLEFORK.html: tiny change to test new syncmail setup
+
+2001-06-24 14:41  elguavas
+
+	* IDLEFORK.html: change to new developer contact, also a test
+	commit for new syncmail setup
+
+2001-06-23 18:15  elguavas
+
+	* IDLEFORK.html: tiny test update for revitalised idle-fork
+
+2000-09-24 17:29  nriley
+
+	* protocol.py: Fixes for Python 1.6 compatibility - socket bind and
+	connect get a tuple instead two arguments.
+
+2000-09-24 17:28  nriley
+
+	* spawn.py: Change for Python 1.6 compatibility - UNIX's 'os'
+	module defines 'spawnv' now, so we check for 'fork' first.
+
+2000-08-15 22:51  nowonder
+
+	* IDLEFORK.html:
+	corrected email address
+
+2000-08-15 22:47  nowonder
+
+	* IDLEFORK.html:
+	added .html file for http://idlefork.sourceforge.net
+
+2000-08-15 11:13  dscherer
+
+	* AutoExpand.py, AutoIndent.py, Bindings.py, CallTipWindow.py,
+	CallTips.py, __init__.py, ChangeLog, ClassBrowser.py,
+	ColorDelegator.py, ConfigParser.py, Debugger.py, Delegator.py,
+	FileList.py, FormatParagraph.py, FrameViewer.py, GrepDialog.py,
+	IOBinding.py, IdleConf.py, IdleHistory.py, MultiScrolledLists.py,
+	MultiStatusBar.py, NEWS.txt, ObjectBrowser.py, OldStackViewer.py,
+	OutputWindow.py, ParenMatch.py, PathBrowser.py, Percolator.py,
+	PyParse.py, PyShell.py, README.txt, ReplaceDialog.py,
+	ScriptBinding.py, ScrolledList.py, SearchBinding.py,
+	SearchDialog.py, SearchDialogBase.py, SearchEngine.py,
+	Separator.py, StackViewer.py, TODO.txt, ToolTip.py, TreeWidget.py,
+	UndoDelegator.py, WidgetRedirector.py, WindowList.py, help.txt,
+	ZoomHeight.py, config-unix.txt, config-win.txt, config.txt,
+	eventparse.py, extend.txt, idle.bat, idle.py, idle.pyw, idlever.py,
+	keydefs.py, loader.py, pyclbr.py, tabnanny.py, testcode.py,
+	EditorWindow.py, ExecBinding.py, Remote.py, protocol.py, spawn.py,
+	Icons/folder.gif, Icons/minusnode.gif, Icons/openfolder.gif,
+	Icons/plusnode.gif, Icons/python.gif, Icons/tk.gif: Initial
+	revision
+
+2000-08-15 11:13  dscherer
+
+	* AutoExpand.py, AutoIndent.py, Bindings.py, CallTipWindow.py,
+	CallTips.py, __init__.py, ChangeLog, ClassBrowser.py,
+	ColorDelegator.py, ConfigParser.py, Debugger.py, Delegator.py,
+	FileList.py, FormatParagraph.py, FrameViewer.py, GrepDialog.py,
+	IOBinding.py, IdleConf.py, IdleHistory.py, MultiScrolledLists.py,
+	MultiStatusBar.py, NEWS.txt, ObjectBrowser.py, OldStackViewer.py,
+	OutputWindow.py, ParenMatch.py, PathBrowser.py, Percolator.py,
+	PyParse.py, PyShell.py, README.txt, ReplaceDialog.py,
+	ScriptBinding.py, ScrolledList.py, SearchBinding.py,
+	SearchDialog.py, SearchDialogBase.py, SearchEngine.py,
+	Separator.py, StackViewer.py, TODO.txt, ToolTip.py, TreeWidget.py,
+	UndoDelegator.py, WidgetRedirector.py, WindowList.py, help.txt,
+	ZoomHeight.py, config-unix.txt, config-win.txt, config.txt,
+	eventparse.py, extend.txt, idle.bat, idle.py, idle.pyw, idlever.py,
+	keydefs.py, loader.py, pyclbr.py, tabnanny.py, testcode.py,
+	EditorWindow.py, ExecBinding.py, Remote.py, protocol.py, spawn.py,
+	Icons/folder.gif, Icons/minusnode.gif, Icons/openfolder.gif,
+	Icons/plusnode.gif, Icons/python.gif, Icons/tk.gif: Modified IDLE
+	from VPython 0.2
+
+
+original IDLE ChangeLog:
+========================
+
+Tue Feb 15 18:08:19 2000  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* NEWS.txt: Notice status bar and stack viewer.
+
+	* EditorWindow.py: Support for Moshe's status bar.
+
+	* MultiStatusBar.py: Status bar code -- by Moshe Zadka.
+
+	* OldStackViewer.py:
+	Adding the old stack viewer implementation back, for the debugger.
+
+	* StackViewer.py: New stack viewer, uses a tree widget.
+	(XXX: the debugger doesn't yet use this.)
+
+	* WindowList.py:
+	Correct a typo and remove an unqualified except that was hiding the error.
+
+	* ClassBrowser.py: Add an XXX comment about the ClassBrowser AIP.
+
+	* ChangeLog: Updated change log.
+
+	* NEWS.txt: News update.  Probably incomplete; what else is new?
+
+	* README.txt:
+	Updated for pending IDLE 0.5 release (still very rough -- just getting
+	it out in a more convenient format than CVS).
+
+	* TODO.txt: Tiny addition.
+
+Thu Sep  9 14:16:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TODO.txt: A few new TODO entries.
+
+Thu Aug 26 23:06:22 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Bindings.py: Add Python Documentation entry to Help menu.
+
+	* EditorWindow.py:
+	Find the help.txt file relative to __file__ or ".", not in sys.path.
+	(Suggested by Moshe Zadka, but implemented differently.)
+
+	Add <<python-docs>> event which, on Unix, brings up Netscape pointing
+	to http://www.python.doc/current/ (a local copy would be nice but its
+	location can't be predicted).  Windows solution TBD.
+
+Wed Aug 11 14:55:43 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TreeWidget.py:
+	Moshe noticed an inconsistency in his comment, so I'm rephrasing it to
+	be clearer.
+
+	* TreeWidget.py:
+	Patch inspired by Moshe Zadka to search for the Icons directory in the
+	same directory as __file__, rather than searching for it along sys.path.
+	This works better when idle is a package.
+
+Thu Jul 15 13:11:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TODO.txt: New wishes.
+
+Sat Jul 10 13:17:35 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* IdlePrefs.py:
+	Make the color for stderr red (i.e. the standard warning/danger/stop
+	color) rather than green.  Suggested by Sam Schulenburg.
+
+Fri Jun 25 17:26:34 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* PyShell.py: Close debugger when closing.  This may break a cycle.
+
+	* Debugger.py: Break cycle on close.
+
+	* ClassBrowser.py: Destroy the tree when closing.
+
+	* TreeWidget.py: Add destroy() method to recursively destroy a tree.
+
+	* PyShell.py: Extend _close() to break cycles.
+	Break some other cycles too (and destroy the root when done).
+
+	* EditorWindow.py:
+	Add _close() method that does the actual cleanup (close() asks the
+	user what they want first if there's unsaved stuff, and may cancel).
+	It closes more than before.
+
+	Add unload_extensions() method to unload all extensions; called from
+	_close().  It calls an extension's close() method if it has one.
+
+	* Percolator.py: Add close() method that breaks cycles.
+
+	* WidgetRedirector.py: Add unregister() method.
+	Unregister everything at closing.
+	Don't call close() in __del__, rely on explicit call to close().
+
+	* IOBinding.py, FormatParagraph.py, CallTips.py:
+	Add close() method that breaks a cycle.
+
+Fri Jun 11 15:03:00 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* AutoIndent.py, EditorWindow.py, FormatParagraph.py:
+	Tim Peters smart.patch:
+
+	EditorWindow.py:
+
+	+ Added get_tabwidth & set_tabwidth "virtual text" methods, that get/set the
+	widget's view of what a tab means.
+
+	+ Moved TK_TABWIDTH_DEFAULT here from AutoIndent.
+
+	+ Renamed Mark's get_selection_index to get_selection_indices (sorry, Mark,
+	but the name was plain wrong <wink>).
+
+	FormatParagraph.py:  renamed use of get_selection_index.
+
+	AutoIndent.py:
+
+	+ Moved TK_TABWIDTH_DEFAULT to EditorWindow.
+
+	+ Rewrote set_indentation_params to use new VTW get/set_tabwidth methods.
+
+	+ Changed smart_backspace_event to delete whitespace back to closest
+	preceding virtual tab stop or real character (note that this may require
+	inserting characters if backspacing over a tab!).
+
+	+ Nuked almost references to the selection tag, in favor of using
+	get_selection_indices.  The sole exception is in set_region, for which no
+	"set_selection" abstraction has yet been agreed upon.
+
+	+ Had too much fun using the spiffy new features of the format-paragraph
+	cmd.
+
+Thu Jun 10 17:48:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* FormatParagraph.py:
+	Code by Mark Hammond to format paragraphs embedded in comments.
+	Read the comments (which I reformatted using the new feature :-)
+	for some limitations.
+
+	* EditorWindow.py:
+	Added abstraction get_selection_index() (Mark Hammond).  Also
+	reformatted some comment blocks to show off a cool feature I'm about
+	to check in next.
+
+	* ClassBrowser.py:
+	Adapt to the new pyclbr's support of listing top-level functions.  If
+	this functionality is not present (e.g. when used with a vintage
+	Python 1.5.2 installation) top-level functions are not listed.
+
+	(Hmm...  Any distribution of IDLE 0.5 should probably include a copy
+	of the new pyclbr.py!)
+
+	* AutoIndent.py:
+	Fix off-by-one error in Tim's recent change to comment_region(): the
+	list of lines returned by get_region() contains an empty line at the
+	end representing the start of the next line, and this shouldn't be
+	commented out!
+
+	* CallTips.py:
+	Mark Hammond writes: Here is another change that allows it to work for
+	class creation - tries to locate an __init__ function.  Also updated
+	the test code to reflect your new "***" change.
+
+	* CallTipWindow.py:
+	Mark Hammond writes: Tim's suggestion of copying the font for the
+	CallTipWindow from the text control makes sense, and actually makes
+	the control look better IMO.
+
+Wed Jun  9 20:34:57 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* CallTips.py:
+	Append "..." if the appropriate flag (for varargs) in co_flags is set.
+	Ditto "***" for kwargs.
+
+Tue Jun  8 13:06:07 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ReplaceDialog.py:
+	Hmm...  Tim didn't turn "replace all" into a single undo block.
+	I think I like it better if it os, so here.
+
+	* ReplaceDialog.py: Tim Peters: made replacement atomic for undo/redo.
+
+	* AutoIndent.py: Tim Peters:
+
+	+ Set usetabs=1.  Editing pyclbr.py was driving me nuts <0.6 wink>.
+	usetabs=1 is the Emacs pymode default too, and thanks to indentwidth !=
+	tabwidth magical usetabs disabling, new files are still created with tabs
+	turned off.  The only implication is that if you open a file whose first
+	indent is a single tab, IDLE will now magically use tabs for that file (and
+	set indentwidth to 8).  Note that the whole scheme doesn't work right for
+	PythonWin, though, since Windows users typically set tabwidth to 4; Mark
+	probably has to hide the IDLE algorithm from them (which he already knows).
+
+	+ Changed comment_region_event to stick "##" in front of every line.  The
+	"holes" previously left on blank lines were visually confusing (made it
+	needlessly hard to figure out what to uncomment later).
+
+Mon Jun  7 15:38:40 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TreeWidget.py, ObjectBrowser.py:
+	Remove unnecessary reference to pyclbr from test() code.
+
+	* PyParse.py: Tim Peters:
+
+	Smarter logic for finding a parse synch point.
+
+	Does a half to a fifth the work in normal cases; don't notice the speedup,
+	but makes  more breathing room for other extensions.
+
+	Speeds terrible cases by at least a factor of 10. "Terrible" == e.g. you put
+	""" at the start of Tkinter.py, undo it, zoom to the bottom, and start
+	typing in code.  Used to take about 8 seconds for ENTER to respond, now some
+	large fraction of a second.  The new code gets indented correctly, despite
+	that it all remains "string colored" until the colorizer catches up (after
+	which, ENTER appears instantaneous again).
+
+Fri Jun  4 19:21:19 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* extend.py: Might as well enable CallTips by default.
+	If there are too many complaints I'll remove it again or fix it.
+
+Thu Jun  3 14:32:16 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* AutoIndent.py, EditorWindow.py, PyParse.py:
+	New offerings by Tim Peters; he writes:
+
+	IDLE is now the first Python editor in the Universe not confused by my
+	doctest.py <wink>.
+
+	As threatened, this defines IDLE's is_char_in_string function as a
+	method of EditorWindow.  You just need to define one similarly in
+	whatever it is you pass as editwin to AutoIndent; looking at the
+	EditorWindow.py part of the patch should make this clear.
+
+	* GrepDialog.py: Enclose pattern in quotes in status message.
+
+	* CallTips.py:
+	Mark Hammond fixed some comments and improved the way the tip text is
+	constructed.
+
+Wed Jun  2 18:18:57 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* CallTips.py:
+	My fix to Mark's code: restore the universal check on <KeyRelease>.
+	Always cancel on <Key-Escape> or <ButtonPress>.
+
+	* CallTips.py:
+	A version that Mark Hammond posted to the newsgroup.  Has some newer
+	stuff for getting the tip.  Had to fix the Key-( and Key-) events
+	for Unix.  Will have to re-apply my patch for catching KeyRelease and
+	ButtonRelease events.
+
+	* CallTipWindow.py, CallTips.py:
+	Call tips by Mark Hammond (plus tiny fix by me.)
+
+	* IdleHistory.py:
+	Changes by Mark Hammond: (1) support optional output_sep argument to
+	the constructor so he can eliminate the sys.ps2 that PythonWin leaves
+	in the source; (2) remove duplicate history items.
+
+	* AutoIndent.py:
+	Changes by Mark Hammond to allow using IDLE extensions in PythonWin as
+	well: make three dialog routines instance variables.
+
+	* EditorWindow.py:
+	Change by Mark Hammond to allow using IDLE extensions in PythonWin as
+	well: make three dialog routines instance variables.
+
+Tue Jun  1 20:06:44 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* AutoIndent.py: Hah!  A fix of my own to Tim's code!
+	Unix bindings for <<toggle-tabs>> and <<change-indentwidth>> were
+	missing, and somehow that meant the events were never generated,
+	even though they were in the menu.  The new Unix bindings are now
+	the same as the Windows bindings (M-t and M-u).
+
+	* AutoIndent.py, PyParse.py, PyShell.py: Tim Peters again:
+
+	The new version (attached) is fast enough all the time in every real module
+	I have <whew!>.  You can make it slow by, e.g., creating an open list with
+	5,000 90-character identifiers (+ trailing comma) each on its own line, then
+	adding an item to the end -- but that still consumes less than a second on
+	my P5-166.  Response time in real code appears instantaneous.
+
+	Fixed some bugs.
+
+	New feature:  when hitting ENTER and the cursor is beyond the line's leading
+	indentation, whitespace is removed on both sides of the cursor; before
+	whitespace was removed only on the left; e.g., assuming the cursor is
+	between the comma and the space:
+
+	def something(arg1, arg2):
+	                   ^ cursor to the left of here, and hit ENTER
+	               arg2):   # new line used to end up here
+	              arg2):    # but now lines up the way you expect
+
+	New hack:  AutoIndent has grown a context_use_ps1 Boolean config option,
+	defaulting to 0 (false) and set to 1 (only) by PyShell.  Reason:  handling
+	the fancy stuff requires looking backward for a parsing synch point; ps1
+	lines are the only sensible thing to look for in a shell window, but are a
+	bad thing to look for in a file window (ps1 lines show up in my module
+	docstrings often).  PythonWin's shell should set this true too.
+
+	Persistent problem:  strings containing def/class can still screw things up
+	completely.  No improvement.  Simplest workaround is on the user's head, and
+	consists of inserting e.g.
+
+	def _(): pass
+
+	(or any other def/class) after the end of the multiline string that's
+	screwing them up.  This is especially irksome because IDLE's syntax coloring
+	is *not* confused, so when this happens the colors don't match the
+	indentation behavior they see.
+
+	* AutoIndent.py: Tim Peters again:
+
+	[Tim, after adding some bracket smarts to AutoIndent.py]
+	> ...
+	> What it can't possibly do without reparsing large gobs of text is
+	> suggest a reasonable indent level after you've *closed* a bracket
+	> left open on some previous line.
+	> ...
+
+	The attached can, and actually fast enough to use -- most of the time.  The
+	code is tricky beyond belief to achieve that, but it works so far; e.g.,
+
+	        return len(string.expandtabs(str[self.stmt_start :
+	                                         ^ indents to caret
+	                                         i],
+	                                     ^ indents to caret
+	                                     self.tabwidth)) + 1
+	    ^ indents to caret
+
+	It's about as smart as pymode now, wrt both bracket and backslash
+	continuation rules.  It does require reparsing large gobs of text, and if it
+	happens to find something that looks like a "def" or "class" or sys.ps1
+	buried in a multiline string, but didn't suck up enough preceding text to
+	see the start of the string, it's completely hosed.  I can't repair that --
+	it's just too slow to reparse from the start of the file all the time.
+
+	AutoIndent has grown a new num_context_lines tuple attribute that controls
+	how far to look back, and-- like other params --this could/should be made
+	user-overridable at startup and per-file on the fly.
+
+	* PyParse.py: New file by Tim Peters:
+
+	One new file in the attached, PyParse.py.  The LineStudier (whatever it was
+	called <wink>) class was removed from AutoIndent; PyParse subsumes its
+	functionality.
+
+	* AutoIndent.py: Tim Peters keeps revising this module (more to come):
+
+	Removed "New tabwidth" menu binding.
+
+	Added "a tab means how many spaces?" dialog to block tabify and untabify.  I
+	think prompting for this is good now:  they're usually at-most-once-per-file
+	commands, and IDLE can't let them change tabwidth from the Tk default
+	anymore, so IDLE can no longer presume to have any idea what a tab means.
+
+	Irony:  for the purpose of keeping comments aligned via tabs, Tk's
+	non-default approach is much nicer than the Emacs/Notepad/Codewright/vi/etc
+	approach.
+
+	* EditorWindow.py:
+	1. Catch NameError on import (could be raised by case mismatch on Windows).
+	2. No longer need to reset pyclbr cache and show watch cursor when calling
+	   ClassBrowser -- the ClassBrowser takes care of pyclbr and the TreeWidget
+	   takes care of the watch cursor.
+	3. Reset the focus to the current window after error message about class
+	   browser on buffer without filename.
+
+	* Icons/minusnode.gif, Icons/plusnode.gif: Missed a few.
+
+	* ClassBrowser.py, PathBrowser.py: Rewritten based on TreeWidget.py
+
+	* ObjectBrowser.py: Object browser, based on TreeWidget.py.
+
+	* TreeWidget.py: Tree widget done right.
+
+	* ToolTip.py: As yet unused code for tool tips.
+
+	* ScriptBinding.py:
+	Ensure sys.argv[0] is the script name on Run Script.
+
+	* ZoomHeight.py: Move zoom height functionality to separate function.
+
+	* Icons/folder.gif, Icons/openfolder.gif, Icons/python.gif, Icons/tk.gif:
+	A few icons used by ../TreeWidget.py and its callers.
+
+	* AutoIndent.py: New version by Tim Peters improves block opening test.
+
+Fri May 21 04:46:17 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Attic/History.py, PyShell.py: Rename History to IdleHistory.
+	Add isatty() to pseudo files.
+
+	* StackViewer.py: Make initial stack viewer wider
+
+	* TODO.txt: New wishes
+
+	* AutoIndent.py, EditorWindow.py, PyShell.py:
+	Much improved autoindent and handling of tabs,
+	by Tim Peters.
+
+Mon May  3 15:49:52 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* AutoIndent.py, EditorWindow.py, FormatParagraph.py, UndoDelegator.py:
+	Tim Peters writes:
+
+	I'm still unsure, but couldn't stand the virtual event trickery so tried a
+	different sin (adding undo_block_start/stop methods to the Text instance in
+	EditorWindow.py).  Like it or not, it's efficient and works <wink>.  Better
+	idea?
+
+	Give the attached a whirl.  Even if you hate the implementation, I think
+	you'll like the results.  Think I caught all the "block edit" cmds,
+	including Format Paragraph, plus subtler ones involving smart indents and
+	backspacing.
+
+	* WidgetRedirector.py: Tim Peters writes:
+
+	[W]hile trying to dope out how redirection works, stumbled into two
+	possible glitches.  In the first, it doesn't appear to make sense to try to
+	rename a command that's already been destroyed; in the second, the name
+	"previous" doesn't really bring to mind "ignore the previous value" <wink>.
+
+Fri Apr 30 19:39:25 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* __init__.py: Support for using idle as a package.
+
+	* PathBrowser.py:
+	Avoid listing files more than once (e.g. foomodule.so has two hits:
+	once for foo + module.so, once for foomodule + .so).
+
+Mon Apr 26 22:20:38 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ChangeLog, ColorDelegator.py, PyShell.py: Tim Peters strikes again:
+
+	Ho ho ho -- that's trickier than it sounded!  The colorizer is working with
+	"line.col" strings instead of Text marks, and the absolute coordinates of
+	the point of interest can change across the self.update call (voice of
+	baffled experience, when two quick backspaces no longer fooled it, but a
+	backspace followed by a quick ENTER did <wink>).
+
+	Anyway, the attached appears to do the trick.  CPU usage goes way up when
+	typing quickly into a long triple-quoted string, but the latency is fine for
+	me (a relatively fast typist on a relatively slow machine).  Most of the
+	changes here are left over from reducing the # of vrbl names to help me
+	reason about the logic better; I hope the code is a *little* easier to
+
+Fri Apr 23 14:01:25 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* EditorWindow.py:
+	Provide full arguments to __import__ so it works in packagized IDLE.
+
+Thu Apr 22 23:20:17 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+        * help.txt:
+        Bunch of updates necessary due to recent changes; added docs for File
+        menu, command line and color preferences.
+
+        * Bindings.py: Remove obsolete 'script' menu.
+
+	* TODO.txt: Several wishes fulfilled.
+
+	* OutputWindow.py:
+	Moved classes OnDemandOutputWindow and PseudoFile here,
+	from ScriptBinding.py where they are no longer needed.
+
+	* ScriptBinding.py:
+	Mostly rewritten.  Instead of the old Run module and Debug module,
+	there are two new commands:
+
+	Import module (F5) imports or reloads the module and also adds its
+	name to the __main__ namespace.  This gets executed in the PyShell
+	window under control of its debug settings.
+
+	Run script (Control-F5) is similar but executes the contents of the
+	file directly in the __main__ namespace.
+
+	* PyShell.py: Nits: document use of $IDLESTARTUP; display idle version
+
+	* idlever.py: New version to celebrate new command line
+
+	* OutputWindow.py: Added flush(), for completeness.
+
+	* PyShell.py:
+	A lot of changes to make the command line more useful.  You can now do:
+	  idle.py -e file ...    -- to edit files
+	  idle.py script arg ... -- to run a script
+	  idle.py -c cmd arg ... -- to run a command
+	Other options, see also the usage message (also new!) for more details:
+	  -d       -- enable debugger
+	  -s       -- run $IDLESTARTUP or $PYTHONSTARTUP
+	  -t title -- set Python Shell window's title
+	sys.argv is set accordingly, unless -e is used.
+	sys.path is absolutized, and all relevant paths are inserted into it.
+
+	Other changes:
+	- the environment in which commands are executed is now the
+	  __main__ module
+	- explicitly save sys.stdout etc., don't restore from sys.__stdout__
+	- new interpreter methods execsource(), execfile(), stuffsource()
+	- a few small nits
+
+	* TODO.txt:
+	Some more TODO items.  Made up my mind about command line args,
+	Run/Import, __main__.
+
+	* ColorDelegator.py:
+	Super-elegant patch by Tim Peters that speeds up colorization
+	dramatically (up to 15 times he claims).  Works by reading more than
+	one line at a time, up to 100-line chunks (starting with one line and
+	then doubling up to the limit).  On a typical machine (e.g. Tim's
+	P5-166) this doesn't reduce interactive responsiveness in a noticeable
+	way.
+
+Wed Apr 21 15:49:34 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ColorDelegator.py:
+	Patch by Tim Peters to speed up colorizing of big multiline strings.
+
+Tue Apr 20 17:32:52 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* extend.txt:
+	For an event 'foo-bar', the corresponding method must be called
+	foo_bar_event().  Therefore, fix the references to zoom_height() in
+	the example.
+
+	* IdlePrefs.py: Restored the original IDLE color scheme.
+
+	* PyShell.py, IdlePrefs.py, ColorDelegator.py, EditorWindow.py:
+	Color preferences code by Loren Luke (massaged by me somewhat)
+
+	* SearchEngine.py:
+	Patch by Mark Favas: it fixes the search engine behaviour where an
+	unsuccessful search wraps around and re-searches that part of the file
+	between the start of the search and the end of the file - only really
+	an issue for very large files, but... (also removes a redundant
+	m.span() call).
+
+Mon Apr 19 16:26:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TODO.txt: A few wishes are now fulfilled.
+
+	* AutoIndent.py: Tim Peters implements some of my wishes:
+
+	o Makes the tab key intelligently insert spaces when appropriate
+	(see Help list banter twixt David Ascher and me; idea stolen from
+	every other editor on earth <wink>).
+
+	o newline_and_indent_event trims trailing whitespace on the old
+	line (pymode and Codewright).
+
+	o newline_and_indent_event no longer fooled by trailing whitespace or
+	comment after ":" (pymode, PTUI).
+
+	o newline_and_indent_event now reduces the new line's indentation after
+	return, break, continue, raise and pass stmts (pymode).
+
+	The last two are easy to fool in the presence of strings &
+	continuations, but pymode requires Emacs's high-powered C parsing
+	functions to avoid that in finite time.
+
+======================================================================
+	Python release 1.5.2c1, IDLE version 0.4
+======================================================================
+
+Wed Apr  7 18:41:59 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* README.txt, NEWS.txt: New version.
+
+	* idlever.py: Version bump awaiting impending new release.
+	(Not much has changed :-( )
+
+Mon Mar 29 14:52:28 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ScriptBinding.py, PyShell.py:
+	At Tim Peters' recommendation, add a dummy flush() method to
+	PseudoFile.
+
+Thu Mar 11 23:21:23 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* PathBrowser.py: Don't crash when sys.path contains an empty string.
+
+	* Attic/Outline.py: This file was never supposed to be part of IDLE.
+
+	* PathBrowser.py:
+	- Don't crash in the case where a superclass is a string instead of a
+	pyclbr.Class object; this can happen when the superclass is
+	unrecognizable (to pyclbr), e.g. when module renaming is used.
+
+	- Show a watch cursor when calling pyclbr (since it may take a while
+	recursively parsing imported modules!).
+
+Wed Mar 10 05:18:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* EditorWindow.py, Bindings.py: Add PathBrowser to File module
+
+	* PathBrowser.py: "Path browser" - 4 scrolled lists displaying:
+	    directories on sys.path
+	    modules in selected directory
+	    classes in selected module
+	    methods of selected class
+
+	Single clicking in a directory, module or class item updates the next
+	column with info about the selected item.  Double clicking in a
+	module, class or method item opens the file (and selects the clicked
+	item if it is a class or method).
+
+	I guess eventually I should be using a tree widget for this, but the
+	ones I've seen don't work well enough, so for now I use the old
+	Smalltalk or NeXT style multi-column hierarchical browser.
+
+	* MultiScrolledLists.py:
+	New utility: multiple scrolled lists in parallel
+
+	* ScrolledList.py: - White background.
+	- Display "(None)" (or text of your choosing) when empty.
+	- Don't set the focus.
+
+======================================================================
+	Python release 1.5.2b2, IDLE version 0.3
+======================================================================
+
+Wed Feb 17 22:47:41 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* NEWS.txt: News in 0.3.
+
+	* README.txt, idlever.py: Bump version to 0.3.
+
+	* EditorWindow.py:
+	After all, we don't need to call the callbacks ourselves!
+
+	* WindowList.py:
+	When deleting, call the callbacks *after* deleting the window from our list!
+
+	* EditorWindow.py:
+	Fix up the Windows menu via the new callback mechanism instead of
+	depending on menu post commands (which don't work when the menu is
+	torn off).
+
+	* WindowList.py:
+	Support callbacks to patch up Windows menus everywhere.
+
+	* ChangeLog: Oh, why not.  Checking in the Emacs-generated change log.
+
+Tue Feb 16 22:34:17 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ScriptBinding.py:
+	Only pop up the stack viewer when requested in the Debug menu.
+
+Mon Feb  8 22:27:49 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* WindowList.py: Don't crash if a window no longer exists.
+
+	* TODO.txt: Restructured a bit.
+
+Mon Feb  1 23:06:17 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* PyShell.py: Add current dir or paths of file args to sys.path.
+
+	* Debugger.py: Add canonic() function -- for brand new bdb.py feature.
+
+	* StackViewer.py: Protect against accessing an empty stack.
+
+Fri Jan 29 20:44:45 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ZoomHeight.py:
+	Use only the height to decide whether to zoom in or out.
+
+Thu Jan 28 22:24:30 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* EditorWindow.py, FileList.py:
+	Make sure the Tcl variables are shared between windows.
+
+	* PyShell.py, EditorWindow.py, Bindings.py:
+	Move menu/key binding code from Bindings.py to EditorWindow.py,
+	with changed APIs -- it makes much more sense there.
+	Also add a new feature: if the first character of a menu label is
+	a '!', it gets a checkbox.  Checkboxes are bound to Boolean Tcl variables
+	that can be accessed through the new getvar/setvar/getrawvar API;
+	the variable is named after the event to which the menu is bound.
+
+	* Debugger.py: Add Quit button to the debugger window.
+
+	* SearchDialog.py:
+	When find_again() finds exactly the current selection, it's a failure.
+
+	* idle.py, Attic/idle: Rename idle -> idle.py
+
+Mon Jan 18 15:18:57 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* EditorWindow.py, WindowList.py: Only deiconify when iconic.
+
+	* TODO.txt: Misc
+
+Tue Jan 12 22:14:34 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* testcode.py, Attic/test.py:
+	Renamed test.py to testcode.py so one can import Python's
+	test package from inside IDLE.  (Suggested by Jack Jansen.)
+
+	* EditorWindow.py, ColorDelegator.py:
+	Hack to close a window that is colorizing.
+
+	* Separator.py: Vladimir Marangozov's patch:
+	The separator dances too much and seems to jump by arbitrary amounts
+	in arbitrary directions when I try to move it for resizing the frames.
+	This patch makes it more quiet.
+
+Mon Jan 11 14:52:40 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* TODO.txt: Some requests have been fulfilled.
+
+	* EditorWindow.py:
+	Set the cursor to a watch when opening the class browser (which may
+	take quite a while, browsing multiple files).
+
+	Newer, better center() -- but assumes no wrapping.
+
+	* SearchBinding.py:
+	Got rid of debug print statement in goto_line_event().
+
+	* ScriptBinding.py:
+	I think I like it better if it prints the traceback even when it displays
+	the stack viewer.
+
+	* Debugger.py: Bind ESC to close-window.
+
+	* ClassBrowser.py: Use a HSeparator between the classes and the items.
+	Make the list of classes wider by default (40 chars).
+	Bind ESC to close-window.
+
+	* Separator.py:
+	Separator classes (draggable divider between two panes).
+
+Sat Jan  9 22:01:33 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* WindowList.py:
+	Don't traceback when wakeup() is called when the window has been destroyed.
+	This can happen when a torn-of Windows menu references closed windows.
+	And Tim Peters claims that the Windows menu is his favorite to tear off...
+
+	* EditorWindow.py: Allow tearing off of the Windows menu.
+
+	* StackViewer.py: Close on ESC.
+
+	* help.txt: Updated a bunch of things (it was mostly still 0.1!)
+
+	* extend.py: Added ScriptBinding to standard bindings.
+
+	* ScriptBinding.py:
+	This now actually works.  See doc string.  It can run a module (i.e.
+	import or reload) or debug it (same with debugger control).  Output
+	goes to a fresh output window, only created when needed.
+
+======================================================================
+	Python release 1.5.2b1, IDLE version 0.2
+======================================================================
+
+Fri Jan  8 17:26:02 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* README.txt, NEWS.txt: What's new in this release.
+
+	* Bindings.py, PyShell.py:
+	Paul Prescod's patches to allow the stack viewer to pop up when a
+	traceback is printed.
+
+Thu Jan  7 00:12:15 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* FormatParagraph.py:
+	Change paragraph width limit to 70 (like Emacs M-Q).
+
+	* README.txt:
+	Separating TODO from README.  Slight reformulation of features.  No
+	exact release date.
+
+	* TODO.txt: Separating TODO from README.
+
+Mon Jan  4 21:19:09 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* FormatParagraph.py:
+	Hm.  There was a boundary condition error at the end of the file too.
+
+	* SearchBinding.py: Hm.  Add Unix binding for replace, too.
+
+	* keydefs.py: Ran eventparse.py again.
+
+	* FormatParagraph.py: Added Unix Meta-q key binding;
+	fix find_paragraph when at start of file.
+
+	* AutoExpand.py: Added Meta-/ binding for Unix as alt for Alt-/.
+
+	* SearchBinding.py:
+	Add unix binding for grep (otherwise the menu entry doesn't work!)
+
+	* ZoomHeight.py: Adjusted Unix height to work with fvwm96. :=(
+
+	* GrepDialog.py: Need to import sys!
+
+	* help.txt, extend.txt, README.txt: Formatted some paragraphs
+
+	* extend.py, FormatParagraph.py:
+	Add new extension to reformat a (text) paragraph.
+
+	* ZoomHeight.py: Typo in Win specific height setting.
+
+Sun Jan  3 00:47:35 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* AutoIndent.py: Added something like Tim Peters' backspace patch.
+
+	* ZoomHeight.py: Adapted to Unix (i.e., more hardcoded constants).
+
+Sat Jan  2 21:28:54 1999  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* keydefs.py, idlever.py, idle.pyw, idle.bat, help.txt, extend.txt, extend.py, eventparse.py, ZoomHeight.py, WindowList.py, UndoDelegator.py, StackViewer.py, SearchEngine.py, SearchDialogBase.py, SearchDialog.py, ScrolledList.py, SearchBinding.py, ScriptBinding.py, ReplaceDialog.py, Attic/README, README.txt, PyShell.py, Attic/PopupMenu.py, OutputWindow.py, IOBinding.py, Attic/HelpWindow.py, History.py, GrepDialog.py, FileList.py, FrameViewer.py, EditorWindow.py, Debugger.py, Delegator.py, ColorDelegator.py, Bindings.py, ClassBrowser.py, AutoExpand.py, AutoIndent.py:
+	Checking in IDLE 0.2.
+
+	Much has changed -- too much, in fact, to write down.
+	The big news is that there's a standard way to write IDLE extensions;
+	see extend.txt.  Some sample extensions have been provided, and
+	some existing code has been converted to extensions.  Probably the
+	biggest new user feature is a new search dialog with more options,
+	search and replace, and even search in files (grep).
+
+	This is exactly as downloaded from my laptop after returning
+	from the holidays -- it hasn't even been tested on Unix yet.
+
+Fri Dec 18 15:52:54 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* FileList.py, ClassBrowser.py:
+	Fix the class browser to work even when the file is not on sys.path.
+
+Tue Dec  8 20:39:36 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Attic/turtle.py: Moved to Python 1.5.2/Lib
+
+Fri Nov 27 03:19:20 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* help.txt: Typo
+
+	* EditorWindow.py, FileList.py: Support underlining of menu labels
+
+	* Bindings.py:
+	New approach, separate tables for menus (platform-independent) and key
+	definitions (platform-specific), and generating accelerator strings
+	automatically from the key definitions.
+
+Mon Nov 16 18:37:42 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Attic/README: Clarify portability and main program.
+
+	* Attic/README: Added intro for 0.1 release and append Grail notes.
+
+Mon Oct 26 18:49:00 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Attic/turtle.py: root is now a global called _root
+
+Sat Oct 24 16:38:38 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Attic/turtle.py: Raise the root window on reset().
+	Different action on WM_DELETE_WINDOW is more likely to do the right thing,
+	allowing us to destroy old windows.
+
+	* Attic/turtle.py:
+	Split the goto() function in two: _goto() is the internal one,
+	using Canvas coordinates, and goto() uses turtle coordinates
+	and accepts variable argument lists.
+
+	* Attic/turtle.py: Cope with destruction of the window
+
+	* Attic/turtle.py: Turtle graphics
+
+	* Debugger.py: Use of Breakpoint class should be bdb.Breakpoint.
+
+Mon Oct 19 03:33:40 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* SearchBinding.py:
+	Speed up the search a bit -- don't drag a mark around...
+
+	* PyShell.py:
+	Change our special entries from <console#N> to <pyshell#N>.
+	Patch linecache.checkcache() to keep our special entries alive.
+	Add popup menu to all editor windows to set a breakpoint.
+
+	* Debugger.py:
+	Use and pass through the 'force' flag to set_dict() where appropriate.
+	Default source and globals checkboxes to false.
+	Don't interact in user_return().
+	Add primitive set_breakpoint() method.
+
+	* ColorDelegator.py:
+	Raise priority of 'sel' tag so its foreground (on Windows) will take
+	priority over text colorization (which on Windows is almost the
+	same color as the selection background).
+
+	Define a tag and color for breakpoints ("BREAK").
+
+	* Attic/PopupMenu.py: Disable "Open stack viewer" and "help" commands.
+
+	* StackViewer.py:
+	Add optional 'force' argument (default 0) to load_dict().
+	If set, redo the display even if it's the same dict.
+
+Fri Oct 16 21:10:12 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* StackViewer.py: Do nothing when loading the same dict as before.
+
+	* PyShell.py: Details for debugger interface.
+
+	* Debugger.py:
+	Restructured and more consistent.  Save checkboxes across instantiations.
+
+	* EditorWindow.py, Attic/README, Bindings.py:
+	Get rid of conflicting ^X binding.  Use ^W.
+
+	* Debugger.py, StackViewer.py:
+	Debugger can now show local and global variables.
+
+	* Debugger.py: Oops
+
+	* Debugger.py, PyShell.py: Better debugger support (show stack etc).
+
+	* Attic/PopupMenu.py: Follow renames in StackViewer module
+
+	* StackViewer.py:
+	Rename classes to StackViewer (the widget) and StackBrowser (the toplevel).
+
+	* ScrolledList.py: Add close() method
+
+	* EditorWindow.py: Clarify 'Open Module' dialog text
+
+	* StackViewer.py: Restructured into a browser and a widget.
+
+Thu Oct 15 23:27:08 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* ClassBrowser.py, ScrolledList.py:
+	Generalized the scrolled list which is the base for the class and
+	method browser into a separate class in its own module.
+
+	* Attic/test.py: Cosmetic change
+
+	* Debugger.py: Don't show function name if there is none
+
+Wed Oct 14 03:43:05 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Debugger.py, PyShell.py: Polish the Debugger GUI a bit.
+	Closing it now also does the right thing.
+
+Tue Oct 13 23:51:13 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* Debugger.py, PyShell.py, Bindings.py:
+	Ad primitive debugger interface (so far it will step and show you the
+	source, but it doesn't yet show the stack).
+
+	* Attic/README: Misc
+
+	* StackViewer.py: Whoops -- referenced self.top before it was set.
+
+	* help.txt: Added history and completion commands.
+
+	* help.txt: Updated
+
+	* FileList.py: Add class browser functionality.
+
+	* StackViewer.py:
+	Add a close() method and bind to WM_DELETE_WINDOW protocol
+
+	* PyShell.py: Clear the linecache before printing a traceback
+
+	* Bindings.py: Added class browser binding.
+
+	* ClassBrowser.py: Much improved, much left to do.
+
+	* PyShell.py: Make the return key do what I mean more often.
+
+	* ClassBrowser.py:
+	Adding the beginnings of a Class browser.  Incomplete, yet.
+
+	* EditorWindow.py, Bindings.py:
+	Add new command, "Open module".  You select or type a module name,
+	and it opens the source.
+
+Mon Oct 12 23:59:27 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* PyShell.py: Subsume functionality from Popup menu in Debug menu.
+	Other stuff so the PyShell window can be resurrected from the Windows menu.
+
+	* FileList.py: Get rid of PopUp menu.
+	Create a simple Windows menu.  (Imperfect when Untitled windows exist.)
+	Add wakeup() method: deiconify, raise, focus.
+
+	* EditorWindow.py: Generalize menu creation.
+
+	* Bindings.py: Add Debug and Help menu items.
+
+	* EditorWindow.py: Added a menu bar to every window.
+
+	* Bindings.py: Add menu configuration to the event configuration.
+
+	* Attic/PopupMenu.py: Pass a root to the help window.
+
+	* SearchBinding.py:
+	Add parent argument to 'go to line number' dialog box.
+
+Sat Oct 10 19:15:32 1998  Guido van Rossum  <guido@cnri.reston.va.us>
+
+	* StackViewer.py:
+	Add a label at the top showing (very basic) help for the stack viewer.
+	Add a label at the bottom showing the exception info.
+
+	* Attic/test.py, Attic/idle: Add Unix main script and test program.
+
+	* idle.pyw, help.txt, WidgetRedirector.py, UndoDelegator.py, StackViewer.py, SearchBinding.py, Attic/README, PyShell.py, Attic/PopupMenu.py, Percolator.py, Outline.py, IOBinding.py, History.py, Attic/HelpWindow.py, FrameViewer.py, FileList.py, EditorWindow.py, Delegator.py, ColorDelegator.py, Bindings.py, AutoIndent.py, AutoExpand.py:
+	Initial checking of Tk-based Python IDE.
+	Features: text editor with syntax coloring and undo;
+	subclassed into interactive Python shell which adds history.
+

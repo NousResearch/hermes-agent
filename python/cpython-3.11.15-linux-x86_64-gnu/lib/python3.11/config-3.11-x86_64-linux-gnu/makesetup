@@ -1,0 +1,350 @@
+#! /bin/sh
+set -e
+
+# Convert templates into Makefile and config.c, based on the module
+# definitions found in the file Setup.
+#
+# Usage: makesetup [-s dir] [-c file] [-m file] [Setup] ... [-n [Setup] ...]
+#
+# Options:
+# -s directory: alternative source directory (default .)
+# -l directory: library source directory (default derived from $0)
+# -c file:      alternative config.c template (default $libdir/config.c.in)
+# -c -:         don't write config.c
+# -m file:      alternative Makefile template (default ./Makefile.pre)
+# -m -:         don't write Makefile
+#
+# Remaining arguments are one or more Setup files (default ./Setup).
+# Setup files after a -n option are used for their variables, modules
+# and libraries but not for their .o files.
+#
+# See Setup for a description of the format of the Setup file.
+#
+# The following edits are made:
+#
+# Copying config.c.in to config.c:
+# - insert an identifying comment at the start
+# - for each <module> mentioned in Setup before *noconfig*:
+#   + insert 'extern PyObject* PyInit_<module>(void);' before MARKER 1
+#   + insert '{"<module>", PyInit_<module>},' before MARKER 2
+#
+# Copying Makefile.pre to Makefile:
+# - insert an identifying comment at the start
+# - replace _MODBUILT_NAMES_ by the list of *static* and *shared* modules
+#   from Setup
+# - replace _MODBSHARED_NAMES_ by the list of *shared* modules from Setup
+# - replace _MODDISABLED_NAMES_ by the list of *disabled* modules from Setup
+# - replace _MODOBJS_ by the list of objects from Setup (except for
+#   Setup files after a -n option)
+# - replace _MODLIBS_ by the list of libraries from Setup
+# - for each object file mentioned in Setup, append a rule
+#   '<file>.o: <file>.c; <build commands>' to the end of the Makefile
+# - for each module mentioned in Setup, append a rule
+#   which creates a shared library version to the end of the Makefile
+# - for each variable definition found in Setup, insert the definition
+#   before the comment 'Definitions added by makesetup'
+
+# Loop over command line options
+usage='
+usage: makesetup [-s srcdir] [-l libdir] [-c config.c.in] [-m Makefile.pre]
+                 [Setup] ... [-n [Setup] ...]'
+srcdir='.'
+libdir=''
+config=''
+makepre=''
+noobjects=''
+doconfig=yes
+while :
+do
+	case $1 in
+	-s)	shift; srcdir=$1; shift;;
+	-l)	shift; libdir=$1; shift;;
+	-c)	shift; config=$1; shift;;
+	-m)	shift; makepre=$1; shift;;
+	--)	shift; break;;
+	-n)	noobjects=yes;;
+	-*)	echo "$usage" 1>&2; exit 2;;
+	*)	break;;
+	esac
+done
+
+# Set default libdir and config if not set by command line
+# (Not all systems have dirname)
+case $libdir in
+'')	case $0 in
+	*/*)	libdir=`echo $0 | sed 's,/[^/]*$,,'`;;
+	*)	libdir=.;;
+	esac;;
+esac
+case $config in
+'')	config=$libdir/config.c.in;;
+esac
+case $makepre in
+'')	makepre=Makefile.pre;;
+esac
+
+# Newline for sed i and a commands
+NL='\
+'
+
+# Setup to link with extra libraries when making shared extensions.
+# Currently, only Cygwin needs this baggage.
+case `uname -s` in
+CYGWIN*) if test $libdir = .
+	 then
+	 	ExtraLibDir=.
+	 else
+	 	ExtraLibDir='$(LIBPL)'
+	 fi
+	 ExtraLibs="-L$ExtraLibDir -lpython\$(LDVERSION)";;
+esac
+
+# Main loop
+for i in ${*-Setup}
+do
+	case $i in
+	-n)	echo '*noobjects*';;
+	*)	echo '*doconfig*'; cat "$i";;
+	esac
+done |
+sed -e 's/[ 	]*#.*//' -e '/^[ 	]*$/d' |
+(
+	rulesf="@rules.$$"
+	trap 'rm -f $rulesf' 0 1 2 3
+	echo "
+# Rules appended by makesetup
+" >$rulesf
+	DEFS=
+	BUILT=
+	BUILT_SHARED=
+	DISABLED=
+	CONFIGURED=
+	MODS=
+	SHAREDMODS=
+	OBJS=
+	LIBS=
+	LOCALLIBS=
+	BASELIBS=
+	while read line
+	do
+		# to handle backslashes for sh's that don't automatically
+		# continue a read when the last char is a backslash
+		while echo $line | grep '\\$' > /dev/null
+		do
+			read extraline
+			line=`echo $line| sed s/.$//`$extraline
+		done
+
+		# Output DEFS in reverse order so first definition overrides
+		case $line in
+		*=*)	DEFS="$line$NL$DEFS"; continue;;
+		'include '*)	DEFS="$line$NL$DEFS"; continue;;
+		'*noobjects*')
+			case $noobjects in
+			yes)	;;
+			*)	LOCALLIBS=$LIBS; LIBS=;;
+			esac
+			noobjects=yes;
+			continue;;
+		'*doconfig*')	doconfig=yes; continue;;
+		'*static*')	doconfig=yes; continue;;
+		'*noconfig*')	doconfig=no; continue;;
+		'*shared*')	doconfig=no; continue;;
+		'*disabled*')	doconfig=disabled; continue;;
+		esac
+		srcs=
+		cpps=
+		libs=
+		mods=
+		mods_upper=
+		skip=
+		for arg in $line
+		do
+			case $skip in
+			libs)	libs="$libs $arg"; skip=; continue;;
+			cpps)	cpps="$cpps $arg"; skip=; continue;;
+			srcs)	srcs="$srcs $arg"; skip=; continue;;
+			esac
+			case $arg in
+			-framework)	libs="$libs $arg"; skip=libs;
+				        # OSX/OSXS/Darwin framework link cmd
+					;;
+			-[IDUCfF]*)	cpps="$cpps $arg";;
+			-Xcompiler)	skip=cpps;;
+			-Xlinker)	libs="$libs $arg"; skip=libs;;
+			-rpath)		libs="$libs $arg"; skip=libs;;
+			--rpath)	libs="$libs $arg"; skip=libs;;
+			-[A-Zl]*)	libs="$libs $arg";;
+			*.a)		libs="$libs $arg";;
+			*.so)		libs="$libs $arg";;
+			*.sl)		libs="$libs $arg";;
+			/*.o)		libs="$libs $arg";;
+			*.def)		libs="$libs $arg";;
+			*.o)		srcs="$srcs `basename $arg .o`.c";;
+			*.[cC])		srcs="$srcs $arg";;
+			*.m)		srcs="$srcs $arg";; # Objective-C src
+			*.cc)		srcs="$srcs $arg";;
+			*.c++)		srcs="$srcs $arg";;
+			*.cxx)		srcs="$srcs $arg";;
+			*.cpp)		srcs="$srcs $arg";;
+			\$\(*_CFLAGS\))		cpps="$cpps $arg";;
+			\$\(*_INCLUDES\))	cpps="$cpps $arg";;
+			\$\(*_LIBS\))		libs="$libs $arg";;
+			\$\(*_LDFLAGS\))	libs="$libs $arg";;
+			\$\(*_RPATH\))		libs="$libs $arg";;
+			\$*)		libs="$libs $arg"
+					cpps="$cpps $arg";;
+			*.*)		echo 1>&2 "bad word $arg in $line"
+					exit 1;;
+			-u)		skip=libs; libs="$libs -u";;
+			[a-zA-Z_]*)
+					mods="$mods $arg"
+					mods_upper=$(echo $mods | tr '[a-z]' '[A-Z]');;
+			*)		echo 1>&2 "bad word $arg in $line"
+					exit 1;;
+			esac
+		done
+		if test -z "$cpps" -a -z "$libs"; then
+			cpps="\$(MODULE_${mods_upper}_CFLAGS)"
+			libs="\$(MODULE_${mods_upper}_LDFLAGS)"
+		fi
+		for mod in $mods
+		do
+			case $CONFIGURED in
+			*,${mod},*)
+				# Detected multiple rules for a module, first rule wins. This
+				# allows users to disable modules in Setup.local.
+				echo 1>&2 "maksetup: '$mod' was handled by previous rule."
+				continue 2;;
+			esac
+			CONFIGURED="$CONFIGURED,${mod},"
+		done
+		case $doconfig in
+		yes)
+			LIBS="$LIBS $libs"
+			MODS="$MODS $mods"
+			BUILT="$BUILT $mods"
+			;;
+		no)
+			BUILT="$BUILT $mods"
+			;;
+		disabled)
+			DISABLED="$DISABLED $mods"
+			continue
+			;;
+		esac
+		case $noobjects in
+		yes)	continue;;
+		esac
+		objs=''
+		for src in $srcs
+		do
+			case $src in
+			*.c)   obj=`basename $src .c`.o; cc='$(CC)';;
+			*.cc)  obj=`basename $src .cc`.o; cc='$(CXX)';;
+			*.c++) obj=`basename $src .c++`.o; cc='$(CXX)';;
+			*.C)   obj=`basename $src .C`.o; cc='$(CXX)';;
+			*.cxx) obj=`basename $src .cxx`.o; cc='$(CXX)';;
+			*.cpp) obj=`basename $src .cpp`.o; cc='$(CXX)';;
+			*.m)   obj=`basename $src .m`.o; cc='$(CC)';; # Obj-C
+			*)     continue;;
+			esac
+			case $src in
+			*/*) obj="$srcdir/`dirname $src`/$obj";;
+			*)   obj="$srcdir/$obj";;
+			esac
+			objs="$objs $obj"
+			case $src in
+			glmodule.c) ;;
+			/*) ;;
+			\$*) ;;
+			*) src='$(srcdir)/'"$srcdir/$src";;
+			esac
+			# custom flags first, PY_STDMODULE_CFLAGS may contain -I with system libmpdec
+			case $doconfig in
+			no)	cc="$cc $cpps \$(PY_STDMODULE_CFLAGS) \$(CCSHARED)";;
+			*)
+				cc="$cc $cpps \$(PY_BUILTIN_MODULE_CFLAGS)";;
+			esac
+			# force rebuild when header file or module build flavor (static/shared) is changed
+			rule="$obj: $src \$(MODULE_${mods_upper}_DEPS) \$(PYTHON_HEADERS) Modules/config.c; $cc -c $src -o $obj"
+			echo "$rule" >>$rulesf
+		done
+		case $doconfig in
+		yes)	OBJS="$OBJS $objs";;
+		esac
+		for mod in $mods
+		do
+			file="$srcdir/$mod\$(EXT_SUFFIX)"
+			case $doconfig in
+			no)
+				SHAREDMODS="$SHAREDMODS $file"
+				BUILT_SHARED="$BUILT_SHARED $mod"
+				;;
+			esac
+			rule="$file: $objs"
+			rule="$rule; \$(BLDSHARED) $objs $libs $ExtraLibs -o $file"
+			echo "$rule" >>$rulesf
+		done
+	done
+
+	case $SHAREDMODS in
+	'')	;;
+	*)	DEFS="SHAREDMODS=$SHAREDMODS$NL$DEFS";;
+	esac
+
+	case $noobjects in
+	yes)	BASELIBS=$LIBS;;
+	*)	LOCALLIBS=$LIBS;;
+	esac
+	LIBS='$(LOCALMODLIBS) $(BASEMODLIBS)'
+	DEFS="BASEMODLIBS=$BASELIBS$NL$DEFS"
+	DEFS="LOCALMODLIBS=$LOCALLIBS$NL$DEFS"
+
+	EXTDECLS=
+	INITBITS=
+	for mod in $MODS
+	do
+		EXTDECLS="${EXTDECLS}extern PyObject* PyInit_$mod(void);$NL"
+		INITBITS="${INITBITS}    {\"$mod\", PyInit_$mod},$NL"
+	done
+
+
+	case $config in
+	-)  ;;
+	*)  sed -e "
+		1i$NL/* Generated automatically from $config by makesetup. */
+		/MARKER 1/i$NL$EXTDECLS
+
+		/MARKER 2/i$NL$INITBITS
+
+		" $config >config.c
+	    ;;
+	esac
+
+	case $makepre in
+	-)	;;
+	*)
+		# macOS' sed has issues with 'a' command. Use 'r' command with an
+		# external replacement file instead.
+		sedf="@sed.in.$$"
+		sedr="@sed.replace.$$"
+		trap 'rm -f $sedf $sedr' 0 1 2 3
+		echo "$NL$NL$DEFS" | sed 's/\\$//' > $sedr
+		echo "1i\\" >$sedf
+		str="# Generated automatically from $makepre by makesetup."
+		echo "$str" >>$sedf
+		echo "s%_MODBUILT_NAMES_%$BUILT%" >>$sedf
+		echo "s%_MODSHARED_NAMES_%$BUILT_SHARED%" >>$sedf
+		echo "s%_MODDISABLED_NAMES_%$DISABLED%" >>$sedf
+		echo "s%_MODOBJS_%$OBJS%" >>$sedf
+		echo "s%_MODLIBS_%$LIBS%" >>$sedf
+		echo "/Definitions added by makesetup/r $sedr" >>$sedf
+		sed -f $sedf $makepre >Makefile
+		cat $rulesf >>Makefile
+		rm -f $sedf $sedr
+	    ;;
+	esac
+
+	rm -f $rulesf
+)

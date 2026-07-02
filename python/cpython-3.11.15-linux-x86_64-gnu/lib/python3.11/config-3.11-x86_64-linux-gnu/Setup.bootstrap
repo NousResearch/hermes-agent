@@ -1,0 +1,35 @@
+# -*- makefile -*-
+
+# ---
+# Built-in modules required to get a functioning interpreter;
+# cannot be built as shared!
+*static*
+
+# module C APIs are used in core
+atexit atexitmodule.c
+faulthandler faulthandler.c
+posix posixmodule.c
+_signal signalmodule.c
+_tracemalloc _tracemalloc.c
+
+# modules used by importlib, deepfreeze, freeze, runpy, and sysconfig
+_codecs _codecsmodule.c
+_collections _collectionsmodule.c
+errno errnomodule.c
+_io _io/_iomodule.c _io/iobase.c _io/fileio.c _io/bytesio.c _io/bufferedio.c _io/textio.c _io/stringio.c
+itertools itertoolsmodule.c
+_sre _sre/sre.c
+_thread _threadmodule.c
+time timemodule.c
+_weakref _weakref.c
+
+# commonly used core modules
+_abc _abc.c
+_functools _functoolsmodule.c
+_locale _localemodule.c
+_operator _operator.c
+_stat _stat.c
+_symtable symtablemodule.c
+
+# for systems without $HOME env, used by site._getuserbase()
+pwd pwdmodule.c

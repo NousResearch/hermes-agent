@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>IDLE &#8212; Python 3.13.0a2 documentation</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/pydoctheme.css?digest=b37c26da2f7529d09fe70b41c4b2133fe4931a90" />
+    <link id="pygments_dark_css" media="(prefers-color-scheme: dark)" rel="stylesheet" type="text/css" href="../_static/pygments_dark.css" />
+
+    <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
+    <script src="../_static/doctools.js"></script>
+    <script src="../_static/sphinx_highlight.js"></script>
+
+    <script src="../_static/sidebar.js"></script>
+
+    <link rel="search" type="application/opensearchdescription+xml"
+          title="Search within Python 3.13.0a2 documentation"
+          href="../_static/opensearch.xml"/>
+    <link rel="author" title="About these documents" href="../about.html" />
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="copyright" title="Copyright" href="../copyright.html" />
+    <link rel="next" title="Development Tools" href="development.html" />
+    <link rel="prev" title="tkinter.ttk — Tk themed widgets" href="tkinter.ttk.html" />
+    <link rel="canonical" href="https://docs.python.org/3/library/idle.html" />
+
+
+
+
+
+    <style>
+      @media only screen {
+        table.full-width-table {
+            width: 100%;
+        }
+      }
+    </style>
+<link rel="stylesheet" href="../_static/pydoctheme_dark.css" media="(prefers-color-scheme: dark)" id="pydoctheme_dark_css">
+    <link rel="shortcut icon" type="image/png" href="../_static/py.svg" />
+            <script type="text/javascript" src="../_static/copybutton.js"></script>
+            <script type="text/javascript" src="../_static/menu.js"></script>
+            <script type="text/javascript" src="../_static/search-focus.js"></script>
+            <script type="text/javascript" src="../_static/themetoggle.js"></script>
+
+  </head>
+<body>
+<div class="mobile-nav">
+    <input type="checkbox" id="menuToggler" class="toggler__input" aria-controls="navigation"
+           aria-pressed="false" aria-expanded="false" role="button" aria-label="Menu" />
+    <nav class="nav-content" role="navigation">
+        <label for="menuToggler" class="toggler__label">
+            <span></span>
+        </label>
+        <span class="nav-items-wrapper">
+            <a href="https://www.python.org/" class="nav-logo">
+                <img src="../_static/py.svg" alt="Logo"/>
+            </a>
+            <span class="version_switcher_placeholder"></span>
+            <form role="search" class="search" action="../search.html" method="get">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" class="search-icon">
+                    <path fill-rule="nonzero" fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 001.48-5.34c-.47-2.78-2.79-5-5.59-5.34a6.505 6.505 0 00-7.27 7.27c.34 2.8 2.56 5.12 5.34 5.59a6.5 6.5 0 005.34-1.48l.27.28v.79l4.25 4.25c.41.41 1.08.41 1.49 0 .41-.41.41-1.08 0-1.49L15.5 14zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"></path>
+                </svg>
+                <input placeholder="Quick search" aria-label="Quick search" type="search" name="q" />
+                <input type="submit" value="Go"/>
+            </form>
+        </span>
+    </nav>
+    <div class="menu-wrapper">
+        <nav class="menu" role="navigation" aria-label="main navigation">
+            <div class="language_switcher_placeholder"></div>
+
+<label class="theme-selector-label">
+    Theme
+    <select class="theme-selector" oninput="activateTheme(this.value)">
+        <option value="auto" selected>Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+    </select>
+</label>
+  <div>
+    <h3><a href="../contents.html">Table of Contents</a></h3>
+    <ul>
+<li><a class="reference internal" href="#">IDLE</a><ul>
+<li><a class="reference internal" href="#menus">Menus</a><ul>
+<li><a class="reference internal" href="#file-menu-shell-and-editor">File menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#edit-menu-shell-and-editor">Edit menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#format-menu-editor-window-only">Format menu (Editor window only)</a></li>
+<li><a class="reference internal" href="#run-menu-editor-window-only">Run menu (Editor window only)</a></li>
+<li><a class="reference internal" href="#shell-menu-shell-window-only">Shell menu (Shell window only)</a></li>
+<li><a class="reference internal" href="#debug-menu-shell-window-only">Debug menu (Shell window only)</a></li>
+<li><a class="reference internal" href="#options-menu-shell-and-editor">Options menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#window-menu-shell-and-editor">Window menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#help-menu-shell-and-editor">Help menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#context-menus">Context menus</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#editing-and-navigation">Editing and Navigation</a><ul>
+<li><a class="reference internal" href="#editor-windows">Editor windows</a></li>
+<li><a class="reference internal" href="#key-bindings">Key bindings</a></li>
+<li><a class="reference internal" href="#automatic-indentation">Automatic indentation</a></li>
+<li><a class="reference internal" href="#search-and-replace">Search and Replace</a></li>
+<li><a class="reference internal" href="#completions">Completions</a></li>
+<li><a class="reference internal" href="#calltips">Calltips</a></li>
+<li><a class="reference internal" href="#code-context">Code Context</a></li>
+<li><a class="reference internal" href="#shell-window">Shell window</a></li>
+<li><a class="reference internal" href="#text-colors">Text colors</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#startup-and-code-execution">Startup and Code Execution</a><ul>
+<li><a class="reference internal" href="#command-line-usage">Command line usage</a></li>
+<li><a class="reference internal" href="#startup-failure">Startup failure</a></li>
+<li><a class="reference internal" href="#running-user-code">Running user code</a></li>
+<li><a class="reference internal" href="#user-output-in-shell">User output in Shell</a></li>
+<li><a class="reference internal" href="#developing-tkinter-applications">Developing tkinter applications</a></li>
+<li><a class="reference internal" href="#running-without-a-subprocess">Running without a subprocess</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#help-and-preferences">Help and Preferences</a><ul>
+<li><a class="reference internal" href="#help-sources">Help sources</a></li>
+<li><a class="reference internal" href="#setting-preferences">Setting preferences</a></li>
+<li><a class="reference internal" href="#idle-on-macos">IDLE on macOS</a></li>
+<li><a class="reference internal" href="#extensions">Extensions</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-idlelib">idlelib</a></li>
+</ul>
+</li>
+</ul>
+
+  </div>
+  <div>
+    <h4>Previous topic</h4>
+    <p class="topless"><a href="tkinter.ttk.html"
+                          title="previous chapter"><code class="xref py py-mod docutils literal notranslate"><span class="pre">tkinter.ttk</span></code> — Tk themed widgets</a></p>
+  </div>
+  <div>
+    <h4>Next topic</h4>
+    <p class="topless"><a href="development.html"
+                          title="next chapter">Development Tools</a></p>
+  </div>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="../bugs.html">Report a Bug</a></li>
+      <li>
+        <a href="https://github.com/python/cpython/blob/main/Doc/library/idle.rst"
+            rel="nofollow">Show Source
+        </a>
+      </li>
+    </ul>
+  </div>
+        </nav>
+    </div>
+</div>
+
+
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="development.html" title="Development Tools"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="tkinter.ttk.html" title="tkinter.ttk — Tk themed widgets"
+             accesskey="P">previous</a> |</li>
+
+          <li><img src="../_static/py.svg" alt="python logo" style="vertical-align: middle; margin-top: -1px"/></li>
+          <li><a href="https://www.python.org/">Python</a> &#187;</li>
+          <li class="switchers">
+            <div class="language_switcher_placeholder"></div>
+            <div class="version_switcher_placeholder"></div>
+          </li>
+          <li>
+
+          </li>
+    <li id="cpython-language-and-version">
+      <a href="../index.html">3.13.0a2 Documentation</a> &#187;
+    </li>
+
+          <li class="nav-item nav-item-1"><a href="index.html" >The Python Standard Library</a> &#187;</li>
+          <li class="nav-item nav-item-2"><a href="tk.html" accesskey="U">Graphical User Interfaces with Tk</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">IDLE</a></li>
+                <li class="right">
+
+
+    <div class="inline-search" role="search">
+        <form class="inline-search" action="../search.html" method="get">
+          <input placeholder="Quick search" aria-label="Quick search" type="search" name="q" id="search-box" />
+          <input type="submit" value="Go" />
+        </form>
+    </div>
+                     |
+                </li>
+            <li class="right">
+<label class="theme-selector-label">
+    Theme
+    <select class="theme-selector" oninput="activateTheme(this.value)">
+        <option value="auto" selected>Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+    </select>
+</label> |</li>
+
+      </ul>
+    </div>
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+
+  <section id="idle">
+<span id="id1"></span><h1>IDLE<a class="headerlink" href="#idle" title="Permalink to this heading">¶</a></h1>
+<p><strong>Source code:</strong> <a class="reference external" href="https://github.com/python/cpython/tree/main/Lib/idlelib/">Lib/idlelib/</a></p>
+<hr class="docutils" id="index-0" />
+<p>IDLE is Python’s Integrated Development and Learning Environment.</p>
+<p>IDLE has the following features:</p>
+<ul class="simple">
+<li><p>cross-platform: works mostly the same on Windows, Unix, and macOS</p></li>
+<li><p>Python shell window (interactive interpreter) with colorizing
+of code input, output, and error messages</p></li>
+<li><p>multi-window text editor with multiple undo, Python colorizing,
+smart indent, call tips, auto completion, and other features</p></li>
+<li><p>search within any window, replace within editor windows, and search
+through multiple files (grep)</p></li>
+<li><p>debugger with persistent breakpoints, stepping, and viewing
+of global and local namespaces</p></li>
+<li><p>configuration, browsers, and other dialogs</p></li>
+</ul>
+<section id="menus">
+<h2>Menus<a class="headerlink" href="#menus" title="Permalink to this heading">¶</a></h2>
+<p>IDLE has two main window types, the Shell window and the Editor window.  It is
+possible to have multiple editor windows simultaneously.  On Windows and
+Linux, each has its own top menu.  Each menu documented below indicates
+which window type it is associated with.</p>
+<p>Output windows, such as used for Edit =&gt; Find in Files, are a subtype of editor
+window.  They currently have the same top menu but a different
+default title and context menu.</p>
+<p>On macOS, there is one application menu.  It dynamically changes according
+to the window currently selected.  It has an IDLE menu, and some entries
+described below are moved around to conform to Apple guidelines.</p>
+<section id="file-menu-shell-and-editor">
+<h3>File menu (Shell and Editor)<a class="headerlink" href="#file-menu-shell-and-editor" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>New File</dt><dd><p>Create a new file editing window.</p>
+</dd>
+<dt>Open…</dt><dd><p>Open an existing file with an Open dialog.</p>
+</dd>
+<dt>Open Module…</dt><dd><p>Open an existing module (searches sys.path).</p>
+</dd>
+<dt>Recent Files</dt><dd><p>Open a list of recent files.  Click one to open it.</p>
+</dd>
+</dl>
+<dl class="simple" id="index-1">
+<dt>Module Browser</dt><dd><p>Show functions, classes, and methods in the current Editor file in a
+tree structure.  In the shell, open a module first.</p>
+</dd>
+<dt>Path Browser</dt><dd><p>Show sys.path directories, modules, functions, classes and methods in a
+tree structure.</p>
+</dd>
+<dt>Save</dt><dd><p>Save the current window to the associated file, if there is one.  Windows
+that have been changed since being opened or last saved have a * before
+and after the window title.  If there is no associated file,
+do Save As instead.</p>
+</dd>
+<dt>Save As…</dt><dd><p>Save the current window with a Save As dialog.  The file saved becomes the
+new associated file for the window. (If your file namager is set to hide
+extensions, the current extension will be omitted in the file name box.
+If the new filename has no ‘.’, ‘.py’ and ‘.txt’ will be added for Python
+and text files, except that on macOS Aqua,’.py’ is added for all files.)</p>
+</dd>
+<dt>Save Copy As…</dt><dd><p>Save the current window to different file without changing the associated
+file.  (See Save As note above about filename extensions.)</p>
+</dd>
+<dt>Print Window</dt><dd><p>Print the current window to the default printer.</p>
+</dd>
+<dt>Close Window</dt><dd><p>Close the current window (if an unsaved editor, ask to save; if an unsaved
+Shell, ask to quit execution).  Calling <code class="docutils literal notranslate"><span class="pre">exit()</span></code> or <code class="docutils literal notranslate"><span class="pre">close()</span></code> in the Shell
+window also closes Shell.  If this is the only window, also exit IDLE.</p>
+</dd>
+<dt>Exit IDLE</dt><dd><p>Close all windows and quit IDLE (ask to save unsaved edit windows).</p>
+</dd>
+</dl>
+</section>
+<section id="edit-menu-shell-and-editor">
+<h3>Edit menu (Shell and Editor)<a class="headerlink" href="#edit-menu-shell-and-editor" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>Undo</dt><dd><p>Undo the last change to the current window.  A maximum of 1000 changes may
+be undone.</p>
+</dd>
+<dt>Redo</dt><dd><p>Redo the last undone change to the current window.</p>
+</dd>
+<dt>Select All</dt><dd><p>Select the entire contents of the current window.</p>
+</dd>
+<dt>Cut</dt><dd><p>Copy selection into the system-wide clipboard; then delete the selection.</p>
+</dd>
+<dt>Copy</dt><dd><p>Copy selection into the system-wide clipboard.</p>
+</dd>
+<dt>Paste</dt><dd><p>Insert contents of the system-wide clipboard into the current window.</p>
+</dd>
+</dl>
+<p>The clipboard functions are also available in context menus.</p>
+<dl class="simple">
+<dt>Find…</dt><dd><p>Open a search dialog with many options</p>
+</dd>
+<dt>Find Again</dt><dd><p>Repeat the last search, if there is one.</p>
+</dd>
+<dt>Find Selection</dt><dd><p>Search for the currently selected string, if there is one.</p>
+</dd>
+<dt>Find in Files…</dt><dd><p>Open a file search dialog.  Put results in a new output window.</p>
+</dd>
+<dt>Replace…</dt><dd><p>Open a search-and-replace dialog.</p>
+</dd>
+<dt>Go to Line</dt><dd><p>Move the cursor to the beginning of the line requested and make that
+line visible.  A request past the end of the file goes to the end.
+Clear any selection and update the line and column status.</p>
+</dd>
+<dt>Show Completions</dt><dd><p>Open a scrollable list allowing selection of existing names. See
+<a class="reference internal" href="#completions"><span class="std std-ref">Completions</span></a> in the Editing and navigation section below.</p>
+</dd>
+<dt>Expand Word</dt><dd><p>Expand a prefix you have typed to match a full word in the same window;
+repeat to get a different expansion.</p>
+</dd>
+<dt>Show Call Tip</dt><dd><p>After an unclosed parenthesis for a function, open a small window with
+function parameter hints.  See <a class="reference internal" href="#calltips"><span class="std std-ref">Calltips</span></a> in the
+Editing and navigation section below.</p>
+</dd>
+<dt>Show Surrounding Parens</dt><dd><p>Highlight the surrounding parenthesis.</p>
+</dd>
+</dl>
+</section>
+<section id="format-menu-editor-window-only">
+<span id="format-menu"></span><h3>Format menu (Editor window only)<a class="headerlink" href="#format-menu-editor-window-only" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>Format Paragraph</dt><dd><p>Reformat the current blank-line-delimited paragraph in comment block or
+multiline string or selected line in a string.  All lines in the
+paragraph will be formatted to less than N columns, where N defaults to 72.</p>
+</dd>
+<dt>Indent Region</dt><dd><p>Shift selected lines right by the indent width (default 4 spaces).</p>
+</dd>
+<dt>Dedent Region</dt><dd><p>Shift selected lines left by the indent width (default 4 spaces).</p>
+</dd>
+<dt>Comment Out Region</dt><dd><p>Insert ## in front of selected lines.</p>
+</dd>
+<dt>Uncomment Region</dt><dd><p>Remove leading # or ## from selected lines.</p>
+</dd>
+<dt>Tabify Region</dt><dd><p>Turn <em>leading</em> stretches of spaces into tabs. (Note: We recommend using
+4 space blocks to indent Python code.)</p>
+</dd>
+<dt>Untabify Region</dt><dd><p>Turn <em>all</em> tabs into the correct number of spaces.</p>
+</dd>
+<dt>Toggle Tabs</dt><dd><p>Open a dialog to switch between indenting with spaces and tabs.</p>
+</dd>
+<dt>New Indent Width</dt><dd><p>Open a dialog to change indent width. The accepted default by the Python
+community is 4 spaces.</p>
+</dd>
+<dt>Strip Trailing Chitespace</dt><dd><p>Remove trailing space and other whitespace characters after the last
+non-whitespace character of a line by applying str.rstrip to each line,
+including lines within multiline strings.  Except for Shell windows,
+remove extra newlines at the end of the file.</p>
+</dd>
+</dl>
+</section>
+<section id="run-menu-editor-window-only">
+<span id="index-2"></span><h3>Run menu (Editor window only)<a class="headerlink" href="#run-menu-editor-window-only" title="Permalink to this heading">¶</a></h3>
+<dl class="simple" id="run-module">
+<dt>Run Module</dt><dd><p>Do <a class="reference internal" href="#check-module"><span class="std std-ref">Check Module</span></a>.  If no error, restart the shell to clean the
+environment, then execute the module.  Output is displayed in the Shell
+window.  Note that output requires use of <code class="docutils literal notranslate"><span class="pre">print</span></code> or <code class="docutils literal notranslate"><span class="pre">write</span></code>.
+When execution is complete, the Shell retains focus and displays a prompt.
+At this point, one may interactively explore the result of execution.
+This is similar to executing a file with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-i</span> <span class="pre">file</span></code> at a command
+line.</p>
+</dd>
+</dl>
+<dl class="simple" id="run-custom">
+<dt>Run… Customized</dt><dd><p>Same as <a class="reference internal" href="#run-module"><span class="std std-ref">Run Module</span></a>, but run the module with customized
+settings.  <em>Command Line Arguments</em> extend <a class="reference internal" href="sys.html#sys.argv" title="sys.argv"><code class="xref py py-data docutils literal notranslate"><span class="pre">sys.argv</span></code></a> as if passed
+on a command line. The module can be run in the Shell without restarting.</p>
+</dd>
+</dl>
+<dl class="simple" id="check-module">
+<dt>Check Module</dt><dd><p>Check the syntax of the module currently open in the Editor window. If the
+module has not been saved IDLE will either prompt the user to save or
+autosave, as selected in the General tab of the Idle Settings dialog.  If
+there is a syntax error, the approximate location is indicated in the
+Editor window.</p>
+</dd>
+</dl>
+<dl class="simple" id="python-shell">
+<dt>Python Shell</dt><dd><p>Open or wake up the Python Shell window.</p>
+</dd>
+</dl>
+</section>
+<section id="shell-menu-shell-window-only">
+<h3>Shell menu (Shell window only)<a class="headerlink" href="#shell-menu-shell-window-only" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>View Last Restart</dt><dd><p>Scroll the shell window to the last Shell restart.</p>
+</dd>
+<dt>Restart Shell</dt><dd><p>Restart the shell to clean the environment and reset display and exception handling.</p>
+</dd>
+<dt>Previous History</dt><dd><p>Cycle through earlier commands in history which match the current entry.</p>
+</dd>
+<dt>Next History</dt><dd><p>Cycle through later commands in history which match the current entry.</p>
+</dd>
+<dt>Interrupt Execution</dt><dd><p>Stop a running program.</p>
+</dd>
+</dl>
+</section>
+<section id="debug-menu-shell-window-only">
+<h3>Debug menu (Shell window only)<a class="headerlink" href="#debug-menu-shell-window-only" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>Go to File/Line</dt><dd><p>Look on the current line. with the cursor, and the line above for a filename
+and line number.  If found, open the file if not already open, and show the
+line.  Use this to view source lines referenced in an exception traceback
+and lines found by Find in Files. Also available in the context menu of
+the Shell window and Output windows.</p>
+</dd>
+</dl>
+<dl class="simple" id="index-3">
+<dt>Debugger (toggle)</dt><dd><p>When activated, code entered in the Shell or run from an Editor will run
+under the debugger.  In the Editor, breakpoints can be set with the context
+menu.  This feature is still incomplete and somewhat experimental.</p>
+</dd>
+<dt>Stack Viewer</dt><dd><p>Show the stack traceback of the last exception in a tree widget, with
+access to locals and globals.</p>
+</dd>
+<dt>Auto-open Stack Viewer</dt><dd><p>Toggle automatically opening the stack viewer on an unhandled exception.</p>
+</dd>
+</dl>
+</section>
+<section id="options-menu-shell-and-editor">
+<h3>Options menu (Shell and Editor)<a class="headerlink" href="#options-menu-shell-and-editor" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>Configure IDLE</dt><dd><p>Open a configuration dialog and change preferences for the following:
+fonts, indentation, keybindings, text color themes, startup windows and
+size, additional help sources, and extensions.  On macOS, open the
+configuration dialog by selecting Preferences in the application
+menu. For more details, see
+<a class="reference internal" href="#preferences"><span class="std std-ref">Setting preferences</span></a> under Help and preferences.</p>
+</dd>
+</dl>
+<p>Most configuration options apply to all windows or all future windows.
+The option items below only apply to the active window.</p>
+<dl class="simple">
+<dt>Show/Hide Code Context (Editor Window only)</dt><dd><p>Open a pane at the top of the edit window which shows the block context
+of the code which has scrolled above the top of the window.  See
+<a class="reference internal" href="#code-context"><span class="std std-ref">Code Context</span></a> in the Editing and Navigation section
+below.</p>
+</dd>
+<dt>Show/Hide Line Numbers (Editor Window only)</dt><dd><p>Open a column to the left of the edit window which shows the number
+of each line of text.  The default is off, which may be changed in the
+preferences (see <a class="reference internal" href="#preferences"><span class="std std-ref">Setting preferences</span></a>).</p>
+</dd>
+<dt>Zoom/Restore Height</dt><dd><p>Toggles the window between normal size and maximum height. The initial size
+defaults to 40 lines by 80 chars unless changed on the General tab of the
+Configure IDLE dialog.  The maximum height for a screen is determined by
+momentarily maximizing a window the first time one is zoomed on the screen.
+Changing screen settings may invalidate the saved height.  This toggle has
+no effect when a window is maximized.</p>
+</dd>
+</dl>
+</section>
+<section id="window-menu-shell-and-editor">
+<h3>Window menu (Shell and Editor)<a class="headerlink" href="#window-menu-shell-and-editor" title="Permalink to this heading">¶</a></h3>
+<p>Lists the names of all open windows; select one to bring it to the foreground
+(deiconifying it if necessary).</p>
+</section>
+<section id="help-menu-shell-and-editor">
+<h3>Help menu (Shell and Editor)<a class="headerlink" href="#help-menu-shell-and-editor" title="Permalink to this heading">¶</a></h3>
+<dl class="simple">
+<dt>About IDLE</dt><dd><p>Display version, copyright, license, credits, and more.</p>
+</dd>
+<dt>IDLE Help</dt><dd><p>Display this IDLE document, detailing the menu options, basic editing and
+navigation, and other tips.</p>
+</dd>
+<dt>Python Docs</dt><dd><p>Access local Python documentation, if installed, or start a web browser
+and open docs.python.org showing the latest Python documentation.</p>
+</dd>
+<dt>Turtle Demo</dt><dd><p>Run the turtledemo module with example Python code and turtle drawings.</p>
+</dd>
+</dl>
+<p>Additional help sources may be added here with the Configure IDLE dialog under
+the General tab. See the <a class="reference internal" href="#help-sources"><span class="std std-ref">Help sources</span></a> subsection below
+for more on Help menu choices.</p>
+</section>
+<section id="context-menus">
+<span id="index-4"></span><h3>Context menus<a class="headerlink" href="#context-menus" title="Permalink to this heading">¶</a></h3>
+<p>Open a context menu by right-clicking in a window (Control-click on macOS).
+Context menus have the standard clipboard functions also on the Edit menu.</p>
+<dl class="simple">
+<dt>Cut</dt><dd><p>Copy selection into the system-wide clipboard; then delete the selection.</p>
+</dd>
+<dt>Copy</dt><dd><p>Copy selection into the system-wide clipboard.</p>
+</dd>
+<dt>Paste</dt><dd><p>Insert contents of the system-wide clipboard into the current window.</p>
+</dd>
+</dl>
+<p>Editor windows also have breakpoint functions.  Lines with a breakpoint set are
+specially marked.  Breakpoints only have an effect when running under the
+debugger.  Breakpoints for a file are saved in the user’s <code class="docutils literal notranslate"><span class="pre">.idlerc</span></code>
+directory.</p>
+<dl class="simple">
+<dt>Set Breakpoint</dt><dd><p>Set a breakpoint on the current line.</p>
+</dd>
+<dt>Clear Breakpoint</dt><dd><p>Clear the breakpoint on that line.</p>
+</dd>
+</dl>
+<p>Shell and Output windows also have the following.</p>
+<dl class="simple">
+<dt>Go to file/line</dt><dd><p>Same as in Debug menu.</p>
+</dd>
+</dl>
+<p>The Shell window also has an output squeezing facility explained in the <em>Python
+Shell window</em> subsection below.</p>
+<dl class="simple">
+<dt>Squeeze</dt><dd><p>If the cursor is over an output line, squeeze all the output between
+the code above and the prompt below down to a ‘Squeezed text’ label.</p>
+</dd>
+</dl>
+</section>
+</section>
+<section id="editing-and-navigation">
+<span id="id2"></span><h2>Editing and Navigation<a class="headerlink" href="#editing-and-navigation" title="Permalink to this heading">¶</a></h2>
+<section id="editor-windows">
+<h3>Editor windows<a class="headerlink" href="#editor-windows" title="Permalink to this heading">¶</a></h3>
+<p>IDLE may open editor windows when it starts, depending on settings
+and how you start IDLE.  Thereafter, use the File menu.  There can be only
+one open editor window for a given file.</p>
+<p>The title bar contains the name of the file, the full path, and the version
+of Python and IDLE running the window.  The status bar contains the line
+number (‘Ln’) and column number (‘Col’).  Line numbers start with 1;
+column numbers with 0.</p>
+<p>IDLE assumes that files with a known .py* extension contain Python code
+and that other files do not.  Run Python code with the Run menu.</p>
+</section>
+<section id="key-bindings">
+<h3>Key bindings<a class="headerlink" href="#key-bindings" title="Permalink to this heading">¶</a></h3>
+<p>The IDLE insertion cursor is a thin vertical bar between character
+positions.  When characters are entered, the insertion cursor and
+everything to its right moves right one character and
+the new character is entered in the new space.</p>
+<p>Several non-character keys move the cursor and possibly
+delete characters.  Deletion does not puts text on the clipboard,
+but IDLE has an undo list.  Wherever this doc discusses keys,
+‘C’ refers to the <kbd class="kbd docutils literal notranslate">Control</kbd> key on Windows and
+Unix and the <kbd class="kbd docutils literal notranslate">Command</kbd> key on macOS.  (And all such dicussions
+assume that the keys have not been re-bound to something else.)</p>
+<ul class="simple">
+<li><p>Arrow keys move the cursor one character or line.</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">LeftArrow</kbd></kbd> and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">RightArrow</kbd></kbd> moves left or right one word.</p></li>
+<li><p><kbd class="kbd docutils literal notranslate">Home</kbd> and <kbd class="kbd docutils literal notranslate">End</kbd> go to the beginning or end of the line.</p></li>
+<li><p><kbd class="kbd docutils literal notranslate">Page Up</kbd> and <kbd class="kbd docutils literal notranslate">Page Down</kbd> go up or down one screen.</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">Home</kbd></kbd> and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">End</kbd></kbd> go to beginning or end of the file.</p></li>
+<li><p><kbd class="kbd docutils literal notranslate">Backspace</kbd> and <kbd class="kbd docutils literal notranslate">Del</kbd> (or <cite>C-d</cite>) delete the previous or
+next character.</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">Backspace</kbd></kbd> and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">Del</kbd></kbd> delete one word left or right.</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">k</kbd></kbd> deletes (‘kills’) everything to the right.</p></li>
+</ul>
+<p>Standard keybindings (like <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">c</kbd></kbd> to copy and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">v</kbd></kbd> to paste)
+may work.  Keybindings are selected in the Configure IDLE dialog.</p>
+</section>
+<section id="automatic-indentation">
+<h3>Automatic indentation<a class="headerlink" href="#automatic-indentation" title="Permalink to this heading">¶</a></h3>
+<p>After a block-opening statement, the next line is indented by 4 spaces (in the
+Python Shell window by one tab).  After certain keywords (break, return etc.)
+the next line is dedented.  In leading indentation, <kbd class="kbd docutils literal notranslate">Backspace</kbd> deletes up
+to 4 spaces if they are there. <kbd class="kbd docutils literal notranslate">Tab</kbd> inserts spaces (in the Python
+Shell window one tab), number depends on Indent width. Currently, tabs
+are restricted to four spaces due to Tcl/Tk limitations.</p>
+<p>See also the indent/dedent region commands on the
+<a class="reference internal" href="#format-menu"><span class="std std-ref">Format menu</span></a>.</p>
+</section>
+<section id="search-and-replace">
+<h3>Search and Replace<a class="headerlink" href="#search-and-replace" title="Permalink to this heading">¶</a></h3>
+<p>Any selection becomes a search target.  However, only selections within
+a line work because searches are only performed within lines with the
+terminal newline removed.  If <code class="docutils literal notranslate"><span class="pre">[x]</span> <span class="pre">Regular</span> <span class="pre">expression</span></code> is checked, the
+target is interpreted according to the Python re module.</p>
+</section>
+<section id="completions">
+<span id="id3"></span><h3>Completions<a class="headerlink" href="#completions" title="Permalink to this heading">¶</a></h3>
+<p>Completions are supplied, when requested and available, for module
+names, attributes of classes or functions, or filenames.  Each request
+method displays a completion box with existing names.  (See tab
+completions below for an exception.) For any box, change the name
+being completed and the item highlighted in the box by
+typing and deleting characters; by hitting <kbd class="kbd docutils literal notranslate">Up</kbd>, <kbd class="kbd docutils literal notranslate">Down</kbd>,
+<kbd class="kbd docutils literal notranslate">PageUp</kbd>, <kbd class="kbd docutils literal notranslate">PageDown</kbd>, <kbd class="kbd docutils literal notranslate">Home</kbd>, and <kbd class="kbd docutils literal notranslate">End</kbd> keys;
+and by a single click within the box.  Close the box with <kbd class="kbd docutils literal notranslate">Escape</kbd>,
+<kbd class="kbd docutils literal notranslate">Enter</kbd>, and double <kbd class="kbd docutils literal notranslate">Tab</kbd> keys or clicks outside the box.
+A double click within the box selects and closes.</p>
+<p>One way to open a box is to type a key character and wait for a
+predefined interval.  This defaults to 2 seconds; customize it
+in the settings dialog.  (To prevent auto popups, set the delay to a
+large number of milliseconds, such as 100000000.) For imported module
+names or class or function attributes, type ‘.’.
+For filenames in the root directory, type <a class="reference internal" href="os.html#os.sep" title="os.sep"><code class="xref py py-data docutils literal notranslate"><span class="pre">os.sep</span></code></a> or
+<a class="reference internal" href="os.html#os.altsep" title="os.altsep"><code class="xref py py-data docutils literal notranslate"><span class="pre">os.altsep</span></code></a> immediately after an opening quote.  (On Windows,
+one can specify a drive first.)  Move into subdirectories by typing a
+directory name and a separator.</p>
+<p>Instead of waiting, or after a box is closed, open a completion box
+immediately with Show Completions on the Edit menu.  The default hot
+key is <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">space</kbd></kbd>.  If one types a prefix for the desired name
+before opening the box, the first match or near miss is made visible.
+The result is the same as if one enters a prefix
+after the box is displayed.  Show Completions after a quote completes
+filenames in the current directory instead of a root directory.</p>
+<p>Hitting <kbd class="kbd docutils literal notranslate">Tab</kbd> after a prefix usually has the same effect as Show
+Completions.  (With no prefix, it indents.)  However, if there is only
+one match to the prefix, that match is immediately added to the editor
+text without opening a box.</p>
+<p>Invoking ‘Show Completions’, or hitting <kbd class="kbd docutils literal notranslate">Tab</kbd> after a prefix,
+outside of a string and without a preceding ‘.’ opens a box with
+keywords, builtin names, and available module-level names.</p>
+<p>When editing code in an editor (as oppose to Shell), increase the
+available module-level names by running your code
+and not restarting the Shell thereafter.  This is especially useful
+after adding imports at the top of a file.  This also increases
+possible attribute completions.</p>
+<p>Completion boxes initially exclude names beginning with ‘_’ or, for
+modules, not included in ‘__all__’.  The hidden names can be accessed
+by typing ‘_’ after ‘.’, either before or after the box is opened.</p>
+</section>
+<section id="calltips">
+<span id="id4"></span><h3>Calltips<a class="headerlink" href="#calltips" title="Permalink to this heading">¶</a></h3>
+<p>A calltip is shown automatically when one types <kbd class="kbd docutils literal notranslate">(</kbd> after the name
+of an <em>accessible</em> function.  A function name expression may include
+dots and subscripts.  A calltip remains until it is clicked, the cursor
+is moved out of the argument area, or <kbd class="kbd docutils literal notranslate">)</kbd> is typed.  Whenever the
+cursor is in the argument part of a definition, select Edit and “Show
+Call Tip” on the menu or enter its shortcut to display a calltip.</p>
+<p>The calltip consists of the function’s signature and docstring up to
+the latter’s first blank line or the fifth non-blank line.  (Some builtin
+functions lack an accessible signature.)  A ‘/’ or ‘*’ in the signature
+indicates that the preceding or following arguments are passed by
+position or name (keyword) only.  Details are subject to change.</p>
+<p>In Shell, the accessible functions depends on what modules have been
+imported into the user process, including those imported by Idle itself,
+and which definitions have been run, all since the last restart.</p>
+<p>For example, restart the Shell and enter <code class="docutils literal notranslate"><span class="pre">itertools.count(</span></code>.  A calltip
+appears because Idle imports itertools into the user process for its own
+use.  (This could change.)  Enter <code class="docutils literal notranslate"><span class="pre">turtle.write(</span></code> and nothing appears.
+Idle does not itself import turtle.  The menu entry and shortcut also do
+nothing.  Enter <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">turtle</span></code>.  Thereafter, <code class="docutils literal notranslate"><span class="pre">turtle.write(</span></code>
+will display a calltip.</p>
+<p>In an editor, import statements have no effect until one runs the file.
+One might want to run a file after writing import statements, after
+adding function definitions, or after opening an existing file.</p>
+</section>
+<section id="code-context">
+<span id="id5"></span><h3>Code Context<a class="headerlink" href="#code-context" title="Permalink to this heading">¶</a></h3>
+<p>Within an editor window containing Python code, code context can be toggled
+in order to show or hide a pane at the top of the window.  When shown, this
+pane freezes the opening lines for block code, such as those beginning with
+<code class="docutils literal notranslate"><span class="pre">class</span></code>, <code class="docutils literal notranslate"><span class="pre">def</span></code>, or <code class="docutils literal notranslate"><span class="pre">if</span></code> keywords, that would have otherwise scrolled
+out of view.  The size of the pane will be expanded and contracted as needed
+to show the all current levels of context, up to the maximum number of
+lines defined in the Configure IDLE dialog (which defaults to 15).  If there
+are no current context lines and the feature is toggled on, a single blank
+line will display.  Clicking on a line in the context pane will move that
+line to the top of the editor.</p>
+<p>The text and background colors for the context pane can be configured under
+the Highlights tab in the Configure IDLE dialog.</p>
+</section>
+<section id="shell-window">
+<h3>Shell window<a class="headerlink" href="#shell-window" title="Permalink to this heading">¶</a></h3>
+<p>In IDLE’s Shell, enter, edit, and recall complete statements. (Most
+consoles and terminals only work with a single physical line at a time).</p>
+<p>Submit a single-line statement for execution by hitting <kbd class="kbd docutils literal notranslate">Return</kbd>
+with the cursor anywhere on the line.  If a line is extended with
+Backslash (<kbd class="kbd docutils literal notranslate">\</kbd>), the cursor must be on the last physical line.
+Submit a multi-line compound statement by entering a blank line after
+the statement.</p>
+<p>When one pastes code into Shell, it is not compiled and possibly executed
+until one hits <kbd class="kbd docutils literal notranslate">Return</kbd>, as specified above.
+One may edit pasted code first.
+If one pastes more than one statement into Shell, the result will be a
+<a class="reference internal" href="exceptions.html#SyntaxError" title="SyntaxError"><code class="xref py py-exc docutils literal notranslate"><span class="pre">SyntaxError</span></code></a> when multiple statements are compiled as if they were one.</p>
+<p>Lines containing <code class="docutils literal notranslate"><span class="pre">RESTART</span></code> mean that the user execution process has been
+re-started.  This occurs when the user execution process has crashed,
+when one requests a restart on the Shell menu, or when one runs code
+in an editor window.</p>
+<p>The editing features described in previous subsections work when entering
+code interactively.  IDLE’s Shell window also responds to the following:</p>
+<ul class="simple">
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">c</kbd></kbd> attemps to interrupt statement execution (but may fail).</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">d</kbd></kbd> closes Shell if typed at a <code class="docutils literal notranslate"><span class="pre">&gt;&gt;&gt;</span></code> prompt.</p></li>
+<li><p><kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">Alt</kbd>-<kbd class="kbd docutils literal notranslate">p</kbd></kbd> and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">Alt</kbd>-<kbd class="kbd docutils literal notranslate">n</kbd></kbd> (<kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">p</kbd></kbd> and <kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">C</kbd>-<kbd class="kbd docutils literal notranslate">n</kbd></kbd> on macOS)
+retrieve to the current prompt the previous or next previously
+entered statement that matches anything already typed.</p></li>
+<li><p><kbd class="kbd docutils literal notranslate">Return</kbd> while the cursor is on any previous statement
+appends the latter to anything already typed at the prompt.</p></li>
+</ul>
+</section>
+<section id="text-colors">
+<h3>Text colors<a class="headerlink" href="#text-colors" title="Permalink to this heading">¶</a></h3>
+<p>Idle defaults to black on white text, but colors text with special meanings.
+For the shell, these are shell output, shell error, user output, and
+user error.  For Python code, at the shell prompt or in an editor, these are
+keywords, builtin class and function names, names following <code class="docutils literal notranslate"><span class="pre">class</span></code> and
+<code class="docutils literal notranslate"><span class="pre">def</span></code>, strings, and comments. For any text window, these are the cursor (when
+present), found text (when possible), and selected text.</p>
+<p>IDLE also highlights the <a class="reference internal" href="../reference/lexical_analysis.html#soft-keywords"><span class="std std-ref">soft keywords</span></a> <a class="reference internal" href="../reference/compound_stmts.html#match"><code class="xref std std-keyword docutils literal notranslate"><span class="pre">match</span></code></a>,
+<a class="reference internal" href="../reference/compound_stmts.html#match"><code class="xref std std-keyword docutils literal notranslate"><span class="pre">case</span></code></a>, and <a class="reference internal" href="../reference/compound_stmts.html#wildcard-patterns"><code class="xref std std-keyword docutils literal notranslate"><span class="pre">_</span></code></a> in
+pattern-matching statements. However, this highlighting is not perfect and
+will be incorrect in some rare cases, including some <code class="docutils literal notranslate"><span class="pre">_</span></code>-s in <code class="docutils literal notranslate"><span class="pre">case</span></code>
+patterns.</p>
+<p>Text coloring is done in the background, so uncolorized text is occasionally
+visible.  To change the color scheme, use the Configure IDLE dialog
+Highlighting tab.  The marking of debugger breakpoint lines in the editor and
+text in popups and dialogs is not user-configurable.</p>
+</section>
+</section>
+<section id="startup-and-code-execution">
+<h2>Startup and Code Execution<a class="headerlink" href="#startup-and-code-execution" title="Permalink to this heading">¶</a></h2>
+<p>Upon startup with the <code class="docutils literal notranslate"><span class="pre">-s</span></code> option, IDLE will execute the file referenced by
+the environment variables <span class="target" id="index-5"></span><code class="xref std std-envvar docutils literal notranslate"><span class="pre">IDLESTARTUP</span></code> or <span class="target" id="index-6"></span><a class="reference internal" href="../using/cmdline.html#envvar-PYTHONSTARTUP"><code class="xref std std-envvar docutils literal notranslate"><span class="pre">PYTHONSTARTUP</span></code></a>.
+IDLE first checks for <code class="docutils literal notranslate"><span class="pre">IDLESTARTUP</span></code>; if <code class="docutils literal notranslate"><span class="pre">IDLESTARTUP</span></code> is present the file
+referenced is run.  If <code class="docutils literal notranslate"><span class="pre">IDLESTARTUP</span></code> is not present, IDLE checks for
+<code class="docutils literal notranslate"><span class="pre">PYTHONSTARTUP</span></code>.  Files referenced by these environment variables are
+convenient places to store functions that are used frequently from the IDLE
+shell, or for executing import statements to import common modules.</p>
+<p>In addition, <code class="docutils literal notranslate"><span class="pre">Tk</span></code> also loads a startup file if it is present.  Note that the
+Tk file is loaded unconditionally.  This additional file is <code class="docutils literal notranslate"><span class="pre">.Idle.py</span></code> and is
+looked for in the user’s home directory.  Statements in this file will be
+executed in the Tk namespace, so this file is not useful for importing
+functions to be used from IDLE’s Python shell.</p>
+<section id="command-line-usage">
+<h3>Command line usage<a class="headerlink" href="#command-line-usage" title="Permalink to this heading">¶</a></h3>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>idle.py [-c command] [-d] [-e] [-h] [-i] [-r file] [-s] [-t title] [-] [arg] ...
+
+-c command  run command in the shell window
+-d          enable debugger and open shell window
+-e          open editor window
+-h          print help message with legal combinations and exit
+-i          open shell window
+-r file     run file in shell window
+-s          run $IDLESTARTUP or $PYTHONSTARTUP first, in shell window
+-t title    set title of shell window
+-           run stdin in shell (- must be last option before args)
+</pre></div>
+</div>
+<p>If there are arguments:</p>
+<ul class="simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">-</span></code>, <code class="docutils literal notranslate"><span class="pre">-c</span></code>, or <code class="docutils literal notranslate"><span class="pre">r</span></code> is used, all arguments are placed in
+<code class="docutils literal notranslate"><span class="pre">sys.argv[1:...]</span></code> and <code class="docutils literal notranslate"><span class="pre">sys.argv[0]</span></code> is set to <code class="docutils literal notranslate"><span class="pre">''</span></code>, <code class="docutils literal notranslate"><span class="pre">'-c'</span></code>,
+or <code class="docutils literal notranslate"><span class="pre">'-r'</span></code>.  No editor window is opened, even if that is the default
+set in the Options dialog.</p></li>
+<li><p>Otherwise, arguments are files opened for editing and
+<code class="docutils literal notranslate"><span class="pre">sys.argv</span></code> reflects the arguments passed to IDLE itself.</p></li>
+</ul>
+</section>
+<section id="startup-failure">
+<h3>Startup failure<a class="headerlink" href="#startup-failure" title="Permalink to this heading">¶</a></h3>
+<p>IDLE uses a socket to communicate between the IDLE GUI process and the user
+code execution process.  A connection must be established whenever the Shell
+starts or restarts.  (The latter is indicated by a divider line that says
+‘RESTART’). If the user process fails to connect to the GUI process, it
+usually displays a <code class="docutils literal notranslate"><span class="pre">Tk</span></code> error box with a ‘cannot connect’ message
+that directs the user here.  It then exits.</p>
+<p>One specific connection failure on Unix systems results from
+misconfigured masquerading rules somewhere in a system’s network setup.
+When IDLE is started from a terminal, one will see a message starting
+with <code class="docutils literal notranslate"><span class="pre">**</span> <span class="pre">Invalid</span> <span class="pre">host:</span></code>.
+The valid value is <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span> <span class="pre">(idlelib.rpc.LOCALHOST)</span></code>.
+One can diagnose with <code class="docutils literal notranslate"><span class="pre">tcpconnect</span> <span class="pre">-irv</span> <span class="pre">127.0.0.1</span> <span class="pre">6543</span></code> in one
+terminal window and <code class="docutils literal notranslate"><span class="pre">tcplisten</span> <span class="pre">&lt;same</span> <span class="pre">args&gt;</span></code> in another.</p>
+<p>A common cause of failure is a user-written file with the same name as a
+standard library module, such as <em>random.py</em> and <em>tkinter.py</em>. When such a
+file is located in the same directory as a file that is about to be run,
+IDLE cannot import the stdlib file.  The current fix is to rename the
+user file.</p>
+<p>Though less common than in the past, an antivirus or firewall program may
+stop the connection.  If the program cannot be taught to allow the
+connection, then it must be turned off for IDLE to work.  It is safe to
+allow this internal connection because no data is visible on external
+ports.  A similar problem is a network mis-configuration that blocks
+connections.</p>
+<p>Python installation issues occasionally stop IDLE: multiple versions can
+clash, or a single installation might need admin access.  If one undo the
+clash, or cannot or does not want to run as admin, it might be easiest to
+completely remove Python and start over.</p>
+<p>A zombie pythonw.exe process could be a problem.  On Windows, use Task
+Manager to check for one and stop it if there is.  Sometimes a restart
+initiated by a program crash or Keyboard Interrupt (control-C) may fail
+to connect.  Dismissing the error box or using Restart Shell on the Shell
+menu may fix a temporary problem.</p>
+<p>When IDLE first starts, it attempts to read user configuration files in
+<code class="docutils literal notranslate"><span class="pre">~/.idlerc/</span></code> (~ is one’s home directory).  If there is a problem, an error
+message should be displayed.  Leaving aside random disk glitches, this can
+be prevented by never editing the files by hand.  Instead, use the
+configuration dialog, under Options.  Once there is an error in a user
+configuration file, the best solution may be to delete it and start over
+with the settings dialog.</p>
+<p>If IDLE quits with no message, and it was not started from a console, try
+starting it from a console or terminal (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">idlelib</span></code>) and see if
+this results in an error message.</p>
+<p>On Unix-based systems with tcl/tk older than <code class="docutils literal notranslate"><span class="pre">8.6.11</span></code> (see
+<code class="docutils literal notranslate"><span class="pre">About</span> <span class="pre">IDLE</span></code>) certain characters of certain fonts can cause
+a tk failure with a message to the terminal.  This can happen either
+if one starts IDLE to edit a file with such a character or later
+when entering such a character.  If one cannot upgrade tcl/tk,
+then re-configure IDLE to use a font that works better.</p>
+</section>
+<section id="running-user-code">
+<h3>Running user code<a class="headerlink" href="#running-user-code" title="Permalink to this heading">¶</a></h3>
+<p>With rare exceptions, the result of executing Python code with IDLE is
+intended to be the same as executing the same code by the default method,
+directly with Python in a text-mode system console or terminal window.
+However, the different interface and operation occasionally affect
+visible results.  For instance, <code class="docutils literal notranslate"><span class="pre">sys.modules</span></code> starts with more entries,
+and <code class="docutils literal notranslate"><span class="pre">threading.active_count()</span></code> returns 2 instead of 1.</p>
+<p>By default, IDLE runs user code in a separate OS process rather than in
+the user interface process that runs the shell and editor.  In the execution
+process, it replaces <code class="docutils literal notranslate"><span class="pre">sys.stdin</span></code>, <code class="docutils literal notranslate"><span class="pre">sys.stdout</span></code>, and <code class="docutils literal notranslate"><span class="pre">sys.stderr</span></code>
+with objects that get input from and send output to the Shell window.
+The original values stored in <code class="docutils literal notranslate"><span class="pre">sys.__stdin__</span></code>, <code class="docutils literal notranslate"><span class="pre">sys.__stdout__</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">sys.__stderr__</span></code> are not touched, but may be <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p>
+<p>Sending print output from one process to a text widget in another is
+slower than printing to a system terminal in the same process.
+This has the most effect when printing multiple arguments, as the string
+for each argument, each separator, the newline are sent separately.
+For development, this is usually not a problem, but if one wants to
+print faster in IDLE, format and join together everything one wants
+displayed together and then print a single string.  Both format strings
+and <a class="reference internal" href="stdtypes.html#str.join" title="str.join"><code class="xref py py-meth docutils literal notranslate"><span class="pre">str.join()</span></code></a> can help combine fields and lines.</p>
+<p>IDLE’s standard stream replacements are not inherited by subprocesses
+created in the execution process, whether directly by user code or by
+modules such as multiprocessing.  If such subprocess use <code class="docutils literal notranslate"><span class="pre">input</span></code> from
+sys.stdin or <code class="docutils literal notranslate"><span class="pre">print</span></code> or <code class="docutils literal notranslate"><span class="pre">write</span></code> to sys.stdout or sys.stderr,
+IDLE should be started in a command line window.  (On Windows,
+use <code class="docutils literal notranslate"><span class="pre">python</span></code> or <code class="docutils literal notranslate"><span class="pre">py</span></code> rather than <code class="docutils literal notranslate"><span class="pre">pythonw</span></code> or <code class="docutils literal notranslate"><span class="pre">pyw</span></code>.)
+The secondary subprocess
+will then be attached to that window for input and output.</p>
+<p>If <code class="docutils literal notranslate"><span class="pre">sys</span></code> is reset by user code, such as with <code class="docutils literal notranslate"><span class="pre">importlib.reload(sys)</span></code>,
+IDLE’s changes are lost and input from the keyboard and output to the screen
+will not work correctly.</p>
+<p>When Shell has the focus, it controls the keyboard and screen.  This is
+normally transparent, but functions that directly access the keyboard
+and screen will not work.  These include system-specific functions that
+determine whether a key has been pressed and if so, which.</p>
+<p>The IDLE code running in the execution process adds frames to the call stack
+that would not be there otherwise.  IDLE wraps <code class="docutils literal notranslate"><span class="pre">sys.getrecursionlimit</span></code> and
+<code class="docutils literal notranslate"><span class="pre">sys.setrecursionlimit</span></code> to reduce the effect of the additional stack
+frames.</p>
+<p>When user code raises SystemExit either directly or by calling sys.exit,
+IDLE returns to a Shell prompt instead of exiting.</p>
+</section>
+<section id="user-output-in-shell">
+<h3>User output in Shell<a class="headerlink" href="#user-output-in-shell" title="Permalink to this heading">¶</a></h3>
+<p>When a program outputs text, the result is determined by the
+corresponding output device.  When IDLE executes user code, <code class="docutils literal notranslate"><span class="pre">sys.stdout</span></code>
+and <code class="docutils literal notranslate"><span class="pre">sys.stderr</span></code> are connected to the display area of IDLE’s Shell.  Some of
+its features are inherited from the underlying Tk Text widget.  Others
+are programmed additions.  Where it matters, Shell is designed for development
+rather than production runs.</p>
+<p>For instance, Shell never throws away output.  A program that sends unlimited
+output to Shell will eventually fill memory, resulting in a memory error.
+In contrast, some system text windows only keep the last n lines of output.
+A Windows console, for instance, keeps a user-settable 1 to 9999 lines,
+with 300 the default.</p>
+<p>A Tk Text widget, and hence IDLE’s Shell, displays characters (codepoints) in
+the BMP (Basic Multilingual Plane) subset of Unicode.  Which characters are
+displayed with a proper glyph and which with a replacement box depends on the
+operating system and installed fonts.  Tab characters cause the following text
+to begin after the next tab stop. (They occur every 8 ‘characters’).  Newline
+characters cause following text to appear on a new line.  Other control
+characters are ignored or displayed as a space, box, or something else,
+depending on the operating system and font.  (Moving the text cursor through
+such output with arrow keys may exhibit some surprising spacing behavior.)</p>
+<div class="highlight-python3 notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">s</span> <span class="o">=</span> <span class="s1">&#39;a</span><span class="se">\t</span><span class="s1">b</span><span class="se">\a</span><span class="s1">&lt;</span><span class="se">\x02</span><span class="s1">&gt;&lt;</span><span class="se">\r</span><span class="s1">&gt;</span><span class="se">\b</span><span class="s1">c</span><span class="se">\n</span><span class="s1">d&#39;</span>  <span class="c1"># Enter 22 chars.</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="nb">len</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
+<span class="go">14</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">s</span>  <span class="c1"># Display repr(s)</span>
+<span class="go">&#39;a\tb\x07&lt;\x02&gt;&lt;\r&gt;\x08c\nd&#39;</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="nb">print</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s1">&#39;&#39;</span><span class="p">)</span>  <span class="c1"># Display s as is.</span>
+<span class="go"># Result varies by OS and font.  Try it.</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">repr</span></code> function is used for interactive echo of expression
+values.  It returns an altered version of the input string in which
+control codes, some BMP codepoints, and all non-BMP codepoints are
+replaced with escape codes. As demonstrated above, it allows one to
+identify the characters in a string, regardless of how they are displayed.</p>
+<p>Normal and error output are generally kept separate (on separate lines)
+from code input and each other.  They each get different highlight colors.</p>
+<p>For SyntaxError tracebacks, the normal ‘^’ marking where the error was
+detected is replaced by coloring the text with an error highlight.
+When code run from a file causes other exceptions, one may right click
+on a traceback line to jump to the corresponding line in an IDLE editor.
+The file will be opened if necessary.</p>
+<p>Shell has a special facility for squeezing output lines down to a
+‘Squeezed text’ label.  This is done automatically
+for output over N lines (N = 50 by default).
+N can be changed in the PyShell section of the General
+page of the Settings dialog.  Output with fewer lines can be squeezed by
+right clicking on the output.  This can be useful lines long enough to slow
+down scrolling.</p>
+<p>Squeezed output is expanded in place by double-clicking the label.
+It can also be sent to the clipboard or a separate view window by
+right-clicking the label.</p>
+</section>
+<section id="developing-tkinter-applications">
+<h3>Developing tkinter applications<a class="headerlink" href="#developing-tkinter-applications" title="Permalink to this heading">¶</a></h3>
+<p>IDLE is intentionally different from standard Python in order to
+facilitate development of tkinter programs.  Enter <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">tkinter</span> <span class="pre">as</span> <span class="pre">tk;</span>
+<span class="pre">root</span> <span class="pre">=</span> <span class="pre">tk.Tk()</span></code> in standard Python and nothing appears.  Enter the same
+in IDLE and a tk window appears.  In standard Python, one must also enter
+<code class="docutils literal notranslate"><span class="pre">root.update()</span></code> to see the window.  IDLE does the equivalent in the
+background, about 20 times a second, which is about every 50 milliseconds.
+Next enter <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">=</span> <span class="pre">tk.Button(root,</span> <span class="pre">text='button');</span> <span class="pre">b.pack()</span></code>.  Again,
+nothing visibly changes in standard Python until one enters <code class="docutils literal notranslate"><span class="pre">root.update()</span></code>.</p>
+<p>Most tkinter programs run <code class="docutils literal notranslate"><span class="pre">root.mainloop()</span></code>, which usually does not
+return until the tk app is destroyed.  If the program is run with
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-i</span></code> or from an IDLE editor, a <code class="docutils literal notranslate"><span class="pre">&gt;&gt;&gt;</span></code> shell prompt does not
+appear until <code class="docutils literal notranslate"><span class="pre">mainloop()</span></code> returns, at which time there is nothing left
+to interact with.</p>
+<p>When running a tkinter program from an IDLE editor, one can comment out
+the mainloop call.  One then gets a shell prompt immediately and can
+interact with the live application.  One just has to remember to
+re-enable the mainloop call when running in standard Python.</p>
+</section>
+<section id="running-without-a-subprocess">
+<h3>Running without a subprocess<a class="headerlink" href="#running-without-a-subprocess" title="Permalink to this heading">¶</a></h3>
+<p>By default, IDLE executes user code in a separate subprocess via a socket,
+which uses the internal loopback interface.  This connection is not
+externally visible and no data is sent to or received from the internet.
+If firewall software complains anyway, you can ignore it.</p>
+<p>If the attempt to make the socket connection fails, Idle will notify you.
+Such failures are sometimes transient, but if persistent, the problem
+may be either a firewall blocking the connection or misconfiguration of
+a particular system.  Until the problem is fixed, one can run Idle with
+the -n command line switch.</p>
+<p>If IDLE is started with the -n command line switch it will run in a
+single process and will not create the subprocess which runs the RPC
+Python execution server.  This can be useful if Python cannot create
+the subprocess or the RPC socket interface on your platform.  However,
+in this mode user code is not isolated from IDLE itself.  Also, the
+environment is not restarted when Run/Run Module (F5) is selected.  If
+your code has been modified, you must reload() the affected modules and
+re-import any specific items (e.g. from foo import baz) if the changes
+are to take effect.  For these reasons, it is preferable to run IDLE
+with the default subprocess if at all possible.</p>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version 3.4.</span></p>
+</div>
+</section>
+</section>
+<section id="help-and-preferences">
+<h2>Help and Preferences<a class="headerlink" href="#help-and-preferences" title="Permalink to this heading">¶</a></h2>
+<section id="help-sources">
+<span id="id6"></span><h3>Help sources<a class="headerlink" href="#help-sources" title="Permalink to this heading">¶</a></h3>
+<p>Help menu entry “IDLE Help” displays a formatted html version of the
+IDLE chapter of the Library Reference.  The result, in a read-only
+tkinter text window, is close to what one sees in a web browser.
+Navigate through the text with a mousewheel,
+the scrollbar, or up and down arrow keys held down.
+Or click the TOC (Table of Contents) button and select a section
+header in the opened box.</p>
+<p>Help menu entry “Python Docs” opens the extensive sources of help,
+including tutorials, available at <code class="docutils literal notranslate"><span class="pre">docs.python.org/x.y</span></code>, where ‘x.y’
+is the currently running Python version.  If your system
+has an off-line copy of the docs (this may be an installation option),
+that will be opened instead.</p>
+<p>Selected URLs can be added or removed from the help menu at any time using the
+General tab of the Configure IDLE dialog.</p>
+</section>
+<section id="setting-preferences">
+<span id="preferences"></span><h3>Setting preferences<a class="headerlink" href="#setting-preferences" title="Permalink to this heading">¶</a></h3>
+<p>The font preferences, highlighting, keys, and general preferences can be
+changed via Configure IDLE on the Option menu.
+Non-default user settings are saved in a <code class="docutils literal notranslate"><span class="pre">.idlerc</span></code> directory in the user’s
+home directory.  Problems caused by bad user configuration files are solved
+by editing or deleting one or more of the files in <code class="docutils literal notranslate"><span class="pre">.idlerc</span></code>.</p>
+<p>On the Font tab, see the text sample for the effect of font face and size
+on multiple characters in multiple languages.  Edit the sample to add
+other characters of personal interest.  Use the sample to select
+monospaced fonts.  If particular characters have problems in Shell or an
+editor, add them to the top of the sample and try changing first size
+and then font.</p>
+<p>On the Highlights and Keys tab, select a built-in or custom color theme
+and key set.  To use a newer built-in color theme or key set with older
+IDLEs, save it as a new custom theme or key set and it well be accessible
+to older IDLEs.</p>
+</section>
+<section id="idle-on-macos">
+<h3>IDLE on macOS<a class="headerlink" href="#idle-on-macos" title="Permalink to this heading">¶</a></h3>
+<p>Under System Preferences: Dock, one can set “Prefer tabs when opening
+documents” to “Always”.  This setting is not compatible with the tk/tkinter
+GUI framework used by IDLE, and it breaks a few IDLE features.</p>
+</section>
+<section id="extensions">
+<h3>Extensions<a class="headerlink" href="#extensions" title="Permalink to this heading">¶</a></h3>
+<p>IDLE contains an extension facility.  Preferences for extensions can be
+changed with the Extensions tab of the preferences dialog. See the
+beginning of config-extensions.def in the idlelib directory for further
+information.  The only current default extension is zzdummy, an example
+also used for testing.</p>
+</section>
+</section>
+<section id="module-idlelib">
+<span id="idlelib"></span><h2>idlelib<a class="headerlink" href="#module-idlelib" title="Permalink to this heading">¶</a></h2>
+<p><strong>Source code:</strong> <a class="reference external" href="https://github.com/python/cpython/tree/main/Lib/idlelib">Lib/idlelib</a></p>
+<hr class="docutils" />
+<p>The Lib/idlelib package implements the IDLE application.  See the rest
+of this page for how to use IDLE.</p>
+<p>The files in idlelib are described in idlelib/README.txt.  Access it
+either in idlelib or click Help =&gt; About IDLE on the IDLE menu.  This
+file also maps IDLE menu items to the code that implements the item.
+Except for files listed under ‘Startup’, the idlelib code is ‘private’ in
+sense that feature changes can be backported (see <span class="target" id="index-7"></span><a class="pep reference external" href="https://peps.python.org/pep-0434/"><strong>PEP 434</strong></a>).</p>
+</section>
+</section>
+
+
+            <div class="clearer"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <div>
+    <h3><a href="../contents.html">Table of Contents</a></h3>
+    <ul>
+<li><a class="reference internal" href="#">IDLE</a><ul>
+<li><a class="reference internal" href="#menus">Menus</a><ul>
+<li><a class="reference internal" href="#file-menu-shell-and-editor">File menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#edit-menu-shell-and-editor">Edit menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#format-menu-editor-window-only">Format menu (Editor window only)</a></li>
+<li><a class="reference internal" href="#run-menu-editor-window-only">Run menu (Editor window only)</a></li>
+<li><a class="reference internal" href="#shell-menu-shell-window-only">Shell menu (Shell window only)</a></li>
+<li><a class="reference internal" href="#debug-menu-shell-window-only">Debug menu (Shell window only)</a></li>
+<li><a class="reference internal" href="#options-menu-shell-and-editor">Options menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#window-menu-shell-and-editor">Window menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#help-menu-shell-and-editor">Help menu (Shell and Editor)</a></li>
+<li><a class="reference internal" href="#context-menus">Context menus</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#editing-and-navigation">Editing and Navigation</a><ul>
+<li><a class="reference internal" href="#editor-windows">Editor windows</a></li>
+<li><a class="reference internal" href="#key-bindings">Key bindings</a></li>
+<li><a class="reference internal" href="#automatic-indentation">Automatic indentation</a></li>
+<li><a class="reference internal" href="#search-and-replace">Search and Replace</a></li>
+<li><a class="reference internal" href="#completions">Completions</a></li>
+<li><a class="reference internal" href="#calltips">Calltips</a></li>
+<li><a class="reference internal" href="#code-context">Code Context</a></li>
+<li><a class="reference internal" href="#shell-window">Shell window</a></li>
+<li><a class="reference internal" href="#text-colors">Text colors</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#startup-and-code-execution">Startup and Code Execution</a><ul>
+<li><a class="reference internal" href="#command-line-usage">Command line usage</a></li>
+<li><a class="reference internal" href="#startup-failure">Startup failure</a></li>
+<li><a class="reference internal" href="#running-user-code">Running user code</a></li>
+<li><a class="reference internal" href="#user-output-in-shell">User output in Shell</a></li>
+<li><a class="reference internal" href="#developing-tkinter-applications">Developing tkinter applications</a></li>
+<li><a class="reference internal" href="#running-without-a-subprocess">Running without a subprocess</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#help-and-preferences">Help and Preferences</a><ul>
+<li><a class="reference internal" href="#help-sources">Help sources</a></li>
+<li><a class="reference internal" href="#setting-preferences">Setting preferences</a></li>
+<li><a class="reference internal" href="#idle-on-macos">IDLE on macOS</a></li>
+<li><a class="reference internal" href="#extensions">Extensions</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-idlelib">idlelib</a></li>
+</ul>
+</li>
+</ul>
+
+  </div>
+  <div>
+    <h4>Previous topic</h4>
+    <p class="topless"><a href="tkinter.ttk.html"
+                          title="previous chapter"><code class="xref py py-mod docutils literal notranslate"><span class="pre">tkinter.ttk</span></code> — Tk themed widgets</a></p>
+  </div>
+  <div>
+    <h4>Next topic</h4>
+    <p class="topless"><a href="development.html"
+                          title="next chapter">Development Tools</a></p>
+  </div>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="../bugs.html">Report a Bug</a></li>
+      <li>
+        <a href="https://github.com/python/cpython/blob/main/Doc/library/idle.rst"
+            rel="nofollow">Show Source
+        </a>
+      </li>
+    </ul>
+  </div>
+        </div>
+<div id="sidebarbutton" title="Collapse sidebar">
+<span>«</span>
+</div>
+
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="development.html" title="Development Tools"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="tkinter.ttk.html" title="tkinter.ttk — Tk themed widgets"
+             >previous</a> |</li>
+
+          <li><img src="../_static/py.svg" alt="python logo" style="vertical-align: middle; margin-top: -1px"/></li>
+          <li><a href="https://www.python.org/">Python</a> &#187;</li>
+          <li class="switchers">
+            <div class="language_switcher_placeholder"></div>
+            <div class="version_switcher_placeholder"></div>
+          </li>
+          <li>
+
+          </li>
+    <li id="cpython-language-and-version">
+      <a href="../index.html">3.13.0a2 Documentation</a> &#187;
+    </li>
+
+          <li class="nav-item nav-item-1"><a href="index.html" >The Python Standard Library</a> &#187;</li>
+          <li class="nav-item nav-item-2"><a href="tk.html" >Graphical User Interfaces with Tk</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">IDLE</a></li>
+                <li class="right">
+
+
+    <div class="inline-search" role="search">
+        <form class="inline-search" action="../search.html" method="get">
+          <input placeholder="Quick search" aria-label="Quick search" type="search" name="q" id="search-box" />
+          <input type="submit" value="Go" />
+        </form>
+    </div>
+                     |
+                </li>
+            <li class="right">
+<label class="theme-selector-label">
+    Theme
+    <select class="theme-selector" oninput="activateTheme(this.value)">
+        <option value="auto" selected>Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+    </select>
+</label> |</li>
+
+      </ul>
+    </div>
+    <div class="footer">
+    &copy; <a href="../copyright.html">Copyright</a> 2001-2024, Python Software Foundation.
+    <br />
+    This page is licensed under the Python Software Foundation License Version 2.
+    <br />
+    Examples, recipes, and other code in the documentation are additionally licensed under the Zero Clause BSD License.
+    <br />
+    See <a href="/license.html">History and License</a> for more information.<br />
+    <br />
+
+    The Python Software Foundation is a non-profit corporation.
+<a href="https://www.python.org/psf/donations/">Please donate.</a>
+<br />
+    <br />
+
+    Last updated on Jan 17, 2024 (06:57 UTC).
+    <a href="/bugs.html">Found a bug</a>?
+    <br />
+
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.0.1.
+    </div>
+
+  </body>
+</html>

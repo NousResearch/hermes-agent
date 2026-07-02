@@ -1,0 +1,296 @@
+IDLE History
+============
+
+This file contains the release messages for previous IDLE releases.
+As you read on you go back to the dark ages of IDLE's history.
+
+
+What's New in IDLEfork 0.8.1?
+=============================
+
+*Release date: 22-Jul-2001*
+
+- New tarball released as a result of the 'revitalisation' of the IDLEfork
+  project.
+
+- This release requires python 2.1 or better. Compatibility with earlier
+  versions of python (especially ancient ones like 1.5x) is no longer a
+  priority in IDLEfork development.
+
+- This release is based on a merging of the earlier IDLE fork work with current
+  cvs IDLE (post IDLE version 0.8), with some minor additional coding by Kurt
+  B. Kaiser and Stephen M. Gava.
+
+- This release is basically functional but also contains some known breakages,
+  particularly with running things from the shell window. Also the debugger is
+  not working, but I believe this was the case with the previous IDLE fork
+  release (0.7.1) as well.
+
+- This release is being made now to mark the point at which IDLEfork is
+  launching into a new stage of development.
+
+- IDLEfork CVS will now be branched to enable further development and
+  exploration of the two "execution in a remote process" patches submitted by
+  David Scherer (David's is currently in IDLEfork) and GvR, while stabilisation
+  and development of less heavyweight improvements (like user customisation)
+  can continue on the trunk.
+
+
+What's New in IDLEfork 0.7.1?
+==============================
+
+*Release date: 15-Aug-2000*
+
+- First project tarball released.
+
+- This was the first release of IDLE fork, which at this stage was a
+  combination of IDLE 0.5 and the VPython idle fork, with additional changes
+  coded by David Scherer, Peter Schneider-Kamp and Nicholas Riley.
+
+
+
+IDLEfork 0.7.1 - 29 May 2000
+-----------------------------
+
+   David Scherer  <dscherer@cmu.edu>
+
+- This is a modification of the CVS version of IDLE 0.5, updated as of
+  2000-03-09.  It is alpha software and might be unstable.  If it breaks, you
+  get to keep both pieces.
+
+- If you have problems or suggestions, you should either contact me or post to
+  the list at http://www.python.org/mailman/listinfo/idle-dev (making it clear
+  that you are using this modified version of IDLE).
+
+- Changes:
+
+  - The ExecBinding module, a replacement for ScriptBinding, executes programs
+    in a separate process, piping standard I/O through an RPC mechanism to an
+    OnDemandOutputWindow in IDLE.  It supports executing unnamed programs
+    (through a temporary file).  It does not yet support debugging.
+
+  - When running programs with ExecBinding, tracebacks will be clipped to
+    exclude system modules.  If, however, a system module calls back into the
+    user program, that part of the traceback will be shown.
+
+  - The OnDemandOutputWindow class has been improved.  In particular, it now
+    supports a readline() function used to implement user input, and a
+    scroll_clear() operation which is used to hide the output of a previous run
+    by scrolling it out of the window.
+
+  - Startup behavior has been changed.  By default IDLE starts up with just a
+    blank editor window, rather than an interactive window.  Opening a file in
+    such a blank window replaces the (nonexistent) contents of that window
+    instead of creating another window.  Because of the need to have a
+    well-known port for the ExecBinding protocol, only one copy of IDLE can be
+    running.  Additional invocations use the RPC mechanism to report their
+    command line arguments to the copy already running.
+
+  - The menus have been reorganized.  In particular, the excessively large
+    'edit' menu has been split up into 'edit', 'format', and 'run'.
+
+  - 'Python Documentation' now works on Windows, if the win32api module is
+    present.
+
+  - A few key bindings have been changed: F1 now loads Python Documentation
+    instead of the IDLE help; shift-TAB is now a synonym for unindent.
+
+- New modules:
+
+  ExecBinding.py         Executes program through loader
+  loader.py              Bootstraps user program
+  protocol.py            RPC protocol
+  Remote.py              User-process interpreter
+  spawn.py               OS-specific code to start programs
+
+- Files modified:
+
+  autoindent.py          ( bindings tweaked )
+  bindings.py            ( menus reorganized )
+  config.txt             ( execbinding enabled )
+  editorwindow.py        ( new menus, fixed 'Python Documentation' )
+  filelist.py            ( hook for "open in same window" )
+  formatparagraph.py     ( bindings tweaked )
+  idle.bat               ( removed absolute pathname )
+  idle.pyw               ( weird bug due to import with same name? )
+  iobinding.py           ( open in same window, EOL convention )
+  keydefs.py             ( bindings tweaked )
+  outputwindow.py        ( readline, scroll_clear, etc )
+  pyshell.py             ( changed startup behavior )
+  readme.txt             ( <Recursion on file with id=1234567> )
+
+
+
+IDLE 0.5 - February 2000 - Release Notes
+----------------------------------------
+
+This is an early release of IDLE, my own attempt at a Tkinter-based
+IDE for Python.
+
+(For a more detailed change log, see the file ChangeLog.)
+
+FEATURES
+
+IDLE has the following features:
+
+- coded in 100% pure Python, using the Tkinter GUI toolkit (i.e. Tcl/Tk)
+
+- cross-platform: works on Windows and Unix (on the Mac, there are
+currently problems with Tcl/Tk)
+
+- multi-window text editor with multiple undo, Python colorizing
+and many other features, e.g. smart indent and call tips
+
+- Python shell window (a.k.a. interactive interpreter)
+
+- debugger (not complete, but you can set breakpoints, view  and step)
+
+USAGE
+
+The main program is in the file "idle.py"; on Unix, you should be able
+to run it by typing "./idle.py" to your shell.  On Windows, you can
+run it by double-clicking it; you can use idle.pyw to avoid popping up
+a DOS console.  If you want to pass command line arguments on Windows,
+use the batch file idle.bat.
+
+Command line arguments: files passed on the command line are executed,
+not opened for editing, unless you give the -e command line option.
+Try "./idle.py -h" to see other command line options.
+
+IDLE requires Python 1.5.2, so it is currently only usable with a
+Python 1.5.2 distribution.  (An older version of IDLE is distributed
+with Python 1.5.2; you can drop this version on top of it.)
+
+COPYRIGHT
+
+IDLE is covered by the standard Python copyright notice
+(http://www.python.org/doc/Copyright.html).
+
+
+New in IDLE 0.5 (2/15/2000)
+---------------------------
+
+Tons of stuff, much of it contributed by Tim Peters and Mark Hammond:
+
+- Status bar, displaying current line/column (Moshe Zadka).
+
+- Better stack viewer, using tree widget.  (XXX Only used by Stack
+Viewer menu, not by the debugger.)
+
+- Format paragraph now recognizes Python block comments and reformats
+them correctly (MH)
+
+- New version of pyclbr.py parses top-level functions and understands
+much more of Python's syntax; this is reflected in the class and path
+browsers (TP)
+
+- Much better auto-indent; knows how to indent the insides of
+multi-line statements (TP)
+
+- Call tip window pops up when you type the name of a known function
+followed by an open parenthesis.  Hit ESC or click elsewhere in the
+window to close the tip window (MH)
+
+- Comment out region now inserts ## to make it stand out more (TP)
+
+- New path and class browsers based on a tree widget that looks
+familiar to Windows users
+
+- Reworked script running commands to be more intuitive: I/O now
+always goes to the *Python Shell* window, and raw_input() works
+correctly.  You use F5 to import/reload a module: this adds the module
+name to the __main__ namespace.  You use Control-F5 to run a script:
+this runs the script *in* the __main__ namespace.  The latter also
+sets sys.argv[] to the script name
+
+
+New in IDLE 0.4 (4/7/99)
+------------------------
+
+Most important change: a new menu entry "File -> Path browser", shows
+a 4-column hierarchical browser which lets you browse sys.path,
+directories, modules, and classes.  Yes, it's a superset of the Class
+browser menu entry.  There's also a new internal module,
+MultiScrolledLists.py, which provides the framework for this dialog.
+
+
+New in IDLE 0.3 (2/17/99)
+-------------------------
+
+Most important changes:
+
+- Enabled support for running a module, with or without the debugger.
+Output goes to a new window.  Pressing F5 in a module is effectively a
+reload of that module; Control-F5 loads it under the debugger.
+
+- Re-enable tearing off the Windows menu, and make a torn-off Windows
+menu update itself whenever a window is opened or closed.
+
+- Menu items can now be have a checkbox (when the menu label starts
+with "!"); use this for the Debugger and "Auto-open stack viewer"
+(was: JIT stack viewer) menu items.
+
+- Added a Quit button to the Debugger API.
+
+- The current directory is explicitly inserted into sys.path.
+
+- Fix the debugger (when using Python 1.5.2b2) to use canonical
+filenames for breakpoints, so these actually work.  (There's still a
+lot of work to be done to the management of breakpoints in the
+debugger though.)
+
+- Closing a window that is still colorizing now actually works.
+
+- Allow dragging of the separator between the two list boxes in the
+class browser.
+
+- Bind ESC to "close window" of the debugger, stack viewer and class
+browser.  It removes the selection highlighting in regular text
+windows.  (These are standard Windows conventions.)
+
+
+New in IDLE 0.2 (1/8/99)
+------------------------
+
+Lots of changes; here are the highlights:
+
+General:
+
+- You can now write and configure your own IDLE extension modules; see
+extend.txt.
+
+
+File menu:
+
+The command to open the Python shell window is now in the File menu.
+
+
+Edit menu:
+
+New Find dialog with more options; replace dialog; find in files dialog.
+
+Commands to tabify or untabify a region.
+
+Command to format a paragraph.
+
+
+Debug menu:
+
+JIT (Just-In-Time) stack viewer toggle -- if set, the stack viewer
+automaticall pops up when you get a traceback.
+
+Windows menu:
+
+Zoom height -- make the window full height.
+
+
+Help menu:
+
+The help text now show up in a regular window so you can search and
+even edit it if you like.
+
+
+
+IDLE 0.1 was distributed with the Python 1.5.2b1 release on 12/22/98.
+
+======================================================================

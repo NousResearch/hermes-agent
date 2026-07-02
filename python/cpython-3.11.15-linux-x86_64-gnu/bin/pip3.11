@@ -1,0 +1,8 @@
+#!/bin/sh
+'''exec' "$(dirname -- "$(realpath -- "$0")")/python3.11" "$0" "$@"
+' '''
+import sys
+from pip._internal.cli.main import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

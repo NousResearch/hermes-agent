@@ -1,0 +1,13 @@
+# See: man pkg-config
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: Python
+Description: Build a C extension for Python
+Requires:
+Version: 3.11
+Libs.private: -lpthread -ldl  -lutil
+Libs:
+Cflags: -I${includedir}/python3.11

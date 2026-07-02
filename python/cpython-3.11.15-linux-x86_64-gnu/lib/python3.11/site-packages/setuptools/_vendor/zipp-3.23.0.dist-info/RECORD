@@ -1,0 +1,14 @@
+zipp-3.23.0.dist-info/INSTALLER,sha256=5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM_6ak,2
+zipp-3.23.0.dist-info/METADATA,sha256=vdZ9TRbPC_O4k-fRjNPS13StuC837Zhbx3cMYHIms1s,3563
+zipp-3.23.0.dist-info/RECORD,,
+zipp-3.23.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+zipp-3.23.0.dist-info/WHEEL,sha256=_zCd3N1l69ArxyTb8rzEoP9TpbYXkqRFSNOD5OuxnTs,91
+zipp-3.23.0.dist-info/licenses/LICENSE,sha256=WlfLTbheKi3YjCkGKJCK3VfjRRRJ4KmnH9-zh3b9dZ0,1076
+zipp-3.23.0.dist-info/top_level.txt,sha256=iAbdoSHfaGqBfVb2XuR9JqSQHCoOsOtG6y9C_LSpqFw,5
+zipp/__init__.py,sha256=ieXh9GIMdABjKRX_JUJtP9k5wdBLK4Mt5X4nszSkmYE,11976
+zipp/_functools.py,sha256=f6Kt9LxZ4TE-cY1lJVdXSId3memSXmH9IdgMbU-_x2k,575
+zipp/compat/__init__.py,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+zipp/compat/overlay.py,sha256=oEIGAnbr8yGjuKTrVSO2ByewPui71uppbX18BLnYTKE,783
+zipp/compat/py310.py,sha256=S7i6N9mToEn3asNb2ILyjnzvITOXrATD_J4emjyBbDU,256
+zipp/compat/py313.py,sha256=RndvDNtuY7H2D9ecnnzcPBMZ8mZc42gmXD_IwQAXXAE,654
+zipp/glob.py,sha256=DLV9LBsDxA6YVW82e3-tkoNrus1h4R-j3BR6VqS0AzE,3382

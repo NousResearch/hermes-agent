@@ -1,0 +1,11 @@
+This directory contains the Distutils package.
+
+There's a full documentation available at:
+
+    https://docs.python.org/distutils/
+
+The Distutils-SIG web page is also a good starting point:
+
+    https://www.python.org/sigs/distutils-sig/
+
+$Id$

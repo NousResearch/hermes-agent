@@ -1,0 +1,7 @@
+#!/bin/sh
+'''exec' "$(dirname -- "$(realpath -- "$0")")/python3.11" "$0" "$@"
+' '''
+import sys
+from lib2to3.main import main
+
+sys.exit(main("lib2to3.fixes"))

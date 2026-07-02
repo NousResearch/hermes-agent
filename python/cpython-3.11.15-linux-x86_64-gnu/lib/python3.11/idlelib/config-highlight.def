@@ -1,0 +1,105 @@
+# IDLE reads several config files to determine user preferences.  This
+# file is the default config file for idle highlight theme settings.
+
+[IDLE Classic]
+normal-foreground= #000000
+normal-background= #ffffff
+keyword-foreground= #ff7700
+keyword-background= #ffffff
+builtin-foreground= #900090
+builtin-background= #ffffff
+comment-foreground= #dd0000
+comment-background= #ffffff
+string-foreground= #00aa00
+string-background= #ffffff
+definition-foreground= #0000ff
+definition-background= #ffffff
+hilite-foreground= #000000
+hilite-background= gray
+break-foreground= black
+break-background= #ffff55
+hit-foreground= #ffffff
+hit-background= #000000
+error-foreground= #000000
+error-background= #ff7777
+context-foreground= #000000
+context-background= lightgray
+linenumber-foreground= gray
+linenumber-background= #ffffff
+#cursor (only foreground can be set, restart IDLE)
+cursor-foreground= black
+#shell window
+stdout-foreground= blue
+stdout-background= #ffffff
+stderr-foreground= red
+stderr-background= #ffffff
+console-foreground= #770000
+console-background= #ffffff
+
+[IDLE New]
+normal-foreground= #000000
+normal-background= #ffffff
+keyword-foreground= #ff7700
+keyword-background= #ffffff
+builtin-foreground= #900090
+builtin-background= #ffffff
+comment-foreground= #dd0000
+comment-background= #ffffff
+string-foreground= #00aa00
+string-background= #ffffff
+definition-foreground= #0000ff
+definition-background= #ffffff
+hilite-foreground= #000000
+hilite-background= gray
+break-foreground= black
+break-background= #ffff55
+hit-foreground= #ffffff
+hit-background= #000000
+error-foreground= #000000
+error-background= #ff7777
+context-foreground= #000000
+context-background= lightgray
+linenumber-foreground= gray
+linenumber-background= #ffffff
+#cursor (only foreground can be set, restart IDLE)
+cursor-foreground= black
+#shell window
+stdout-foreground= blue
+stdout-background= #ffffff
+stderr-foreground= red
+stderr-background= #ffffff
+console-foreground= #770000
+console-background= #ffffff
+
+[IDLE Dark]
+comment-foreground = #dd0000
+console-foreground = #ff4d4d
+error-foreground = #FFFFFF
+hilite-background = #7e7e7e
+string-foreground = #02ff02
+stderr-background = #002240
+stderr-foreground = #ffb3b3
+console-background = #002240
+hit-background = #fbfbfb
+string-background = #002240
+normal-background = #002240
+hilite-foreground = #FFFFFF
+keyword-foreground = #ff8000
+error-background = #c86464
+keyword-background = #002240
+builtin-background = #002240
+break-background = #808000
+builtin-foreground = #ff00ff
+definition-foreground = #5e5eff
+stdout-foreground = #c2d1fa
+definition-background = #002240
+normal-foreground = #FFFFFF
+cursor-foreground = #ffffff
+stdout-background = #002240
+hit-foreground = #002240
+comment-background = #002240
+break-foreground = #FFFFFF
+context-foreground= #ffffff
+context-background= #454545
+linenumber-foreground= gray
+linenumber-background= #002240

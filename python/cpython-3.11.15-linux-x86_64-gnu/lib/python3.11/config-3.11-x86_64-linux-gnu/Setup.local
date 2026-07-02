@@ -1,0 +1,89 @@
+
+*disabled*
+
+_gdbm
+_scproxy
+nis
+xx
+xxlimited
+xxlimited_35
+
+*shared*
+
+_crypt _cryptmodule.c -lcrypt
+_ctypes_test _ctypes/_ctypes_test.c -lm
+_dbm _dbmmodule.c -DUSE_BERKDB -I/tools/deps/include -ldb
+_testbuffer _testbuffer.c
+_testcapi _testcapimodule.c
+_testimportmultiple _testimportmultiple.c
+_testmultiphase _testmultiphase.c
+_tkinter _tkinter.c tkappinit.c -DWITH_APPINIT -I/tools/deps/include/X11 -ltcl9.0 -ltcl9tk9.0 -lX11 -lxcb -lXau
+
+*static*
+
+_asyncio _asynciomodule.c
+_bisect _bisectmodule.c
+_blake2 _blake2/blake2module.c _blake2/blake2b_impl.c _blake2/blake2s_impl.c
+_bz2 _bz2module.c -lbz2
+_codecs_cn cjkcodecs/_codecs_cn.c
+_codecs_hk cjkcodecs/_codecs_hk.c
+_codecs_iso2022 cjkcodecs/_codecs_iso2022.c
+_codecs_jp cjkcodecs/_codecs_jp.c
+_codecs_kr cjkcodecs/_codecs_kr.c
+_codecs_tw cjkcodecs/_codecs_tw.c
+_contextvars _contextvarsmodule.c
+_csv _csv.c
+_ctypes _ctypes/_ctypes.c _ctypes/callbacks.c _ctypes/callproc.c _ctypes/stgdict.c _ctypes/cfield.c    -I/tools/deps/include -lffi -ldl
+_curses _cursesmodule.c  -I/tools/deps/include/ncursesw -lncursesw
+_curses_panel _curses_panel.c  -I/tools/deps/include/ncursesw -lpanelw -lncursesw
+_datetime _datetimemodule.c
+_decimal _decimal/_decimal.c  -I/tools/deps/include -lmpdec
+_elementtree _elementtree.c -lexpat
+_hashlib _hashopenssl.c -I/tools/deps/include -lcrypto -l:libatomic.a
+_heapq _heapqmodule.c
+_json _json.c
+_lsprof _lsprof.c rotatingtree.c
+_lzma _lzmamodule.c -I/tools/deps/include -llzma
+_md5 md5module.c -IModules/_hacl/include
+_multibytecodec cjkcodecs/multibytecodec.c
+_multiprocessing _multiprocessing/multiprocessing.c _multiprocessing/semaphore.c
+_opcode _opcode.c
+_pickle _pickle.c
+_posixshmem _multiprocessing/posixshmem.c -IModules/_multiprocessing -lrt
+_posixsubprocess _posixsubprocess.c
+_queue _queuemodule.c
+_random _randommodule.c
+_sha1 sha1module.c -IModules/_hacl/include
+_sha256 sha256module.c
+_sha3 _sha3/sha3module.c -IModules/_hacl/include
+_sha512 sha512module.c
+_socket socketmodule.c
+_sqlite3 _sqlite/connection.c _sqlite/cursor.c _sqlite/microprotocols.c _sqlite/module.c _sqlite/prepare_protocol.c _sqlite/row.c _sqlite/statement.c _sqlite/util.c _sqlite/blob.c  -IModules/_sqlite -I/tools/deps/include -lsqlite3
+_ssl _ssl.c -I/tools/deps/include -lssl -lcrypto -l:libatomic.a
+_statistics _statisticsmodule.c
+_struct _struct.c
+_testinternalcapi _testinternalcapi.c -IInclude/internal
+_typing _typingmodule.c
+_uuid _uuidmodule.c -I/tools/deps/include/uuid -luuid
+_xxsubinterpreters _xxsubinterpretersmodule.c
+_xxtestfuzz _xxtestfuzz/_xxtestfuzz.c _xxtestfuzz/fuzzer.c
+_zoneinfo _zoneinfo.c
+array arraymodule.c
+audioop audioop.c
+binascii binascii.c
+cmath cmathmodule.c -lm
+fcntl fcntlmodule.c
+grp grpmodule.c
+math mathmodule.c -lm
+mmap mmapmodule.c
+ossaudiodev ossaudiodev.c
+pyexpat pyexpat.c -lexpat
+readline readline.c  -I/tools/deps/libedit/include -I/tools/deps/libedit/include/ncursesw -ledit -lncursesw
+resource resource.c
+select selectmodule.c
+spwd spwdmodule.c
+syslog syslogmodule.c
+termios termios.c
+unicodedata unicodedata.c
+xxsubtype xxsubtype.c
+zlib zlibmodule.c -I/tools/deps/include -lz

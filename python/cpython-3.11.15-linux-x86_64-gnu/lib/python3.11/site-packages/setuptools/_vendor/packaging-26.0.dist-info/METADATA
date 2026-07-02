@@ -1,0 +1,107 @@
+Metadata-Version: 2.4
+Name: packaging
+Version: 26.0
+Summary: Core utilities for Python packages
+Author-email: Donald Stufft <donald@stufft.io>
+Requires-Python: >=3.8
+Description-Content-Type: text/x-rst
+License-Expression: Apache-2.0 OR BSD-2-Clause
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Classifier: Programming Language :: Python :: Implementation :: PyPy
+Classifier: Typing :: Typed
+License-File: LICENSE
+License-File: LICENSE.APACHE
+License-File: LICENSE.BSD
+Project-URL: Documentation, https://packaging.pypa.io/
+Project-URL: Source, https://github.com/pypa/packaging
+
+packaging
+=========
+
+.. start-intro
+
+Reusable core utilities for various Python Packaging
+`interoperability specifications <https://packaging.python.org/specifications/>`_.
+
+This library provides utilities that implement the interoperability
+specifications which have clearly one correct behaviour (eg: :pep:`440`)
+or benefit greatly from having a single shared implementation (eg: :pep:`425`).
+
+.. end-intro
+
+The ``packaging`` project includes the following: version handling, specifiers,
+markers, requirements, tags, metadata, lockfiles, utilities.
+
+Documentation
+-------------
+
+The `documentation`_ provides information and the API for the following:
+
+- Version Handling
+- Specifiers
+- Markers
+- Requirements
+- Tags
+- Metadata
+- Lockfiles
+- Utilities
+
+Installation
+------------
+
+Use ``pip`` to install these utilities::
+
+    pip install packaging
+
+The ``packaging`` library uses calendar-based versioning (``YY.N``).
+
+Discussion
+----------
+
+If you run into bugs, you can file them in our `issue tracker`_.
+
+You can also join ``#pypa`` on Freenode to ask questions or get involved.
+
+
+.. _`documentation`: https://packaging.pypa.io/
+.. _`issue tracker`: https://github.com/pypa/packaging/issues
+
+
+Code of Conduct
+---------------
+
+Everyone interacting in the packaging project's codebases, issue trackers, chat
+rooms, and mailing lists is expected to follow the `PSF Code of Conduct`_.
+
+.. _PSF Code of Conduct: https://github.com/pypa/.github/blob/main/CODE_OF_CONDUCT.md
+
+Contributing
+------------
+
+The ``CONTRIBUTING.rst`` file outlines how to contribute to this project as
+well as how to report a potential security issue. The documentation for this
+project also covers information about `project development`_ and `security`_.
+
+.. _`project development`: https://packaging.pypa.io/en/latest/development/
+.. _`security`: https://packaging.pypa.io/en/latest/security/
+
+Project History
+---------------
+
+Please review the ``CHANGELOG.rst`` file or the `Changelog documentation`_ for
+recent changes and project history.
+
+.. _`Changelog documentation`: https://packaging.pypa.io/en/latest/changelog/
+

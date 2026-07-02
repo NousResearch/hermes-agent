@@ -1,0 +1,12 @@
+# Encoding file: iso2022-jp, escape-driven
+E
+name		iso2022-jp
+init		{}
+final		{}
+ascii		\x1b(B
+jis0201		\x1b(J
+jis0208		\x1b$B
+jis0208		\x1b$@
+jis0212		\x1b$(D
+gb2312		\x1b$A
+ksc5601		\x1b$(C

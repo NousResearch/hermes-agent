@@ -1,0 +1,7 @@
+#!/bin/sh
+'''exec' "$(dirname -- "$(realpath -- "$0")")/python3.11" "$0" "$@"
+' '''
+
+from idlelib.pyshell import main
+if __name__ == '__main__':
+    main()

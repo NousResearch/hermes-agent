@@ -1,0 +1,93 @@
+# IDLE reads several config files to determine user preferences.  This
+# file is the default config file for general idle settings.
+#
+# When IDLE starts, it will look in
+# the following two sets of files, in order:
+#
+#     default configuration files in idlelib
+#     --------------------------------------
+#     config-main.def         default general config file
+#     config-extensions.def   default extension config file
+#     config-highlight.def    default highlighting config file
+#     config-keys.def         default keybinding config file
+#
+#     user configuration files in ~/.idlerc
+#     -------------------------------------
+#     config-main.cfg         user general config file
+#     config-extensions.cfg   user extension config file
+#     config-highlight.cfg    user highlighting config file
+#     config-keys.cfg         user keybinding config file
+#
+# On Windows, the default location of the home directory ('~' above)
+# depends on the version.  For Windows 10, it is C:\Users\<username>.
+#
+# Any options the user saves through the config dialog will be saved to
+# the relevant user config file. Reverting any general or extension
+# setting to the default causes that entry to be wiped from the user
+# file and re-read from the default file.  This rule applies to each
+# item, except that the three editor font items are saved as a group.
+#
+# User highlighting themes and keybinding sets must have (section) names
+# distinct from the default names.  All items are added and saved as a
+# group. They are retained unless specifically deleted within the config
+# dialog. Choosing one of the default themes or keysets just applies the
+# relevant settings from the default file.
+#
+# Additional help sources are listed in the [HelpFiles] section below
+# and should be viewable by a web browser (or the Windows Help viewer in
+# the case of .chm files). These sources will be listed on the Help
+# menu.  The pattern, and two examples, are:
+#
+# <sequence_number = menu item;/path/to/help/source>
+# 1 = IDLE;C:/Programs/Python36/Lib/idlelib/help.html
+# 2 = Pillow;https://pillow.readthedocs.io/en/latest/
+#
+# You can't use a semi-colon in a menu item or path.  The path will be
+# platform specific because of path separators, drive specs etc.
+#
+# The default files should not be edited except to add new sections to
+# config-extensions.def for added extensions.  The user files should be
+# modified through the Settings dialog.
+
+[General]
+editor-on-startup= 0
+autosave= 0
+print-command-posix=lpr %%s
+print-command-win=start /min notepad /p %%s
+delete-exitfunc= 1
+
+[EditorWindow]
+width= 80
+height= 40
+cursor-blink= 1
+font= TkFixedFont
+# For TkFixedFont, the actual size and boldness are obtained from tk
+# and override 10 and 0.  See idlelib.config.IdleConf.GetFont
+font-size= 10
+font-bold= 0
+encoding= none
+line-numbers-default= 0
+
+[PyShell]
+auto-squeeze-min-lines= 50
+
+[Indent]
+use-spaces= 1
+num-spaces= 4
+
+[Theme]
+default= 1
+name= IDLE Classic
+name2=
+# name2 set in user config-main.cfg for themes added after 2015 Oct 1
+
+[Keys]
+default= 1
+name=
+name2=
+# name2 set in user config-main.cfg for keys added after 2016 July 1
+
+[History]
+cyclic=1
+
+[HelpFiles]

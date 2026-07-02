@@ -1,0 +1,2 @@
+[externally-managed]
+Error=This Python installation is managed by uv and should not be modified.

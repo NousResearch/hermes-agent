@@ -1,0 +1,133 @@
+Metadata-Version: 2.4
+Name: importlib_metadata
+Version: 8.7.1
+Summary: Read metadata from Python packages
+Author-email: "Jason R. Coombs" <jaraco@jaraco.com>
+License-Expression: Apache-2.0
+Project-URL: Source, https://github.com/python/importlib_metadata
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Requires-Python: >=3.9
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Requires-Dist: zipp>=3.20
+Provides-Extra: test
+Requires-Dist: pytest!=8.1.*,>=6; extra == "test"
+Requires-Dist: packaging; extra == "test"
+Requires-Dist: pyfakefs; extra == "test"
+Requires-Dist: flufl.flake8; extra == "test"
+Requires-Dist: pytest-perf>=0.9.2; extra == "test"
+Requires-Dist: jaraco.test>=5.4; extra == "test"
+Provides-Extra: doc
+Requires-Dist: sphinx>=3.5; extra == "doc"
+Requires-Dist: jaraco.packaging>=9.3; extra == "doc"
+Requires-Dist: rst.linker>=1.9; extra == "doc"
+Requires-Dist: furo; extra == "doc"
+Requires-Dist: sphinx-lint; extra == "doc"
+Requires-Dist: jaraco.tidelift>=1.4; extra == "doc"
+Provides-Extra: perf
+Requires-Dist: ipython; extra == "perf"
+Provides-Extra: check
+Requires-Dist: pytest-checkdocs>=2.4; extra == "check"
+Requires-Dist: pytest-ruff>=0.2.1; sys_platform != "cygwin" and extra == "check"
+Provides-Extra: cover
+Requires-Dist: pytest-cov; extra == "cover"
+Provides-Extra: enabler
+Requires-Dist: pytest-enabler>=3.4; extra == "enabler"
+Provides-Extra: type
+Requires-Dist: pytest-mypy>=1.0.1; extra == "type"
+Requires-Dist: mypy<1.19; platform_python_implementation == "PyPy" and extra == "type"
+Dynamic: license-file
+
+.. image:: https://img.shields.io/pypi/v/importlib_metadata.svg
+   :target: https://pypi.org/project/importlib_metadata
+
+.. image:: https://img.shields.io/pypi/pyversions/importlib_metadata.svg
+
+.. image:: https://github.com/python/importlib_metadata/actions/workflows/main.yml/badge.svg
+   :target: https://github.com/python/importlib_metadata/actions?query=workflow%3A%22tests%22
+   :alt: tests
+
+.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json
+    :target: https://github.com/astral-sh/ruff
+    :alt: Ruff
+
+.. image:: https://readthedocs.org/projects/importlib-metadata/badge/?version=latest
+   :target: https://importlib-metadata.readthedocs.io/en/latest/?badge=latest
+
+.. image:: https://img.shields.io/badge/skeleton-2025-informational
+   :target: https://blog.jaraco.com/skeleton
+
+.. image:: https://tidelift.com/badges/package/pypi/importlib-metadata
+   :target: https://tidelift.com/subscription/pkg/pypi-importlib-metadata?utm_source=pypi-importlib-metadata&utm_medium=readme
+
+Library to access the metadata for a Python package.
+
+This package supplies third-party access to the functionality of
+`importlib.metadata <https://docs.python.org/3/library/importlib.metadata.html>`_
+including improvements added to subsequent Python versions.
+
+
+Compatibility
+=============
+
+New features are introduced in this third-party library and later merged
+into CPython. The following table indicates which versions of this library
+were contributed to different versions in the standard library:
+
+.. list-table::
+   :header-rows: 1
+
+   * - importlib_metadata
+     - stdlib
+   * - 7.0
+     - 3.13
+   * - 6.5
+     - 3.12
+   * - 4.13
+     - 3.11
+   * - 4.6
+     - 3.10
+   * - 1.4
+     - 3.8
+
+
+Usage
+=====
+
+See the `online documentation <https://importlib-metadata.readthedocs.io/>`_
+for usage details.
+
+`Finder authors
+<https://docs.python.org/3/reference/import.html#finders-and-loaders>`_ can
+also add support for custom package installers.  See the above documentation
+for details.
+
+
+Caveats
+=======
+
+This project primarily supports third-party packages installed by PyPA
+tools (or other conforming packages). It does not support:
+
+- Packages in the stdlib.
+- Packages installed without metadata.
+
+Project details
+===============
+
+ * Project home: https://github.com/python/importlib_metadata
+ * Report bugs at: https://github.com/python/importlib_metadata/issues
+ * Code hosting: https://github.com/python/importlib_metadata
+ * Documentation: https://importlib-metadata.readthedocs.io/
+
+For Enterprise
+==============
+
+Available as part of the Tidelift Subscription.
+
+This project and the maintainers of thousands of other packages are working with Tidelift to deliver one enterprise subscription that covers all of the open source you use.
+
+`Learn more <https://tidelift.com/subscription/pkg/pypi-importlib-metadata?utm_source=pypi-importlib-metadata&utm_medium=referral&utm_campaign=github>`_.

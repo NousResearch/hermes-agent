@@ -404,6 +404,192 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_slack_media_delivery_uses_standalone_upload_path(self, tmp_path):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        report = tmp_path / "diameter.csv.gz"
+        report.write_text("rows\n", encoding="utf-8")
+        send = AsyncMock(
+            return_value={"success": True, "platform": "slack", "message_id": "1"}
+        )
+
+        entry = _slack_entry()
+        assert entry is not None
+        original = entry.standalone_sender_fn
+
+        async def recorder(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+            return await send(
+                pconfig,
+                chat_id,
+                message,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+
+        entry.standalone_sender_fn = recorder
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    slack_cfg,
+                    "CLX6NJKB9",
+                    "Attached",
+                    thread_id="1782982014.696759",
+                    media_files=[(str(report), False)],
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original
+
+        assert result["success"] is True
+        assert "warnings" not in result
+        send.assert_awaited_once_with(
+            slack_cfg,
+            "CLX6NJKB9",
+            "Attached",
+            thread_id="1782982014.696759",
+            media_files=[(str(report), False)],
+            force_document=False,
+        )
+
+    def test_slack_media_only_delivery_still_uploads_file(self, tmp_path):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        report = tmp_path / "diameter.csv.gz"
+        report.write_text("rows\n", encoding="utf-8")
+        send = AsyncMock(
+            return_value={"success": True, "platform": "slack", "message_id": "1"}
+        )
+        entry = _slack_entry()
+        assert entry is not None
+        original = entry.standalone_sender_fn
+
+        async def recorder(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+            return await send(
+                pconfig,
+                chat_id,
+                message,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+
+        entry.standalone_sender_fn = recorder
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    slack_cfg,
+                    "CLX6NJKB9",
+                    "",
+                    thread_id="1782982014.696759",
+                    media_files=[(str(report), False)],
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original
+
+        assert result["success"] is True
+        assert "warnings" not in result
+        send.assert_awaited_once()
+        assert send.await_args.kwargs["media_files"] == [(str(report), False)]
+
+    def test_slack_standalone_send_uploads_media_in_thread(self, tmp_path, monkeypatch):
+        import plugins.platforms.slack.adapter as slack_mod
+
+        report = tmp_path / "diameter.csv.gz"
+        report.write_text("rows\n", encoding="utf-8")
+
+        class _Resp:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def json(self):
+                return {"ok": True, "ts": "1782986634.727459"}
+
+        class _Session:
+            def __init__(self, *args, **kwargs):
+                self.posts = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            def post(self, url, *, headers=None, json=None, **kwargs):
+                self.posts.append((url, json))
+                return _Resp()
+
+        upload_client = MagicMock()
+        upload_client.files_upload_v2 = AsyncMock(
+            return_value={"ok": True, "file": {"id": "F123"}}
+        )
+        client_cls = MagicMock(return_value=upload_client)
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        monkeypatch.setattr(slack_mod, "AsyncWebClient", client_cls)
+        monkeypatch.setattr(slack_mod.aiohttp, "ClientSession", _Session)
+
+        result = asyncio.run(
+            slack_mod._standalone_send(
+                SimpleNamespace(token="xoxb-test", extra={}),
+                "CLX6NJKB9",
+                "Attached",
+                thread_id="1782982014.696759",
+                media_files=[(str(report), False)],
+            )
+        )
+
+        assert result["success"] is True
+        upload_client.files_upload_v2.assert_awaited_once_with(
+            channel="CLX6NJKB9",
+            file=str(report),
+            filename="diameter.csv.gz",
+            initial_comment="",
+            thread_ts="1782982014.696759",
+        )
+
+    def test_slack_standalone_upload_non_ok_returns_error(self, tmp_path, monkeypatch):
+        import plugins.platforms.slack.adapter as slack_mod
+
+        report = tmp_path / "diameter.csv.gz"
+        report.write_text("rows\n", encoding="utf-8")
+
+        class _Session:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+        upload_client = MagicMock()
+        upload_client.files_upload_v2 = AsyncMock(
+            return_value={"ok": False, "error": "not_in_channel"}
+        )
+        client_cls = MagicMock(return_value=upload_client)
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        monkeypatch.setattr(slack_mod, "AsyncWebClient", client_cls)
+        monkeypatch.setattr(slack_mod.aiohttp, "ClientSession", _Session)
+
+        result = asyncio.run(
+            slack_mod._standalone_send(
+                SimpleNamespace(token="xoxb-test", extra={}),
+                "CLX6NJKB9",
+                "",
+                thread_id="1782982014.696759",
+                media_files=[(str(report), False)],
+            )
+        )
+
+        assert result == {"error": "Slack media upload failed: not_in_channel"}
+
     def test_resolved_matrix_thread_name_preserves_thread_id(self):
         matrix_cfg = SimpleNamespace(
             enabled=True,

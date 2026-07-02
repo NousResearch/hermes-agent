@@ -4337,21 +4337,60 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
-            payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
-            if thread_id:
-                payload["thread_ts"] = thread_id
-            async with session.post(
-                url, headers=headers, json=payload, **_req_kw
-            ) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return {
+            last_result = None
+            if formatted:
+                payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+                if thread_id:
+                    payload["thread_ts"] = thread_id
+                async with session.post(
+                    url, headers=headers, json=payload, **_req_kw
+                ) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        last_result = {
+                            "success": True,
+                            "platform": "slack",
+                            "chat_id": chat_id,
+                            "message_id": data.get("ts"),
+                        }
+                    else:
+                        return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
+
+            if media_files:
+                if not SLACK_AVAILABLE or AsyncWebClient is Any:
+                    return {"error": "Slack media upload failed: slack_sdk not installed"}
+                client_kwargs = {"token": token}
+                if _proxy:
+                    client_kwargs["proxy"] = _proxy
+                client = AsyncWebClient(**client_kwargs)
+                for media_path, _is_voice in media_files or []:
+                    if not os.path.exists(str(media_path)):
+                        return {"error": f"Slack media upload failed: file not found: {os.path.basename(str(media_path))}"}
+                    upload = await client.files_upload_v2(
+                        channel=chat_id,
+                        file=str(media_path),
+                        filename=os.path.basename(str(media_path)),
+                        initial_comment="" if formatted else "",
+                        thread_ts=thread_id,
+                    )
+                    if isinstance(upload, dict) and upload.get("ok") is False:
+                        return {"error": f"Slack media upload failed: {upload.get('error', 'unknown')}"}
+                    file_id = None
+                    if isinstance(upload, dict):
+                        file_id = upload.get("file", {}).get("id") or upload.get("ts")
+                    last_result = {
                         "success": True,
                         "platform": "slack",
                         "chat_id": chat_id,
-                        "message_id": data.get("ts"),
+                        "message_id": file_id,
                     }
-                return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
+
+            return last_result or {
+                "success": True,
+                "platform": "slack",
+                "chat_id": chat_id,
+                "message_id": None,
+            }
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
 

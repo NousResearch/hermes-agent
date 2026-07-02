@@ -1677,6 +1677,24 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+
+
+def _split_response_attachments_for_direct_send(adapter: Any, response: str):
+    """Return cleaned text plus native attachments for an already-managed send.
+
+    Some gateway paths, notably the queued-follow-up fast path, send a response
+    directly with ``adapter.send()`` before returning to the normal
+    ``_handle_message`` post-processing block. Those paths must still strip
+    ``MEDIA:`` directives from visible text and dispatch the corresponding
+    attachments separately; otherwise users see either raw host paths or a claim
+    that a file was attached when no uploader ran.
+    """
+    from gateway.platforms.base import BasePlatformAdapter
+
+    media_files, cleaned = adapter.extract_media(response)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    images, text_content = adapter.extract_images(cleaned)
+    return text_content, images, media_files
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
@@ -18761,11 +18779,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
+                            _first_text, _first_images, _first_media_files = _split_response_attachments_for_direct_send(
+                                adapter,
                                 first_response,
-                                metadata=_status_thread_metadata,
                             )
+                            if _first_text:
+                                await adapter.send(
+                                    source.chat_id,
+                                    _first_text,
+                                    metadata=_status_thread_metadata,
+                                )
+                            for _image_url, _alt_text in _first_images or []:
+                                await adapter.send_image(
+                                    chat_id=source.chat_id,
+                                    image_url=_image_url,
+                                    caption=_alt_text,
+                                    metadata=_status_thread_metadata,
+                                )
+                            if _first_media_files:
+                                for _media_path, _is_voice in _first_media_files:
+                                    await adapter.send_document(
+                                        chat_id=source.chat_id,
+                                        file_path=_media_path,
+                                        metadata=_status_thread_metadata,
+                                    )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

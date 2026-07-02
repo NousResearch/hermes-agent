@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
-from urllib.parse import urlparse
+from typing import Any, List, Optional
 
 from hermes_cli.auth import get_auth_status
 from plugins.spotify.client import (
@@ -11,6 +10,9 @@ from plugins.spotify.client import (
     SpotifyAuthRequiredError,
     SpotifyClient,
     SpotifyError,
+    normalize_spotify_id,
+    normalize_spotify_uri,
+    normalize_spotify_uris,
 )
 from tools.registry import tool_error, tool_result
 
@@ -62,39 +64,15 @@ def _as_list(raw: Any) -> List[str]:
     return [str(raw).strip()] if str(raw).strip() else []
 
 
-def _coerce_spotify_uri(value: str, *, expected_type: Optional[str] = None) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        raise SpotifyError("Spotify URI/url/id is required.")
-    if raw.startswith("spotify:"):
-        parts = raw.split(":")
-        if len(parts) < 3:
-            raise SpotifyError(
-                "Invalid Spotify URI format. Expected `spotify:<type>:<id>`."
-            )
-        if expected_type and parts[1] != expected_type:
-            raise SpotifyError(
-                f"Expected a Spotify {expected_type}, got {parts[1]}."
-            )
-        return raw
-    if "open.spotify.com" in raw:
-        parsed = urlparse(raw)
-        path_parts = [part for part in parsed.path.split("/") if part]
-        if len(path_parts) < 2:
-            raise SpotifyError(
-                "Invalid Spotify URL. Expected `open.spotify.com/<type>/<id>`."
-            )
-        item_type = path_parts[0]
-        if expected_type and item_type != expected_type:
-            raise SpotifyError(
-                f"Expected a Spotify {expected_type}, got {item_type}."
-            )
-        return f"spotify:{item_type}:{path_parts[1]}"
-    if expected_type and raw:
-        return f"spotify:{expected_type}:{raw}"
-    raise SpotifyError(
-        "Invalid Spotify URI/URL format. Provide an item ID, `open.spotify.com/<type>/<id>` URL, or `spotify:<type>:<id>` URI."
-    )
+def _coerce_spotify_uri(value: str, expected_type: Optional[str] = None) -> str:
+    """Normalize a Spotify URI/URL/ID into a canonical ``spotify:<type>:<id>`` URI.
+
+    Delegates to ``normalize_spotify_uri`` from the Spotify client so behavior
+    stays in lock-step with the existing, tested normalizer. Accepts bare IDs
+    when ``expected_type`` is None (preserving the prior passthrough behavior
+    required by the queue handler for search-result IDs).
+    """
+    return normalize_spotify_uri(str(value or ""), expected_type)
 
 
 def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:

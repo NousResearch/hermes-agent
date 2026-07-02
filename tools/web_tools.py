@@ -235,6 +235,17 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    # Plugin-registered backends: when the name isn't in the hardcoded
+    # whitelist above, ask the provider registry — any plugin-backed
+    # provider (crawl4ai, etc.) supplies its own is_available() check
+    # and doesn't need a per-backend entry here.
+    try:
+        from agent.web_search_registry import get_provider
+        provider = get_provider(backend)
+        if provider is not None:
+            return bool(provider.is_available())
+    except Exception:
+        pass
     return False
 
 

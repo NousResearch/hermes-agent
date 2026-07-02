@@ -5,7 +5,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Check } from '@/lib/icons'
 import type { MemoryProviderField } from '@/types/hermes'
 
-import { CONTROL_TEXT } from './constants'
+import { CONTROL_TEXT } from '../constants'
 
 // Fade the placeholder well below set values so example text never reads as data.
 const FIELD_INPUT = `font-mono ${CONTROL_TEXT} placeholder:text-muted-foreground/45`

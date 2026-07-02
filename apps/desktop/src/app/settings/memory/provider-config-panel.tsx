@@ -8,7 +8,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig } from '@/types/hermes'
 
 import { FieldControl } from './field-control'
-import { ListRow, LoadingState, Pill } from './primitives'
+import { ListRow, LoadingState, Pill } from '../primitives'
 import { ProviderConfigModal } from './provider-config-modal'
 
 /** Seed editable values from the inline fields only, so saving the compact

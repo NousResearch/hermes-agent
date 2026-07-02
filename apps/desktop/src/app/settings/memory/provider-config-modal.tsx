@@ -16,7 +16,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { FieldControl } from './field-control'
-import { ListRow } from './primitives'
+import { ListRow } from '../primitives'
 
 /** Seed every editable field (inline and modal-only). Secrets start blank —
  *  their value is never returned and submitting blank keeps the stored one. */

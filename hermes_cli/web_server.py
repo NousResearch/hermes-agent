@@ -14119,13 +14119,24 @@ def start_server(
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
     # Loopback binds are the Desktop case: a single local client, no reverse
-    # proxy in front. A GIL-heavy agent turn can stall the event loop past 20s,
-    # and uvicorn's ws keepalive ping runs on that same starved loop — so a
-    # 20s ping timeout kills an otherwise-healthy local connection over a
-    # recoverable stall (QW-1). Give loopback a longer 60s timeout / 30s
-    # interval to ride out those stalls. Non-loopback binds sit behind a
-    # Cloudflare Tunnel (idle timeout ~100s), so keep them at 20/20 to detect
-    # half-open connections promptly and stay under the tunnel's idle window.
+    # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
+    # as agent turns, and a single synchronous GIL-holding call on a worker
+    # thread (e.g. a regex/scrub over a large model output, or a long
+    # delegate_task subagent turn) can starve that loop for *minutes* — the
+    # loop cannot process the incoming pong, so uvicorn declares the socket
+    # dead and closes it, dropping an otherwise-healthy local connection
+    # (#53773: "event loop stalled 226.3s"; #48445/#50005). A longer timeout
+    # only raises the threshold — a multi-minute stall sails past any finite
+    # window. The keepalive ping exists to detect *half-open* connections
+    # (reverse-proxy 524, dropped tunnels), which cannot happen on loopback:
+    # there is no network or proxy in the path, and a dead local client tears
+    # the socket down with a real FIN/RST that starlette surfaces as
+    # WebSocketDisconnect regardless of the ping. So on loopback the ping
+    # provides ~no liveness value while actively killing recoverable stalls —
+    # disable it entirely. Non-loopback binds sit behind a Cloudflare Tunnel
+    # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
+    # ping at 20/20 to detect it promptly and stay under the tunnel's idle
+    # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
@@ -14137,12 +14148,12 @@ def start_server(
         # decide cookie Secure flags, so we flip proxy_headers on for that
         # mode.
         proxy_headers=bool(app.state.auth_required),
-        # Detect half-open WS connections (reverse-proxy 524, dropped
-        # tunnels) within ~20-40s so WebSocketDisconnect fires the
-        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.  Loopback gets a longer window (see above).
-        ws_ping_interval=30.0 if _is_loopback else 20.0,
-        ws_ping_timeout=60.0 if _is_loopback else 20.0,
+        # Half-open detection for public binds only (see above). Loopback
+        # disables the protocol ping (None) so an event-loop stall can never
+        # trigger a false disconnect; a genuinely dead local client is still
+        # reaped via the WebSocketDisconnect → disconnect/reap path.
+        ws_ping_interval=None if _is_loopback else 20.0,
+        ws_ping_timeout=None if _is_loopback else 20.0,
     )
     server = uvicorn.Server(config)
 

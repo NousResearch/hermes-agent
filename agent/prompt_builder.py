@@ -787,7 +787,13 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images are sent as native "
         "photos, videos play inline when supported, and other files arrive as downloadable "
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
-        "will be downloaded and sent as native media when possible."
+        "will be downloaded and sent as native media when possible.\n\n"
+        "Tables: the WeChat personal client clips the right-hand side of wide pipe-style "
+        "Markdown tables — columns beyond the initial viewport stay hidden even when the "
+        "user scrolls. Do NOT use pipe tables for 3+ columns or wide data. Instead, either "
+        "(a) render the table as an image (for example via the bundled table-image-generator "
+        "skill) and attach it with MEDIA:/absolute/path/to/table.png, or (b) for simple "
+        "rows, format as a key: value list. Two-column pipe tables render fine and are OK."
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "

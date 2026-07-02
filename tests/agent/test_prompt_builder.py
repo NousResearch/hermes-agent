@@ -1128,6 +1128,32 @@ class TestPromptBuilderConstants:
         assert "Markdown" in hint
         assert "absolute" in hint
 
+    def test_platform_hints_weixin_discourages_wide_pipe_tables(self):
+        # Regression for #16951: the WeChat personal client clips the
+        # right-hand side of wide pipe-style Markdown tables, so the
+        # Weixin hint must steer the agent to images or key:value lists
+        # for 3+ column data instead of pipe tables.
+        hint = PLATFORM_HINTS["weixin"]
+        # Existing positive guidance remains.
+        assert "Weixin" in hint or "WeChat" in hint
+        assert "MEDIA:" in hint
+        # New negative guidance about wide pipe tables must be present.
+        lower = hint.lower()
+        assert "table" in lower, "weixin hint should mention tables"
+        assert "pipe" in lower, (
+            "weixin hint should explicitly call out pipe-style tables"
+        )
+        assert any(
+            marker in lower for marker in ("do not", "don't", "not use")
+        ), "weixin hint should explicitly discourage wide pipe tables"
+        # The recommended alternatives must be spelled out.
+        assert (
+            "image" in lower or "table-image-generator" in lower
+        ), "weixin hint should point to image rendering as an alternative"
+        assert "key: value" in lower or "key:value" in lower, (
+            "weixin hint should point to key:value list format as an alternative"
+        )
+
 
 # =========================================================================
 # Environment hints

@@ -3360,3 +3360,79 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+def _patch_opencode_go_apikey(monkeypatch, *, config_default, stale_base_url):
+    """Force the api_key-credential resolver path (no pool entry) for
+    opencode-go with a stale persisted ``model.base_url``.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "base_url": stale_base_url,
+            "default": config_default,
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": "opencode-go",
+            "api_key": "oc-key",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "source": "OPENCODE_GO_API_KEY",
+        },
+    )
+
+
+def test_resolve_runtime_provider_opencode_go_apikey_ignores_stale_base_url(monkeypatch):
+    """Regression for #57259: on the api_key-credential path (no pool entry),
+    a ``model.base_url`` persisted WITHOUT ``/v1`` by a previous switch to a
+    MiniMax (anthropic_messages) model must not win the config override when
+    resolving a chat_completions model — otherwise the OpenAI SDK hits
+    ``…/zen/go/chat/completions`` (no ``/v1``) and returns HTTP 404.
+    """
+    _patch_opencode_go_apikey(
+        monkeypatch,
+        config_default="deepseek-v4-flash",
+        stale_base_url="https://opencode.ai/zen/go",  # stale, /v1 stripped
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go", target_model="deepseek-v4-flash"
+    )
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    # The stale (no-/v1) URL is dropped; the /v1 default is restored so the
+    # OpenAI SDK builds ``…/zen/go/v1/chat/completions``.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_resolve_runtime_provider_opencode_go_apikey_minimax_round_trips(monkeypatch):
+    """The guard must not break the MiniMax (anthropic_messages) direction:
+    the /v1 default is restored, then stripped for the Anthropic SDK, yielding
+    ``…/zen/go`` — so switching back and forth between MiniMax and
+    chat_completions models keeps working.
+    """
+    _patch_opencode_go_apikey(
+        monkeypatch,
+        config_default="minimax-m3",
+        stale_base_url="https://opencode.ai/zen/go",
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go", target_model="minimax-m3"
+    )
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"

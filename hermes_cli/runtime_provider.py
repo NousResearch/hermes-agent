@@ -2011,6 +2011,24 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            # For opencode-zen/opencode-go: a switch TO an anthropic_messages
+            # model (e.g. minimax-m3) persists model.base_url WITHOUT /v1 (the
+            # Anthropic SDK appends /v1/messages itself).  When resolving a
+            # chat_completions model (e.g. deepseek-v4-flash, glm-5.2) that
+            # stale URL would win the override here and the OpenAI SDK would hit
+            # …/chat/completions without /v1 → HTTP 404.  Only honour the config
+            # override when it still matches the provider's inference_base_url;
+            # otherwise drop it and fall back to the default (which carries
+            # /v1).  Mirrors the pool-entry guard in
+            # _resolve_runtime_from_pool_entry — this is the sibling code path
+            # for opencode keys resolved via env/config (no pool entry).
+            # Refs #57259, #56158.
+            if (
+                provider in {"opencode-zen", "opencode-go"}
+                and cfg_base_url
+                and cfg_base_url != pconfig.inference_base_url.rstrip("/")
+            ):
+                cfg_base_url = ""
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":

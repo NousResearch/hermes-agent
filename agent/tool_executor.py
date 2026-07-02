@@ -51,6 +51,9 @@ from tools.budget_config import (
     DEFAULT_BUDGET,
     FEISHU_BUDGET,
     FEISHU_DEEP_BUDGET,
+    MESSAGING_BUDGET,
+    UI_VERIFICATION_BUDGET,
+    DEEP_DIAGNOSTIC_BUDGET,
     budget_for_context_window,
 )
 
@@ -67,6 +70,12 @@ def _platform_budget_for_agent(agent) -> BudgetConfig:
         return FEISHU_BUDGET
     if platform == "feishu_deep":
         return FEISHU_DEEP_BUDGET
+    if platform in {"telegram", "telegram_ordinary", "feishu_ordinary"}:
+        return MESSAGING_BUDGET
+    if platform in {"telegram_ui", "feishu_ui", "ui_verification"}:
+        return UI_VERIFICATION_BUDGET
+    if platform in {"telegram_deep", "deep_diagnostic"}:
+        return DEEP_DIAGNOSTIC_BUDGET
     return DEFAULT_BUDGET
 
 

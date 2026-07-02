@@ -46,6 +46,7 @@ import re
 import struct
 import sys
 import threading
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -342,18 +343,25 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    inspect_full = bool(args.get("inspect_full", False))
+    max_inline_chars = _coerce_max_inline_chars(args.get("max_inline_chars"))
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
-        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
+        return _capture_response(
+            cap,
+            max_elements=_coerce_max_elements(args.get("max_elements")),
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
         res = backend.wait(seconds)
-        return _text_response(res)
+        return _text_response(res, max_inline_chars=1000)
 
     if action == "list_apps":
         apps = backend.list_apps()
@@ -364,7 +372,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -385,7 +399,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -402,7 +422,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -414,22 +440,46 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(
+            backend,
+            res,
+            capture_after,
+            inspect_full=inspect_full,
+            max_inline_chars=max_inline_chars,
+        )
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -438,13 +488,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # Response shaping
 # ---------------------------------------------------------------------------
 
-def _text_response(res: ActionResult) -> str:
+def _text_response(res: ActionResult, max_inline_chars: int = 1000) -> str:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
     if res.meta:
         payload["meta"] = res.meta
-    return json.dumps(payload)
+    return _json_limited(payload, max_inline_chars=max_inline_chars)
 
 
 # Default cap for the AX `elements` array returned by capture. Dense UIs
@@ -457,6 +507,9 @@ _DEFAULT_MAX_ELEMENTS = 100
 # reintroduce the original unbounded behavior.
 _MAX_ALLOWED_MAX_ELEMENTS = 1000
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
+_DEFAULT_MAX_INLINE_CHARS = 8000
+_MAX_ALLOWED_INLINE_CHARS = 16000
+_MIN_ALLOWED_INLINE_CHARS = 500
 
 
 def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
@@ -535,7 +588,75 @@ def _coerce_max_elements(value: Any) -> int:
     return n
 
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _coerce_max_inline_chars(value: Any) -> int:
+    if value is None:
+        return _DEFAULT_MAX_INLINE_CHARS
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_INLINE_CHARS
+    if n < _MIN_ALLOWED_INLINE_CHARS:
+        return _MIN_ALLOWED_INLINE_CHARS
+    if n > _MAX_ALLOWED_INLINE_CHARS:
+        return _MAX_ALLOWED_INLINE_CHARS
+    return n
+
+
+def _json_limited(payload: Dict[str, Any], *, max_inline_chars: int) -> str:
+    text = json.dumps(payload, ensure_ascii=False)
+    if len(text) <= max_inline_chars:
+        return text
+
+    compact = dict(payload)
+    if "elements" in compact:
+        compact["elements"] = []
+        compact["elements_omitted_for_inline_budget"] = True
+    if isinstance(compact.get("summary"), str):
+        compact["summary"] = compact["summary"][: max(120, max_inline_chars // 2)] + "\n..."
+    compact["inline_truncated"] = True
+    compact["max_inline_chars"] = max_inline_chars
+    text = json.dumps(compact, ensure_ascii=False)
+    if len(text) <= max_inline_chars:
+        return text
+    minimal = {
+        "ok": payload.get("ok"),
+        "action": payload.get("action"),
+        "inline_truncated": True,
+        "max_inline_chars": max_inline_chars,
+    }
+    if "screenshot_path" in payload:
+        minimal["screenshot_path"] = payload["screenshot_path"]
+    text = json.dumps(minimal, ensure_ascii=False)
+    if len(text) <= max_inline_chars:
+        return text
+    return text[:max_inline_chars] + "\n... [computer_use inline result truncated]"
+
+
+def _store_capture_artifact(cap: CaptureResult) -> Optional[str]:
+    if not cap.png_b64:
+        return None
+    try:
+        from hermes_constants import get_hermes_dir
+
+        cache_dir = os.path.join(str(get_hermes_dir()), "cache", "computer-use")
+        os.makedirs(cache_dir, exist_ok=True)
+        suffix = ".jpg" if (cap.image_mime_type == "image/jpeg" or cap.png_b64.startswith("/9j/")) else ".png"
+        path = os.path.join(cache_dir, f"capture-{uuid.uuid4().hex[:12]}{suffix}")
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(cap.png_b64, validate=False))
+        return path
+    except Exception as exc:
+        logger.debug("computer_use: failed to persist capture artifact: %s", exc)
+        return None
+
+
+def _capture_response(
+    cap: CaptureResult,
+    max_elements: int = _DEFAULT_MAX_ELEMENTS,
+    *,
+    inspect_full: bool = True,
+    max_inline_chars: int = _DEFAULT_MAX_INLINE_CHARS,
+) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
     truncated_elements = max(0, total_elements - len(visible_elements))
@@ -575,6 +696,33 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             "provider minimum)"
         )
     summary = "\n".join(summary_lines)
+
+    if not inspect_full:
+        if truncated_elements:
+            summary_lines.append(
+                f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
+                "set inspect_full=true only for a bounded deep UI inspection)"
+            )
+        artifact_path = _store_capture_artifact(cap)
+        payload: Dict[str, Any] = {
+            "mode": cap.mode,
+            "width": response_width,
+            "height": response_height,
+            "app": cap.app,
+            "window_title": cap.window_title,
+            "elements": [_element_to_dict(e) for e in visible_elements],
+            "total_elements": total_elements,
+            "summary": "\n".join(summary_lines),
+            "inspect_full": False,
+        }
+        if artifact_path:
+            payload["screenshot_path"] = artifact_path
+            payload["screenshot_bytes"] = cap.png_bytes_len
+        if truncated_elements:
+            payload["truncated_elements"] = truncated_elements
+        if cap.png_b64:
+            payload["image_inline_omitted"] = True
+        return _json_limited(payload, max_inline_chars=max_inline_chars)
 
     if cap.png_b64 and cap.mode != "ax" and not image_too_small:
         # Decide whether to hand the screenshot to the auxiliary.vision
@@ -834,15 +982,20 @@ def _route_capture_through_aux_vision(
 
 
 def _maybe_follow_capture(
-    backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    backend: ComputerUseBackend,
+    res: ActionResult,
+    do_capture: bool,
+    *,
+    inspect_full: bool = False,
+    max_inline_chars: int = _DEFAULT_MAX_INLINE_CHARS,
 ) -> Any:
     if not do_capture:
-        return _text_response(res)
+        return _text_response(res, max_inline_chars=1000)
     # Skip the follow-up capture when the action itself failed: showing a
     # normal-looking screenshot after a failure misleads the model into thinking
     # the action succeeded. Return the error text instead.
     if not res.ok:
-        return _text_response(res)
+        return _text_response(res, max_inline_chars=1000)
     try:
         # Preserve the app context established by the preceding capture/focus_app so
         # that capture_after=True re-captures the same app rather than the frontmost
@@ -851,9 +1004,13 @@ def _maybe_follow_capture(
         cap = backend.capture(mode="som", app=last_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
-        return _text_response(res)
+        return _text_response(res, max_inline_chars=1000)
     # Combine action summary with the capture.
-    resp = _capture_response(cap)
+    resp = _capture_response(
+        cap,
+        inspect_full=inspect_full,
+        max_inline_chars=max_inline_chars,
+    )
     if isinstance(resp, dict) and resp.get("_multimodal"):
         prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]

@@ -16,7 +16,12 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import (
+    GatewayRunner,
+    _AGENT_PENDING_SENTINEL,
+    _max_iterations_for_platform_budget,
+    _platform_budget_key_for_message,
+)
 from gateway.session import SessionSource, build_session_key
 
 
@@ -74,6 +79,17 @@ def _make_event(text="hello", chat_id="12345"):
         user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
+
+
+def test_messaging_budget_modes_are_explicit():
+    assert _platform_budget_key_for_message("telegram", "查token") == "telegram"
+    assert _platform_budget_key_for_message("telegram", "UI验证：查token") == "telegram_ui"
+    assert _platform_budget_key_for_message("telegram", "深诊断：查token") == "telegram_deep"
+    assert _platform_budget_key_for_message("feishu", "/deep 查token") == "feishu_deep"
+
+    assert _max_iterations_for_platform_budget(90, "telegram") == 6
+    assert _max_iterations_for_platform_budget(90, "telegram_ui") == 6
+    assert _max_iterations_for_platform_budget(90, "telegram_deep") == 12
 
 
 # ------------------------------------------------------------------

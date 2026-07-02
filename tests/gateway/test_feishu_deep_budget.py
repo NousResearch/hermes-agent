@@ -19,8 +19,10 @@ def test_feishu_deep_prefix_selects_deep_budget_key():
     assert _platform_budget_key_for_message("feishu", "/deep 继续查路由配置") == "feishu_deep"
 
 
-def test_deep_prefix_does_not_affect_other_platforms():
-    assert _platform_budget_key_for_message("telegram", "/deep 继续查") == "telegram"
+def test_deep_prefix_selects_telegram_deep_budget_key():
+    assert _platform_budget_key_for_message("telegram", "继续上一轮") == "telegram"
+    assert _platform_budget_key_for_message("telegram", "/deep 继续查") == "telegram_deep"
+    assert _platform_budget_key_for_message("telegram", "深诊断：继续查") == "telegram_deep"
 
 
 def test_feishu_github_install_request_uses_install_task_mode():

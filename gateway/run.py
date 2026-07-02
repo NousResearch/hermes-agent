@@ -2305,22 +2305,39 @@ def _deep_command_message(text: str) -> str:
 def _platform_budget_key_for_message(platform: str, message: str) -> str:
     """Return the runtime budget key for a platform/message pair.
 
-    Feishu gets a narrow default budget for ordinary chat diagnostics.  Users
-    must opt into the larger one with either the plain-text trigger or /deep.
-    Other platforms keep their existing budget key.
+    Messaging platforms get a narrow default budget for ordinary ops
+    diagnostics. Users must opt into the larger one with either the plain-text
+    trigger or /deep. UI verification is a separate compact mode because it is
+    allowed to touch desktop state but should not inherit earlier repair logs.
     """
     platform_key = (platform or "").strip().lower()
-    if platform_key != "feishu":
-        return platform_key
     text = (message or "").lstrip()
-    if (
+    is_deep = (
         text == "深诊断"
         or text.startswith("深诊断：")
         or text.startswith("深诊断:")
         or text.startswith("/deep")
+    )
+    is_ui = (
+        text == "UI验证"
+        or text.startswith("UI验证：")
+        or text.startswith("UI验证:")
+        or text.startswith("/ui")
+    )
+    if platform_key in {"feishu", "telegram"}:
+        if is_deep:
+            return f"{platform_key}_deep"
+        if is_ui:
+            return f"{platform_key}_ui"
+        return platform_key
+    if (
+        is_deep
+        and platform_key in {"discord", "slack", "matrix", "wechat", "qq"}
     ):
-        return "feishu_deep"
-    return "feishu"
+        return "deep_diagnostic"
+    if is_ui:
+        return "ui_verification"
+    return platform_key
 
 
 def _platform_task_mode_for_message(platform: str, budget_key: str, message: str) -> str:
@@ -2334,9 +2351,11 @@ def _platform_task_mode_for_message(platform: str, budget_key: str, message: str
 
 
 def _max_iterations_for_platform_budget(default_max: int, platform_budget_key: str) -> int:
-    if platform_budget_key == "feishu":
+    if platform_budget_key in {"feishu", "telegram"}:
         return min(default_max, 6)
-    if platform_budget_key == "feishu_deep":
+    if platform_budget_key in {"feishu_ui", "telegram_ui", "ui_verification"}:
+        return min(default_max, 6)
+    if platform_budget_key in {"feishu_deep", "telegram_deep", "deep_diagnostic"}:
         return min(max(default_max, 12), 12)
     return default_max
 

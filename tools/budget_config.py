@@ -138,3 +138,46 @@ FEISHU_DEEP_BUDGET = BudgetConfig(
         "search_files": 16_000,
     },
 )
+
+
+# Messaging operations should default to a compact "summary + artifact path"
+# shape regardless of platform. Telegram was previously allowed to inherit the
+# large desktop/CLI defaults, so a routine ops request could carry tens of
+# thousands of chars into every later model request.
+MESSAGING_BUDGET = BudgetConfig(
+    default_result_size=8_000,
+    turn_budget=24_000,
+    preview_size=1_200,
+    tool_overrides={
+        "execute_code": 8_000,
+        "terminal": 8_000,
+        "search_files": 8_000,
+        "computer_use": 8_000,
+    },
+)
+
+
+UI_VERIFICATION_BUDGET = BudgetConfig(
+    default_result_size=8_000,
+    turn_budget=24_000,
+    preview_size=1_200,
+    tool_overrides={
+        "computer_use": 8_000,
+        "execute_code": 8_000,
+        "terminal": 8_000,
+        "search_files": 8_000,
+    },
+)
+
+
+DEEP_DIAGNOSTIC_BUDGET = BudgetConfig(
+    default_result_size=16_000,
+    turn_budget=48_000,
+    preview_size=1_500,
+    tool_overrides={
+        "computer_use": 16_000,
+        "execute_code": 16_000,
+        "terminal": 16_000,
+        "search_files": 16_000,
+    },
+)

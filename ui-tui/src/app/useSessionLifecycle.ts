@@ -6,6 +6,7 @@ import { type RefObject, useCallback, useEffect, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
+import { initialStatusCapsule } from '../domain/statusCapsule.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -73,6 +74,7 @@ export const scheduleResumeScrollToBottom = (
   delays: readonly number[] = [0, 80, 240]
 ) => {
   const startedAt = Date.now()
+
   const timers = delays.map((delay, index) =>
     setTimeout(() => {
       const scroll = scrollRef.current
@@ -148,6 +150,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
     [rpc]
   )
+
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
 
   const resetSession = useCallback(() => {
@@ -156,7 +159,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
+    patchUiState({ bgTasks: new Set(), info: null, sid: null, statusCapsule: initialStatusCapsule(), usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -186,7 +189,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setLastUserMsg('')
       composerActions.setPasteSnips([])
       patchTurnState({ activity: [] })
-      patchUiState({ info, usage: usageFrom(info) })
+      patchUiState({ info, statusCapsule: initialStatusCapsule(), usage: usageFrom(info) })
     },
     [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt]
   )

@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
+import { initialStatusCapsule } from '../domain/statusCapsule.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -17,6 +18,7 @@ const buildUiState = (): UiState => ({
   info: null,
   liveSessionCount: 0,
   inlineDiffs: true,
+  mechanismStatusBar: true,
   mouseTracking: MOUSE_TRACKING,
   notice: null,
   pasteCollapseLines: 5,
@@ -27,6 +29,7 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
+  statusCapsule: initialStatusCapsule(),
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO

@@ -40,6 +40,7 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
+    expect(s.mechanismStatusBar).toBe(true)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
@@ -63,6 +64,7 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
+    expect(s.mechanismStatusBar).toBe(true)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
@@ -160,6 +162,22 @@ describe('applyDisplay', () => {
 
     applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
+  })
+  it('threads display.tui_mechanism_statusbar into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_mechanism_statusbar: false } } }, setBell)
+    expect($uiState.get().mechanismStatusBar).toBe(false)
+
+    applyDisplay({ config: { display: { tui_mechanism_statusbar: true } } }, setBell)
+    expect($uiState.get().mechanismStatusBar).toBe(true)
+  })
+
+  it('treats missing display.tui_mechanism_statusbar as enabled for v1 visibility', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().mechanismStatusBar).toBe(true)
   })
 })
 

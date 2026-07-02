@@ -178,6 +178,7 @@ export interface ConfigDisplayConfig {
   // narrowing-and-autocomplete contract on a value that requires runtime
   // validation anyway.
   tui_status_indicator?: string
+  tui_mechanism_statusbar?: boolean
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 

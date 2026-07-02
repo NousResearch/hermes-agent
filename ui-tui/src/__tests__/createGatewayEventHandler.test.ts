@@ -180,6 +180,57 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('⏸ goal paused')
   })
 
+  it('folds runtime mechanism events into the status capsule without upgrading unknown OpenCode/Deep state', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ mechanismStatusBar: true, sid: 'sess-1' } as any)
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    expect((getUiState() as any).statusCapsule).toMatchObject({ route: 'Hermes', state: 'running' })
+
+    onEvent({ payload: { name: 'terminal', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      observed: { deep: 'unknown', opencode: 'unknown' },
+      state: 'tooling',
+      tools: ['terminal']
+    })
+
+    onEvent({ payload: { goal: 'check implementation', subagent_id: 'sa-1', task_index: 0 }, type: 'subagent.start' } as any)
+    expect((getUiState() as any).statusCapsule.observed.delegate).toBe('observed')
+
+    onEvent({ payload: { count: 2, index: 1, label: 'openrouter:openai/gpt-5.5', text: 'draft' }, type: 'moa.reference' } as any)
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      observed: { moa: 'observed', opencode: 'unknown' },
+      route: 'MoA'
+    })
+
+    onEvent({ payload: { text: 'done', usage: { calls: 1, input: 20, output: 5, total: 25 } }, type: 'message.complete' } as any)
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      precision: { elapsed: 'observed', tokens: 'observed' },
+      state: 'idle'
+    })
+  })
+
+  it('keeps resetting hidden mechanism state while the status capsule is disabled', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ mechanismStatusBar: true, sid: 'sess-1' } as any)
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { label: 'reference', text: 'draft' }, type: 'moa.reference' } as any)
+    expect((getUiState() as any).statusCapsule.route).toBe('MoA')
+
+    patchUiState({ mechanismStatusBar: false } as any)
+    onEvent({ payload: {}, type: 'message.start' } as any)
+
+    expect((getUiState() as any).statusCapsule).toMatchObject({
+      observed: { delegate: 'unknown', moa: 'unknown', opencode: 'unknown' },
+      route: 'Hermes',
+      state: 'running'
+    })
+  })
+
   it('surfaces self-improvement review summaries as a persistent system line', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

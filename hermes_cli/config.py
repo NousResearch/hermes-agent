@@ -1726,6 +1726,11 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Mechanism Status Bar v1: show a compact runtime capsule in the Ink
+        # status rule.  It reports only observed runtime signals and labels token
+        # / elapsed readouts as observed/unknown (never exact).  Set false to
+        # hide this extra capsule while keeping the rest of the status bar.
+        "tui_mechanism_statusbar": True,
         # Seconds between prompt_toolkit redraws in the classic CLI when idle.
         # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
         # last-turn) ticking and keeps the bottom chrome alive during idle —

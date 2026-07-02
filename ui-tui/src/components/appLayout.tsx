@@ -11,6 +11,7 @@ import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { buildStatusCapsule } from '../domain/statusCapsule.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -463,6 +464,19 @@ const StatusRulePane = memo(function StatusRulePane({
     return null
   }
 
+  const statusCapsule = ui.mechanismStatusBar
+    ? buildStatusCapsule({
+        autoSession: !ui.sid && /forging|resuming|recovering|starting agent/i.test(ui.status),
+        busy: ui.busy,
+        lastTurnEndedAt: status.lastTurnEndedAt,
+        prior: ui.statusCapsule,
+        sessionStartedAt: status.sessionStartedAt,
+        status: ui.status,
+        turnStartedAt: status.turnStartedAt,
+        usage: ui.usage
+      })
+    : null
+
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
@@ -480,6 +494,7 @@ const StatusRulePane = memo(function StatusRulePane({
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
         status={ui.status}
+        statusCapsule={statusCapsule}
         statusColor={status.statusColor}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}

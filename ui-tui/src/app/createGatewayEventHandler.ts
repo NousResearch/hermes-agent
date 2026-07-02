@@ -1,6 +1,7 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildStatusCapsule, foldStatusCapsuleEvent } from '../domain/statusCapsule.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -28,6 +29,23 @@ import { getUiState, patchUiState } from './uiStore.js'
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+
+const patchMechanismCapsule = (ev: GatewayEvent) => {
+  patchUiState(state => {
+    const base =
+      state.statusCapsule ??
+      buildStatusCapsule({
+        busy: state.busy,
+        lastTurnEndedAt: null,
+        sessionStartedAt: null,
+        status: state.status,
+        turnStartedAt: null,
+        usage: state.usage
+      })
+
+    return { ...state, statusCapsule: foldStatusCapsuleEvent(base, ev) }
+  })
+}
 
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
@@ -423,12 +441,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'session.info': {
         const info = ev.payload
 
-        patchUiState(state => ({
-          ...state,
-          info,
-          status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
-        }))
+        patchUiState(state => {
+          const usage = info.usage ? { ...state.usage, ...info.usage } : state.usage
+
+          return {
+            ...state,
+            info,
+            status: state.status === 'starting agent…' ? 'ready' : state.status,
+            statusCapsule: state.mechanismStatusBar
+              ? buildStatusCapsule({
+                  busy: state.busy,
+                  lastTurnEndedAt: null,
+                  prior: state.statusCapsule,
+                  sessionStartedAt: null,
+                  status: state.status,
+                  turnStartedAt: null,
+                  usage
+                })
+              : state.statusCapsule,
+            usage
+          }
+        })
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
 
@@ -457,6 +490,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'message.start':
         resetAgentsNudgeTurnState()
         turnController.startMessage()
+        patchMechanismCapsule(ev)
 
         return
       case 'status.update': {
@@ -689,6 +723,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'moa.reference':
+        patchMechanismCapsule(ev)
         turnController.recordMoaReference(
           String(ev.payload?.label ?? 'reference'),
           String(ev.payload?.text ?? ''),
@@ -699,6 +734,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'moa.aggregating':
+        patchMechanismCapsule(ev)
+
         // Spinner/status transition only — the aggregator's response follows
         // through the normal message stream. No committed transcript entry.
         return
@@ -718,6 +755,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.start':
+        patchMechanismCapsule(ev)
         turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(
           ev.payload.tool_id,
@@ -820,6 +858,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.spawn_requested':
+        patchMechanismCapsule(ev)
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'queued' }))
@@ -838,6 +877,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'subagent.start':
+        patchMechanismCapsule(ev)
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'running' }))
 
         // `subagent.start` is the first delegation event the TUI reliably
@@ -848,6 +888,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'subagent.thinking': {
+        patchMechanismCapsule(ev)
         const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
@@ -869,6 +910,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.tool': {
+        patchMechanismCapsule(ev)
+
         const line = formatToolCall(
           ev.payload.tool_name ?? 'delegate_task',
           ev.payload.tool_preview ?? ev.payload.text ?? ''
@@ -887,6 +930,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.progress': {
+        patchMechanismCapsule(ev)
         const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
@@ -906,6 +950,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.complete':
+        patchMechanismCapsule(ev)
         turnController.upsertSubagent(
           ev.payload,
           c => ({
@@ -943,11 +988,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
         }
 
+        patchMechanismCapsule(ev)
+
         return
       }
 
       case 'error':
         turnController.recordError()
+        patchMechanismCapsule(ev)
         flashPet('failed')
 
         {

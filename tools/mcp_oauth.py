@@ -77,6 +77,22 @@ try:
 except ImportError:
     AnyUrl = None  # type: ignore[assignment, misc]
 
+# Machine-to-machine OAuth via the SDK's headless client_credentials extension
+# (mcp>=1.26): the client authenticates with client_id + client_secret — no
+# browser, no callback — and the SDK re-mints on expiry (no refresh_token
+# needed). Optional import so the module still loads on older SDKs.
+_M2M_AVAILABLE = False
+try:
+    from mcp.client.auth.extensions.client_credentials import (
+        ClientCredentialsOAuthProvider,
+    )
+
+    _M2M_AVAILABLE = True
+except ImportError:
+    logger.debug(
+        "MCP client_credentials extension not available -- M2M MCP auth disabled"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -786,6 +802,103 @@ def _maybe_preregister_client(
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 
+# ---------------------------------------------------------------------------
+# Machine-to-machine (headless client_credentials grant)
+#
+# ``grant: client_credentials`` — client_id + client_secret, via the MCP SDK's
+# ``ClientCredentialsOAuthProvider``. Selected via ``oauth.grant``; default
+# (absent) keeps the interactive authorization_code flow below unchanged. The
+# provider mints reactively on the first 401 and re-mints on expiry inside the
+# SDK's own httpx flow (no refresh_token, no proactive path), so no Hermes
+# subclass is needed: unlike authorization_code, ``is_token_valid()`` gates
+# nothing extra for this grant.
+# ---------------------------------------------------------------------------
+
+M2M_GRANT_CLIENT_CREDENTIALS = "client_credentials"
+_M2M_GRANTS = frozenset({M2M_GRANT_CLIENT_CREDENTIALS})
+
+
+def _grant_of(oauth_config: dict | None) -> str:
+    if not oauth_config:
+        return ""
+    return str(oauth_config.get("grant", "")).strip().lower()
+
+
+def is_m2m_grant(oauth_config: dict | None) -> bool:
+    """True when the oauth block requests a headless machine-to-machine grant."""
+    return _grant_of(oauth_config) in _M2M_GRANTS
+
+
+def _require_client_id(cfg: dict, grant: str) -> str:
+    client_id = cfg.get("client_id")
+    if not client_id:
+        raise ValueError(f"MCP OAuth grant '{grant}' requires 'oauth.client_id'.")
+    return client_id
+
+
+def build_client_credentials_provider(
+    server_name: str,
+    server_url: str,
+    oauth_config: dict,
+) -> "ClientCredentialsOAuthProvider | None":
+    """Build a headless client_credentials M2M OAuth provider for an MCP server.
+
+    Shared by :func:`build_oauth_auth` and the manager's ``_build_provider`` so
+    both construction paths behave identically. The shared secret is read from
+    ``oauth.client_secret`` — resolve it from a secret via ``${VAR}``; never
+    inline a literal. Returns None if the SDK's client_credentials extension is
+    unavailable.
+    """
+    if not _M2M_AVAILABLE:
+        logger.warning(
+            "MCP OAuth grant 'client_credentials' requested for '%s' but the SDK "
+            "client_credentials extension is unavailable. Install 'mcp>=1.26.0'.",
+            server_name,
+        )
+        return None
+
+    cfg = dict(oauth_config or {})
+    client_id = _require_client_id(cfg, M2M_GRANT_CLIENT_CREDENTIALS)
+    client_secret = cfg.get("client_secret")
+    if not client_secret:
+        raise ValueError(
+            "MCP OAuth grant 'client_credentials' requires 'oauth.client_secret' "
+            "(resolve it from a secret via ${VAR}; do not inline a literal)."
+        )
+    auth_method = str(
+        cfg.get("token_endpoint_auth_method", "client_secret_basic")
+    ).strip()
+    if auth_method not in ("client_secret_basic", "client_secret_post"):
+        raise ValueError(
+            "MCP OAuth 'token_endpoint_auth_method' must be 'client_secret_basic' "
+            f"or 'client_secret_post' (got {auth_method!r})."
+        )
+    return ClientCredentialsOAuthProvider(
+        server_url=server_url,
+        storage=HermesTokenStorage(server_name),
+        client_id=client_id,
+        client_secret=client_secret,
+        token_endpoint_auth_method=auth_method,
+        scopes=cfg.get("scope"),
+    )
+
+
+def build_m2m_provider(
+    server_name: str,
+    server_url: str,
+    oauth_config: dict,
+) -> "OAuthClientProvider | None":
+    """Dispatch to the M2M provider for the configured ``oauth.grant``.
+
+    Returns None if the SDK extension is unavailable; raises ValueError for an
+    absent/unknown M2M grant (callers gate with :func:`is_m2m_grant` first).
+    """
+    grant = _grant_of(oauth_config)
+    if grant == M2M_GRANT_CLIENT_CREDENTIALS:
+        return build_client_credentials_provider(server_name, server_url, oauth_config)
+    raise ValueError(f"Unknown M2M oauth grant: {grant!r}")
+
+
 def build_oauth_auth(
     server_name: str,
     server_url: str,
@@ -815,6 +928,11 @@ def build_oauth_auth(
         return None
 
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
+
+    # Headless M2M grant: no browser, no callback, no interactivity gate.
+    if is_m2m_grant(cfg):
+        return build_m2m_provider(server_name, server_url, cfg)
+
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():

@@ -1786,13 +1786,13 @@ _TOOL_DOC_LINES = [
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"
-     "    Always overwrites the entire file."),
+     "    Always overwrites the entire file. Check for an \"error\" key before destructive terminal() commands; path safety rules may reject writes that terminal() can still modify."),
     ("search_files",
      "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch",
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
+     "    Replaces old_string with new_string in the file. Check for an \"error\" key before destructive terminal() commands."),
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),

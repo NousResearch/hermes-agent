@@ -6,7 +6,9 @@ import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
 from hermes_cli import kanban_db as kb
 
 
@@ -913,6 +915,73 @@ async def test_natural_language_task_request_continues_when_kanban_create_fails(
 
     adapter.handle_message.assert_awaited_once()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_natural_language_task_event_creates_ready_kanban_task_from_voice_transcript(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_voice123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="スキル調べて教えて",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    fake_add_notify_sub = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="100",
+        chat_name="リノ",
+        chat_type="dm",
+        user_id="42",
+        user_name="内田さん",
+        message_id="999",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="999",
+    )
+
+    result = await adapter.maybe_handle_natural_task_event(
+        event=event,
+        prompt="スキル調べて教えて",
+        has_attachments=True,
+    )
+
+    assert result.created is True
+    assert result.task_id == "t_voice123"
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == "スキル調べて教えて"
+    assert created["kwargs"]["idempotency_key"] == "discord-natural-task:999"
+    assert created["kwargs"]["initial_status"] == "ready"
+    fake_add_notify_sub.assert_called_once()
 
 
 @pytest.mark.asyncio

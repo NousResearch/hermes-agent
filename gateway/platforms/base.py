@@ -947,6 +947,7 @@ class MessageEvent:
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
+    transcribed_text: Optional[str] = None
     
     # Source information
     source: SessionSource = None

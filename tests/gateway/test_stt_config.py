@@ -1,6 +1,7 @@
 """Gateway STT config tests — honor stt.enabled: false from config.yaml."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -140,3 +141,67 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_discord_voice_transcript_defers_to_natural_task_intake():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._has_setup_skill = lambda: False
+    adapter = SimpleNamespace(
+        maybe_handle_natural_task_event=AsyncMock(
+            return_value=SimpleNamespace(created=True, task_id="t_voice")
+        )
+    )
+    runner.adapters = {Platform.DISCORD: adapter}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="100",
+        chat_name="リノ",
+        chat_type="dm",
+        user_id="42",
+        user_name="内田さん",
+        message_id="999",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        raw_message=SimpleNamespace(id=999),
+        message_id="999",
+        media_urls=["/tmp/discord-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "スキル調べて教えて",
+            "provider": "local_command",
+        },
+    ):
+        message_text = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert message_text is not None
+    assert event.transcribed_text == "スキル調べて教えて"
+
+    deferred = await runner._maybe_defer_discord_voice_natural_task(
+        event=event,
+    )
+
+    assert deferred is True
+    adapter.maybe_handle_natural_task_event.assert_awaited_once()
+    call_kwargs = adapter.maybe_handle_natural_task_event.await_args.kwargs
+    assert call_kwargs["event"] is event
+    assert call_kwargs["prompt"] == "スキル調べて教えて"
+    assert call_kwargs["has_attachments"] is True

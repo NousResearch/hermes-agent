@@ -1420,6 +1420,19 @@ def _get_platform_tools(
     from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
+
+    # Desktop/TUI settings are intentionally stored in the CLI toolset lane
+    # today (see the Desktop /api/tools endpoints). If a runtime caller starts
+    # passing the Desktop session source key, keep that existing configuration
+    # contract instead of falling through to a non-existent hermes-desktop
+    # composite. A user-provided platform_toolsets.desktop entry still wins.
+    if platform == "desktop" and "desktop" not in platform_toolsets:
+        return _get_platform_tools(
+            config,
+            "cli",
+            include_default_mcp_servers=include_default_mcp_servers,
+        )
+
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):

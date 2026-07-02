@@ -449,6 +449,10 @@ def _sender_identity(sender: Any) -> frozenset:
     )
 
 
+def _allowlist_admits(sender_ids: frozenset, allowlist: set[str] | frozenset[str]) -> bool:
+    return "*" in allowlist or bool(sender_ids and (sender_ids & allowlist))
+
+
 # ---------------------------------------------------------------------------
 # Markdown rendering helpers
 # ---------------------------------------------------------------------------
@@ -4209,7 +4213,7 @@ class FeishuAdapter(BasePlatformAdapter):
             # Gateway auth fail-closes agent access until approval.
             if not self._allowed_group_users:
                 return None
-            if not (sender_ids and (sender_ids & self._allowed_group_users)):
+            if not _allowlist_admits(sender_ids, self._allowed_group_users):
                 return "dm_policy_rejected"
             return None
 
@@ -4266,11 +4270,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
 
         if policy == "allowlist":
-            return bool(sender_ids and (sender_ids & allowlist))
+            return _allowlist_admits(sender_ids, allowlist)
         if policy == "blacklist":
             return bool(sender_ids and not (sender_ids & blacklist))
 
-        return bool(sender_ids and (sender_ids & self._allowed_group_users))
+        return _allowlist_admits(sender_ids, self._allowed_group_users)
 
     # --- Mention detection ----------------------------------------------------
 

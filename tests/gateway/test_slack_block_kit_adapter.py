@@ -77,6 +77,18 @@ class TestSendMessageBlocks:
             assert "blocks" not in c.kwargs
             assert c.kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_feedback_buttons_opt_in_appended_to_blocks(self):
+        adapter, client = _make_adapter({"feedback_buttons": True})
+
+        await adapter.send("C1", "final answer")
+
+        blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+        feedback = blocks[-1]
+        assert feedback["type"] == "context_actions"
+        assert feedback["elements"][0]["type"] == "feedback_buttons"
+        assert feedback["elements"][0]["action_id"] == "hermes_feedback"
+
 
 class TestEditMessageBlocks:
     @pytest.mark.asyncio
@@ -94,6 +106,13 @@ class TestEditMessageBlocks:
         kwargs = client.chat_update.await_args.kwargs
         assert "blocks" in kwargs and kwargs["blocks"]
         assert kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_finalize_edit_gets_feedback_buttons_when_enabled(self):
+        adapter, client = _make_adapter({"rich_blocks": True, "feedback_buttons": True})
+        await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
+        blocks = client.chat_update.await_args.kwargs["blocks"]
+        assert blocks[-1]["elements"][0]["type"] == "feedback_buttons"
 
     @pytest.mark.asyncio
     async def test_finalize_edit_disabled_no_blocks(self):

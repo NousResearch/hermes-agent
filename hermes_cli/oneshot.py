@@ -127,6 +127,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +138,11 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated string or iterable of skill
+            identifiers to preload for the run, mirroring `--skills` on a
+            normal chat turn. The loaded skill payload is injected as the
+            agent's ephemeral system prompt so it steers the single run
+            without being cached or persisted.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -189,6 +195,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -253,6 +260,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -337,6 +345,13 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    # Preload skills exactly like a normal chat turn (`hermes chat --skills`).
+    # The chat path builds a skill payload with build_preloaded_skills_prompt()
+    # and appends it to the system prompt; oneshot bypasses cli.py so we build
+    # the same payload here and hand it to the agent as its ephemeral system
+    # prompt — present for this single run, never cached or persisted.
+    ephemeral_skill_prompt = _build_preloaded_skill_prompt(skills)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -349,6 +364,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        ephemeral_system_prompt=ephemeral_skill_prompt,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
@@ -371,6 +387,44 @@ def _run_agent(
 
     result = agent.run_conversation(prompt)
     return (result.get("final_response") or "", result)
+
+
+def _build_preloaded_skill_prompt(skills: object = None) -> Optional[str]:
+    """Build the preloaded-skill system-prompt payload for a oneshot run.
+
+    Mirrors the chat path in ``cli.py`` (``_parse_skills_argument`` +
+    ``build_preloaded_skills_prompt``) so ``hermes -z --skills X`` loads a
+    skill the same way ``hermes chat --skills X`` does. Returns the payload
+    string to use as the agent's ephemeral system prompt, or ``None`` when no
+    skills were requested / none resolved.
+
+    Failure handling mirrors the chat path: if at least one skill loads we
+    proceed and warn about the missing ones; if EVERY requested skill is
+    unknown we raise so a misconfigured caller fails loudly instead of
+    silently running without the guidance it asked for.
+    """
+    if not skills:
+        return None
+
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    parsed = _normalize_toolsets(skills)  # reuse split/strip; dedupe happens downstream
+    if not parsed:
+        return None
+
+    skills_prompt, loaded, missing = build_preloaded_skills_prompt(parsed)
+
+    if missing:
+        missing_display = ", ".join(missing)
+        if loaded:
+            sys.stderr.write(
+                f"hermes -z: unknown skill(s) skipped: {missing_display}. "
+                f"Continuing with: {', '.join(loaded)}.\n"
+            )
+        else:
+            raise ValueError(f"Unknown skill(s): {missing_display}")
+
+    return skills_prompt or None
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

@@ -243,12 +243,22 @@ def test_free_response_channels_int_list():
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False):
+                   active_session=False, channel_type=None):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
     skipped (returned early).
+
+    ``channel_type`` mirrors the real Slack payload ("im" = 1:1 DM,
+    "mpim" = group DM, "" = channel). When omitted it is derived from the
+    legacy ``is_dm`` flag as a 1:1 IM, preserving existing callers. Gating
+    keys off ``is_one_to_one_dm`` (only a true 1:1 IM is exempt); MPIMs are
+    shared surfaces and go through the same gating as channels.
     """
+    if channel_type is None:
+        channel_type = "im" if is_dm else ""
+    is_one_to_one_dm = channel_type == "im"
+
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
     if mentioned:
         text = f"<@{bot_uid}> {text}"
@@ -257,7 +267,7 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         or adapter._slack_message_matches_mention_patterns(text)
     )
 
-    if not is_dm and bot_uid:
+    if not is_one_to_one_dm and bot_uid:
         # allowed_channels check (whitelist — must pass before other gating)
         allowed = adapter._slack_allowed_channels()
         if allowed and channel_id not in allowed:
@@ -267,6 +277,8 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
             return True
         elif not adapter._slack_require_mention():
             return True
+        elif adapter._slack_strict_mention() and not is_mentioned:
+            return False
         elif not is_mentioned:
             if thread_reply and active_session:
                 return True
@@ -304,6 +316,67 @@ def test_other_channel_not_in_free_response_still_gated():
 def test_dm_always_processed_regardless_of_setting():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(adapter, is_dm=True, text="hello") is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: MPIM / group-DM shared-surface gating (regression for the group-DM
+# routing bug introduced by PRs #4633 / #54632 / #54663, which classified
+# mpim as a DM and thereby exempted it from mention gating + reaction guards).
+# ---------------------------------------------------------------------------
+
+def test_mpim_unmentioned_strict_mention_ignored():
+    """MPIM, not mentioned, strict_mention on -> dropped (shared surface)."""
+    adapter = _make_adapter(require_mention=True, strict_mention=True,
+                            free_response_channels=[])
+    assert _would_process(adapter, channel_type="mpim", text="hello") is False
+
+
+def test_mpim_unmentioned_require_mention_ignored():
+    """MPIM, not mentioned, require_mention on (non-strict) -> dropped."""
+    adapter = _make_adapter(require_mention=True)
+    assert _would_process(adapter, channel_type="mpim", text="hello") is False
+
+
+def test_mpim_mentioned_processed():
+    """MPIM with an @mention is processed like any addressed message."""
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(adapter, channel_type="mpim", mentioned=True,
+                          text="hello") is True
+
+
+def test_mpim_not_in_allowed_channels_dropped():
+    """MPIM absent from a non-empty allowed_channels whitelist is dropped,
+    even when mentioned."""
+    adapter = _make_adapter(require_mention=True, allowed_channels=["C_ALLOWED"])
+    assert _would_process(adapter, channel_type="mpim", channel_id="C_BLOCKED",
+                          mentioned=True, text="hello") is False
+
+
+def test_mpim_in_free_response_processed_without_mention():
+    """An MPIM explicitly listed in free_response_channels still opts in."""
+    adapter = _make_adapter(require_mention=True,
+                            free_response_channels=["G_MPIM"])
+    assert _would_process(adapter, channel_type="mpim", channel_id="G_MPIM",
+                          text="hello") is True
+
+
+def test_one_to_one_im_still_exempt():
+    """1:1 IM behavior is preserved: mention-exempt regardless of settings."""
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(adapter, channel_type="im", text="hello") is True
+
+
+def test_mpim_unmentioned_does_not_react():
+    """Reaction guard: only a 1:1 IM or an @mention earns a reaction. An
+    unmentioned MPIM message must NOT get :eyes:/:white_check_mark: noise."""
+    def _should_react(channel_type, is_mentioned):
+        is_one_to_one_dm = channel_type == "im"
+        return is_one_to_one_dm or is_mentioned
+
+    assert _should_react("mpim", False) is False   # the reported spam case
+    assert _should_react("mpim", True) is True      # addressed -> ok
+    assert _should_react("im", False) is True        # 1:1 DM -> ok
+    assert _should_react("", False) is False         # channel, unmentioned
 
 
 def test_mentioned_message_always_processed():

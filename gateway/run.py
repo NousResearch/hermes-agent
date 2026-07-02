@@ -267,7 +267,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         name = type(cur).__name__
         if name in transient_class_names:
             return True
-        cur = cur.__cause__ or cur.__context__
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
     return False
 
 

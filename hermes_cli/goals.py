@@ -666,6 +666,21 @@ def _session_waiting(session_id: str) -> bool:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
+def _strip_reasoning(text: str) -> str:
+    """Strip <think>/reasoning blocks before the naive JSON extraction below.
+
+    Think-enabled auxiliary judges (DeepSeek-R1, QwQ, MiniMax M2) emit inline
+    reasoning that echoes the ``{"verdict": ...}`` / contract format shown in
+    the prompt. Left in place, the first-JSON-object fallback (``_JSON_OBJECT_RE``
+    is non-greedy) latches onto a brace from *inside* the reasoning, yielding a
+    wrong verdict or a spurious parse failure (which trips the consecutive-
+    failure auto-pause). Mirrors the canonical scrubber used by
+    title_generator / kanban_specify.
+    """
+    from agent.agent_runtime_helpers import strip_think_blocks
+    return strip_think_blocks(None, text)
+
+
 def _goal_judge_max_tokens() -> int:
     """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
 
@@ -710,7 +725,7 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     if not raw:
         return "continue", "judge returned empty response", True, None
 
-    text = raw.strip()
+    text = _strip_reasoning(raw).strip()
 
     # Strip markdown code fences the model may wrap JSON in.
     if text.startswith("```"):
@@ -1050,7 +1065,7 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
     """
     if not raw:
         return None
-    text = raw.strip()
+    text = _strip_reasoning(raw).strip()
     if text.startswith("```"):
         text = text.strip("`")
         nl = text.find("\n")

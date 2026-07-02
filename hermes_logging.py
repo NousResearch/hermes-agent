@@ -29,6 +29,7 @@ Session context:
 
 import atexit
 import copy
+import errno
 import io
 import logging
 import os
@@ -137,6 +138,10 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
         and isinstance(exc, RuntimeError)
         and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
     )
+
+
+def _is_no_space_left(exc: BaseException | None) -> bool:
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC
 
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
@@ -530,7 +535,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         the stdlib handler prints it to stderr (which, under the Desktop
         slash-worker, is captured and surfaced into chat output)."""
         exc = sys.exc_info()[1]
-        if _is_windows_concurrent_log_lock_timeout(exc):
+        if _is_windows_concurrent_log_lock_timeout(exc) or _is_no_space_left(exc):
             return
         super().handleError(record)
 

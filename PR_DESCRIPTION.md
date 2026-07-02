@@ -22,9 +22,11 @@ The WebUI currently instantiates `AIAgent` directly for chat. The long-term goal
 
 ### New tests
 - `tests/gateway/test_runtime_models.py` — 20 tests
-- `tests/gateway/test_runtime_run_manager.py` — 33 tests
-- `tests/gateway/test_runtime_routes.py` — 21 tests
-- `tests/gateway/test_runtime_server_mount.py` — 31 tests
+- `tests/gateway/test_runtime_run_manager.py` — 40 tests
+- `tests/gateway/test_runtime_routes.py` — 23 tests
+- `tests/gateway/test_runtime_server_mount.py` — 42 tests
+- `tests/gateway/test_runtime_approval_clarify.py` — 38 tests
+- `tests/gateway/test_runtime_control_bridge.py` — 25 tests
 
 ## API Changes
 
@@ -34,8 +36,8 @@ The WebUI currently instantiates `AIAgent` directly for chat. The long-term goal
 | GET | `/v1/runs/{run_id}` | Get run status |
 | GET | `/v1/runs/{run_id}/events` | Get run events (JSON or SSE) |
 | POST | `/v1/runs/{run_id}/stop` | Request run interruption |
-| POST | `/v1/runs/{run_id}/approval` | Resolve pending approval (501 not_supported) |
-| POST | `/v1/runs/{run_id}/clarify` | Resolve pending clarification (501 not_supported) |
+| POST | `/v1/runs/{run_id}/approval` | Resolve pending approval |
+| POST | `/v1/runs/{run_id}/clarify` | Resolve pending clarification |
 
 ## Config Flags
 
@@ -46,11 +48,13 @@ The WebUI currently instantiates `AIAgent` directly for chat. The long-term goal
 ## Tests Run
 
 ```
-105 focused tests: 105 passed, 0 failed
+188 runtime-focused tests: 188 passed, 0 failed (6 files)
+8845 full gateway suite: 8845 passed, 3 failed (pre-existing, unrelated)
 193 existing api_server tests: 193 passed, 0 failed
 23 existing api_server_runs tests: 23 passed, 0 failed
-Import smoke: PASS
-Live smoke (Phase 10B): PASS
+104 WebUI tests: 104 passed, 0 failed
+Import/construct smoke: PASS
+Integration HTTP smoke: PASS
 ```
 
 ## Compatibility Notes
@@ -61,8 +65,9 @@ Live smoke (Phase 10B): PASS
 
 ## Known Limitations
 
-- Approval/clarify resolution returns 501 `not_supported` — requires gateway adapter context
-- True live interruption not implemented — `stop_run` transitions status; `agent.interrupt()` needs live `AIAgent`
+- Approval/clarify resolution has a full lifecycle in RunManager with bridge to live gateway primitives via `RuntimeControlBridge` (`tools.approval.resolve_gateway_approval` and `tools.clarify_gateway.resolve_gateway_clarify`)
+- True live agent interruption is bridged via `RuntimeControlBridge.stop_run()` → `AIAgent.interrupt()` through GatewayRunner weakref
+- Full run_id → gateway session_key mapping at run creation time requires GatewayRunner cooperation; `bind_run(run_id, session_key)` is available for integration
 - `hermes gateway run` full startup blocked by messaging adapter dependencies in test environments
 
 ## Rollback Plan

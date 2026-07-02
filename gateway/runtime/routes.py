@@ -6,6 +6,12 @@ the six /v1/runs endpoints on an existing ``web.Application``.
 
 The module is self-contained and can be tested standalone or mounted
 into the live API server (``gateway.platforms.api_server``).
+
+When a ``RuntimeControlBridge`` is supplied via the *control_bridge*
+parameter, approval / clarify / stop handlers delegate through the
+bridge so live AIAgent execution can be interrupted or unblocked.
+Without a bridge the handlers fall back to standalone ``RunManager``
+behaviour (Phase 11B).
 """
 
 import json
@@ -35,6 +41,7 @@ def register_runtime_routes(
     *,
     run_manager: Optional[RunManager] = None,
     error_formatter: Optional[Callable[..., Dict[str, Any]]] = None,
+    control_bridge: Optional[Any] = None,
 ) -> RunManager:
     """Register /v1/runs runtime handlers on *app* and return the RunManager.
 
@@ -49,6 +56,11 @@ def register_runtime_routes(
         Optional ``(message, err_type, code) -> dict`` callback for
         error response bodies.  Defaults to a simple OpenAPI-style
         envelope.
+    control_bridge:
+        Optional ``RuntimeControlBridge`` instance.  When provided,
+        approval / clarify / stop handlers delegate through the bridge
+        so live AIAgent execution can be interrupted or unblocked.
+        Without it, handlers use standalone ``RunManager`` only.
 
     Returns
     -------
@@ -71,6 +83,8 @@ def register_runtime_routes(
         error_formatter = _standard_error
 
     app["runtime_run_manager"] = run_manager
+    if control_bridge is not None:
+        app["runtime_control_bridge"] = control_bridge
 
     async def _handle_create_run(request: web.Request) -> web.Response:
         try:
@@ -219,7 +233,13 @@ def register_runtime_routes(
 
     async def _handle_stop_run(request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
-        result = run_manager.stop_run(run_id)
+        bridge = request.app.get("runtime_control_bridge")
+
+        if bridge is not None:
+            result = bridge.stop_run(run_id)
+        else:
+            result = run_manager.stop_run(run_id)
+
         if result.get("error") == "not_found":
             return web.json_response(
                 error_formatter(
@@ -237,6 +257,7 @@ def register_runtime_routes(
 
     async def _handle_approval(request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
+        bridge = request.app.get("runtime_control_bridge")
 
         try:
             body = await request.json()
@@ -263,7 +284,15 @@ def register_runtime_routes(
                 status=400,
             )
 
-        result = run_manager.resolve_approval(run_id, approval_id, choice)
+        if bridge is not None:
+            result = bridge.resolve_approval(
+                run_id, approval_id, choice,
+                payload=body.get("payload"),
+            )
+        else:
+            result = run_manager.resolve_approval(
+                run_id, approval_id, choice,
+            )
 
         if result.get("error") == "not_found":
             msg = str(result.get("message", ""))
@@ -293,6 +322,7 @@ def register_runtime_routes(
 
     async def _handle_clarify(request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
+        bridge = request.app.get("runtime_control_bridge")
 
         try:
             body = await request.json()
@@ -321,7 +351,15 @@ def register_runtime_routes(
                 status=400,
             )
 
-        result = run_manager.resolve_clarify(run_id, clarify_id, str(response_text))
+        if bridge is not None:
+            result = bridge.resolve_clarify(
+                run_id, clarify_id, str(response_text),
+                payload=body.get("payload"),
+            )
+        else:
+            result = run_manager.resolve_clarify(
+                run_id, clarify_id, str(response_text),
+            )
 
         if result.get("error") == "not_found":
             msg = str(result.get("message", ""))

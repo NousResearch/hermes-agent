@@ -44,11 +44,13 @@ from gateway.runtime.models import (
 
 from gateway.runtime.run_manager import RunManager
 from gateway.runtime.routes import register_runtime_routes
+from gateway.runtime.control_bridge import RuntimeControlBridge
 
 __all__ = [
     "RuntimeEvent",
     "RuntimeStatus",
     "RunManager",
+    "RuntimeControlBridge",
     "RUN_STATUS_QUEUED",
     "RUN_STATUS_RUNNING",
     "RUN_STATUS_AWAITING_APPROVAL",
@@ -81,4 +83,5 @@ __all__ = [
     "TERMINAL_EVENT_TYPES",
     "redact_secrets",
     "register_runtime_routes",
+    "RuntimeControlBridge",
 ]

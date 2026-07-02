@@ -24,6 +24,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.runtime.routes import register_runtime_routes
+from gateway.runtime.run_manager import RunManager
 
 
 # ---------------------------------------------------------------------------
@@ -578,3 +579,183 @@ class TestMalformedRequests:
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# Control bridge mount tests
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeMount:
+    """Routes can receive a RuntimeControlBridge."""
+
+    def test_bridge_stored_on_app_when_provided(self):
+        from gateway.runtime.control_bridge import RuntimeControlBridge
+
+        app = web.Application()
+        bridge = RuntimeControlBridge(RunManager())
+        register_runtime_routes(app, control_bridge=bridge)
+        assert "runtime_control_bridge" in app
+        assert app["runtime_control_bridge"] is bridge
+
+    def test_no_bridge_stored_when_not_provided(self):
+        app = web.Application()
+        register_runtime_routes(app)
+        assert "runtime_control_bridge" not in app
+
+    @pytest.mark.asyncio
+    async def test_approval_uses_bridge_when_present(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_approval.return_value = {
+            "status": "resolved",
+            "type": "approval",
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            run_id = (await create_resp.json())["run_id"]
+
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "once", "approval_id": "apr-1"},
+            )
+            assert resp.status == 200
+            mock_bridge.resolve_approval.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_clarify_uses_bridge_when_present(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_clarify.return_value = {
+            "status": "resolved",
+            "type": "clarify",
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            run_id = (await create_resp.json())["run_id"]
+
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/clarify",
+                json={"response": "yes", "clarify_id": "clar-1"},
+            )
+            assert resp.status == 200
+            mock_bridge.resolve_clarify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_uses_bridge_when_present(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.stop_run.return_value = {
+            "status": "cancelled",
+            "terminal": True,
+            "controls": [],
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            run_id = (await create_resp.json())["run_id"]
+
+            resp = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert resp.status == 200
+            mock_bridge.stop_run.assert_called_once_with(run_id)
+
+    @pytest.mark.asyncio
+    async def test_bridge_not_found_maps_404(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_approval.return_value = {
+            "error": "not_found",
+            "message": "Approval apr-001 not found for run run_x.",
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/run_x/approval",
+                json={"choice": "once", "approval_id": "apr-001"},
+            )
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_bridge_conflict_maps_409(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_approval.return_value = {
+            "error": "conflict",
+            "message": "Approval apr-001 has already been resolved.",
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/run_x/approval",
+                json={"choice": "once", "approval_id": "apr-001"},
+            )
+            assert resp.status == 409
+
+    @pytest.mark.asyncio
+    async def test_url_run_id_wins_over_body_when_bridge_present(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_approval.return_value = {
+            "status": "resolved",
+        }
+        register_runtime_routes(app, control_bridge=mock_bridge)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/url_run/approval",
+                json={
+                    "choice": "once",
+                    "run_id": "body_run",
+                    "approval_id": "apr-1",
+                },
+            )
+            assert resp.status == 400
+
+
+class TestBridgeDynamicMount:
+    """Bridge can be set on app AFTER route registration."""
+
+    @pytest.mark.asyncio
+    async def test_bridge_set_after_mount_used_by_handlers(self):
+        from unittest.mock import MagicMock
+
+        app = web.Application()
+        register_runtime_routes(app)
+
+        mock_bridge = MagicMock()
+        mock_bridge.resolve_approval.return_value = {
+            "status": "resolved",
+            "type": "approval",
+        }
+        app["runtime_control_bridge"] = mock_bridge
+
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            run_id = (await create_resp.json())["run_id"]
+
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "once", "approval_id": "apr-1"},
+            )
+            assert resp.status == 200
+            mock_bridge.resolve_approval.assert_called_once()
+

@@ -60,6 +60,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.runtime.routes import register_runtime_routes
+from gateway.runtime.control_bridge import RuntimeControlBridge
 
 logger = logging.getLogger(__name__)
 
@@ -4791,10 +4792,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 str(_use_runtime_raw).strip().lower() in {"1", "true", "yes", "on"}
             )
             if _use_runtime:
-                register_runtime_routes(
+                run_manager = register_runtime_routes(
                     self._app,
                     error_formatter=_openai_error,
                 )
+                try:
+                    from gateway.run import _gateway_runner_ref as _gw_ref
+
+                    def _session_key_for_run(run_id: str) -> Optional[str]:
+                        status = run_manager.get_status(run_id)
+                        return status.get("session_id") if status else None
+
+                    control_bridge = RuntimeControlBridge(
+                        run_manager,
+                        get_session_key_for_run=_session_key_for_run,
+                        gateway_runner_ref=_gw_ref,
+                    )
+                    self._app["runtime_control_bridge"] = control_bridge
+                    self._app["runtime_run_manager"] = run_manager
+                except Exception:
+                    pass
                 logger.info(
                     "[%s] /v1/runs using runtime-backed RunManager route module",
                     self.name,

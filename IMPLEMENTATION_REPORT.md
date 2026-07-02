@@ -319,3 +319,49 @@ RunManager-level verified. Full HTTP live smoke deferred due to lack of test-onl
 - `tests/gateway/test_runtime_run_manager.py` — updated TestApprovalAndClarify → TestApprovalRequestAndResolve
 - `tests/gateway/test_runtime_routes.py` — updated contract tests
 - `tests/gateway/test_runtime_server_mount.py` — updated server mount tests
+
+## Phase 11C — Live Agent Control Bridge (completed)
+
+### Implemented Behavior
+
+Created a `RuntimeControlBridge` that bridges run_id-based runtime controls to session_key-based live gateway primitives in `tools/approval.py` and `tools/clarify_gateway.py`:
+
+**`RuntimeControlBridge`** class in `gateway/runtime/control_bridge.py`:
+- `resolve_approval(run_id, approval_id, choice, payload)` — updates RunManager, then calls `resolve_gateway_approval(session_key, choice)` when session_key is known
+- `resolve_clarify(run_id, clarify_id, answer, payload)` — updates RunManager, then calls `resolve_gateway_clarify(clarify_id, answer)` (clarify_id is universally unique)
+- `stop_run(run_id)` — updates RunManager, then signals `AIAgent.interrupt("run_stop")` when live agent is reachable via GatewayRunner
+- `bind_run(run_id, session_key)` — establishes run_id → session_key mapping
+- Constructor accepts: `get_session_key_for_run` callable and `gateway_runner_ref` weakref
+
+**Route integration:** handlers dynamically look up bridge from `request.app["runtime_control_bridge"]`, delegate when present, fall back to RunManager when absent.
+
+**API server wiring:** creates bridge with `get_session_key_for_run` using RunManager `session_id` and `gateway_runner_ref` pointing to `_gateway_runner_ref`.
+
+### What's Complete
+
+- RuntimeControlBridge exists and is wired into routes and API server
+- Clarify resolution delegates to live `resolve_gateway_clarify()` always (no mapping needed)
+- Approval resolution delegates to live `resolve_gateway_approval()` when session_key is known
+- Stop/cancel delegates to live `AIAgent.interrupt()` through GatewayRunner weakref
+
+### What's Partially Deferred
+
+- Full `run_id` → gateway `session_key` mapping at run creation time — the bridge uses RunManager `session_id` as proxy; true gateway `session_key` requires GatewayRunner cooperation at spawn time
+- `bind_run(run_id, session_key)` is ready; a future integration that calls it when spawning runtime-tracked agent runs would complete the mapping
+
+### Tests Run
+
+```
+188 tests across 6 files: 188 passed, 0 failed
+Full gateway suite: 8845 passed, 3 failed (pre-existing wecom_callback, unrelated)
+WebUI tests: 104 passed, 0 failed (no WebUI changes needed)
+```
+
+### Files Changed in Phase 11C
+
+- `gateway/runtime/control_bridge.py` — new file
+- `gateway/runtime/routes.py` — bridge-aware control handlers
+- `gateway/runtime/__init__.py` — added RuntimeControlBridge export
+- `gateway/platforms/api_server.py` — bridge creation and wiring
+- `tests/gateway/test_runtime_control_bridge.py` — new test file (25 tests)
+- `tests/gateway/test_runtime_server_mount.py` — bridge mount tests (8 tests added)

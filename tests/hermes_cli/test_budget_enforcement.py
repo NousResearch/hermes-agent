@@ -57,3 +57,20 @@ class TestGetBudgetCheckVerdict:
         from hermes_cli.plugins import get_budget_check_verdict
 
         assert get_budget_check_verdict() is None
+
+
+class TestBootstrapNotice:
+    def test_notice_when_no_hook_registered(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        from hermes_cli.plugins import (
+            BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE,
+            budget_enforcement_bootstrap_notice,
+        )
+
+        assert budget_enforcement_bootstrap_notice() == BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE
+
+    def test_none_when_hook_registered(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        from hermes_cli.plugins import budget_enforcement_bootstrap_notice
+
+        assert budget_enforcement_bootstrap_notice() is None

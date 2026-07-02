@@ -2107,6 +2107,24 @@ def get_pre_tool_call_block_message(
     return None
 
 
+BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE = (
+    "[BUDGET] No budget enforcement is active. Install a budget plugin "
+    "(e.g. hermes-telemetry) to cap spend on LLM calls and paid tools."
+)
+
+
+def budget_enforcement_bootstrap_notice() -> Optional[str]:
+    """Discoverability nudge: return a one-time notice when NO plugin
+    registers ``on_budget_check``, so the agent can tell the user that cost
+    enforcement is available but not active. Returns ``None`` when a budget
+    plugin IS registered (nothing to advertise). Callers gate the once-per-
+    session cadence (e.g. first turn only).
+    """
+    if has_hook("on_budget_check"):
+        return None
+    return BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE
+
+
 _BUDGET_SEVERITY = {"ok": 0, "soft": 1, "hard": 2}
 
 

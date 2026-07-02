@@ -1,98 +1,17 @@
-"""Declarative configuration schema for desktop memory providers.
+"""Honcho's declared config surface — rendered by the generic desktop panel."""
 
-Each memory provider *declares* its configurable surface here — the fields, their
-types, which values are secrets, and (for selects) the allowed options. A single
-generic renderer in the desktop UI and a single generic ``GET/PUT
-/api/memory/providers/{name}/config`` endpoint pair drive the whole experience,
-so adding a new provider is pure declaration with no bespoke UI components.
-
-This module is intentionally pure data: it imports nothing from the config/env
-layer. ``web_server`` owns the generic read/write logic that interprets these
-declarations, dispatching on ``MemoryProvider.storage`` to the matching backend.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass, field as dataclass_field
-
-# Field kinds understood by the generic renderer.
-KIND_TEXT = "text"
-KIND_SELECT = "select"
-KIND_SECRET = "secret"
-KIND_BOOL = "bool"
-KIND_NUMBER = "number"
-KIND_JSON = "json"
-
-# Storage backends understood by web_server. ``flat_json`` persists non-secret
-# fields to ``<hermes_home>/<provider>/config.json``; ``honcho_host_block``
-# targets Honcho's real config (honcho.json, scoped to the active profile host).
-STORAGE_FLAT_JSON = "flat_json"
-STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
-
-
-@dataclass(frozen=True)
-class ProviderFieldOption:
-    """A single choice for a ``select`` field."""
-
-    value: str
-    label: str
-    description: str = ""
-
-
-@dataclass(frozen=True)
-class ProviderField:
-    """One configurable field on a memory provider.
-
-    A field is stored in exactly one place, decided by ``kind``:
-
-    * non-secret kinds — persisted to the provider's config via its storage
-      backend under ``key``.
-    * ``secret`` — persisted to the env store under ``env_key`` and never read
-      back out over the API (only an ``is_set`` flag is surfaced).
-
-    ``aliases`` and ``env_fallbacks`` let a field read legacy values written by
-    earlier CLI/env setup without re-introducing per-provider code. ``inline``
-    marks the curated subset shown in the compact panel; the rest surface only
-    in the full-config modal. ``group`` buckets fields within that modal.
-    """
-
-    key: str
-    label: str
-    kind: str = KIND_TEXT
-    default: str = ""
-    description: str = ""
-    placeholder: str = ""
-    options: tuple[ProviderFieldOption, ...] = ()
-    env_key: str | None = None
-    aliases: tuple[str, ...] = ()
-    env_fallbacks: tuple[str, ...] = ()
-    inline: bool = False
-    group: str = ""
-    # Where a host-block backend stores the field: "host" (per-profile host
-    # block) or "root" (config root). Ignored by the flat-json backend.
-    scope: str = "host"
-
-    @property
-    def is_secret(self) -> bool:
-        return self.kind == KIND_SECRET
-
-    def allowed_values(self) -> set[str]:
-        return {opt.value for opt in self.options}
-
-
-@dataclass(frozen=True)
-class MemoryProvider:
-    """A declared memory provider and its configurable fields."""
-
-    name: str
-    label: str
-    storage: str = STORAGE_FLAT_JSON
-    # Optional link to the provider's config docs, shown in the full-config modal.
-    docs_url: str = ""
-    fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
-
-    def inline_fields(self) -> tuple[ProviderField, ...]:
-        return tuple(f for f in self.fields if f.inline)
+from plugins.memory.config_schema import (
+    KIND_BOOL,
+    KIND_JSON,
+    KIND_NUMBER,
+    KIND_SECRET,
+    KIND_SELECT,
+    KIND_TEXT,
+    STORAGE_HONCHO_HOST_BLOCK,
+    ProviderConfigSchema,
+    ProviderField,
+    ProviderFieldOption,
+)
 
 
 # Reasoning effort levels shared by dialectic-related selects.
@@ -105,7 +24,7 @@ _REASONING_LEVELS = (
 )
 
 
-HONCHO = MemoryProvider(
+CONFIG_SCHEMA = ProviderConfigSchema(
     name="honcho",
     label="Honcho",
     storage=STORAGE_HONCHO_HOST_BLOCK,
@@ -387,84 +306,3 @@ HONCHO = MemoryProvider(
         ),
     ),
 )
-
-
-HINDSIGHT = MemoryProvider(
-    name="hindsight",
-    label="Hindsight",
-    fields=(
-        ProviderField(
-            key="mode",
-            label="Mode",
-            kind=KIND_SELECT,
-            default="cloud",
-            description="How Hermes connects to Hindsight.",
-            options=(
-                ProviderFieldOption(
-                    "cloud",
-                    "Cloud",
-                    "Hindsight Cloud API (lightweight, just needs an API key)",
-                ),
-                ProviderFieldOption(
-                    "local_external",
-                    "Local External",
-                    "Connect to an existing Hindsight instance",
-                ),
-            ),
-            inline=True,
-        ),
-        ProviderField(
-            key="api_key",
-            label="API key",
-            kind=KIND_SECRET,
-            env_key="HINDSIGHT_API_KEY",
-            description="Used to authenticate with the Hindsight API.",
-            placeholder="Enter Hindsight API key",
-            inline=True,
-        ),
-        ProviderField(
-            key="api_url",
-            label="API URL",
-            kind=KIND_TEXT,
-            default="https://api.hindsight.vectorize.io",
-            aliases=("apiUrl",),
-            env_fallbacks=("HINDSIGHT_API_URL",),
-            inline=True,
-        ),
-        ProviderField(
-            key="bank_id",
-            label="Bank ID",
-            kind=KIND_TEXT,
-            default="hermes",
-            aliases=("bankId",),
-            inline=True,
-        ),
-        ProviderField(
-            key="recall_budget",
-            label="Recall budget",
-            kind=KIND_SELECT,
-            default="mid",
-            aliases=("budget",),
-            options=(
-                ProviderFieldOption("low", "low"),
-                ProviderFieldOption("mid", "mid"),
-                ProviderFieldOption("high", "high"),
-            ),
-            inline=True,
-        ),
-    ),
-)
-
-
-# Registry of providers that expose a desktop config surface. Providers without
-# an entry here (e.g. ``builtin``) simply render no config panel. Honcho leads.
-MEMORY_PROVIDERS: dict[str, MemoryProvider] = {
-    HONCHO.name: HONCHO,
-    HINDSIGHT.name: HINDSIGHT,
-}
-
-
-def get_memory_provider(name: str) -> MemoryProvider | None:
-    """Return the declared provider for ``name``, or ``None`` if undeclared."""
-
-    return MEMORY_PROVIDERS.get(name)

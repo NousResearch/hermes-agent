@@ -69,11 +69,11 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
-from hermes_cli.memory_providers import (
-    MemoryProvider,
+from plugins.memory.config_schema import (
+    ProviderConfigSchema,
     ProviderField,
     STORAGE_HONCHO_HOST_BLOCK,
-    get_memory_provider,
+    get_provider_config_schema,
 )
 from gateway.status import (
     derive_gateway_busy,
@@ -3978,11 +3978,11 @@ def _serialize_field_value(field: ProviderField, value: Any) -> str:
 # — flat-json backend (default; reusable for simple providers) —
 
 
-def _flat_json_path(provider: MemoryProvider) -> Path:
+def _flat_json_path(provider: ProviderConfigSchema) -> Path:
     return get_hermes_home() / provider.name / "config.json"
 
 
-def _read_flat_json(provider: MemoryProvider) -> Dict[str, Any]:
+def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
     path = _flat_json_path(provider)
     if not path.exists():
         return {}
@@ -4076,7 +4076,7 @@ def _honcho_field_is_set(field: ProviderField, raw: Dict[str, Any], host_block: 
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
-def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
+def _memory_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
     fields: List[Dict[str, Any]] = []
 
     if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
@@ -4118,7 +4118,7 @@ def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
     return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
 
 
-def _write_provider_flat(provider: MemoryProvider, values: Dict[str, str]) -> None:
+def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     from utils import atomic_json_write
 
     existing = _read_flat_json(provider)
@@ -4144,7 +4144,7 @@ def _write_provider_flat(provider: MemoryProvider, values: Dict[str, str]) -> No
     atomic_json_write(path, existing, mode=0o600)
 
 
-def _write_provider_honcho(provider: MemoryProvider, values: Dict[str, str]) -> None:
+def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     """Persist submitted fields to Honcho's real config for the active host.
 
     Only keys present in ``values`` are touched, so a partial save (e.g. the
@@ -4191,7 +4191,7 @@ def _write_provider_honcho(provider: MemoryProvider, values: Dict[str, str]) -> 
 
 @app.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str):
-    provider = get_memory_provider(name)
+    provider = get_provider_config_schema(name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
         # empty schema so the generic panel simply renders nothing.
@@ -4201,7 +4201,7 @@ async def get_memory_provider_config(name: str):
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
-    provider = get_memory_provider(name)
+    provider = get_provider_config_schema(name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { translateNow } from '@/i18n'
 import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
@@ -44,7 +45,7 @@ export function usageContextLabel(usage: UsageStats): string {
     return `${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
   }
 
-  return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
+  return usage.total > 0 ? translateNow('shell.statusbar.tokensShort', compactNumber(usage.total)) : ''
 }
 
 export function contextBarLabel(usage: UsageStats): string {

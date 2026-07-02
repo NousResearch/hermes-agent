@@ -5,6 +5,7 @@ import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { localeDirection, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
@@ -260,9 +261,22 @@ function ProjectTreeRow({
   relativeTo?: null | string
 }) {
   const renamingPath = useStore($renamingPath)
+  // react-arborist computes the depth indent as a physical paddingLeft; mirror
+  // it (and the collapsed chevron) to paddingRight when the document is RTL.
+  // `withTreeInset` adds the row inset on top of arborist's calc — apply it to
+  // whichever physical side matches the document direction.
+  const { locale } = useI18n()
+  const rtl = localeDirection(locale) === 'rtl'
+  const rowStyle = rtl
+    ? {
+        ...style,
+        paddingLeft: undefined,
+        paddingRight: withTreeInset(style.paddingLeft)
+      }
+    : { ...style, paddingLeft: withTreeInset(style.paddingLeft) }
 
   if (!node.data) {
-    return <div style={style} />
+    return <div style={rowStyle} />
   }
 
   const isFolder = node.data.isDirectory
@@ -323,10 +337,7 @@ function ProjectTreeRow({
         event.dataTransfer.setData('text/plain', node.data.id)
       }}
       ref={dragHandle}
-      style={{
-        ...style,
-        paddingLeft: withTreeInset(style.paddingLeft)
-      }}
+      style={rowStyle}
       title={node.data.id}
     >
       {/* No chevron column — the folder icon (open/closed) already carries the

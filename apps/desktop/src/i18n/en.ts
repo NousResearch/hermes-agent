@@ -510,6 +510,38 @@ export const en: Translations = {
       hoursAgo: count => `${count} hours ago`,
       daysAgo: count => `${count} days ago`
     },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+      appPathLabel: 'App:',
+      uninstalling: 'Uninstalling…',
+      confirmYes: 'Yes, uninstall',
+      cancel: 'Cancel',
+      sectionTitle: 'Uninstall Hermes',
+      sectionBody:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      couldNotStart: 'Uninstall could not start.',
+      modes: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description:
+            'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
+      }
+    },
     config: {
       none: 'None',
       noneParen: '(none)',
@@ -943,6 +975,22 @@ export const en: Translations = {
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
       searchFailed: 'Hub search failed'
+    categoryLabels: {
+      'apple': 'Apple',
+      'autonomous-ai-agents': 'Autonomous AI Agents',
+      'creative': 'Creative',
+      'data-science': 'Data Science',
+      'email': 'Email',
+      'general': 'General',
+      'github': 'GitHub',
+      'media': 'Media',
+      'mlops': 'MLOps',
+      'note-taking': 'Note Taking',
+      'productivity': 'Productivity',
+      'research': 'Research',
+      'smart-home': 'Smart Home',
+      'social-media': 'Social Media',
+      'software-development': 'Software Development'
     }
   },
 
@@ -1131,6 +1179,7 @@ export const en: Translations = {
     noUsage: period => `No usage in the last ${period} days.`,
     retry: 'Retry',
     dailyTokens: 'Daily tokens',
+    dayUsageTooltip: (day, input, output) => `${day} · in ${input} · out ${output}`,
     input: 'input',
     output: 'output',
     noDailyActivity: 'No daily activity.',
@@ -2123,6 +2172,8 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      tokensShort: value => `${value} tok`,
+      reasoningShort: { none: 'Off', minimal: 'Min', low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra' },
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,

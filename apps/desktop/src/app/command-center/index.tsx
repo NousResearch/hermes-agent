@@ -501,6 +501,25 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   )
 }
 
+function formatTokens(value: null | number | undefined): string {
+  const num = Number(value || 0)
+
+  if (num >= 1_000_000) {
+    return `${(num / 1_000_000).toFixed(1)}M`
+  }
+
+  if (num >= 1_000) {
+    return `${(num / 1_000).toFixed(1)}K`
+  }
+
+  // Locale pinned so digits stay western regardless of system locale (file convention).
+  return num.toLocaleString('en-US')
+}
+
+function formatInteger(value: null | number | undefined): string {
+  return Number(value ?? 0).toLocaleString('en-US')
+}
+
 interface UsagePanelProps {
   error: string
   loading: boolean
@@ -582,7 +601,8 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           </div>
         ) : (
           <>
-            <div className="flex h-24 items-end gap-px">
+            {/* Chart region is forced LTR so the time axis always flows left-to-right (standard for data viz under RTL); labels around it stay localized. */}
+            <div className="flex h-24 items-end gap-px" dir="ltr">
               {daily.map(entry => {
                 const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
                 const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
@@ -591,7 +611,11 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                   <div
                     className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                     key={entry.day}
-                    title={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
+                    title={cc.dayUsageTooltip(
+                      entry.day,
+                      formatTokens(entry.input_tokens),
+                      formatTokens(entry.output_tokens)
+                    )}
                   >
                     <div
                       className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
@@ -605,7 +629,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                 )
               })}
             </div>
-            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
+            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)" dir="ltr">
               <span>{daily[0]?.day}</span>
               <span>{daily[daily.length - 1]?.day}</span>
             </div>
@@ -628,7 +652,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={topSkills.slice(0, 6).map(entry => ({
             key: entry.skill,
             label: entry.skill,
-            value: cc.actions(compactNumber(entry.total_count))
+            value: cc.actions(formatInteger(entry.total_count))
           }))}
           title={cc.topSkills}
         />
@@ -659,8 +683,13 @@ function UsageList({
         <ul>
           {rows.map(row => (
             <li className="flex items-center justify-between gap-2 py-1.5" key={row.key}>
-              <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{row.label}</span>
-              <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">{row.value}</span>
+              {/* dir="ltr" isolates Latin identifiers and metric strings (e.g. "1.2M · $0.40") so bidi does not reorder their runs under RTL. */}
+              <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground" dir="ltr">
+                {row.label}
+              </span>
+              <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)" dir="ltr">
+                {row.value}
+              </span>
             </li>
           ))}
         </ul>
@@ -673,7 +702,10 @@ function UsageStat({ hint, label, value }: { hint?: string; label: string; value
   return (
     <div className="min-w-0">
       <div className="text-[0.625rem] font-medium uppercase tracking-[0.12em] text-(--ui-text-tertiary)">{label}</div>
-      <div className="mt-1 truncate text-base font-semibold tracking-tight text-foreground">{value}</div>
+      <div className="mt-1 truncate text-base font-semibold tracking-tight text-foreground">
+        {/* Inline LTR isolate keeps metric runs like "31.1M / 5K" from reordering under RTL without changing block alignment. */}
+        <span dir="ltr">{value}</span>
+      </div>
       {hint && <div className="mt-0.5 truncate text-[0.62rem] text-(--ui-text-tertiary)">{hint}</div>}
     </div>
   )

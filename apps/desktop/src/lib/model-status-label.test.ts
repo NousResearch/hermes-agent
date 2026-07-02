@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
+
 import {
   currentPickerSelection,
   displayModelName,
@@ -34,13 +36,28 @@ describe('model-status-label', () => {
     )
   })
 
+  it('formats session state with the active locale labels passed by the caller', () => {
+    const ar = TRANSLATIONS.ar
+
+    expect(
+      formatModelStatusLabel('openai/gpt-5.5', {
+        fastLabel: ar.shell.modelMenu.fast,
+        fastMode: true,
+        mediumLabel: ar.shell.modelMenu.medium,
+        reasoningEffort: 'high',
+        reasoningLabels: ar.shell.statusbar.reasoningShort
+      })
+    ).toBe('GPT-5.5 · سريع عالٍ')
+  })
+
   it('always surfaces the effort (default medium) so the level is visible', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
   })
 
   it('returns just the placeholder name when there is no model', () => {
-    expect(formatModelStatusLabel('')).toBe('No model')
+    // The placeholder now resolves through the i18n catalog (statusbar style).
+    expect(formatModelStatusLabel('')).toBe('no model')
   })
 
   describe('currentPickerSelection', () => {

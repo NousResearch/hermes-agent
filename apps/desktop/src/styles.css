@@ -1,3 +1,7 @@
+@import '@fontsource/cairo/400.css';
+@import '@fontsource/cairo/500.css';
+@import '@fontsource/cairo/600.css';
+@import '@fontsource/cairo/700.css';
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';
@@ -491,6 +495,58 @@
     background: var(--ui-selection-background);
     color: inherit;
   }
+}
+
+/* Arabic (RTL) UI font. Cairo ships via @fontsource (Arabic + Latin glyphs).
+   Declared on body — not :root — because the theme engine (applyTheme) writes
+   --dt-font-sans inline on <html> at boot, which would shadow any :root rule;
+   a body-level declaration wins for the whole rendered tree. LTR locales are
+   untouched: they keep the theme's own stack. Letter-spacing is forced to 0 —
+   tracking breaks Arabic's connected letterforms. */
+html[dir='rtl'] body {
+  --dt-font-sans:
+    'Cairo', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+  /* Mono stack gains Cairo before the generic fallback: Latin/digits keep the
+     real monospace faces, while Arabic glyphs (absent from all of them) fall
+     to Cairo instead of a system Arabic face squeezed into mono metrics —
+     which renders disconnected, letter-spaced strokes. */
+  --dt-font-mono:
+    'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, 'Cairo', monospace,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+  letter-spacing: 0;
+}
+
+/* Tooltips hardcode Arial (see components/ui/tooltip.tsx) — Arial's Arabic
+   glyphs clash with the UI face, so swap to Cairo only under RTL. */
+html[dir='rtl'] [data-slot='tooltip-content'] {
+  font-family: 'Cairo', Arial, sans-serif;
+}
+
+/* Tailwind tracking-* utilities tear Arabic apart: letter-spacing breaks the
+   script's connected letterforms (joining strokes get gaps). The body-level
+   reset above can't beat utilities on descendants, so force them off under
+   RTL. Latin-only locales are untouched. */
+html[dir='rtl'] [class*='tracking-'] {
+  letter-spacing: 0 !important;
+}
+
+/* react-arborist's virtual list (react-window) hardcodes an inline
+   `direction: ltr` on its scroll container, freezing the file tree in LTR
+   inside the mirrored layout. Vertical lists do no horizontal scroll math,
+   so flipping is safe; rows are flex and follow the container. The row
+   indent flip lives in right-sidebar/files/tree.tsx. */
+html[dir='rtl'] [role='tree'] > div {
+  direction: rtl !important;
+}
+
+/* Code stays LTR inside the RTL document. Elements that opt into dir="auto"
+   (e.g. the SOUL.md editor, whose markdown may be Arabic prose) are exempt —
+   they resolve direction per first strong character instead. */
+html[dir='rtl'] :is(code, kbd, pre, samp, .font-mono, .xterm):not([dir='auto']) {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: embed;
 }
 
 .dither {

@@ -1,24 +1,24 @@
-import { normalize } from '@/lib/text'
+import { translateNow } from '@/i18n'
 
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'XHigh',
-  max: 'Max',
-  ultra: 'Ultra'
-}
+// Known effort keys; translateNow resolves the active locale's badge and
+// falls back to the English catalog for locales without reasoningShort.
+// Mirrors upstream's REASONING_LABELS key set (incl. max/ultra) so new
+// effort tiers get a localized badge instead of the raw effort string.
+const REASONING_KEYS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+type ReasoningLabels = Partial<Record<string, string>>
 
-export function reasoningEffortLabel(effort: string): string {
-  const key = normalize(effort)
+export function reasoningEffortLabel(effort: string, labels?: ReasoningLabels): string {
+  const key = effort.trim().toLowerCase()
 
   if (!key) {
     return ''
   }
 
-  return REASONING_LABELS[key] ?? effort
+  if (!REASONING_KEYS.has(key)) {
+    return effort
+  }
+
+  return labels?.[key] ?? translateNow(`shell.statusbar.reasoningShort.${key}`)
 }
 
 /** Which model/provider a picker should mark "current". With a live session the
@@ -91,7 +91,7 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
+  return { name: prettifyBase(base) || model.trim() || translateNow('shell.statusbar.noModel'), tag }
 }
 
 /** Friendly one-line model name for menus and the status bar. */
@@ -102,9 +102,16 @@ export function displayModelName(model: string): string {
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: {
+    fastLabel?: string
+    fastMode?: boolean
+    mediumLabel?: string
+    noModelLabel?: string
+    reasoningEffort?: string
+    reasoningLabels?: ReasoningLabels
+  }
 ): string {
-  const name = displayModelName(model)
+  const name = model.trim() ? displayModelName(model) : (options?.noModelLabel ?? displayModelName(model))
 
   if (!model.trim()) {
     return name
@@ -115,12 +122,16 @@ export function formatModelStatusLabel(
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).
   if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
+    parts.push(options?.fastLabel ?? translateNow('shell.modelMenu.fast'))
   }
 
   // Always surface the effort (empty = Hermes default of medium) so the
   // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  parts.push(
+    reasoningEffortLabel(options?.reasoningEffort || 'medium', options?.reasoningLabels) ||
+      options?.mediumLabel ||
+      translateNow('shell.modelMenu.medium')
+  )
 
   return `${name} · ${parts.join(' ')}`
 }

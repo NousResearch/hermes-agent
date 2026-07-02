@@ -12,6 +12,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'ar',
+    name: 'العربية',
+    englishName: 'Arabic',
+    configValue: 'ar'
+  },
+  {
     id: 'zh',
     name: '简体中文',
     englishName: 'Simplified Chinese',
@@ -43,6 +49,15 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
+  ar: 'ar',
+  arabic: 'ar',
+  العربية: 'ar',
+  'ar-eg': 'ar',
+  ar_eg: 'ar',
+  'ar-sa': 'ar',
+  ar_sa: 'ar',
+  'ar-ae': 'ar',
+  ar_ae: 'ar',
   zh: 'zh',
   'zh-cn': 'zh',
   zh_cn: 'zh',
@@ -65,6 +80,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ja: 'ja',
   'ja-jp': 'ja',
   ja_jp: 'ja'
+}
+
+export function localeDirection(locale: Locale): 'ltr' | 'rtl' {
+  return locale === 'ar' ? 'rtl' : 'ltr'
 }
 
 export function isLocale(value: unknown): value is Locale {

@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'ar' | 'zh' | 'zh-hant' | 'ja'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -104,6 +104,16 @@ export interface Translations {
     deleteTitle: (name: string) => string
     deleteBody: string
     pathCopied: string
+  }
+
+  /**
+   * New-session intro screen. Optional: locales that omit it keep the English
+   * 'HERMES AGENT' wordmark and the personality-driven body copy (the wordmark
+   * is set in a Latin-only display face, so non-Latin locales override it).
+   */
+  intro?: {
+    wordmark: string
+    body: string
   }
 
   boot: {
@@ -391,9 +401,23 @@ export interface Translations {
         turnOnFailed: string
         turnOffFailed: string
       }
+      /**
+       * Optional localized labels/blurbs for the built-in theme cards, keyed
+       * by preset name (presets.ts). Locales without them keep the English
+       * label/description carried on the preset itself.
+       */
+      themeNames?: Record<string, string>
+      themeDescriptions?: Record<string, string>
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    /**
+     * Optional display labels for raw enum option values in config selects
+     * (keyed by the raw value, e.g. 'manual' → «يدوي»). Values without a
+     * label fall back to the prettified raw value, so brand and model names
+     * can simply be omitted.
+     */
+    enumValueLabels?: Record<string, string>
     about: {
       heading: string
       version: (value: string) => string
@@ -420,6 +444,25 @@ export interface Translations {
       minAgo: (count: number) => string
       hoursAgo: (count: number) => string
       daysAgo: (count: number) => string
+    }
+    /**
+     * Desktop "Danger zone" uninstall section. Optional: locales that omit it
+     * fall back to the English copy at runtime (defineLocale() merges it in;
+     * direct catalogs fall back in the component).
+     */
+    uninstall?: {
+      dangerZone: string
+      checking: string
+      confirmTitle: string
+      confirmBody: (consequence: string) => string
+      appPathLabel: string
+      uninstalling: string
+      confirmYes: string
+      cancel: string
+      sectionTitle: string
+      sectionBody: string
+      couldNotStart: string
+      modes: Record<'gui' | 'lite' | 'full', { title: string; description: string; consequence: string }>
     }
     config: {
       none: string
@@ -823,6 +866,7 @@ export interface Translations {
       scanFailed: string
       searchFailed: string
     }
+    categoryLabels?: Record<string, string>
   }
 
   starmap: {
@@ -993,6 +1037,7 @@ export interface Translations {
     noUsage: (period: number) => string
     retry: string
     dailyTokens: string
+    dayUsageTooltip: (day: string, input: string, output: string) => string
     input: string
     output: string
     noDailyActivity: string
@@ -1752,6 +1797,10 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      /** Optional: locales without it fall back to the English "N tok" via translateNow. */
+      tokensShort?: (value: string) => string
+      /** Optional short reasoning-effort badges (none/minimal/low/medium/high/xhigh). */
+      reasoningShort?: Record<string, string>
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

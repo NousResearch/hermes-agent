@@ -66,6 +66,7 @@ function ConfigField({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  const enumLabels = t.settings.enumValueLabels
 
   const label =
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
@@ -131,7 +132,7 @@ function ConfigField({
           {selectOptions.map(option => (
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
               {option
-                ? (optionLabels?.[option] ?? prettyName(option))
+                ? (optionLabels?.[option] ?? enumLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
                   ? c.none
                   : c.noneParen}

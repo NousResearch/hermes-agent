@@ -27,6 +27,16 @@ export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'
 export const titlebarHeaderShadowClass =
   "after:pointer-events-none after:absolute after:left-0 after:right-0 after:top-full after:h-4 after:bg-linear-to-b after:from-(--ui-chat-surface-background) after:to-transparent after:content-['']"
 
+export function paneToolsSideForLayout(rtl: boolean, panesFlipped: boolean): 'left' | 'right' {
+  const logicalRailSide = panesFlipped ? 'left' : 'right'
+
+  if (!rtl) {
+    return logicalRailSide
+  }
+
+  return logicalRailSide === 'left' ? 'right' : 'left'
+}
+
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
   isFullscreen = false

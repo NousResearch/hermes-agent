@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
@@ -159,6 +160,15 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const { t } = useI18n()
+
+  // Locales may localize the intro via the catalog (t.intro). The 'Collapse'
+  // display face is Latin-only, so a localized wordmark switches to the UI
+  // sans and trades the edge-to-edge fit for a capped size — script faces
+  // ballooning to the container width read as broken, not branded.
+  const wordmark = t.intro?.wordmark || WORDMARK
+  const body = t.intro?.body || copy.body
+  const localized = wordmark !== WORDMARK
 
   return (
     <div
@@ -167,17 +177,31 @@ export function Intro({ personality, seed }: IntroProps) {
     >
       <div className="w-full min-w-0">
         <p
-          aria-label={WORDMARK}
-          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={{ '--fit-min': '2.75rem' } as CSSProperties}
+          aria-label={wordmark}
+          dir="auto"
+          className={
+            localized
+              ? 'fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-sans font-bold leading-[1.5] tracking-normal text-midground mix-blend-plus-lighter dark:text-foreground/90'
+              : "fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          }
+          style={
+            localized
+              ? ({ '--fit-min': '2rem', '--fit-max': '3.5rem' } as CSSProperties)
+              : ({ '--fit-min': '2.75rem' } as CSSProperties)
+          }
         >
           <span>
-            <span>{WORDMARK}</span>
+            <span>{wordmark}</span>
           </span>
-          <span aria-hidden="true">{WORDMARK}</span>
+          <span aria-hidden="true">{wordmark}</span>
         </p>
 
-        <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <p
+          className={localized ? 'm-0 text-center leading-normal' : 'm-0 text-center leading-normal tracking-tight'}
+          dir="auto"
+        >
+          {body}
+        </p>
       </div>
     </div>
   )

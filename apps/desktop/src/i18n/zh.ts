@@ -1312,6 +1312,7 @@ export const zh: Translations = {
     noUsage: period => `最近 ${period} 天暂无用量。`,
     retry: '重试',
     dailyTokens: '每日词元',
+    dayUsageTooltip: (day, input, output) => `${day} · 输入 ${input} · 输出 ${output}`,
     input: '输入',
     output: '输出',
     noDailyActivity: '暂无每日活动。',

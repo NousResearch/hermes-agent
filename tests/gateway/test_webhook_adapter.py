@@ -932,6 +932,16 @@ class TestRawTemplateToken:
         result = adapter._render_prompt("{__raw__}", payload, "push", "test")
         assert len(result) <= 4000
 
+    def test_raw_token_accepts_custom_truncation_limit(self):
+        """{__raw__:N} allows large JSON payloads without the default 4000-char cut."""
+        adapter = _make_adapter()
+        payload = {"data": "x" * 5000}
+
+        result = adapter._render_prompt("{__raw__:6000}", payload, "push", "test")
+
+        assert result == json.dumps(payload, indent=2)
+        assert json.loads(result) == payload
+
     def test_raw_mixed_with_other_variables(self):
         """{__raw__} can be mixed with regular template variables."""
         adapter = _make_adapter()
@@ -1084,4 +1094,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

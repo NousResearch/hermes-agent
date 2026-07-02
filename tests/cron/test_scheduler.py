@@ -1086,6 +1086,84 @@ class TestRunJobSessionPersistence:
         assert final_response == "Daily report: 4 PRs merged."
         assert success is True
 
+    def test_run_job_warns_on_truncated_response(self, tmp_path):
+        """When the agent hits its token budget (finish_reason=length), a
+        warning must be appended to the delivered output (issue #56790)."""
+        from run_agent import AIAgent
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "Here is the analysis of your data...",
+                "turn_exit_reason": "text_response(finish_reason=length)",
+            }
+            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert "truncated" in final_response.lower()
+        assert "⚠️" in final_response
+        # The original content must still be present.
+        assert "Here is the analysis of your data..." in final_response
+
+    def test_run_job_no_warning_when_finish_reason_stop(self, tmp_path):
+        """A normal response (finish_reason=stop) must NOT get a truncation
+        warning (issue #56790 — false-positive guard)."""
+        from run_agent import AIAgent
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "All tasks completed successfully.",
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+            }
+            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert "truncated" not in final_response.lower()
+        assert final_response == "All tasks completed successfully."
+
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
         # The cron session's first message is the injected "[IMPORTANT: …]"
         # hint, which used to surface as the sidebar/history row label. run_job

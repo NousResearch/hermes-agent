@@ -2978,6 +2978,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     turn_exit_reason,
                 )
                 final_response = ""
+        # Detect truncated responses and warn the user (issue #56790).
+        # When the agent hits its token budget, finish_reason='length' and
+        # the conversation loop's continuation retries are exhausted.  The
+        # response is still delivered but the user has no signal it was cut
+        # off — potentially omitting critical data.  Append a visible warning.
+        if final_response.strip() and "finish_reason=length" in turn_exit_reason:
+            final_response += (
+                "\n\n> ⚠️ **Warning:** This response was truncated because the "
+                "model hit its output token limit. Content may be incomplete."
+            )
+            logger.warning(
+                "Job '%s': response truncated (finish_reason=length) — "
+                "appending truncation warning to delivery",
+                job_id,
+            )
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"

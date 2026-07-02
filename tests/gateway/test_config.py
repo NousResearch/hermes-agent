@@ -1855,6 +1855,114 @@ class TestLoadGatewayConfig:
         assert Platform.API_SERVER not in config.platforms
 
 
+class TestWebhookPortBridging:
+    """Top-level port/host in the YAML platform section must be bridged into
+    PlatformConfig.extra so the webhook/api_server adapters can read them.
+
+    The adapters (WebhookAdapter, ApiServerAdapter) read port/host from
+    ``config.extra``, but users naturally write them at the top level of the
+    platform section in config.yaml:
+
+        platforms:
+          webhook:
+            enabled: true
+            host: 0.0.0.0
+            port: 8649
+
+    Without bridging, the port silently falls back to DEFAULT_PORT (8644),
+    causing port conflicts between profiles that configure different ports."""
+
+    def test_webhook_port_bridged_from_toplevel(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    host: 0.0.0.0\n"
+            "    port: 8649\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+
+        config = load_gateway_config()
+
+        assert Platform.WEBHOOK in config.platforms
+        wh = config.platforms[Platform.WEBHOOK]
+        assert wh.enabled is True
+        assert wh.extra.get("port") == 8649
+        assert wh.extra.get("host") == "0.0.0.0"
+
+    def test_webhook_port_in_extra_not_overwritten_by_toplevel(self, tmp_path, monkeypatch):
+        """If port is already under extra, the top-level value must not clobber it."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    extra:\n"
+            "      port: 8650\n"
+            "    port: 8649\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+
+        config = load_gateway_config()
+
+        wh = config.platforms[Platform.WEBHOOK]
+        assert wh.extra.get("port") == 8650
+
+    def test_api_server_port_bridged_from_toplevel(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    host: 127.0.0.1\n"
+            "    port: 8648\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+
+        config = load_gateway_config()
+
+        assert Platform.API_SERVER in config.platforms
+        api = config.platforms[Platform.API_SERVER]
+        assert api.extra.get("port") == 8648
+        assert api.extra.get("host") == "127.0.0.1"
+
+    def test_webhook_port_defaults_when_not_configured(self, tmp_path, monkeypatch):
+        """No port anywhere -> adapter uses its hardcoded DEFAULT_PORT."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+
+        config = load_gateway_config()
+
+        wh = config.platforms[Platform.WEBHOOK]
+        assert "port" not in wh.extra or wh.extra.get("port") is None
+
+
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
     configured via config.yaml (not just when credential env vars create it)."""

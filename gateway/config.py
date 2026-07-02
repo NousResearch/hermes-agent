@@ -1497,6 +1497,24 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:
                     bridged["typing_status_text"] = platform_cfg["typing_status_text"]
+                # Bridge top-level port/host/secret into extra for platforms
+                # whose adapters read these from config.extra (webhook,
+                # msgraph_webhook, api_server).  Without this, YAML like:
+                #   platforms:
+                #     webhook:
+                #       enabled: true
+                #       port: 8649
+                # silently falls back to the hardcoded DEFAULT_PORT because
+                # PlatformConfig.from_dict only extracts ``extra`` from the
+                # ``extra:`` sub-key, not from the top level.
+                if plat in {Platform.WEBHOOK, Platform.MSGRAPH_WEBHOOK}:
+                    for _bridge_key in ("port", "host", "secret"):
+                        if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
+                            bridged[_bridge_key] = platform_cfg[_bridge_key]
+                if plat == Platform.API_SERVER:
+                    for _bridge_key in ("port", "host"):
+                        if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
+                            bridged[_bridge_key] = platform_cfg[_bridge_key]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")

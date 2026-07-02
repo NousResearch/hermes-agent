@@ -7,6 +7,7 @@ import {
   delegateTaskPayloads,
   hasSessionInfoStatePatch,
   sessionInfoStatePatch,
+  shouldPreserveStreamedTextOnEmptyComplete,
   toTodoPayload
 } from './utils'
 
@@ -19,6 +20,18 @@ describe('completionErrorText', () => {
     expect(completionErrorText('Gateway error: nope')).toMatch(/^Gateway error/)
     expect(completionErrorText('here is your answer')).toBeNull()
     expect(completionErrorText('   ')).toBeNull()
+  })
+})
+
+describe('shouldPreserveStreamedTextOnEmptyComplete', () => {
+  it('keeps streamed text when a completion frame has no final text', () => {
+    expect(shouldPreserveStreamedTextOnEmptyComplete('', 'already streamed answer')).toBe(true)
+    expect(shouldPreserveStreamedTextOnEmptyComplete('   ', 'already streamed answer')).toBe(true)
+  })
+
+  it('allows explicit completion text to replace the streamed text', () => {
+    expect(shouldPreserveStreamedTextOnEmptyComplete('final answer', 'already streamed answer')).toBe(false)
+    expect(shouldPreserveStreamedTextOnEmptyComplete('', '')).toBe(false)
   })
 })
 

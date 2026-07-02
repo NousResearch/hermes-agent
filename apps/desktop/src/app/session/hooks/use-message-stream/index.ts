@@ -28,7 +28,12 @@ import { setSessionTodos } from '@/store/todos'
 import type { ClientSessionState } from '../../../types'
 
 import { useGatewayEventHandler } from './gateway-event'
-import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from './utils'
+import {
+  completionErrorText,
+  delegateTaskPayloads,
+  shouldPreserveStreamedTextOnEmptyComplete,
+  STREAM_DELTA_FLUSH_MS
+} from './utils'
 
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -385,6 +390,11 @@ export function useMessageStream({
                 parts: message.parts.filter(part => part.type !== 'text'),
                 pending: false
               }
+            : shouldPreserveStreamedTextOnEmptyComplete(finalText, chatMessageText(message))
+              ? {
+                  ...message,
+                  pending: false
+                }
             : {
                 ...message,
                 parts: replaceTextPart(message.parts),

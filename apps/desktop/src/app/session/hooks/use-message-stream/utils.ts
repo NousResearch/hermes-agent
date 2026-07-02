@@ -81,6 +81,10 @@ export function completionErrorText(finalText: string): string | null {
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
 
+export function shouldPreserveStreamedTextOnEmptyComplete(finalText: string, existingText: string): boolean {
+  return !finalText.trim() && Boolean(existingText.trim())
+}
+
 export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.spawn_requested',
   'subagent.start',

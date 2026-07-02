@@ -194,7 +194,13 @@ class OSSBackend(Mem0Backend):
         return _unwrap_results(response)
 
     def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._memory.get_all(filters=filters)
+        # //// Neoffice — mem0 v3's Memory.get_all defaults to top_k=20, which
+        # silently caps this "list EVERYTHING then paginate in memory" call to
+        # the first 20 memories of the bucket (mem0_list looked complete on
+        # small test stores and truncated in production). Ask for effectively
+        # all rows; the in-memory pagination below stays authoritative.
+        response = self._memory.get_all(filters=filters, top_k=100000)
+        # //// END Neoffice ////
         all_results = _unwrap_results(response)
         total = len(all_results)
         start = (page - 1) * page_size

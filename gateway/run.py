@@ -55,6 +55,7 @@ from typing import Callable, Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.known_ops_tasks import render_known_ops_task
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -2176,6 +2177,88 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _deep_command_message(text: str) -> str:
+    """Rewrite /deep arguments into the plain-text diagnostic trigger."""
+    text = (text or "").strip()
+    return f"深诊断：{text or '继续上一轮问题'}"
+
+
+def _platform_budget_key_for_message(platform: str, message: str) -> str:
+    """Return the runtime budget key for a platform/message pair.
+
+    Messaging platforms get a narrow default budget for ordinary ops
+    diagnostics. Users must opt into the larger one with either the plain-text
+    trigger or /deep. UI verification is a separate compact mode because it is
+    allowed to touch desktop state but should not inherit earlier repair logs.
+    """
+    platform_key = (platform or "").strip().lower()
+    text = (message or "").lstrip()
+    is_deep = (
+        text == "深诊断"
+        or text.startswith("深诊断：")
+        or text.startswith("深诊断:")
+        or text.startswith("/deep")
+    )
+    is_ui = (
+        text == "UI验证"
+        or text.startswith("UI验证：")
+        or text.startswith("UI验证:")
+        or text.startswith("/ui")
+    )
+    if platform_key in {"feishu", "telegram"}:
+        if is_deep:
+            return f"{platform_key}_deep"
+        if is_ui:
+            return f"{platform_key}_ui"
+        return platform_key
+    if (
+        is_deep
+        and platform_key in {"discord", "slack", "matrix", "wechat", "qq"}
+    ):
+        return "deep_diagnostic"
+    if is_ui:
+        return "ui_verification"
+    return platform_key
+
+
+def _platform_task_mode_for_message(platform: str, budget_key: str, message: str) -> str:
+    try:
+        from agent.install_success_stop import is_install_task_message
+        if is_install_task_message(platform, budget_key, message):
+            return "install"
+    except Exception:
+        pass
+    return ""
+
+
+def _max_iterations_for_platform_budget(default_max: int, platform_budget_key: str) -> int:
+    if platform_budget_key in {"feishu", "telegram"}:
+        return min(default_max, 6)
+    if platform_budget_key in {"feishu_ui", "telegram_ui", "ui_verification"}:
+        return min(default_max, 6)
+    if platform_budget_key in {"feishu_deep", "telegram_deep", "deep_diagnostic"}:
+        return min(max(default_max, 12), 12)
+    return default_max
+
+
+def _safe_first_response_before_queued_followup(text: str) -> str:
+    """Return a bounded response for delivery before a queued follow-up."""
+    text = text or ""
+    if "[OUT-OF-BAND USER MESSAGE" in text:
+        return (
+            "本轮已结束，但生成的收口内容包含内部中途消息标记，已停止直接投递以避免刷屏。"
+            "\n\n"
+            "我会继续处理你刚发来的新消息；如果要延续原任务，请发送 `深诊断：继续`。"
+        )
+    if len(text) > 12000:
+        return (
+            "本轮已结束，但生成的收口内容过长，已停止整段投递以避免刷屏。"
+            "\n\n"
+            "我会继续处理你刚发来的新消息；如果要延续原任务，请发送 `深诊断：继续`。"
+        )
+    return text
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -8668,6 +8751,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        if not event.get_command():
+            try:
+                platform_name = source.platform.value if source.platform else ""
+                known_ops_result = render_known_ops_task(platform_name, event.text or "")
+            except Exception as exc:
+                logger.warning("Known ops fast path failed: %s", exc)
+                return f"已知运维快路径执行失败：{exc}"
+            if known_ops_result is not None:
+                logger.info("Known ops fast path matched: %s", known_ops_result.task.name)
+                return known_ops_result.text
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -9425,6 +9519,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "deep":
+            try:
+                event.text = _deep_command_message(event.get_command_args())
+            except Exception:
+                pass
+            # Do NOT return — fall through to normal message processing with
+            # the plain-text deep diagnostic trigger.
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -12588,6 +12690,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             platform_key = _platform_config_key(source.platform)
+            platform_budget_key = _platform_budget_key_for_message(platform_key, prompt)
+            platform_task_mode = _platform_task_mode_for_message(
+                platform_key,
+                platform_budget_key,
+                prompt,
+            )
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -12595,7 +12703,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = _current_max_iterations()
+            max_iterations = _max_iterations_for_platform_budget(
+                int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+                platform_budget_key,
+            )
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -12648,6 +12759,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
                 )
+                agent._platform_budget_key = platform_budget_key
+                agent._platform_task_mode = platform_task_mode
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -16771,7 +16884,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
+            platform_budget_key = _platform_budget_key_for_message(platform_key, message)
+            platform_task_mode = _platform_task_mode_for_message(
+                platform_key,
+                platform_budget_key,
+                message,
+            )
+
+            # Read from env var or use default (same as CLI). Messaging
+            # platforms can narrow or widen this per explicit diagnostic mode.
+            max_iterations = _max_iterations_for_platform_budget(
+                int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+                platform_budget_key,
+            )
+
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
@@ -16780,8 +16906,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-
-            max_iterations = _current_max_iterations()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -17113,6 +17237,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.platform = platform_key
+            agent._platform_budget_key = platform_budget_key
+            agent._platform_task_mode = platform_task_mode
+            agent.max_iterations = max_iterations
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via
@@ -18543,6 +18671,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         previewed=_previewed,
                     )
                     if first_response and not _already_streamed:
+                        first_response = _safe_first_response_before_queued_followup(
+                            first_response
+                        )
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",

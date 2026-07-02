@@ -4789,9 +4789,9 @@ def _expand_value_from_environ(val: str) -> str:
         default_val = match.group(2)
         if default_val is not None:
             default_val = default_val[2:]
-        val = os.environ.get(var_name)
-        if val is not None:
-            return val
+        env_val = os.environ.get(var_name)
+        if env_val is not None:
+            return env_val
         if default_val is not None:
             return default_val
         return match.group(0)
@@ -4898,7 +4898,7 @@ def load_env() -> Dict[str, str]:
                 # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
                 # stored under the wrong key ``"export API_KEY"`` (#6659).
                 if line.startswith('export '):
-                    line = line[7:]
+                    line = line[7:].lstrip()
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = _expand_value_from_environ(value.strip().strip('"\''))
 

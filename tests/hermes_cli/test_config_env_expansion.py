@@ -133,3 +133,30 @@ class TestLoadCliConfigExpansion:
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"
+
+
+class TestExpandValueFromEnviron:
+    def test_expand_value_simple(self, monkeypatch):
+        monkeypatch.setenv("TEST_VAR", "my-secret-key")
+        from hermes_cli.config import _expand_value_from_environ
+        assert _expand_value_from_environ("${TEST_VAR}") == "my-secret-key"
+
+    def test_expand_value_with_default(self, monkeypatch):
+        monkeypatch.delenv("TEST_UNSET", raising=False)
+        from hermes_cli.config import _expand_value_from_environ
+        assert _expand_value_from_environ("${TEST_UNSET:-default-val}") == "default-val"
+
+    def test_expand_value_with_default_mismatch(self, monkeypatch):
+        monkeypatch.setenv("TEST_SET", "set-val")
+        from hermes_cli.config import _expand_value_from_environ
+        assert _expand_value_from_environ("${TEST_SET:-default-val}") == "set-val"
+
+    def test_expand_value_no_braces(self, monkeypatch):
+        monkeypatch.setenv("TEST_VAR", "my-secret-key")
+        from hermes_cli.config import _expand_value_from_environ
+        assert _expand_value_from_environ("$TEST_VAR") == "my-secret-key"
+
+    def test_expand_value_literal_dollar(self):
+        from hermes_cli.config import _expand_value_from_environ
+        assert _expand_value_from_environ("literal-$var") == "literal-$var"
+

@@ -255,3 +255,28 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+class TestWritePlatformConfigField:
+    """Verify that write_platform_config_field updates platforms.<platform>.<field>."""
+
+    def test_write_platform_config_field_loaded(self, _isolated_hermes_home):
+        from hermes_cli.config import write_platform_config_field
+        import yaml
+        
+        # Test writing field under platforms.telegram.enabled
+        write_platform_config_field("telegram", "enabled", True)
+        
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["platforms"]["telegram"]["enabled"] is True
+
+    def test_write_platform_config_field_raw(self, _isolated_hermes_home):
+        from hermes_cli.config import write_platform_config_field
+        import yaml
+        
+        # Test raw=True flow
+        write_platform_config_field("slack", "require_mention", False, raw=True)
+        
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["platforms"]["slack"]["require_mention"] is False
+

@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import time
+from pathlib import Path
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -710,6 +711,12 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertIn("shell_quote", desc)
         self.assertIn("retry", desc)
 
+    def test_strict_mode_description_mentions_host_filesystem_tool_boundary(self):
+        schema = build_execute_code_schema(mode="strict")
+        desc = schema["description"]
+        self.assertIn("temp-dir isolation only applies to the Python process cwd", desc)
+        self.assertIn("still operate on the host filesystem", desc)
+
     def test_none_defaults_to_all_tools(self):
         schema_none = build_execute_code_schema(None)
         schema_all = build_execute_code_schema(SANDBOX_ALLOWED_TOOLS)
@@ -817,6 +824,42 @@ class TestEnvVarFiltering(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
+
+
+@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+def test_strict_mode_write_file_still_targets_host_filesystem():
+    scratch_dir = Path.cwd() / ".pytest-exec-code"
+    target = scratch_dir / "strict-host-write.txt"
+    code = (
+        "from hermes_tools import write_file, terminal\n"
+        f"print(write_file({str(target)!r}, 'hello from strict'))\n"
+        f"print(terminal({('test -f ' + str(target) + ' && echo exists || echo missing')!r})['output'])\n"
+    )
+
+    scratch_dir.mkdir(exist_ok=True)
+    if target.exists():
+        target.unlink()
+
+    try:
+        with patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"timeout": 10, "max_tool_calls": 50, "mode": "strict"},
+        ):
+            raw = execute_code(
+                code,
+                task_id="test-strict-host-write",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+
+        result = json.loads(raw)
+        assert result["status"] == "success", result
+        assert target.read_text(encoding="utf-8") == "hello from strict"
+        assert "exists" in result["output"]
+    finally:
+        if target.exists():
+            target.unlink()
+        if scratch_dir.exists():
+            scratch_dir.rmdir()
 
 
 # ---------------------------------------------------------------------------

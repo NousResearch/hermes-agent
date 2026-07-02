@@ -1829,10 +1829,19 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
             "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
             "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
         )
+        tool_fs_note = (
+            "The temp-dir isolation only applies to the Python process cwd. Hermes tool calls "
+            "(read_file, write_file, patch, search_files, terminal) still operate on the host "
+            "filesystem, using absolute paths or their normal path-resolution rules."
+        )
     else:
         cwd_note = (
             "Scripts run in the session's working directory with the active venv's python, "
             "so project deps (pandas, etc.) and relative paths work like in terminal()."
+        )
+        tool_fs_note = (
+            "Hermes tool calls (read_file, write_file, patch, search_files, terminal) operate "
+            "on the same host filesystem they use outside execute_code."
         )
 
     description = (
@@ -1849,6 +1858,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         f"{cwd_note}\n\n"
+        f"{tool_fs_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"

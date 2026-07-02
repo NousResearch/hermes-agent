@@ -6,6 +6,7 @@ http.server with a mocked agent handler.
 """
 
 from __future__ import annotations
+from pathlib import Path
 
 import asyncio
 import json
@@ -428,60 +429,106 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
+class TestSendLockAtomicity:
+    """AST-level structural test for PR #53757: the fut.done()/set_result() sequence
+    in send() must execute UNDER _pending_lock to prevent the TOCTOU race where
+    disconnect() can interleave between the check and the set.
 
-    def test_send_race_condition_under_load(self):
-        """Regression: concurrent send() + disconnect() must not raise
-        InvalidStateError on the Future. The original code released
-        _pending_lock before checking fut.done() and calling
-        fut.set_result(), creating a TOCTOU race.
-        """
-        import asyncio
-        import threading
-        from concurrent.futures import Future
+    Per SOUL §4.5: for async races, structural AST tests are MORE reliable than
+    runtime tests because asyncio's cooperative scheduling doesn't reliably interleave
+    tasks unless one explicitly yields. This test reads the source AST and asserts
+    that set_result() and done() are nested inside the lock's with-block.
+    """
+
+    def test_set_result_is_inside_pending_lock(self):
+        """The fix: fut.set_result() must be called INSIDE the with-block."""
+        import ast
         from plugins.platforms.a2a import adapter as adapter_mod
-        from plugins.platforms.a2a.adapter import A2AAdapter, SendResult
 
-        # We test the logic directly without spinning up the full server.
-        # Build a stub with the same internal state shape.
-        class _StubAdapter:
-            def __init__(self):
-                self._pending_replies = {}
-                self._pending_lock = threading.Lock()
+        source = Path(adapter_mod.__file__).read_text()
+        tree = ast.parse(source)
 
-        # Replicate the post-fix send() logic.
-        async def send(stub, chat_id, content):
-            with stub._pending_lock:
-                fut = stub._pending_replies.get(chat_id)
-                if fut is not None and not fut.done():
-                    fut.set_result(content or "")
-                    return SendResult(success=True, message_id="ok")
-            return SendResult(success=True, message_id="dropped")
+        # Find the send method
+        send_func = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "send":
+                send_func = node
+                break
+        assert send_func is not None, "send() not found in adapter.py"
 
-        # Replicate disconnect's pending-reply drain.
-        def disconnect_drain(stub):
-            with stub._pending_lock:
-                for fut in stub._pending_replies.values():
-                    if not fut.done():
-                        fut.set_result("[agent shutting down]")
+        # Find the with-block that locks _pending_lock
+        lock_with = None
+        for node in ast.walk(send_func):
+            if isinstance(node, ast.With):
+                # Check if the context manager references _pending_lock
+                for item in node.items:
+                    ctx = item.context_expr
+                    if isinstance(ctx, ast.Attribute) and ctx.attr == "_pending_lock":
+                        lock_with = node
+                        break
+                if lock_with:
+                    break
 
-        async def scenario():
-            stub = _StubAdapter()
-            ctx_id = "ctx-race"
-            fut = Future()
-            stub._pending_replies[ctx_id] = fut
+        assert lock_with is not None, (
+            "send() must contain 'with self._pending_lock:' — "
+            "found no such block. Race condition regression."
+        )
 
-            # Race 1000 send/disconnect pairs.
-            for _ in range(1000):
-                # Reset future
-                fut = Future()
-                stub._pending_replies[ctx_id] = fut
-                # Run send + drain concurrently.
-                await asyncio.gather(
-                    send(stub, ctx_id, "ok"),
-                    asyncio.to_thread(disconnect_drain, stub),
-                    return_exceptions=True,
-                )
-                # Either way, future must be settled (not raise).
-                assert fut.done(), "future should be settled"
+        # Collect all function/method calls inside the with-block
+        calls_inside = set()
+        for sub in ast.walk(lock_with):
+            if isinstance(sub, ast.Call):
+                func = sub.func
+                if isinstance(func, ast.Attribute):
+                    calls_inside.add(func.attr)
 
-        asyncio.run(scenario())
+        # The fix must keep these inside the lock
+        assert "set_result" in calls_inside, (
+            "fut.set_result() must be called INSIDE 'with self._pending_lock:'. "
+            "Found set_result outside the lock — race condition regressed. "
+            "Calls inside lock: " + ", ".join(sorted(calls_inside))
+        )
+        assert "done" in calls_inside, (
+            "fut.done() must be called INSIDE 'with self._pending_lock:'. "
+            "Found done() outside the lock — race condition regressed. "
+            "Calls inside lock: " + ", ".join(sorted(calls_inside))
+        )
+
+    def test_done_and_set_result_in_same_with_block(self):
+        """Specifically: done() and set_result() must be in the SAME with-block
+        (not split across separate locks or after the lock exits)."""
+        import ast
+        from plugins.platforms.a2a import adapter as adapter_mod
+
+        source = Path(adapter_mod.__file__).read_text()
+        tree = ast.parse(source)
+
+        # Find send()
+        send_func = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "send":
+                send_func = node
+                break
+
+        # For each with-block that locks _pending_lock, gather all attribute calls
+        lock_blocks = []
+        for node in ast.walk(send_func):
+            if isinstance(node, ast.With):
+                for item in node.items:
+                    ctx = item.context_expr
+                    if isinstance(ctx, ast.Attribute) and ctx.attr == "_pending_lock":
+                        calls = set()
+                        for sub in ast.walk(node):
+                            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                                calls.add(sub.func.attr)
+                        lock_blocks.append(calls)
+
+        assert lock_blocks, "No with self._pending_lock block in send()"
+
+        # At least one block must contain BOTH done and set_result
+        atomic_block = [b for b in lock_blocks if "done" in b and "set_result" in b]
+        assert atomic_block, (
+            "send() must have a single with _pending_lock block containing BOTH "
+            "fut.done() and fut.set_result(). Found blocks: " + str(lock_blocks) + ". "
+            "If they're in separate blocks (or one is outside), the TOCTOU race returns."
+        )

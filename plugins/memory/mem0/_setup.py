@@ -230,7 +230,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-        {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+        {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
     ]
 
     existing_config = {}

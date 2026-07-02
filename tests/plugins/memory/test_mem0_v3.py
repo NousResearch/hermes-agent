@@ -52,33 +52,6 @@ class TestMem0V3Tools:
         provider._backend = backend
         return provider
 
-    def test_list_returns_paginated_with_ids(self, monkeypatch):
-        backend = FakeBackend(all_results={
-            "count": 2,
-            "results": [
-                {"id": "mem-1", "memory": "alpha"},
-                {"id": "mem-2", "memory": "beta"},
-            ]
-        })
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_list", {}))
-        assert result["count"] == 2
-        assert result["results"][0]["id"] == "mem-1"
-        assert result["results"][0]["memory"] == "alpha"
-
-    def test_list_pagination_params(self, monkeypatch):
-        backend = FakeBackend()
-        provider = self._make_provider(monkeypatch, backend)
-        provider.handle_tool_call("mem0_list", {"page": 2, "page_size": 50})
-        assert backend.captured[0][1]["page"] == 2
-        assert backend.captured[0][1]["page_size"] == 50
-
-    def test_list_empty(self, monkeypatch):
-        backend = FakeBackend()
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_list", {}))
-        assert result["result"] == "No memories stored yet."
-
     def test_search_returns_ids(self, monkeypatch):
         backend = FakeBackend(search_results=[{"id": "mem-1", "memory": "foo", "score": 0.9}])
         provider = self._make_provider(monkeypatch, backend)
@@ -92,11 +65,11 @@ class TestMem0V3Tools:
         assert backend.captured[0][2]["filters"] == {"user_id": "u123"}
         assert backend.captured[0][2]["top_k"] == 3
 
-    def test_search_rerank_default_true(self, monkeypatch):
+    def test_search_rerank_default_false(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)
         provider.handle_tool_call("mem0_search", {"query": "test"})
-        assert backend.captured[0][2]["rerank"] is True
+        assert backend.captured[0][2]["rerank"] is False
 
     def test_search_rerank_override_false(self, monkeypatch):
         backend = FakeBackend()
@@ -280,6 +253,8 @@ class TestMem0V3Internal:
         assert "error" in result
         result = json.loads(provider.handle_tool_call("mem0_conclude", {}))
         assert "error" in result
+        result = json.loads(provider.handle_tool_call("mem0_list", {}))
+        assert "error" in result
 
 
 class TestMem0Prefetch:
@@ -308,7 +283,7 @@ class TestMem0Prefetch:
         assert query == "what theme do I like?"
         assert opts["filters"] == {"user_id": "u123"}
         assert opts["top_k"] == 10
-        assert opts["rerank"] is True
+        assert opts["rerank"] is False
         assert "## Mem0 Memory" in result
         assert "user prefers dark mode" in result
 
@@ -368,11 +343,11 @@ class TestMem0Prefetch:
 
 class TestMem0V3Config:
 
-    def test_tool_schemas_five_tools(self):
+    def test_tool_schemas_four_tools(self):
         provider = Mem0MemoryProvider()
         schemas = provider.get_tool_schemas()
         names = [s["name"] for s in schemas]
-        assert names == ["mem0_list", "mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
+        assert names == ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
 
     def test_system_prompt_new_tool_names(self):
         provider = Mem0MemoryProvider()
@@ -380,9 +355,9 @@ class TestMem0V3Config:
         block = provider.system_prompt_block()
         assert "mem0_search" in block
         assert "mem0_add" in block
-        assert "mem0_list" in block
         assert "mem0_update" in block
         assert "mem0_delete" in block
+        assert "mem0_list" not in block
         assert "mem0_profile" not in block
         assert "mem0_conclude" not in block
 
@@ -455,7 +430,7 @@ class TestMem0ModeSwitch:
         provider = Mem0MemoryProvider()
         schemas = provider.get_tool_schemas()
         names = [s["name"] for s in schemas]
-        assert names == ["mem0_list", "mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
+        assert names == ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
 
     def test_system_prompt_includes_mode(self):
         provider = Mem0MemoryProvider()
@@ -463,7 +438,6 @@ class TestMem0ModeSwitch:
         provider._mode = "oss"
         block = provider.system_prompt_block()
         assert "mem0_search" in block
-        assert "mem0_list" in block
         assert "OSS" in block
 
 
@@ -547,3 +521,82 @@ class TestMem0WriteMetadata:
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
         assert adds[-1][2]["metadata"] == {"channel": "discord"}
+
+
+class _SentinelBackend:
+    def __init__(self, *args):
+        self.args = args
+
+
+class TestCreateBackendRouting:
+    """_create_backend() must pick the backend matching the configured mode/host."""
+
+    def _provider(self, monkeypatch, *, mode="platform", api_key="k", host=""):
+        # Neutralize lazy-install so the routing decision is all we exercise.
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None, raising=False)
+        provider = Mem0MemoryProvider()
+        provider._mode = mode
+        provider._api_key = api_key
+        provider._host = host
+        provider._config = {"oss": {"vector_store": {"provider": "qdrant"}}}
+        return provider
+
+    def test_routes_to_selfhosted_when_host_set(self, monkeypatch):
+        captured = {}
+
+        class SH(_SentinelBackend):
+            def __init__(self, api_key, host):
+                captured["args"] = (api_key, host)
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.SelfHostedBackend", SH)
+        provider = self._provider(monkeypatch, host="http://sh:8888", api_key="adminkey")
+        backend = provider._create_backend()
+        assert isinstance(backend, SH)
+        assert captured["args"] == ("adminkey", "http://sh:8888")
+
+    def test_routes_to_platform_when_no_host(self, monkeypatch):
+        class PB(_SentinelBackend):
+            def __init__(self, api_key):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.PlatformBackend", PB)
+        provider = self._provider(monkeypatch, host="")
+        assert isinstance(provider._create_backend(), PB)
+
+    def test_routes_to_oss_when_mode_oss(self, monkeypatch):
+        class OB(_SentinelBackend):
+            def __init__(self, cfg):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.OSSBackend", OB)
+        provider = self._provider(monkeypatch, mode="oss")
+        assert isinstance(provider._create_backend(), OB)
+
+    def test_oss_mode_takes_precedence_over_host(self, monkeypatch):
+        class OB(_SentinelBackend):
+            def __init__(self, cfg):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.OSSBackend", OB)
+        provider = self._provider(monkeypatch, mode="oss", host="http://sh:8888")
+        assert isinstance(provider._create_backend(), OB)
+
+
+class TestSelfHostedConfig:
+    """Config plumbing for self-hosted (MEM0_HOST env + is_available)."""
+
+    def test_load_config_reads_mem0_host_env(self, monkeypatch):
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
+
+    def test_is_available_true_with_host_only(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        assert Mem0MemoryProvider().is_available() is True
+
+    def test_is_available_false_without_key_or_host(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        assert Mem0MemoryProvider().is_available() is False

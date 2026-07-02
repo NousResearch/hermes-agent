@@ -18,6 +18,8 @@ KANBAN_METHODS = [
     "_kanban_unsub",
     "_kanban_rewind",
     "_deliver_kanban_artifacts",
+    "_kanban_discord_projection_drain_tick",
+    "_kanban_discord_projection_watcher",
 ]
 
 
@@ -43,6 +45,7 @@ def test_watcher_loops_are_coroutines():
     # The two long-running watchers are async loops.
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_notifier_watcher)
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_dispatcher_watcher)
+    assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_discord_projection_watcher)
 
 
 def test_singleton_dispatcher_lock_is_exclusive(tmp_path):

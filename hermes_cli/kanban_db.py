@@ -99,7 +99,10 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {
+    "triage", "todo", "scheduled", "ready", "running", "blocked",
+    "review", "done", "archive_candidate", "closed", "archived",
+}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
@@ -914,6 +917,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    parent_discord_thread_id: Optional[str] = None
+    parent_discord_channel_id: Optional[str] = None
+    parent_discord_guild_id: Optional[str] = None
+    discord_thread_link_state: Optional[str] = None
+    discord_thread_link_idempotency_key: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -997,6 +1005,22 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            parent_discord_thread_id=(
+                row["parent_discord_thread_id"] if "parent_discord_thread_id" in keys else None
+            ),
+            parent_discord_channel_id=(
+                row["parent_discord_channel_id"] if "parent_discord_channel_id" in keys else None
+            ),
+            parent_discord_guild_id=(
+                row["parent_discord_guild_id"] if "parent_discord_guild_id" in keys else None
+            ),
+            discord_thread_link_state=(
+                row["discord_thread_link_state"] if "discord_thread_link_state" in keys else None
+            ),
+            discord_thread_link_idempotency_key=(
+                row["discord_thread_link_idempotency_key"]
+                if "discord_thread_link_idempotency_key" in keys else None
             ),
         )
 
@@ -1175,7 +1199,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Mandatory human-audit projection seam. Discord is a projection/log
+    -- surface only; Kanban remains lifecycle source of truth.
+    parent_discord_thread_id TEXT,
+    parent_discord_channel_id TEXT,
+    parent_discord_guild_id TEXT,
+    discord_thread_link_state TEXT,
+    discord_thread_link_idempotency_key TEXT,
+    discord_thread_linked_at INTEGER,
+    discord_thread_link_failed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1263,6 +1296,38 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+CREATE TABLE IF NOT EXISTS discord_projection_outbox (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type         TEXT NOT NULL,
+    issue_id           TEXT NOT NULL,
+    from_status        TEXT,
+    to_status          TEXT,
+    actor              TEXT,
+    reason             TEXT,
+    summary            TEXT,
+    sequence           INTEGER,
+    parent_thread_id   TEXT NOT NULL,
+    idempotency_key    TEXT NOT NULL UNIQUE,
+    delivery_status    TEXT NOT NULL DEFAULT 'pending',
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    discord_message_id TEXT,
+    payload            TEXT,
+    created_at         INTEGER NOT NULL,
+    delivered_at       INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS discord_close_audit (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id           TEXT NOT NULL,
+    parent_thread_id   TEXT,
+    observed_status    TEXT,
+    dry_run            INTEGER NOT NULL DEFAULT 1,
+    allowed            INTEGER NOT NULL DEFAULT 0,
+    reasons            TEXT,
+    created_at         INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1273,6 +1338,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_delivery
+    ON discord_projection_outbox(delivery_status, id);
+CREATE INDEX IF NOT EXISTS idx_outbox_issue
+    ON discord_projection_outbox(issue_id, event_type, sequence);
+CREATE INDEX IF NOT EXISTS idx_close_audit_issue
+    ON discord_close_audit(issue_id, created_at);
 """
 
 
@@ -1986,6 +2057,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    discord_projection_columns = {
+        "parent_discord_thread_id": "parent_discord_thread_id TEXT",
+        "parent_discord_channel_id": "parent_discord_channel_id TEXT",
+        "parent_discord_guild_id": "parent_discord_guild_id TEXT",
+        "discord_thread_link_state": "discord_thread_link_state TEXT",
+        "discord_thread_link_idempotency_key": "discord_thread_link_idempotency_key TEXT",
+        "discord_thread_linked_at": "discord_thread_linked_at INTEGER",
+        "discord_thread_link_failed_at": "discord_thread_link_failed_at INTEGER",
+    }
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for column, ddl in discord_projection_columns.items():
+        if column not in cols:
+            _add_column_if_missing(conn, "tasks", column, ddl)
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2000,6 +2085,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if {"parent_discord_thread_id", "status"} <= cols:
+        existing_parent_idx = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_tasks_parent_discord_thread'"
+        ).fetchone()
+        if existing_parent_idx and "status NOT IN" in (existing_parent_idx["sql"] or ""):
+            conn.execute("DROP INDEX idx_tasks_parent_discord_thread")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_parent_discord_thread "
+            "ON tasks(parent_discord_thread_id) "
+            "WHERE parent_discord_thread_id IS NOT NULL"
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -3385,6 +3482,23 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        projection = conn.execute(
+            """
+            SELECT parent_discord_thread_id, discord_thread_link_state
+              FROM tasks
+             WHERE id = ? AND status = 'ready'
+            """,
+            (task_id,),
+        ).fetchone()
+        if projection and (
+            not projection["parent_discord_thread_id"]
+            or projection["discord_thread_link_state"] != "linked"
+        ):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "discord_parent_thread_not_linked"},
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3514,6 +3628,23 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        projection = conn.execute(
+            """
+            SELECT parent_discord_thread_id, discord_thread_link_state
+              FROM tasks
+             WHERE id = ? AND status = 'review'
+            """,
+            (task_id,),
+        ).fetchone()
+        if projection and (
+            not projection["parent_discord_thread_id"]
+            or projection["discord_thread_link_state"] != "linked"
+        ):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "discord_parent_thread_not_linked", "source_status": "review"},
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks

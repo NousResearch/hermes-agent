@@ -146,6 +146,33 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _auto_link_parent_threads_for_legacy_tool_tests(monkeypatch):
+    """Seed synthetic parent-thread links for pre-projection tool tests."""
+    from hermes_cli import kanban_db as kb
+
+    original_create_task = kb.create_task
+
+    def create_task_with_parent_thread(conn, *args, **kwargs):
+        task_id = original_create_task(conn, *args, **kwargs)
+        conn.execute(
+            """
+            UPDATE tasks
+               SET parent_discord_thread_id = ?,
+                   parent_discord_channel_id = 'test-channel',
+                   parent_discord_guild_id = 'test-guild',
+                   discord_thread_link_state = 'linked',
+                   discord_thread_link_idempotency_key = ?
+             WHERE id = ?
+            """,
+            (f"test-parent:{task_id}", f"test-link:{task_id}", task_id),
+        )
+        conn.commit()
+        return task_id
+
+    monkeypatch.setattr(kb, "create_task", create_task_with_parent_thread)
+
+
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set

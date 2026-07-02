@@ -25,6 +25,23 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _config_bool(value: Any, default: bool = False) -> bool:
+    """Parse a config boolean without treating string "false" as truthy."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "disabled", ""}:
+            return False
+    return default
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -56,6 +73,81 @@ def _resolve_auto_decompose_settings(
         per_tick = 1
     return enabled, per_tick
 
+
+
+def _resolve_discord_projection_outbox_drain_settings(
+    load_config: Callable[[], Any],
+) -> "tuple[bool, int]":
+    """Resolve the explicitly mocked Discord projection outbox drain gate.
+
+    This is intentionally disabled by default and only supports a test/mocked
+    sender path.  It never constructs a Discord adapter and never performs
+    archive actions; it just lets the gateway layer exercise the durable
+    outbox projector with a caller-provided send callable.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False, 1
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    enabled = _config_bool(kcfg.get("discord_projection_outbox_drain_mock"), False)
+    try:
+        max_events = int(kcfg.get("discord_projection_outbox_drain_per_tick", 1) or 1)
+    except (TypeError, ValueError):
+        max_events = 1
+    return enabled, max(1, max_events)
+
+
+def _drain_discord_projection_outbox_once(
+    *,
+    kb_module: Any,
+    kdp_module: Any,
+    send: Callable[[str, str, str], str],
+    max_events: int = 1,
+) -> list[Any]:
+    """Drain up to ``max_events`` Discord projection rows across kanban boards.
+
+    The supplied ``send`` is the only delivery path.  Passing a fake sender in
+    tests records outbox delivery; production code must opt in explicitly and
+    still cannot accidentally use a live Discord adapter through this helper.
+    """
+    if not callable(send):
+        return []
+    remaining = max(1, int(max_events or 1))
+    try:
+        boards = kb_module.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+
+    results: list[Any] = []
+    seen_db_paths: set[str] = set()
+    for board_meta in boards:
+        if remaining <= 0:
+            break
+        slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+        db_path = board_meta.get("db_path")
+        try:
+            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb_module.kanban_db_path(slug).resolve())
+        except Exception:
+            resolved_db_path = f"slug:{slug}"
+        if resolved_db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(resolved_db_path)
+        conn = None
+        try:
+            conn = kb_module.connect(board=slug)
+            while remaining > 0:
+                result = kdp_module.project_next_outbox_event(conn, send)
+                if getattr(result, "event_id", None) is None:
+                    break
+                results.append(result)
+                remaining -= 1
+                if not getattr(result, "delivered", False):
+                    break
+        finally:
+            if conn is not None:
+                conn.close()
+    return results
 
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
@@ -740,6 +832,58 @@ class GatewayKanbanWatchersMixin:
                     "kanban notifier: artifact upload (%s) failed: %s",
                     path, exc,
                 )
+
+
+    def _kanban_discord_projection_drain_tick(self) -> list[Any]:
+        """One dry-run/mocked Discord projection outbox drain tick.
+
+        Gated by ``kanban.discord_projection_outbox_drain_mock`` (default
+        false).  The sender must be injected as
+        ``self._kanban_discord_projection_send`` by a test harness or another
+        explicitly mocked caller.  No live Discord adapter is discovered here.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban discord projection: config loader unavailable; disabled")
+            return []
+        enabled, max_events = _resolve_discord_projection_outbox_drain_settings(_load_config)
+        if not enabled:
+            logger.debug("kanban discord projection: mocked outbox drain disabled")
+            return []
+        send = getattr(self, "_kanban_discord_projection_send", None)
+        if not callable(send):
+            logger.warning(
+                "kanban discord projection: mocked outbox drain enabled but no injected sender; disabled"
+            )
+            return []
+        try:
+            from hermes_cli import kanban_db as _kb
+            from hermes_cli import kanban_discord_projection as _kdp
+        except Exception as exc:
+            logger.warning("kanban discord projection: imports unavailable; disabled (%s)", exc)
+            return []
+        return _drain_discord_projection_outbox_once(
+            kb_module=_kb,
+            kdp_module=_kdp,
+            send=send,
+            max_events=max_events,
+        )
+
+    async def _kanban_discord_projection_watcher(self, interval: float = 5.0) -> None:
+        """Disabled-by-default dry-run/mocked Discord projection drain loop."""
+        while self._running:
+            try:
+                await asyncio.to_thread(self._kanban_discord_projection_drain_tick)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("kanban discord projection: watcher tick failed")
+            slept = 0.0
+            interval = max(float(interval or 1.0), 1.0)
+            while slept < interval and self._running:
+                await asyncio.sleep(min(1.0, interval - slept))
+                slept += 1.0
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

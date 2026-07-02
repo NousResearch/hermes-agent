@@ -6906,6 +6906,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so human-in-the-loop workflows hear back without polling.
         asyncio.create_task(self._kanban_notifier_watcher())
 
+        # Start background kanban Discord projection drain. This watcher is
+        # inert unless its own default-off mocked/dry-run config gate is true
+        # and an explicit test/mock sender has been injected; it never creates
+        # a live Discord adapter.
+        asyncio.create_task(self._kanban_discord_projection_watcher())
+
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or

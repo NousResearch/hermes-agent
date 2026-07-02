@@ -137,14 +137,25 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return the configured session cwd only when it is a stable anchor.
 
     Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
     rejected — a relative anchor is meaningless without knowing which cwd it is
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    configured = _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    if configured:
+        return configured
+    try:
+        from agent.runtime_cwd import resolve_context_cwd
+
+        context_cwd = resolve_context_cwd()
+    except Exception:
+        return None
+    if context_cwd is None:
+        return None
+    return _sentinel_free_abs_cwd(str(context_cwd))
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:

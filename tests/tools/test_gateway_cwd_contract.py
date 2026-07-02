@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from gateway.session_context import clear_session_vars, set_session_vars
 from tools import code_execution_tool, file_tools, terminal_tool
 
 
@@ -67,3 +68,26 @@ def test_execute_code_project_mode_falls_back_when_terminal_cwd_missing(monkeypa
 
     assert Path(resolved).is_dir()
     assert Path(resolved) != tmp_path / "missing"
+
+
+def test_tool_surfaces_use_gateway_session_cwd_without_terminal_cwd(monkeypatch, tmp_path):
+    """Webhook sessions pin cwd via contextvars, not process-wide TERMINAL_CWD."""
+    workspace = tmp_path / "workspace"
+    staging = tmp_path / "staging"
+    workspace.mkdir()
+    staging.mkdir()
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    tokens = set_session_vars(cwd=str(workspace))
+    try:
+        terminal_cwd = Path(terminal_tool._get_env_config()["cwd"])
+        file_cwd = file_tools._resolve_path_for_task("notes/today.md").parent.parent
+        execute_cwd = Path(code_execution_tool._resolve_child_cwd("project", str(staging)))
+    finally:
+        clear_session_vars(tokens)
+
+    assert terminal_cwd == workspace
+    assert file_cwd == workspace
+    assert execute_cwd == workspace

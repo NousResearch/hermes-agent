@@ -1738,18 +1738,21 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
+    - ``project``: the session's resolved cwd (same as the terminal tool), or
+      ``os.getcwd()`` if no configured cwd points at a real dir.
       Falls back to the staging tmpdir as a last resort so we never invoke
       Popen with a nonexistent cwd.
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
-    if raw:
-        expanded = os.path.expanduser(raw)
-        if os.path.isdir(expanded):
-            return expanded
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        resolved = resolve_agent_cwd()
+        if resolved.is_dir():
+            return str(resolved)
+    except Exception:
+        pass
     here = os.getcwd()
     if os.path.isdir(here):
         return here

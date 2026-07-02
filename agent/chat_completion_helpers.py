@@ -1427,6 +1427,30 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_tls_to_client_kwargs,
+                    get_compatible_custom_providers,
+                    load_config_readonly,
+                )
+
+                # Mirror agent_init / switch_model: every request-scoped
+                # client is rebuilt from _client_kwargs, so without the
+                # fallback provider's ssl_ca_cert / ssl_verify here, a
+                # custom HTTPS endpoint signed by a private CA fails
+                # APIConnectionError on the first request after fallback
+                # activates (the initial fb_client resolves TLS via the
+                # auxiliary path, masking the gap until the rebuild).
+                apply_custom_provider_tls_to_client_kwargs(
+                    agent._client_kwargs,
+                    str(fb_base_url or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
+            except Exception:
+                logger.debug(
+                    "custom-provider TLS resolution skipped on fallback activation",
+                    exc_info=True,
+                )
             if _fb_timeout is not None:
                 agent._client_kwargs["timeout"] = _fb_timeout
                 # Rebuild the shared OpenAI client so the configured

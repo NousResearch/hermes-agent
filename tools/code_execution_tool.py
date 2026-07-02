@@ -236,7 +236,7 @@ _TOOL_STUBS = {
     "read_file": (
         "read_file",
         "path: str, offset: int = 1, limit: int = 500",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
+        '"""Read a file. Returns dict with raw "content" and "total_lines"."""',
         '{"path": path, "offset": offset, "limit": limit}',
     ),
     "write_file": (
@@ -484,6 +484,48 @@ def _call(tool_name, args):
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
+def _strip_read_file_display_prefixes(content: str) -> str:
+    """Remove read_file's model-facing ``LINE_NUM|`` prefixes.
+
+    The top-level read_file tool returns line-numbered display text because
+    models need stable line references. execute_code exposes a programmatic
+    Python API, and scripts commonly pass read_file()["content"] into
+    write_file(). Returning display text there silently corrupts one-line files
+    as ``1|...``. Keep standard read_file safety checks by dispatching through
+    the normal tool, then strip only the display prefix before handing content
+    to the child script.
+    """
+    if not isinstance(content, str) or "|" not in content:
+        return content
+
+    stripped_lines: list[str] = []
+    for line in content.split("\n"):
+        prefix, sep, rest = line.partition("|")
+        if sep and prefix.isdigit():
+            stripped_lines.append(rest)
+        else:
+            stripped_lines.append(line)
+    return "\n".join(stripped_lines)
+
+
+def _normalize_execute_code_tool_result(tool_name: str, result: str) -> str:
+    """Adjust standard tool results for execute_code's programmatic API."""
+    if tool_name != "read_file":
+        return result
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return result
+    if not isinstance(payload, dict) or "error" in payload:
+        return result
+    content = payload.get("content")
+    if isinstance(content, str):
+        payload["content"] = _strip_read_file_display_prefixes(content)
+        payload["content_raw"] = True
+        return json.dumps(payload, ensure_ascii=False)
+    return result
+
+
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
@@ -588,6 +630,7 @@ def _rpc_server_loop(
                         result = handle_function_call(
                             tool_name, tool_args, task_id=task_id
                         )
+                        result = _normalize_execute_code_tool_result(tool_name, result)
                     finally:
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                         devnull.close()
@@ -869,6 +912,9 @@ def _rpc_poll_loop(
                             sys.stderr = devnull
                             tool_result = handle_function_call(
                                 tool_name, tool_args, task_id=task_id
+                            )
+                            tool_result = _normalize_execute_code_tool_result(
+                                tool_name, tool_result
                             )
                         finally:
                             sys.stdout, sys.stderr = _real_stdout, _real_stderr
@@ -1783,7 +1829,7 @@ _TOOL_DOC_LINES = [
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+     "    Returns raw {\"content\": \"...\", \"total_lines\": N}; offset/limit are 1-indexed."),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"
      "    Always overwrites the entire file."),

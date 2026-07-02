@@ -15,9 +15,11 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
+import base64
 import json
 import os
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -216,6 +218,118 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertIn("TZ='US/Eastern; echo PWNED'", run_cmd,
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
+    def test_remote_read_file_write_file_round_trip_preserves_content(self):
+        """The file-based RPC transport returns raw read_file content too."""
+
+        class FakeEnv:
+            def __init__(self):
+                self.requests = {}
+                self.responses = {}
+                self.lock = threading.Lock()
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def _round_trip(self, rpc_dir, token, seq, tool, args):
+                req_path = f"{rpc_dir}/req_{seq:06d}"
+                res_path = f"{rpc_dir}/res_{seq:06d}"
+                request = json.dumps(
+                    {"token": token, "seq": seq, "tool": tool, "args": args}
+                )
+                with self.lock:
+                    self.requests[req_path] = request
+
+                deadline = time.time() + 3
+                while time.time() < deadline:
+                    with self.lock:
+                        response = self.responses.get(res_path)
+                    if response is not None:
+                        return json.loads(response)
+                    time.sleep(0.01)
+                raise AssertionError(f"timed out waiting for {res_path}")
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if command.startswith("mkdir -p "):
+                    return {"output": ""}
+                if command.startswith("ls -1 "):
+                    with self.lock:
+                        pending = sorted(self.requests)
+                    return {"output": "\n".join(pending)}
+                if command.startswith("cat "):
+                    req_path = command.removeprefix("cat ").strip("'")
+                    with self.lock:
+                        return {"output": self.requests.get(req_path, "")}
+                if command.startswith("echo '") and "| base64 -d >" in command:
+                    encoded = command.split("echo '", 1)[1].split("' |", 1)[0]
+                    res_path = command.split(" > ", 1)[1].split(".tmp", 1)[0]
+                    response = base64.b64decode(encoded).decode("utf-8")
+                    with self.lock:
+                        self.responses[res_path] = response
+                    return {"output": ""}
+                if command.startswith("rm -f "):
+                    req_path = command.removeprefix("rm -f ").strip("'")
+                    with self.lock:
+                        self.requests.pop(req_path, None)
+                    return {"output": ""}
+                if "python3 script.py" in command:
+                    rpc_dir = command.split("HERMES_RPC_DIR=", 1)[1].split(" ", 1)[0]
+                    token = command.split("HERMES_RPC_TOKEN=", 1)[1].split(" ", 1)[0]
+                    read_result = self._round_trip(
+                        rpc_dir,
+                        token,
+                        1,
+                        "read_file",
+                        {"path": "/remote/source.txt"},
+                    )
+                    self._round_trip(
+                        rpc_dir,
+                        token,
+                        2,
+                        "write_file",
+                        {"path": "/remote/backup.txt", "content": read_result["content"]},
+                    )
+                    return {"output": "ok\n", "returncode": 0}
+                if command.startswith("rm -rf "):
+                    return {"output": ""}
+                return {"output": ""}
+
+        writes = []
+
+        def dispatch(function_name, function_args, task_id=None, user_task=None):
+            if function_name == "read_file":
+                return json.dumps({"content": "1|important data", "total_lines": 1})
+            if function_name == "write_file":
+                writes.append(function_args["content"])
+                return json.dumps({"status": "ok"})
+            raise AssertionError(f"unexpected tool: {function_name}")
+
+        env = FakeEnv()
+        with patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"timeout": 30, "max_tool_calls": 5},
+        ), patch(
+            "tools.code_execution_tool._get_or_create_env",
+            return_value=(env, "ssh"),
+        ), patch(
+            "tools.code_execution_tool._ship_file_to_remote",
+        ), patch(
+            "model_tools.handle_function_call",
+            side_effect=dispatch,
+        ):
+            result = json.loads(
+                _execute_remote(
+                    "from hermes_tools import read_file, write_file",
+                    "task-remote-roundtrip",
+                    ["read_file", "write_file"],
+                )
+            )
+
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertEqual(result["tool_calls_made"], 2)
+        self.assertEqual(writes, ["important data"])
+
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
@@ -282,6 +396,37 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
+
+    def test_read_file_write_file_round_trip_preserves_content(self):
+        """Programmatic read_file() output should be safe to write back."""
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
+            source = os.path.join(tmpdir, "source.txt")
+            dest = os.path.join(tmpdir, "backup.txt")
+            with open(source, "w", encoding="utf-8") as f:
+                f.write("important data")
+
+            code = f"""
+from hermes_tools import read_file, write_file
+content = read_file({source!r})["content"]
+print(write_file({dest!r}, content))
+"""
+            with patch(
+                "tools.code_execution_tool._load_config",
+                return_value={"timeout": 30, "max_tool_calls": 10, "mode": "project"},
+            ), patch(
+                "tools.approval.check_execute_code_guard",
+                return_value={"approved": True, "message": None},
+            ):
+                raw = execute_code(
+                    code=code,
+                    task_id="test-read-write-roundtrip",
+                    enabled_tools=["read_file", "write_file"],
+                )
+
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "success", msg=result)
+            with open(dest, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "important data")
 
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""

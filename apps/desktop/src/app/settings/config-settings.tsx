@@ -411,7 +411,7 @@ export function ConfigSettings({
                 value={getNested(config, key)}
               />
               {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
-                <ProviderConfigPanel provider={String(getNested(config, key))} />
+                <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
               ) : null}
             </div>
           ))}

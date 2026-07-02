@@ -574,3 +574,314 @@ def test_rate_limiter_is_thread_safe_across_bucket_rollover():
         thread.join()
 
     assert errors == []
+
+
+# ── Action gate (Phase 1) ────────────────────────────────────────────────
+
+from hermes_cli.telegram_miniapp import bridge as _bridge  # noqa: E402
+
+
+def _actions_client(tmp_path, *, owners={"777"}, now=1_700_000_100):
+    """Build a sidecar with the action gate enabled and a live bridge snapshot
+    already exported, so /api/approvals returns a real opaque id + version."""
+    key = _bridge.derive_bridge_key(BOT_TOKEN)
+    br = _bridge.MiniAppBridge(tmp_path, key)
+    br.export(
+        [{"session_key": "sess-a", "command": "rm -rf /data", "description": "Удалить данные",
+          "pattern_key": "rm-rf", "risk_tier": "critical",
+          "requested_at": 1_700_000_050, "expires_at": 1_700_000_400}],
+        now=1_700_000_090,
+    )
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        action_owners=set(owners),
+        enable_actions=True,
+        hermes_home=str(tmp_path),
+        now=lambda: now,
+    )
+    app = create_app(settings=settings, status_provider=lambda: {"ok": True, "gateway": {}})
+    client = TestClient(app, base_url="http://127.0.0.1:9120")
+    return app, client
+
+
+def action_headers(user=USER):
+    # Fresh Telegram proof header required by the decision endpoint. auth_date
+    # matches the fixed test clock so it stays within the action initData TTL.
+    return {"x-telegram-init-data": build_init_data(user=user, auth_date=1_700_000_000)}
+
+
+def test_action_route_absent_and_capability_blocked_by_default():
+    client = make_client()
+    auth_client(client)
+
+    # No decision route exists in the default (actions-disabled) app.
+    resp = client.post(
+        "/api/approvals/anything/decision",
+        json={"decision": "approve_once", "client_request_id": "x", "snapshot_version": "v"},
+    )
+    assert resp.status_code == 404
+
+    caps = client.get("/api/capabilities").json()
+    approve = next(c for c in caps["items"] if c["id"] == "approve-action")
+    assert approve["enabled"] is False and approve["mode"] == "blocked"
+
+
+def test_action_gate_enabled_flow_and_leak_safety(tmp_path):
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+
+    # Capability now reports the owner-confirmed action mode.
+    caps = client.get("/api/capabilities").json()
+    approve = next(c for c in caps["items"] if c["id"] == "approve-action")
+    assert approve["enabled"] is True and approve["mode"] == "owner-confirmed-action"
+
+    approvals = client.get("/api/approvals").json()
+    assert approvals["meta"]["source"] == "live-safe"
+    version = approvals["snapshot_version"]
+    approval_id = approvals["items"][0]["id"]
+    # The live projection must not leak raw command/session data.
+    serialized = json.dumps(approvals)
+    for forbidden in ("rm -rf", "/data", "sess-a", "rm-rf"):
+        assert forbidden not in serialized
+
+    ok = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-1", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["ok"] and body["status"] == "accepted" and body["decision_id"]
+    assert "rm -rf" not in ok.text and BOT_TOKEN not in ok.text
+    assert ok.headers["cache-control"] == "no-store"
+
+    # A signed decision file was written for the gateway to pick up.
+    decision_files = list((tmp_path / "miniapp" / "decisions").glob("*.json"))
+    assert len(decision_files) == 1
+
+    # Idempotent replay: same client_request_id -> same response, no 2nd file.
+    replay = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-1", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    assert replay.status_code == 200 and replay.json()["decision_id"] == body["decision_id"]
+    assert len(list((tmp_path / "miniapp" / "decisions").glob("*.json"))) == 1
+
+
+def test_action_gate_requires_owner(tmp_path):
+    # Authenticated allowlisted user 777, but not in action_owners.
+    app, client = _actions_client(tmp_path, owners={"999"})
+    auth_client(client)
+    resp = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_once", "client_request_id": "u", "snapshot_version": "v"},
+    )
+    assert resp.status_code == 403
+
+
+def test_action_gate_requires_auth(tmp_path):
+    app, client = _actions_client(tmp_path)
+    resp = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_once", "client_request_id": "u", "snapshot_version": "v"},
+        headers={"origin": "http://127.0.0.1:5175"},
+    )
+    assert resp.status_code == 401
+
+
+def test_action_preflight_allows_proof_header(tmp_path):
+    # A real browser preflights the decision POST with the proof header; the
+    # allow-list must include it or the browser blocks the request.
+    app, client = _actions_client(tmp_path)
+    resp = client.options(
+        "/api/approvals/abc/decision",
+        headers={
+            "origin": "http://127.0.0.1:5175",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "content-type,x-telegram-init-data",
+        },
+    )
+    assert resp.status_code == 204
+    allowed = resp.headers.get("access-control-allow-headers", "").lower()
+    assert "x-telegram-init-data" in allowed
+    assert "content-type" in allowed
+
+
+def test_action_gate_requires_fresh_telegram_proof(tmp_path):
+    # Owner is authenticated (session cookie), but a request WITHOUT the
+    # X-Telegram-Init-Data proof header is rejected — this is what stops a
+    # malicious same-origin page from riding the cookie as a signing oracle.
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+    approvals = client.get("/api/approvals").json()
+    approval_id = approvals["items"][0]["id"]
+    version = approvals["snapshot_version"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "no-proof", "snapshot_version": version},
+    )
+    assert resp.status_code == 401
+    assert not list((tmp_path / "miniapp" / "decisions").glob("*.json"))
+
+
+def test_action_gate_rejects_proof_for_other_user(tmp_path):
+    # Two owners; session is 777 but the initData proof is for 888 -> the proof
+    # is valid but does not match the session, so the action is refused.
+    app, client = _actions_client(tmp_path, owners={"777", "888"})
+    auth_client(client)  # session user = 777
+    approvals = client.get("/api/approvals").json()
+    approval_id = approvals["items"][0]["id"]
+    version = approvals["snapshot_version"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "mismatch", "snapshot_version": version},
+        headers=action_headers(user={"id": 888, "first_name": "Other"}),
+    )
+    assert resp.status_code == 403
+    assert not list((tmp_path / "miniapp" / "decisions").glob("*.json"))
+
+
+def test_action_gate_rejects_bad_body_and_rate_limits(tmp_path):
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+
+    bad_decision = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_all", "client_request_id": "u", "snapshot_version": "v"},
+        headers=action_headers(),
+    )
+    assert bad_decision.status_code == 422
+
+    missing = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_once", "client_request_id": "", "snapshot_version": ""},
+        headers=action_headers(),
+    )
+    assert missing.status_code == 422
+
+    # Rate limit: 5/min per session; 6th distinct request is throttled.
+    last = None
+    for i in range(7):
+        last = client.post(
+            "/api/approvals/abc/decision",
+            json={"decision": "approve_once", "client_request_id": f"rl-{i}", "snapshot_version": "v"},
+            headers=action_headers(),
+        )
+    assert last.status_code == 429
+
+
+def test_action_route_still_absent_when_owners_empty(tmp_path):
+    # enable_actions True but no owners -> actions_ready() False -> route absent.
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        action_owners=set(),
+        enable_actions=True,
+        hermes_home=str(tmp_path),
+        now=lambda: 1_700_000_100,
+    )
+    app = create_app(settings=settings, status_provider=lambda: {"ok": True, "gateway": {}})
+    client = TestClient(app, base_url="http://127.0.0.1:9120")
+    auth_client(client)
+    resp = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_once", "client_request_id": "u", "snapshot_version": "v"},
+    )
+    assert resp.status_code == 404
+
+
+def test_action_route_absent_without_hermes_home():
+    # enable_actions + owners but no home -> actions_ready() False (fail-closed),
+    # so the gate never registers even though it "looks" enabled by config.
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        action_owners={"777"},
+        enable_actions=True,
+        hermes_home=None,
+        now=lambda: 1_700_000_100,
+    )
+    app = create_app(settings=settings, status_provider=lambda: {"ok": True, "gateway": {}})
+    client = TestClient(app, base_url="http://127.0.0.1:9120")
+    auth_client(client)
+    resp = client.post(
+        "/api/approvals/abc/decision",
+        json={"decision": "approve_once", "client_request_id": "u", "snapshot_version": "v"},
+    )
+    assert resp.status_code == 404
+    caps = client.get("/api/capabilities").json()
+    approve = next(c for c in caps["items"] if c["id"] == "approve-action")
+    assert approve["enabled"] is False
+
+
+def test_action_gate_rejects_stale_snapshot(tmp_path):
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+    approvals = client.get("/api/approvals").json()
+    approval_id = approvals["items"][0]["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-stale", "snapshot_version": "outdated-version"},
+        headers=action_headers(),
+    )
+    assert resp.status_code == 409
+    assert not list((tmp_path / "miniapp" / "decisions").glob("*.json"))
+
+
+def test_idempotent_replay_is_not_rate_limited(tmp_path):
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+    approvals = client.get("/api/approvals").json()
+    approval_id = approvals["items"][0]["id"]
+    version = approvals["snapshot_version"]
+
+    first = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-keep", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    assert first.status_code == 200
+
+    for i in range(6):
+        client.post(
+            f"/api/approvals/{approval_id}/decision",
+            json={"decision": "approve_once", "client_request_id": f"burn-{i}", "snapshot_version": version},
+            headers=action_headers(),
+        )
+
+    replay = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-keep", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    assert replay.status_code == 200 and replay.json()["decision_id"] == first.json()["decision_id"]
+
+
+def test_idempotency_key_scoped_to_target(tmp_path):
+    # Reusing a client_request_id for a DIFFERENT decision must not replay the
+    # first cached response — the second decision is processed on its own.
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+    approvals = client.get("/api/approvals").json()
+    approval_id = approvals["items"][0]["id"]
+    version = approvals["snapshot_version"]
+
+    approve = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "shared-id", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    reject = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "reject_once", "client_request_id": "shared-id", "snapshot_version": version},
+        headers=action_headers(),
+    )
+    assert approve.status_code == 200 and reject.status_code == 200
+    # Distinct decisions produced distinct signed files (not a replayed cache).
+    assert approve.json()["decision_id"] != reject.json()["decision_id"]
+    assert len(list((tmp_path / "miniapp" / "decisions").glob("*.json"))) == 2

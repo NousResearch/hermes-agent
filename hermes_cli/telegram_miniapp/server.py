@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from hermes_cli.config import get_env_value
 
 from .auth import InitDataAuthError, TelegramMiniAppUser, VerifiedInitData, verify_init_data
-from .approvals import build_approvals_snapshot
+from .approvals import build_approvals_snapshot, build_live_approvals_snapshot
 from .capabilities import build_capabilities_snapshot
 from .previews import build_logs_snapshot, build_sessions_snapshot
 from .status import build_status_snapshot
@@ -44,6 +44,10 @@ class MiniAppSettings:
     public_smoke: bool = False
     public_base_url: str | None = None
     enable_actions: bool = False
+    action_owners: set[str] = field(default_factory=set)
+    hermes_home: str | None = None
+    action_rate_limit_per_minute: int = 5
+    action_initdata_ttl_seconds: int = 86400
     auth_rate_limit_per_minute: int = 10
     auth_global_limit: int = 50
     status_rate_limit_per_minute: int = 60
@@ -51,6 +55,17 @@ class MiniAppSettings:
 
     def resolved_bot_token(self) -> str:
         return self.bot_token or get_env_value("TELEGRAM_BOT_TOKEN") or ""
+
+    def actions_ready(self) -> bool:
+        """Actions are only live when explicitly enabled, an owner allowlist
+        exists, a bot token is available to key the bridge, and a home dir is
+        resolved for the bridge files. Fail-closed on any missing piece."""
+        return bool(
+            self.enable_actions
+            and self.action_owners
+            and self.resolved_bot_token()
+            and self.hermes_home
+        )
 
 
 @dataclass
@@ -126,6 +141,12 @@ class RateLimiter:
 
 class TelegramAuthRequest(BaseModel):
     initData: str = ""
+
+
+class DecisionRequest(BaseModel):
+    decision: str = ""
+    client_request_id: str = ""
+    snapshot_version: str = ""
 
 
 def _user_payload(user: TelegramMiniAppUser) -> dict[str, str]:
@@ -272,11 +293,32 @@ def create_app(
     settings = settings or MiniAppSettings()
     sessions = SessionStore()
     rate_limiter = RateLimiter()
+    actions_ready = settings.actions_ready()
+    bridge = None
+    bridge_key = b""
+    bridge_sign = None
+    if actions_ready and settings.hermes_home:
+        from .bridge import MiniAppBridge, derive_bridge_key, sign_envelope
+
+        bridge_key = derive_bridge_key(settings.resolved_bot_token())
+        bridge = MiniAppBridge(settings.hermes_home, bridge_key)
+        bridge_sign = sign_envelope
+    # Idempotency cache (target-scoped key -> cached response), guarded by a lock
+    # because FastAPI runs sync handlers in a threadpool: two concurrent retries
+    # of the same decision must not both miss the cache and double-submit.
+    action_idempotency: dict[str, dict[str, Any]] = {}
+    action_idempotency_lock = threading.Lock()
     status_provider = status_provider or (lambda: build_status_snapshot(hermes_home_configured=True))
-    approvals_provider = approvals_provider or build_approvals_snapshot
+    if approvals_provider is None:
+        def approvals_provider() -> dict[str, Any]:
+            if bridge is not None:
+                snapshot = bridge.read_public_snapshot(now=settings.now())
+                if snapshot is not None:
+                    return build_live_approvals_snapshot(snapshot)
+            return build_approvals_snapshot()
     sessions_provider = sessions_provider or build_sessions_snapshot
     logs_provider = logs_provider or build_logs_snapshot
-    capabilities_provider = capabilities_provider or build_capabilities_snapshot
+    capabilities_provider = capabilities_provider or (lambda: build_capabilities_snapshot(actions_enabled=actions_ready))
     app = FastAPI(title="Hermes Telegram Mini App", docs_url=None, redoc_url=None, openapi_url=None)
 
     def guarded_response(request: Request, response: Response) -> Response:
@@ -300,7 +342,10 @@ def create_app(
                 return guarded_response(request, Response(status_code=204))
             headers.update({
                 "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "content-type",
+                # x-telegram-init-data is the action-gate proof header; it must
+                # be allow-listed here or the browser blocks the decision POST
+                # at preflight. Harmless when actions are disabled.
+                "Access-Control-Allow-Headers": "content-type, x-telegram-init-data",
             })
             return guarded_response(request, Response(status_code=204, headers=headers))
 
@@ -459,5 +504,102 @@ def create_app(
                 raise HTTPException(status_code=429, detail="Too many requests")
         snapshot = logs_provider()
         return _apply_api_no_store(JSONResponse(snapshot), settings)
+
+    # ── Action gate (Phase 1) ────────────────────────────────────────────
+    # Registered ONLY when actions are explicitly enabled with an owner
+    # allowlist and a bridge. Default config never reaches here, so the route
+    # stays absent (404) and the forbidden-route tests keep passing.
+    if actions_ready and bridge is not None:
+
+        @app.post("/api/approvals/{approval_id}/decision")
+        def approval_decision(approval_id: str, payload: DecisionRequest, request: Request):
+            session = current_session(request)
+            if session.user.id not in settings.action_owners:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+            # Fresh Telegram proof: the action must carry a valid initData
+            # (HMAC-signed with the bot token) for the SAME owner. The session
+            # cookie alone is not enough — a malicious page squatting an allowed
+            # loopback origin could ride the cookie via CORS, but it cannot
+            # forge initData without the bot token. This turns the endpoint from
+            # a cookie-only signing oracle into one that requires proof of a
+            # genuine Telegram Mini App runtime.
+            init_data = request.headers.get("x-telegram-init-data", "")
+            try:
+                action_proof = verify_init_data(
+                    init_data,
+                    bot_token=settings.resolved_bot_token(),
+                    allowed_users=settings.action_owners,
+                    now=settings.now(),
+                    ttl_seconds=settings.action_initdata_ttl_seconds,
+                    future_skew_seconds=settings.future_skew_seconds,
+                )
+            except InitDataAuthError as exc:
+                raise HTTPException(status_code=401, detail="Unauthorized") from exc
+            if action_proof.user.id != session.user.id:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+            # Idempotency key is scoped to the exact target (user + approval +
+            # decision + snapshot), so reusing a client_request_id for a
+            # different action never replays the wrong cached decision. Checked
+            # before the rate limit so a normal retry of an already-accepted
+            # decision returns the cached response instead of being throttled.
+            idem_key = "\x1f".join(
+                (
+                    session.user.id,
+                    payload.client_request_id,
+                    approval_id,
+                    payload.decision,
+                    payload.snapshot_version,
+                )
+            )
+            # The check/reserve/validate/submit/store critical section runs under
+            # a lock so concurrent threadpool retries of the same decision can
+            # never both miss the cache and double-submit. Actions are owner-only
+            # and low frequency, so serialising this path is cheap.
+            with action_idempotency_lock:
+                cached = action_idempotency.get(idem_key) if payload.client_request_id else None
+                if cached is not None:
+                    return _apply_api_no_store(JSONResponse(cached), settings)
+
+                if not rate_limiter.check(
+                    f"action:{session.session_id}",
+                    limit=settings.action_rate_limit_per_minute,
+                    now=settings.now(),
+                ):
+                    raise HTTPException(status_code=429, detail="Too many requests")
+                if payload.decision not in ("approve_once", "reject_once"):
+                    raise HTTPException(status_code=422, detail="Unsupported decision")
+                if not payload.client_request_id or not payload.snapshot_version:
+                    raise HTTPException(status_code=422, detail="Missing request fields")
+
+                # Reject acting on a stale saved snapshot before signing anything:
+                # the current on-disk snapshot must be fresh, match the client's
+                # version, and still contain this approval. The gateway
+                # re-validates against its live index too.
+                if not bridge.check_target(approval_id, payload.snapshot_version, now=settings.now()):
+                    raise HTTPException(status_code=409, detail="Snapshot is stale; refresh and retry")
+
+                envelope = bridge_sign(
+                    bridge_key,
+                    {
+                        "approval_id": approval_id,
+                        "decision": payload.decision,
+                        "client_request_id": payload.client_request_id,
+                        "snapshot_version": payload.snapshot_version,
+                        "issued_at": int(settings.now()),
+                    },
+                )
+                decision_id = bridge.submit_decision(envelope)
+                # "accepted" == queued for the gateway; execution is confirmed by
+                # the gateway receipt, surfaced on the next approvals refresh.
+                body = {
+                    "ok": True,
+                    "decision_id": decision_id or "",
+                    "status": "accepted",
+                    "message": "Решение отправлено на подтверждение gateway.",
+                }
+                action_idempotency[idem_key] = body
+            return _apply_api_no_store(JSONResponse(body), settings)
 
     return app

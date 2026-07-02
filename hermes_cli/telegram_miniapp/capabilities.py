@@ -24,13 +24,33 @@ def _capability(*, item_id: str, label: str, enabled: bool, mode: str, reason: s
     }
 
 
-def build_capabilities_snapshot() -> dict[str, Any]:
+def build_capabilities_snapshot(*, actions_enabled: bool = False) -> dict[str, Any]:
     """Build a static-safe capabilities matrix.
 
     The response intentionally contains only product capability labels. It does
     not inspect or expose runtime commands, paths, PIDs, env values, tokens,
     provider names, prompts, user payloads, raw logs, or config values.
+
+    ``actions_enabled`` reflects whether the owner-confirmed Phase 1 decision
+    endpoint (approve_once / reject_once) is live. Restart / process control
+    stays blocked regardless.
     """
+    if actions_enabled:
+        approve = _capability(
+            item_id="approve-action",
+            label="Approve / reject",
+            enabled=True,
+            mode="owner-confirmed-action",
+            reason="Approve/reject once доступны владельцу для pending-одобрений.",
+        )
+    else:
+        approve = _capability(
+            item_id="approve-action",
+            label="Approve / reject",
+            enabled=False,
+            mode="blocked",
+            reason="Требуется отдельный approved backend design.",
+        )
     return {
         "ok": True,
         "meta": _preview_meta(),
@@ -47,7 +67,7 @@ def build_capabilities_snapshot() -> dict[str, Any]:
                 label="Очередь одобрений",
                 enabled=True,
                 mode="read-only",
-                reason="Доступен только preview без decision endpoint.",
+                reason="Доступен только preview без decision endpoint." if not actions_enabled else "Доступны pending-одобрения с owner-confirmed решением.",
             ),
             _capability(
                 item_id="sessions-read",
@@ -56,13 +76,7 @@ def build_capabilities_snapshot() -> dict[str, Any]:
                 mode="read-only",
                 reason="Доступны только redacted preview items.",
             ),
-            _capability(
-                item_id="approve-action",
-                label="Approve / reject",
-                enabled=False,
-                mode="blocked",
-                reason="Требуется отдельный approved backend design.",
-            ),
+            approve,
             _capability(
                 item_id="restart-action",
                 label="Restart / process control",

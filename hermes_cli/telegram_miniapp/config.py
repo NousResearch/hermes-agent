@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hermes_cli.config import cfg_get, load_config
+from hermes_cli.config import cfg_get, get_hermes_home, load_config
 
 from .server import MiniAppSettings, _default_allowed_origins
 
@@ -12,8 +12,10 @@ from .server import MiniAppSettings, _default_allowed_origins
 def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSettings:
     """Resolve Mini App settings without mutating config.yaml or .env.
 
-    Public HTTPS smoke activation is deliberately not read from config or env.
-    It is a per-run foreground CLI decision only.
+    Public HTTPS smoke activation and the action gate are deliberately NOT read
+    from durable config: ``enable_actions`` stays False here and can only be set
+    by a per-run foreground CLI flag, exactly like ``public_smoke``. Config only
+    supplies the owner allowlist that a future enabled run would consult.
     """
     cfg = load_config() if config is None else config
     section = cfg_get(cfg, "telegram_miniapp", default={})
@@ -22,6 +24,7 @@ def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSetting
 
     allowed = section.get("allowed_users") or []
     origins = section.get("cors_allowed_origins") or []
+    action_owners = section.get("action_owners") or []
     cors_allowed_origins = {str(value) for value in origins if str(value).strip()}
     return MiniAppSettings(
         host=str(section.get("host") or "127.0.0.1"),
@@ -29,6 +32,8 @@ def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSetting
         auth_ttl_seconds=int(section.get("auth_ttl_seconds") or 300),
         session_ttl_seconds=int(section.get("session_ttl_seconds") or 3600),
         allowed_users={str(value) for value in allowed if str(value).strip()},
+        action_owners={str(value) for value in action_owners if str(value).strip()},
+        hermes_home=str(get_hermes_home()),
         cors_allowed_origins=cors_allowed_origins or _default_allowed_origins(),
         enable_actions=False,
         public_smoke=False,

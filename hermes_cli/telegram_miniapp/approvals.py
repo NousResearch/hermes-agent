@@ -6,6 +6,17 @@ from typing import Any
 
 _ALLOWED_RISKS = {"read_only", "critical"}
 _ALLOWED_STATUSES = {"waiting", "blocked"}
+_ALLOWED_DECISIONS = {"approve_once", "reject_once"}
+
+# The bridge exposes four risk tiers; the preview UI carries two. Only a true
+# read_only action shows the safe badge — anything state-changing (reversible,
+# risky, critical) maps up to critical so the owner never under-reads the risk.
+_RISK_TIER_TO_UI = {
+    "read_only": "read_only",
+    "reversible": "critical",
+    "risky": "critical",
+    "critical": "critical",
+}
 
 
 def _preview_meta(source_label: str) -> dict[str, Any]:
@@ -76,4 +87,42 @@ def build_approvals_snapshot() -> dict[str, Any]:
                 checks=["секреты скрыты", "команды не выполняются", "доступ только владельцу"],
             ),
         ],
+    }
+
+
+def build_live_approvals_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Map a redacted bridge snapshot into the sidecar approvals response.
+
+    The bridge already projected away every sensitive field; this only shapes
+    the safe items for the UI and carries the opaque ``snapshot_version`` plus
+    per-item ``allowed_decisions`` the action gate needs. It never re-derives or
+    exposes raw command/session data because it never sees any.
+    """
+    items: list[dict[str, Any]] = []
+    for raw in snapshot.get("items", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        allowed = [d for d in (raw.get("allowed_decisions") or []) if d in _ALLOWED_DECISIONS]
+        item = _approval_item(
+            item_id=str(raw.get("approval_id", "")),
+            title=str(raw.get("title", "Одобрение")),
+            source=str(raw.get("source_label", "gateway approval")),
+            risk=_RISK_TIER_TO_UI.get(str(raw.get("risk")), "critical"),
+            summary=str(raw.get("summary", "Требуется решение владельца.")),
+            requested_at=str(raw.get("requested_at", "")),
+            status="waiting",
+            checks=["решение владельца", "одноразовое approve/reject", "raw-команда не раскрывается"],
+        )
+        item["allowed_decisions"] = allowed
+        items.append(item)
+    return {
+        "ok": True,
+        "meta": {
+            "source": "live-safe",
+            "source_label": "Live gateway approvals",
+            "redaction": "safe-preview",
+            "contains_live_actions": True,
+        },
+        "snapshot_version": str(snapshot.get("snapshot_version", "")),
+        "items": items,
     }

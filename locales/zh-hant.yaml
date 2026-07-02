@@ -88,6 +88,7 @@ gateway:
     not_enough:            "對話內容不足，無法壓縮（至少需要 4 則訊息）。"
     no_provider:           "未設定提供方 — 無法壓縮。"
     nothing_to_do:         "目前沒有可壓縮的內容（對話記錄仍全部為受保護的上下文）。"
+    aggressive_unsupported: "不支援 --aggressive；請使用 '/compress here [N]' 只保留最近的對話，或使用 /undo 刪除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"

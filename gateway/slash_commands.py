@@ -3044,12 +3044,43 @@ class GatewaySlashCommandsMixin:
         # Parse args: either a focus topic (full compress) or the
         # boundary-aware "here [N]" form (partial compress).
         from hermes_cli.partial_compress import (
+            extract_compress_flags,
             parse_partial_compress_args,
             rejoin_compressed_head_and_tail,
             split_history_for_partial_compress,
+            summarize_compress_preview,
         )
         _raw_args = (event.get_command_args() or "").strip()
+        # Strip --preview/--dry-run/--aggressive before positional parsing
+        # so the flags coexist with 'here [N]' / focus-topic forms.
+        _raw_args, _preview, _aggressive = extract_compress_flags(_raw_args)
         partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
+
+        _agg_note = ""
+        if _aggressive:
+            # LLM-free hard truncation is not supported on this surface —
+            # it would need its own transcript-persistence branch outside
+            # the guarded _compress_context rotation machinery (#44794).
+            _agg_note = t("gateway.compress.aggressive_unsupported")
+            if not _preview:
+                return _agg_note
+
+        if _preview:
+            # Report what WOULD be compressed — no agent, no writes.
+            from agent.model_metadata import estimate_request_tokens_rough
+            _pv_msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in {"user", "assistant"} and m.get("content")
+            ]
+            approx_tokens = estimate_request_tokens_rough(_pv_msgs)
+            report = summarize_compress_preview(
+                _pv_msgs, partial, keep_last, focus_topic, approx_tokens
+            )
+            lines = [f"🗜️ {line}" for line in report["lines"]]
+            if _aggressive:
+                lines.append(_agg_note)
+            return "\n".join(lines)
 
         try:
             from run_agent import AIAgent

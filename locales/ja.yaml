@@ -88,6 +88,7 @@ gateway:
     not_enough:            "圧縮するための会話が不十分です (少なくとも 4 件のメッセージが必要)。"
     no_provider:           "プロバイダーが構成されていません — 圧縮できません。"
     nothing_to_do:         "まだ圧縮するものがありません (トランスクリプトはすべて保護されたコンテキストのままです)。"
+    aggressive_unsupported: "--aggressive はサポートされていません。'/compress here [N]' で直近のやり取りだけを残すか、/undo でターンを削除してください。"
     focus_line:            "フォーカス: \"{topic}\""
     summary_failed:        "⚠️ 要約の生成に失敗しました ({error})。{count} 件の履歴メッセージが削除され、プレースホルダーに置き換えられました。以前のコンテキストは復元できません。auxiliary.compression モデルの設定を確認してください。"
     aborted:               "⚠️ 圧縮が中止されました ({error})。メッセージは削除されていません — 会話はそのままです。再試行するには /compress、新しいセッションを開始するには /reset を実行するか、auxiliary.compression モデル設定を確認してください。"

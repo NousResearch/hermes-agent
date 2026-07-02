@@ -88,6 +88,7 @@ gateway:
     not_enough:            "Conversazione insufficiente da comprimere (servono almeno 4 messaggi)."
     no_provider:           "Nessun provider configurato — impossibile comprimere."
     nothing_to_do:         "Niente da comprimere per ora (la trascrizione è ancora tutta contesto protetto)."
+    aggressive_unsupported: "--aggressive non è supportato; usa '/compress here [N]' per conservare solo gli scambi recenti, oppure /undo per rimuovere i turni."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Generazione del riepilogo non riuscita ({error}). {count} messaggio/i storico/i sono stati rimossi e sostituiti con un segnaposto; il contesto precedente non è più recuperabile. Considera di controllare la configurazione del modello auxiliary.compression."
     aborted:               "⚠️ Compressione interrotta ({error}). Nessun messaggio è stato eliminato — la conversazione è invariata. Esegui /compress per riprovare, /reset per una nuova sessione, o controlla la configurazione del modello auxiliary.compression."

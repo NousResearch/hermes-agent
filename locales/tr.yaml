@@ -88,6 +88,7 @@ gateway:
     not_enough:            "Sıkıştırmak için yeterli konuşma yok (en az 4 mesaj gerekli)."
     no_provider:           "Yapılandırılmış sağlayıcı yok — sıkıştırılamıyor."
     nothing_to_do:         "Henüz sıkıştırılacak bir şey yok (transkript hâlâ tamamen korunan bağlam)."
+    aggressive_unsupported: "--aggressive desteklenmiyor; yalnızca son alışverişleri tutmak için '/compress here [N]' kullanın veya turları silmek için /undo kullanın."
     focus_line:            "Odak: \"{topic}\""
     summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
     aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /reset komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."

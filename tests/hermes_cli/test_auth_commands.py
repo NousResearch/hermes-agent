@@ -1936,3 +1936,43 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+def test_normalize_provider_uses_shared_alias_map():
+    """Auth commands must accept the same aliases as resolve_provider().
+
+    Regression test for #57309: `hermes auth add qwen` failed with
+    "Unknown provider: qwen" even though `hermes model --provider qwen`
+    resolved correctly. _normalize_provider() now delegates to
+    normalize_provider_alias() which shares the canonical alias map.
+    """
+    from hermes_cli.auth_commands import _normalize_provider
+
+    cases = {
+        "qwen": "qwen-oauth",
+        "qwen-cli": "qwen-oauth",
+        "glm": "zai",
+        "z-ai": "zai",
+        "kimi": "kimi-coding",
+        "moonshot": "kimi-coding",
+        "grok": "xai",
+        "google": "gemini",
+        "github": "copilot",
+        "github-copilot": "copilot",
+        "codex": "openai-codex",
+        "or": "openrouter",
+        "open-router": "openrouter",
+    }
+
+    for raw, expected in cases.items():
+        assert _normalize_provider(raw) == expected, (
+            f"_normalize_provider({raw!r}) returned {_normalize_provider(raw)!r}, "
+            f"expected {expected!r}"
+        )
+
+    # Canonical provider IDs pass through unchanged
+    assert _normalize_provider("copilot") == "copilot"
+    assert _normalize_provider("qwen-oauth") == "qwen-oauth"
+
+    # Unknown providers pass through (caller raises a useful error)
+    assert _normalize_provider("totally-fake-provider") == "totally-fake-provider"

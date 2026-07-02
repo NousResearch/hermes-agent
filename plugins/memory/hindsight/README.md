@@ -145,3 +145,49 @@ Available in `hybrid` and `tools` memory modes:
 ## Client Version
 
 Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+
+## Local Embedded — Ollama / OpenAI-Compatible Notes
+
+When `mode: local_embedded` and you're pointing at a local Ollama (or any OpenAI-compatible LLM endpoint), you usually also want to point **embeddings** at the same endpoint, otherwise the daemon falls back to its default `sentence-transformers` model which requires torch + downloads ~100MB on first run. The embedding provider is **separate** from the LLM provider and **not** read from `~/.hermes/hindsight/config.json` — it is read from environment variables only.
+
+```yaml
+# ~/.hindsight/profiles/hermes.env (auto-materialized by the plugin)
+HINDSIGHT_API_LLM_PROVIDER=ollama
+HINDSIGHT_API_LLM_API_KEY=ollama              # Ollama ignores the value
+HINDSIGHT_API_LLM_MODEL=qwen2.5:3b           # or llama3.2:3b, gemma2:2b, ...
+HINDSIGHT_API_LLM_BASE_URL=http://localhost:11434/v1
+HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai     # uses Ollama's OpenAI-compatible /v1
+HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL=http://localhost:11434/v1
+HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL=nomic-embed-text:latest
+HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY=ollama
+```
+
+### Known issue: Ollama `llama3.2:1b` + structured output + concurrency
+
+Ollama 0.24.x can stop responding (hang) when asked for structured JSON output from a 1B-parameter model concurrently with another request. Mitigations that have proven stable on CPU-only Linux:
+
+```yaml
+HINDSIGHT_API_LLM_MAX_CONCURRENT=1
+HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT=1
+HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM=1
+HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT=1
+HINDSIGHT_API_LLM_TIMEOUT=300
+```
+
+If Ollama hangs anyway, restart the daemon: `sudo snap restart ollama` (or your distro equivalent). Hermes will recover automatically on the next retain/recall.
+
+### `retain_async=True` is the recommended default
+
+`c.retain(retain_async=True)` returns in ~1s with an `operation_id`. The default `retain_async=False` blocks the client until the daemon's fact-extraction + embedding + consolidation steps complete, which can take several minutes on a 1B model. Use async by default and let `consolidation` happen in the background; query results become available a few minutes later via recall.
+
+### Upstream packaging note
+
+`hindsight-all` 0.8.4 ships a top-level `hindsight/` Python package (containing the `HindsightEmbedded` class) inside its wheel, but its `setuptools`/`hatchling` metadata does not declare it as an installed package. As a result, `pip install hindsight-all` (or `uv pip install hindsight-all`) installs the dependencies but **not** the bare `hindsight` import path that the plugin uses for local_embedded mode.
+
+Workarounds, in order of preference:
+
+1. `pip install hindsight-all --no-binary :all:` — installs the source distribution, which DOES install the bare package.
+2. Switch the plugin to `mode: local_external` and point it at a running Hindsight daemon you started yourself.
+3. Manually copy the `hindsight/` directory from the wheel (e.g., `python -c "import zipfile; zipfile.ZipFile('hindsight_all-0.8.4-py3-none-any.whl').extractall()"`) into your venv's `site-packages/`.
+
+The plugin's `_get_client` surfaces a clear error message pointing to these workarounds if it detects the missing import.

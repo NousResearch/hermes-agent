@@ -2,7 +2,18 @@ name: hindsight
 version: 1.0.0
 description: "Hindsight — long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval."
 pip_dependencies:
+  # `hindsight-client` ships the cloud-mode HTTP client (HindsightClient / Hindsight class).
+  # `hindsight-embed` is the daemon-manager used by local_embedded mode
+  # (HindsightEmbedded class instantiated in `_get_client`). It MUST be declared here —
+  # otherwise a fresh plugin install + edit-config mode=local_embedded + retry fails at
+  # `from hindsight import HindsightEmbedded` (ModuleNotFoundError) because
+  # `hindsight-embed`'s top-level package is *not* a transitive of `hindsight-client`.
+  # `hindsight-api-slim` is a runtime dep of `hindsight-embed`; declaring it here makes
+  # `uv pip install` resolve a working set even when the user hasn't run the setup wizard
+  # (which separately pulls a fuller set including torch for sentence-transformers).
   - "hindsight-client>=0.6.1"
+  - "hindsight-embed>=0.8.4"
+  - "hindsight-api-slim[embedded-db]>=0.8.4"
 requires_env: []
 hooks:
   - on_session_end

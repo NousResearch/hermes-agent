@@ -327,3 +327,95 @@ class TestBridgeBindRun:
             result = bridge.resolve_approval(r["run_id"], "apr-001", "once")
             assert result["status"] == "resolved"
             mock.assert_not_called()
+
+    def test_bind_run_stores_agent_reference(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        bridge = RuntimeControlBridge(mgr)
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "gw_key", mock_agent)
+        assert bridge._live_agents.get(r["run_id"]) is mock_agent
+
+    def test_bind_run_agent_is_optional(self):
+        mgr = RunManager()
+        bridge = RuntimeControlBridge(mgr)
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "gw_key")
+        assert r["run_id"] in bridge._bindings
+        assert r["run_id"] not in bridge._live_agents
+
+    def test_unbind_run_cleans_both(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        bridge = RuntimeControlBridge(mgr)
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "gw_key", mock_agent)
+        bridge.unbind_run(r["run_id"])
+        assert r["run_id"] not in bridge._bindings
+        assert r["run_id"] not in bridge._live_agents
+
+    def test_unbind_run_nonexistent_is_noop(self):
+        mgr = RunManager()
+        bridge = RuntimeControlBridge(mgr)
+        bridge.unbind_run("no_such_run")
+
+
+class TestBridgeStopDirectAgentRef:
+    """stop_run uses direct agent reference from bind_run when available."""
+
+    def test_stop_uses_direct_agent_not_gateway_ref(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner._running_agents = {"sk": MagicMock()}
+
+        bridge = RuntimeControlBridge(
+            mgr,
+            get_session_key_for_run=lambda rid: "sk",
+            gateway_runner_ref=lambda: mock_runner,
+        )
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "sk", mock_agent)
+        result = bridge.stop_run(r["run_id"])
+        assert result["status"] == "cancelled"
+        mock_agent.interrupt.assert_called_once_with("run_stop")
+        mock_runner._running_agents["sk"].interrupt.assert_not_called()
+
+    def test_stop_direct_agent_failure_does_not_raise(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        mock_agent.interrupt.side_effect = RuntimeError("boom")
+        bridge = RuntimeControlBridge(mgr)
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "sk", mock_agent)
+        result = bridge.stop_run(r["run_id"])
+        assert result["status"] == "cancelled"
+
+    def test_stop_without_direct_agent_falls_back_to_gateway_ref(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner._running_agents = {"sk": mock_agent}
+
+        bridge = RuntimeControlBridge(
+            mgr,
+            get_session_key_for_run=lambda rid: "sk",
+            gateway_runner_ref=lambda: mock_runner,
+        )
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "sk")
+        result = bridge.stop_run(r["run_id"])
+        assert result["status"] == "cancelled"
+        mock_agent.interrupt.assert_called_once_with("run_stop")
+
+    def test_stop_after_unbind_uses_runmanager_only(self):
+        mgr = RunManager()
+        mock_agent = MagicMock()
+        bridge = RuntimeControlBridge(mgr)
+        r = mgr.create_run("sess_1")
+        bridge.bind_run(r["run_id"], "sk", mock_agent)
+        bridge.unbind_run(r["run_id"])
+
+        result = bridge.stop_run(r["run_id"])
+        assert result["status"] == "cancelled"
+        mock_agent.interrupt.assert_not_called()

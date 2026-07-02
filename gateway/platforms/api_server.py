@@ -4235,6 +4235,19 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
+        control_bridge = self._app.get("runtime_control_bridge") if self._app is not None else None
+        if control_bridge is not None:
+            run_manager = self._app.get("runtime_run_manager")
+            if run_manager is not None:
+                run_manager.create_run(
+                    session_id=session_id,
+                    run_id=run_id,
+                    message=user_message,
+                    model=body.get("model"),
+                    toolsets=body.get("toolsets"),
+                    metadata=body.get("metadata"),
+                )
+
         event_cb = self._make_run_event_callback(run_id, loop)
 
         # Also wire stream_delta_callback so message.delta events flow through.
@@ -4274,6 +4287,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     route=route,
                 )
                 self._active_run_agents[run_id] = agent
+
+                if control_bridge is not None:
+                    try:
+                        control_bridge.bind_run(run_id, approval_session_key, agent)
+                    except Exception:
+                        pass
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -4434,6 +4453,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+
+                if control_bridge is not None:
+                    try:
+                        control_bridge.unbind_run(run_id)
+                    except Exception:
+                        pass
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4671,6 +4696,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                try:
+                    control_bridge = self._app.get("runtime_control_bridge") if self._app else None
+                    if control_bridge is not None:
+                        control_bridge.unbind_run(run_id)
+                except Exception:
+                    pass
 
             stale_statuses = [
                 run_id
@@ -4795,6 +4826,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 run_manager = register_runtime_routes(
                     self._app,
                     error_formatter=_openai_error,
+                    register_create=False,
+                    register_status=False,
+                    register_events=False,
                 )
                 try:
                     from gateway.run import _gateway_runner_ref as _gw_ref
@@ -4811,9 +4845,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     self._app["runtime_control_bridge"] = control_bridge
                     self._app["runtime_run_manager"] = run_manager
                 except Exception:
-                    pass
+                    control_bridge = None
+                self._app.router.add_post("/v1/runs", self._handle_runs)
+                self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
+                self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
                 logger.info(
-                    "[%s] /v1/runs using runtime-backed RunManager route module",
+                    "[%s] /v1/runs using runtime-backed RunManager route module "
+                    "(agent-run controller with live bridge)",
                     self.name,
                 )
             else:

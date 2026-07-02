@@ -57,9 +57,11 @@ class RunManager:
         model: Optional[str] = None,
         toolsets: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
-            run_id = f"run_{uuid.uuid4().hex}"
+            if run_id is None:
+                run_id = f"run_{uuid.uuid4().hex}"
             now = time.time()
 
             status = RuntimeStatus(

@@ -42,6 +42,9 @@ def register_runtime_routes(
     run_manager: Optional[RunManager] = None,
     error_formatter: Optional[Callable[..., Dict[str, Any]]] = None,
     control_bridge: Optional[Any] = None,
+    register_create: bool = True,
+    register_status: bool = True,
+    register_events: bool = True,
 ) -> RunManager:
     """Register /v1/runs runtime handlers on *app* and return the RunManager.
 
@@ -61,6 +64,18 @@ def register_runtime_routes(
         approval / clarify / stop handlers delegate through the bridge
         so live AIAgent execution can be interrupted or unblocked.
         Without it, handlers use standalone ``RunManager`` only.
+    register_create:
+        When ``False``, the ``POST /v1/runs`` create endpoint is
+        skipped.  Callers that want to own run creation (e.g. the
+        API server's legacy agent-run handler) set this to ``False``
+        and register their own ``POST /v1/runs`` handler that
+        coordinates agent spawn + RunManager entry + bridge binding.
+    register_status:
+        When ``False``, the ``GET /v1/runs/{run_id}`` status endpoint
+        is skipped (caller provides their own).
+    register_events:
+        When ``False``, the ``GET /v1/runs/{run_id}/events`` endpoint
+        is skipped (caller provides their own).
 
     Returns
     -------
@@ -69,9 +84,9 @@ def register_runtime_routes(
 
     Endpoints registered
     --------------------
-    POST   /v1/runs
-    GET    /v1/runs/{run_id}
-    GET    /v1/runs/{run_id}/events
+    POST   /v1/runs           (skipped when *register_create* is False)
+    GET    /v1/runs/{run_id}  (skipped when *register_status* is False)
+    GET    /v1/runs/{run_id}/events  (skipped when *register_events* is False)
     POST   /v1/runs/{run_id}/stop
     POST   /v1/runs/{run_id}/approval
     POST   /v1/runs/{run_id}/clarify
@@ -387,9 +402,12 @@ def register_runtime_routes(
             }
         )
 
-    app.router.add_post("/v1/runs", _handle_create_run)
-    app.router.add_get("/v1/runs/{run_id}", _handle_get_run)
-    app.router.add_get("/v1/runs/{run_id}/events", _handle_run_events)
+    if register_create:
+        app.router.add_post("/v1/runs", _handle_create_run)
+    if register_status:
+        app.router.add_get("/v1/runs/{run_id}", _handle_get_run)
+    if register_events:
+        app.router.add_get("/v1/runs/{run_id}/events", _handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/stop", _handle_stop_run)
     app.router.add_post("/v1/runs/{run_id}/approval", _handle_approval)
     app.router.add_post("/v1/runs/{run_id}/clarify", _handle_clarify)

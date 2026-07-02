@@ -66,8 +66,10 @@ Integration HTTP smoke: PASS
 ## Known Limitations
 
 - Approval/clarify resolution has a full lifecycle in RunManager with bridge to live gateway primitives via `RuntimeControlBridge` (`tools.approval.resolve_gateway_approval` and `tools.clarify_gateway.resolve_gateway_clarify`)
-- True live agent interruption is bridged via `RuntimeControlBridge.stop_run()` → `AIAgent.interrupt()` through GatewayRunner weakref
-- Full run_id → gateway session_key mapping at run creation time requires GatewayRunner cooperation; `bind_run(run_id, session_key)` is available for integration
+- True live agent interruption is bridged via `RuntimeControlBridge.stop_run()` which uses direct agent reference (from `bind_run`) or GatewayRunner `_running_agents` via weakref
+- `bind_run(run_id, session_key, agent)` is called at API server runtime run spawn time, establishing the mapping for approval/clarify/stop
+- `unbind_run(run_id)` cleans up on run terminal (completion, failure, cancel, sweep)
+- Full GatewayRunner-level binding for non-API-server sessions is deferred: the bridge infrastructure is ready, but GatewayRunner does not yet call `bind_run` when spawning runtime-tracked agents
 - `hermes gateway run` full startup blocked by messaging adapter dependencies in test environments
 
 ## Rollback Plan

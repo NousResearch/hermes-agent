@@ -55,9 +55,16 @@ class RuntimeControlBridge:
         self._get_session_key = get_session_key_for_run
         self._gateway_ref = gateway_runner_ref
         self._bindings: Dict[str, str] = {}
+        self._live_agents: Dict[str, Any] = {}
 
-    def bind_run(self, run_id: str, session_key: str) -> None:
+    def bind_run(self, run_id: str, session_key: str, agent: Any = None) -> None:
         self._bindings[run_id] = session_key
+        if agent is not None:
+            self._live_agents[run_id] = agent
+
+    def unbind_run(self, run_id: str) -> None:
+        self._bindings.pop(run_id, None)
+        self._live_agents.pop(run_id, None)
 
     # -- resolve approval ---------------------------------------------------
 
@@ -137,6 +144,11 @@ class RuntimeControlBridge:
         ``AIAgent.interrupt()``.  If no live context exists the
         RunManager-only cancellation proceeds (Phase 11B semantics).
 
+        Resolution order:
+        1. Direct agent reference from ``bind_run(run_id, ..., agent=...)``.
+        2. Via ``session_key`` → ``GatewayRunner._running_agents``.
+        3. RunManager-only (Phase 11B stand-alone fallback).
+
         The check for ``result_already_terminal`` uses the fact that
         ``RunManager.stop_run`` returns a ``message`` key only when
         the run was *already* in a terminal state — not when it
@@ -150,22 +162,32 @@ class RuntimeControlBridge:
         already_terminal = bool(rm_result.get("message"))
 
         if not already_terminal:
-            session_key = self._resolve_session_key(run_id)
-            if session_key and self._gateway_ref is not None:
+            agent = self._live_agents.get(run_id)
+            if agent is not None:
                 try:
-                    runner = self._gateway_ref()
+                    agent.interrupt("run_stop")
                 except Exception:
-                    runner = None
-                if runner is not None:
+                    logger.debug(
+                        "Live agent interrupt failed for run=%s (direct ref)",
+                        run_id, exc_info=True,
+                    )
+            else:
+                session_key = self._resolve_session_key(run_id)
+                if session_key and self._gateway_ref is not None:
                     try:
-                        agent = getattr(runner, "_running_agents", {}).get(session_key)
-                        if agent is not None:
-                            agent.interrupt("run_stop")
+                        runner = self._gateway_ref()
                     except Exception:
-                        logger.debug(
-                            "Live agent interrupt failed for run=%s session=%s",
-                            run_id, session_key, exc_info=True,
-                        )
+                        runner = None
+                    if runner is not None:
+                        try:
+                            agent = getattr(runner, "_running_agents", {}).get(session_key)
+                            if agent is not None:
+                                agent.interrupt("run_stop")
+                        except Exception:
+                            logger.debug(
+                                "Live agent interrupt failed for run=%s session=%s",
+                                run_id, session_key, exc_info=True,
+                            )
 
         return rm_result
 

@@ -553,24 +553,47 @@ Result: 188 passed, 0 failed (6 files)
 
 Full gateway suite: 8845 passed, 3 failed (pre-existing `test_wecom_callback.py`, unrelated)
 
-### What Is Complete vs Still Partially Deferred
+### Phase 12 — Live Agent Binding (completed)
 
-**Complete:**
-- `RuntimeControlBridge` exists and is wired into routes and API server
-- Approval resolution bridges to `tools.approval.resolve_gateway_approval(session_key, choice)` when session_key is known
-- Clarify resolution bridges to `tools.clarify_gateway.resolve_gateway_clarify(clarify_id, answer)` (clarify_id is universally unique, no mapping needed)
-- Stop/cancel bridges to `AIAgent.interrupt("run_stop")` through GatewayRunner
+**Commit:** TBD (next commit)
 
-**Still deferred (documented missing primitive):**
-- Full run_id → session_key mapping at run creation time requires GatewayRunner to cooperate — the bridge's `get_session_key_for_run` callable is supplied by the API server using RunManager `session_id` as a proxy, which works for API-server-created runs but is not the same as a true gateway `session_key` (built from platform/chat_id/user_id via `build_session_key`)
-- The bridge has the `bind_run(run_id, session_key)` method ready; a future gateway integration that calls it when spawning a runtime-tracked agent run would complete the mapping
+**What was implemented:**
+1. `RuntimeControlBridge.bind_run(run_id, session_key, agent=None)` now accepts an optional agent reference for direct agent interrupt
+2. `RuntimeControlBridge.unbind_run(run_id)` cleans up both session_key and agent mappings
+3. `RuntimeControlBridge.stop_run()` tries direct agent reference first (from `bind_run`), then falls back to GatewayRunner `_running_agents` lookup, then RunManager-only
+4. `RunManager.create_run()` now accepts optional `run_id` parameter for callers that provide their own
+5. `register_runtime_routes()` now accepts `register_create`, `register_status`, `register_events` flags for selective route registration
+6. API server runtime mode (`HERMES_USE_RUNTIME_RUNS=1`) now:
+   - Registers runtime routes for stop/approval/clarify only (control plane)
+   - Keeps legacy handlers for run creation (POST /v1/runs), status (GET /v1/runs/{run_id}), and events (GET /v1/runs/{run_id}/events) — these share a common `run_id`
+   - Creates RunManager entries from `_handle_runs` so the runtime control bridge can resolve them
+   - Calls `bridge.bind_run(run_id, approval_session_key, agent)` at agent spawn time
+   - Calls `bridge.unbind_run(run_id)` on run terminal (completion, failure, cancel, sweep)
+
+**What is complete:**
+- `bind_run(run_id, session_key, agent_ref)` is called at API server runtime run spawn time
+- Direct agent interrupt via stored agent reference (no GatewayRunner look-up needed when `bind_run` includes agent)
+- Approval resolution bridges through bound `session_key` to `resolve_gateway_approval()`
+- Clarify resolution bridges through globally unique `clarify_id` to `resolve_gateway_clarify()`
+- Stop/cancel interrupts live agent via `bind_run` agent reference
+- `unbind_run` clean-up on run terminal state
+- 38 new binding-specific tests + 8 updated control bridge tests
+- Full backward compat for Phase 11B standalone RunManager + Phase 11C bridge via `None` guard on `self._app`
+
+**What is still deferred:**
+- Full GatewayRunner-level binding (when GatewayRunner spawns a runtime-tracked agent for a non-API-server session). The bridge infrastructure is ready — a GatewayRunner integration that calls `bridge.bind_run()` when spawning a runtime-tracked agent (with a known run_id) would complete this.
+- Non-API-server runtime runs (e.g., runs created directly via runtime routes without the API server's agent execution path) do not have live agent execution. The runtime routes provide the control plane but not the execution plane.
 
 ### Live Smoke Status
-Integration smoke test verifies: routes correctly delegate through bridge, bridge correctly delegates to RunManager, bridge handles errors gracefully. Full HTTP test with aiohttp TestClient passes all paths (create, status, stop via bridge, approval via bridge, clarify via bridge).
+- ET-level HTTP integration tests pass with aiohttp TestClient: all routes correctly delegate through bridge
+- Bridge correctly falls back to RunManager when no live primitives exist
+- All error codes (404, 409) and edge cases tested
+- Full E2E live agent approval/clarify resolution requires a running GatewayRunner instance — simulated with mock agents in tests
 
 ### Remaining Risks
-1. `session_id` from RunManager is not identical to gateway `session_key` — but clarify resolution doesn't need it (universally unique ID), and approval resolution only needs it when both a live gateway approval queue and a matching session_key exist
-2. GatewayRunner interaction is via module-level functions and weakref, not instance references — the weakref pattern is safe
+1. `RunManager.session_id` is not the same as gateway `session_key` — approve/clarify resolution uses the session_key from `bind_run`, not `session_id`
+2. The API server's runtime mode sets `session_id` in RunManager to the API client-provided `session_id`, which differs from the gateway `session_key`. For API-server-backed runs, `bind_run` uses `approval_session_key` (which is `run_id`) as the session_key, which matches the `set_current_session_key()` call in `_run_sync()`
+3. GatewayRunner interaction is via module-level weakref — safe across process lifecycle
 
 ### Next task
-**Phase 12 — Full gateway runner integration for live agent continuation, or PR submission.**
+Phase 13 — PR submission or further GatewayRunner-level runtime binding.

@@ -363,5 +363,84 @@ WebUI tests: 104 passed, 0 failed (no WebUI changes needed)
 - `gateway/runtime/routes.py` — bridge-aware control handlers
 - `gateway/runtime/__init__.py` — added RuntimeControlBridge export
 - `gateway/platforms/api_server.py` — bridge creation and wiring
-- `tests/gateway/test_runtime_control_bridge.py` — new test file (25 tests)
+- `tests/gateway/test_runtime_control_bridge.py` — new test file (33 tests total)
 - `tests/gateway/test_runtime_server_mount.py` — bridge mount tests (8 tests added)
+
+## Phase 12 — Full GatewayRunner Runtime-Run Binding for Live Agent Continuation (completed)
+
+### Implemented Behavior
+
+Completed live AIAgent continuation by binding runtime run_id to live gateway
+session_key and agent reference at spawn time.
+
+**RuntimeControlBridge enhancements** (`gateway/runtime/control_bridge.py`):
+- `bind_run(run_id, session_key, agent=None)` now accepts optional agent reference
+- `unbind_run(run_id)` cleans up both session_key and agent mappings
+- `stop_run()` uses direct agent reference first (from `bind_run`), then falls back to GatewayRunner reset via session_key, then RunManager-only
+- `_live_agents` dict stores direct agent references per run_id
+
+**RunManager enhancement** (`gateway/runtime/run_manager.py`):
+- `create_run()` now accepts optional `run_id` parameter so callers can
+  re-use the same run_id across RunManager and their own tracking system
+
+**Route registration flexibility** (`gateway/runtime/routes.py`):
+- `register_runtime_routes()` now accepts `register_create`, `register_status`,
+  `register_events` flags for selective route registration
+- Default: all three are `True` (zero behavior change)
+
+**API server runtime mode integration** (`gateway/platforms/api_server.py`):
+- When `HERMES_USE_RUNTIME_RUNS=1`:
+  - Registers only runtime control routes (stop/approval/clarify) via bridge
+  - Keeps legacy handlers for run creation (POST /v1/runs), status, and events
+  - `_handle_runs` creates RunManager entries with matching `run_id`
+  - Calls `bridge.bind_run(run_id, approval_session_key, agent)` at agent spawn
+  - Calls `bridge.unbind_run(run_id)` on run terminal (finally block + sweep)
+  - Guards against `self._app is None` (test adapter setups)
+
+### What's Complete
+
+- `bind_run(run_id, session_key, agent)` is called at API server runtime run spawn
+- Direct agent interrupt via stored reference bypasses GatewayRunner look-up
+- Approval resolution bridges through bound session_key to live `resolve_gateway_approval()`
+- Clarify resolution bridges through universally unique `clarify_id`
+- Stop/cancel interrupts live agent via `bind_run` agent reference
+- `unbind_run` clean-up on all terminal states
+- 46 new binding-specific tests + 8 additional bridge tests
+- Full backward compat: Phase 11B RunManager-only, Phase 11C bridge
+
+### What's Still Deferred
+
+- Full GatewayRunner-level binding: when a GatewayRunner session spawns a
+  runtime-tracked agent, `bridge.bind_run()` should be called. The bridge
+  infrastructure is ready for this — the GatewayRunner needs to be made
+  aware of the runtime bridge instance.
+- Non-API-server runtime runs (created directly via `/v1/runs` without the
+  API server's agent execution path) have no execution plane. The runtime
+  routes provide the control/observation plane but agent execution must be
+  wired separately.
+
+### Tests Run
+
+```
+Phase 12 specific: 257 tests across 8 files — 257 passed, 0 failed
+  - test_runtime_models.py: 20 tests
+  - test_runtime_run_manager.py: 40 tests
+  - test_runtime_routes.py: 23 tests
+  - test_runtime_server_mount.py: 42 tests
+  - test_runtime_approval_clarify.py: 38 tests
+  - test_runtime_control_bridge.py: 33 tests (8 new)
+  - test_runtime_gateway_binding.py: 38 tests (new)
+  - test_api_server_runs.py: 23 tests
+
+Full gateway suite: 8891 passed, 3 failed (pre-existing test_wecom_callback.py)
+WebUI tests: 104 passed, 0 failed (no WebUI changes needed)
+```
+
+### Files Changed in Phase 12
+
+- `gateway/runtime/control_bridge.py` — agent ref storage, unbind, direct interrupt
+- `gateway/runtime/routes.py` — selective route registration flags
+- `gateway/runtime/run_manager.py` — optional `run_id` parameter
+- `gateway/platforms/api_server.py` — runtime mode: bind_run at spawn, unbind at terminal, _app guard
+- `tests/gateway/test_runtime_control_bridge.py` — 8 new agent-ref/unbind tests
+- `tests/gateway/test_runtime_gateway_binding.py` — new file (38 tests)

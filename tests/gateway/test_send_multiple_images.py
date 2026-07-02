@@ -115,6 +115,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+from plugins.platforms.telegram import adapter as telegram_adapter_mod  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -132,7 +133,13 @@ class TestTelegramMultiImage:
         import telegram
         images = [(f"https://x.com/{i}.png", f"alt{i}") for i in range(3)]
         # Make InputMediaPhoto a concrete class that records its args
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media, "caption": caption})
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None, **kwargs: {
+                "media": media,
+                "caption": caption,
+                **kwargs,
+            }
+        )
 
         _run(adapter.send_multiple_images("12345", images))
 
@@ -145,7 +152,9 @@ class TestTelegramMultiImage:
         """15 photos → two send_media_group calls (10 + 5)."""
         import telegram
         images = [(f"https://x.com/{i}.png", "") for i in range(15)]
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None, **_kwargs: {"media": media}
+        )
 
         _run(adapter.send_multiple_images("12345", images))
 
@@ -156,7 +165,9 @@ class TestTelegramMultiImage:
     def test_animations_routed_to_send_animation(self, adapter):
         """GIFs are peeled off and sent individually via send_animation."""
         import telegram
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None, **_kwargs: {"media": media}
+        )
         adapter.send_animation = AsyncMock()
         # 2 photos + 1 gif
         images = [
@@ -174,7 +185,9 @@ class TestTelegramMultiImage:
     def test_fallback_to_per_image_on_send_media_group_failure(self, adapter):
         """If send_media_group raises, each photo falls back to send_image."""
         import telegram
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None, **_kwargs: {"media": media}
+        )
         adapter._bot.send_media_group = AsyncMock(side_effect=Exception("boom"))
         adapter.send_image = AsyncMock(return_value=MagicMock(success=True))
         adapter.send_animation = AsyncMock(return_value=MagicMock(success=True))
@@ -185,6 +198,38 @@ class TestTelegramMultiImage:
 
         # Three per-image fallback calls
         assert adapter.send_image.await_count == 3
+
+    def test_media_group_markdown_parse_failure_retries_plain_captions(self, adapter, tmp_path):
+        """Caption parse errors retry the album with plain captions before per-image fallback."""
+        import telegram
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"png-data")
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None, **kwargs: {
+                "media": media,
+                "caption": caption,
+                **kwargs,
+            }
+        )
+        adapter._bot.send_media_group = AsyncMock(
+            side_effect=[
+                RuntimeError("can't parse entities: can't find end of Bold entity"),
+                [MagicMock(message_id=1)],
+            ]
+        )
+        adapter.send_image = AsyncMock(return_value=MagicMock(success=True))
+
+        images = [(f"file://{image_path}", "**Important:** caption")]
+        _run(adapter.send_multiple_images("12345", images))
+
+        assert adapter._bot.send_media_group.await_count == 2
+        assert adapter.send_image.await_count == 0
+
+        first_media = adapter._bot.send_media_group.await_args_list[0].kwargs["media"][0]
+        retry_media = adapter._bot.send_media_group.await_args_list[1].kwargs["media"][0]
+        assert first_media["parse_mode"] == telegram_adapter_mod.ParseMode.MARKDOWN_V2
+        assert "parse_mode" not in retry_media
+        assert "**" not in retry_media["caption"]
 
     def test_empty_noop(self, adapter):
         _run(adapter.send_multiple_images("12345", []))

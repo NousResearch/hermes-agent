@@ -879,6 +879,49 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
 
 
 @pytest.mark.asyncio
+async def test_native_media_dm_topic_retry_can_then_retry_plain_caption(tmp_path):
+    """Stale reply-anchor fallback remains eligible for MarkdownV2 caption fallback."""
+    adapter = _make_adapter()
+    media_path = tmp_path / "clip.mp3"
+    media_path.write_bytes(b"mp3-data")
+    call_log = []
+
+    async def mock_send_audio(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        if len(call_log) == 2:
+            raise FakeBadRequest("can't parse entities: can't find end of Bold entity")
+        return SimpleNamespace(message_id=787)
+
+    adapter._bot = SimpleNamespace(send_audio=mock_send_audio)
+
+    result = await adapter.send_voice(
+        chat_id="123",
+        audio_path=str(media_path),
+        caption="**Important:** caption",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert result.success is True
+    assert len(call_log) == 3
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["parse_mode"] == _fake_telegram_constants.ParseMode.MARKDOWN_V2
+    assert call_log[1]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["parse_mode"] == _fake_telegram_constants.ParseMode.MARKDOWN_V2
+    assert call_log[2]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[2]
+    assert "parse_mode" not in call_log[2]
+    assert "**" not in call_log[2]["caption"]
+
+
+@pytest.mark.asyncio
 async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
     adapter = _make_adapter()
     call_log = []

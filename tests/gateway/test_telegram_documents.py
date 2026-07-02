@@ -51,6 +51,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 # Now we can safely import
+from plugins.platforms.telegram import adapter as telegram_adapter_mod  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -650,6 +651,54 @@ class TestSendVoice:
         connected_adapter._bot.send_audio.assert_awaited_once()
         connected_adapter._bot.send_document.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_mp3_caption_uses_markdownv2_parse_mode(self, connected_adapter, tmp_path):
+        """Telegram audio captions must render Markdown instead of showing raw syntax."""
+        audio_file = tmp_path / "clip.mp3"
+        audio_file.write_bytes(b"ID3" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        connected_adapter._bot.send_audio = AsyncMock(return_value=mock_msg)
+
+        caption = "## Solar\n**Charge from grid** is enabled."
+        await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption=caption,
+        )
+
+        call_kwargs = connected_adapter._bot.send_audio.await_args.kwargs
+        assert call_kwargs["caption"] == connected_adapter.format_message(caption)
+        assert call_kwargs["parse_mode"] == telegram_adapter_mod.ParseMode.MARKDOWN_V2
+
+    @pytest.mark.asyncio
+    async def test_mp3_caption_parse_failure_retries_plain_caption(self, connected_adapter, tmp_path):
+        """A bad MarkdownV2 caption must not prevent the audio from being sent."""
+        audio_file = tmp_path / "clip.mp3"
+        audio_file.write_bytes(b"ID3" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 105
+        connected_adapter._bot.send_audio = AsyncMock(
+            side_effect=[
+                RuntimeError("can't parse entities: can't find end of Bold entity"),
+                mock_msg,
+            ]
+        )
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption="**Important:** caption",
+        )
+
+        assert result.success is True
+        assert connected_adapter._bot.send_audio.await_count == 2
+        retry_kwargs = connected_adapter._bot.send_audio.await_args_list[1].kwargs
+        assert "parse_mode" not in retry_kwargs
+        assert "**" not in retry_kwargs["caption"]
+
 
 # ---------------------------------------------------------------------------
 # TestSendDocument — outbound file attachment delivery
@@ -689,6 +738,28 @@ class TestSendDocument:
         assert call_kwargs["chat_id"] == 12345
         assert call_kwargs["filename"] == "report.pdf"
         assert call_kwargs["caption"] == "Here's the report"
+        assert call_kwargs["parse_mode"] == telegram_adapter_mod.ParseMode.MARKDOWN_V2
+
+    @pytest.mark.asyncio
+    async def test_send_document_caption_uses_markdownv2_parse_mode(self, connected_adapter, tmp_path):
+        """Document captions share the same Telegram Markdown rendering path."""
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 99
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        caption = "**Important:** see `report.pdf`."
+        await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            caption=caption,
+        )
+
+        call_kwargs = connected_adapter._bot.send_document.await_args.kwargs
+        assert call_kwargs["caption"] == connected_adapter.format_message(caption)
+        assert call_kwargs["parse_mode"] == telegram_adapter_mod.ParseMode.MARKDOWN_V2
 
     @pytest.mark.asyncio
     async def test_send_document_custom_filename(self, connected_adapter, tmp_path):

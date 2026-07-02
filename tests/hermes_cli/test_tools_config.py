@@ -14,6 +14,7 @@ from hermes_cli.tools_config import (
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
+    _is_provider_active,
     _platform_toolset_summary,
     _reconfigure_tool,
     _run_post_setup,
@@ -749,6 +750,90 @@ def test_visible_providers_force_fresh_shows_nous_subscription_after_upgrade(mon
     # longer asserted to be first — "Local Browser" sorts first by design.
     assert any(p["name"].startswith("Nous Subscription") for p in providers)
     assert ("features", True) in calls
+
+
+def test_visible_web_providers_include_youdotcom_mcp():
+    providers = _visible_providers(TOOL_CATEGORIES["web"], {})
+
+    youdotcom = next(p for p in providers if p["name"] == "You.com MCP")
+    assert youdotcom["mcp_catalog_entry"] == "youdotcom"
+    assert "web_backend" not in youdotcom
+
+
+def test_configure_youdotcom_mcp_installs_catalog_entry(monkeypatch):
+    provider = next(
+        p for p in TOOL_CATEGORIES["web"]["providers"] if p["name"] == "You.com MCP"
+    )
+    entry = SimpleNamespace(name="youdotcom")
+    calls = []
+    config = {}
+
+    monkeypatch.setattr("hermes_cli.mcp_catalog.get_entry", lambda name: entry)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_catalog.install_entry",
+        lambda selected_entry, *, enable=True: calls.append((selected_entry, enable)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.load_config",
+        lambda: {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp?profile=free",
+                    "enabled": True,
+                }
+            }
+        },
+    )
+
+    _configure_provider(provider, config)
+
+    assert calls == [(entry, True)]
+    assert config["mcp_servers"]["youdotcom"]["enabled"] is True
+    assert "web" not in config
+
+
+def test_youdotcom_mcp_active_when_server_enabled():
+    provider = {"name": "You.com MCP", "mcp_catalog_entry": "youdotcom"}
+
+    assert _is_provider_active(
+        provider,
+        {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp",
+                    "enabled": True,
+                }
+            }
+        },
+    )
+    assert _is_provider_active(
+        provider,
+        {"mcp_servers": {"youdotcom": {"url": "https://api.you.com/mcp"}}},
+    )
+    assert not _is_provider_active(
+        provider,
+        {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+
+def test_web_toolset_configured_when_youdotcom_mcp_enabled():
+    config = {
+        "mcp_servers": {
+            "youdotcom": {
+                "url": "https://api.you.com/mcp?profile=free",
+                "enabled": True,
+            }
+        }
+    }
+
+    assert _toolset_needs_configuration_prompt("web", config) is False
 
 
 def test_local_browser_provider_is_saved_explicitly(monkeypatch):

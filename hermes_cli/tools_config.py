@@ -340,6 +340,13 @@ TOOL_CATEGORIES = {
         # See PR #25182 for the migration rationale.
         "providers": [
             {
+                "name": "You.com MCP",
+                "badge": "★ recommended · free · MCP",
+                "tag": "Remote MCP server: free search, optional API key for contents/research",
+                "env_vars": [],
+                "mcp_catalog_entry": "youdotcom",
+            },
+            {
                 "name": "Nous Subscription",
                 "badge": "subscription",
                 "tag": "Managed Firecrawl billed to your subscription",
@@ -2364,6 +2371,13 @@ def _toolset_needs_configuration_prompt(
         tts_cfg = config.get("tts", {})
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
     if ts_key == "web":
+        for provider in _visible_providers(cat, config, force_fresh=force_fresh):
+            if provider.get("mcp_catalog_entry") and _is_provider_active(
+                provider,
+                config,
+                force_fresh=force_fresh,
+            ):
+                return False
         web_cfg = config.get("web", {})
         return not isinstance(web_cfg, dict) or "backend" not in web_cfg
     if ts_key == "browser":
@@ -2530,6 +2544,9 @@ def _is_provider_active(
     force_fresh: bool = False,
 ) -> bool:
     """Check if a provider entry matches the currently active config."""
+    if provider.get("mcp_catalog_entry"):
+        return provider["mcp_catalog_entry"] in enabled_mcp_server_names(config)
+
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
         image_cfg = config.get("image_gen", {})
@@ -3001,6 +3018,32 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
                 break
 
 
+def _install_mcp_catalog_provider(provider: dict, config: dict) -> bool:
+    """Install an MCP catalog-backed provider row into mcp_servers."""
+    entry_name = provider.get("mcp_catalog_entry")
+    if not entry_name:
+        return False
+
+    try:
+        from hermes_cli.mcp_catalog import CatalogError, get_entry, install_entry
+
+        entry = get_entry(entry_name)
+        if entry is None:
+            _print_error(f"  MCP catalog entry not found: {entry_name}")
+            return False
+        install_entry(entry, enable=True)
+    except CatalogError as exc:
+        _print_error(f"  Failed to install MCP catalog entry: {exc}")
+        return False
+
+    refreshed = load_config()
+    servers = refreshed.get("mcp_servers")
+    if isinstance(servers, dict):
+        config["mcp_servers"] = servers
+    _print_success(f"  MCP server enabled: {entry_name}")
+    return True
+
+
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
     """Non-interactively persist a provider selection for a toolset.
 
@@ -3066,6 +3109,10 @@ def _configure_provider(
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
+
+    if provider.get("mcp_catalog_entry"):
+        _install_mcp_catalog_provider(provider, config)
+        return
 
     # Nous-managed Tool Gateway backends are always listed (see
     # _visible_providers), but only *activate* once the user has paid Nous

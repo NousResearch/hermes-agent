@@ -3651,6 +3651,31 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] in {"blocked", "gave_up"}
 
 
+def _awaiting_manual_promotion(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` is a decomposed entry child that is
+    still awaiting a manual promotion.
+
+    When a triage task is fanned out with ``auto_promote_children`` false,
+    ``decompose_triage_task`` emits a ``"promotion_gated"`` event on each
+    parent-free entry child and leaves it in ``todo``. Those entries must
+    NOT be auto-promoted by ``recompute_ready`` on any tick — only an
+    explicit operator ``promote_task`` (which emits ``"promoted_manual"``)
+    releases them. This mirrors ``_has_sticky_block``'s most-recent-event
+    signal so the gate is intrinsic to ``recompute_ready`` and holds
+    regardless of which call site fired it.
+
+    Returns False when there is no gate event (the overwhelming common
+    case), preserving the legacy auto-promote path unchanged.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('promotion_gated', 'promoted_manual') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "promotion_gated"
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -3698,6 +3723,10 @@ def recompute_ready(
                 # silently auto-recover.  ``unblock_task`` is the only
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
+                continue
+            if cur_status == "todo" and _awaiting_manual_promotion(conn, task_id):
+                # Decomposed entry child under manual-promote mode — only
+                # an explicit promote_task releases it; never auto-promote.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
@@ -5566,6 +5595,29 @@ def decompose_triage_task(
     # for manual-review-first workflows.
     if auto_promote:
         recompute_ready(conn)
+    else:
+        # Manual-promote mode: parent-free entry children would otherwise be
+        # trivially promoted by the very next recompute_ready tick (all-parents-
+        # done is vacuously true for a parent-free task). Emit a persistent
+        # ``promotion_gated`` event on each so ``_awaiting_manual_promotion``
+        # holds them in 'todo' across every dispatcher tick until an operator
+        # ``promote_task`` (which emits ``"promoted_manual"``) releases them.
+        # Children WITH sibling parents need no gate: they're already blocked
+        # by their unfinished dependencies. _append_event needs an open txn.
+        gated = [
+            child_ids[idx]
+            for idx in range(len(children))
+            if not (children[idx].get("parents"))
+        ]
+        if gated:
+            with write_txn(conn):
+                for child_id in gated:
+                    _append_event(
+                        conn,
+                        child_id,
+                        "promotion_gated",
+                        {"reason": "auto_promote_children=false", "root": task_id},
+                    )
     return child_ids
 
 

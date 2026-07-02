@@ -444,6 +444,13 @@ class TestClarifySchema:
         assert "```select" in description
         assert "multi_select=true" in description
 
+    def test_schema_covers_task_reports_and_scope_choices(self):
+        description = CLARIFY_SCHEMA["description"]
+        assert "task report" in description
+        assert "scope" in description
+        assert "defer" in description
+        assert "forbid" in description
+
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4

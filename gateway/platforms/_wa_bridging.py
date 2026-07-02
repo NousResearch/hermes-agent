@@ -217,7 +217,7 @@ class WABridgeMixin:
         no blocking approval — checks whether a WA self-chat session was
         bridged and its pending approval is actually under a different key.
         """
-        redirect_key = self._wa_bridge_approval_redirects.get(session_key)
+        redirect_key = getattr(self, "_wa_bridge_approval_redirects", {}).get(session_key)
         if redirect_key:
             try:
                 from tools.approval import has_blocking_approval

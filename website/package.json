@@ -5,9 +5,9 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "prestart": "node scripts/prebuild.mjs",
-    "start": "docusaurus start",
+    "start": "node init && docusaurus start",
     "prebuild": "node scripts/prebuild.mjs",
-    "build": "docusaurus build",
+    "build": "node init && docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",

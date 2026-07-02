@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
-    "start": "tsx src/entry.tsx",
-    "build": "node scripts/build.mjs",
+    "dev": "node init && npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
+    "start": "node init && tsx src/entry.tsx",
+    "build": "node init && node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ packages/",
     "lint:fix": "eslint src/ packages/ --fix",

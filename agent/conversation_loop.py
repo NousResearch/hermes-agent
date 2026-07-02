@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
+from agent.context_assembly import compact_stale_payloads_for_prompt
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -945,6 +946,28 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        _assembly_cfg = getattr(agent, "_context_assembly_config", None) or {}
+        api_messages, _assembly_stats = compact_stale_payloads_for_prompt(
+            api_messages,
+            enabled=bool(_assembly_cfg.get("enabled", True)),
+            protect_last_n=int(_assembly_cfg.get("protect_last_n", 20)),
+            min_chars=int(_assembly_cfg.get("min_chars", 12_000)),
+            preview_chars=int(_assembly_cfg.get("preview_chars", 600)),
+            preserve_tools=_assembly_cfg.get("preserve_tools", []),
+        )
+        if _assembly_stats.messages_compacted:
+            logger.info(
+                "Context assembly compacted stale payloads before request: "
+                "messages=%s tool_results=%s tool_call_args=%s media=%s "
+                "estimated_tokens_evicted=%s session=%s",
+                _assembly_stats.messages_compacted,
+                _assembly_stats.tool_results_compacted,
+                _assembly_stats.tool_call_args_compacted,
+                _assembly_stats.media_parts_compacted,
+                _assembly_stats.estimated_tokens_evicted,
+                agent.session_id or "-",
+            )
 
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)

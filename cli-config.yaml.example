@@ -437,6 +437,16 @@ compression:
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 
+  # Non-destructive prompt-view cleanup that runs before each model call.
+  # This does NOT rewrite the saved transcript; it only replaces stale heavy
+  # payloads in the active API request after preserving the recent tail.
+  context_assembly:
+    enabled: true
+    protect_last_n: 20
+    min_chars: 12000
+    preview_chars: 600
+    preserve_tools: []
+
 # =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================

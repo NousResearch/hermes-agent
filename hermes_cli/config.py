@@ -1337,6 +1337,20 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
+        "context_assembly": {
+            "enabled": True,          # non-destructively compact stale heavy
+                                      # payloads in the API prompt view before
+                                      # each model call; canonical history stays
+                                      # intact in SQLite/transcripts.
+            "protect_last_n": 20,     # most-recent non-system messages preserved
+                                      # exactly before stale-payload compaction.
+            "min_chars": 12_000,      # old tool results / tool-call arguments
+                                      # at or above this size are replaced with
+                                      # compact placeholders in the prompt view.
+            "preview_chars": 600,     # total head/tail preview kept in each
+                                      # placeholder.
+            "preserve_tools": [],     # tool names to never compact.
+        },
         "abort_on_summary_failure": False,  # When True, auto-compression that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of

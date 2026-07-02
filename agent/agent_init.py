@@ -1436,6 +1436,13 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    try:
+        from agent.context_assembly import context_assembly_config_from_mapping
+        agent._context_assembly_config = context_assembly_config_from_mapping(
+            _compression_cfg
+        )
+    except Exception:
+        agent._context_assembly_config = {}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at

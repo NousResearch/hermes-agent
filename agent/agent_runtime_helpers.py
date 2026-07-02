@@ -2927,4 +2927,51 @@ __all__ = [
     "apply_pending_steer_to_tool_results",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
+    "preemptive_rotate_credential",
 ]
+
+
+def preemptive_rotate_credential(agent) -> None:
+    """Advance the round_robin/least_used credential cursor once per API call.
+
+    Hermes' credential pool is reactive by default: it only rotates to the
+    next key inside the 429/401 error-recovery path, so a single long-running
+    session keeps hitting one key until it is rate-limited. When
+    ``HERMES_PREEMPTIVE_KEY_ROTATION`` is truthy, this helper is invoked at the
+    top of every conversation-loop iteration to select the next pool entry
+    *before* the request is sent, spreading load across all keys.
+
+    Opt-in and inert by default. Only fires for API-key pools using the
+    ``round_robin`` or ``least_used`` strategies with at least one available
+    entry; OAuth / single-key / ``fill_first`` providers are never touched.
+    Every error is swallowed so a rotation hiccup can never break the turn.
+    """
+    if not env_var_enabled("HERMES_PREEMPTIVE_KEY_ROTATION"):
+        return
+    try:
+        from agent.credential_pool import (
+            STRATEGY_ROUND_ROBIN,
+            STRATEGY_LEAST_USED,
+        )
+
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None or not pool.has_available():
+            return
+        if getattr(pool, "_strategy", None) not in (
+            STRATEGY_ROUND_ROBIN,
+            STRATEGY_LEAST_USED,
+        ):
+            return
+        entry = pool.select()
+        if entry is None:
+            return
+        if getattr(entry, "runtime_api_key", None) or getattr(
+            entry, "access_token", ""
+        ):
+            agent._swap_credential(entry)
+            logger.debug(
+                "credential pool: preemptive rotation -> %s",
+                entry.label or entry.id[:8],
+            )
+    except Exception as exc:  # never let rotation break the turn
+        logger.debug("preemptive credential rotation skipped: %s", exc)

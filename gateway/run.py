@@ -10605,6 +10605,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
+                _cred_label = ""
+                try:
+                    _fa = self._running_agents.get(session_key)
+                    if _fa is None or _fa is _AGENT_PENDING_SENTINEL:
+                        _fc = self._agent_cache.get(session_key)
+                        _fa = _fc[0] if isinstance(_fc, tuple) else _fc
+                    _fp = getattr(_fa, "_credential_pool", None) if _fa else None
+                    _fcur = _fp.current() if _fp is not None else None
+                    if _fcur is not None:
+                        _cred_label = _fcur.label or _fcur.id[:8]
+                except Exception:
+                    _cred_label = ""
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
@@ -10613,6 +10625,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    credential=_cred_label,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

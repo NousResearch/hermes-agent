@@ -626,6 +626,13 @@ def run_conversation(
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
 
+        # Preemptive per-turn credential rotation (opt-in via env
+        # HERMES_PREEMPTIVE_KEY_ROTATION). No-op unless enabled; spreads load
+        # across pool keys before a request is sent instead of only rotating
+        # reactively on a 429. See agent_runtime_helpers.preemptive_rotate_credential.
+        from agent.agent_runtime_helpers import preemptive_rotate_credential as _preempt_rotate
+        _preempt_rotate(agent)
+
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
         # this iteration regardless of outcome.

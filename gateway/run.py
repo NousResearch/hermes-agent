@@ -16161,7 +16161,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
+        # instead of the chat (#3459 / #3458). Gateway-only by design.
+        log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
+        log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -16266,6 +16270,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            # "log" mode: append tool.started lines to the log queue and stay
+            # silent in chat. Handled before the progress_queue guard because
+            # log mode runs without a chat progress queue.
+            if log_queue is not None:
+                if event_type == "tool.started" and tool_name and tool_name != "_thinking":
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    preview_str = f' "{preview}"' if preview else ""
+                    log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+                if not progress_queue:
+                    return
             if not progress_queue or not _run_still_current():
                 return
 
@@ -16492,6 +16506,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
+
+        async def write_tool_log():
+            """Drain log_queue and append tool-call lines to tool_calls.log.
+
+            Only active when ``display.tool_progress`` is ``log``. Uses a
+            RotatingFileHandler (5MB × 3 backups) so the audit log can't grow
+            unbounded, and the shared RedactingFormatter so secrets never land
+            on disk.
+            """
+            if log_queue is None:
+                return
+            from logging.handlers import RotatingFileHandler
+
+            from agent.redact import RedactingFormatter
+
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_dir / "tool_calls.log",
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(RedactingFormatter("%(message)s"))
+            tool_logger = logging.getLogger(f"hermes.tool_calls.{id(log_queue)}")
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.propagate = False
+            tool_logger.addHandler(file_handler)
+            try:
+                while True:
+                    try:
+                        tool_logger.info("%s", log_queue.get_nowait())
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+                    except Exception as e:
+                        logger.error("write_tool_log error: %s", e)
+                        await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                # Drain remaining entries before closing so late tool calls
+                # from the final iteration aren't lost.
+                while True:
+                    try:
+                        tool_logger.info("%s", log_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+                tool_logger.removeHandler(file_handler)
+                try:
+                    file_handler.flush()
+                    file_handler.close()
+                except Exception:
+                    pass
 
         async def send_progress_messages():
             if not progress_queue:
@@ -17287,7 +17356,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # who set thinking_progress:true but kept tool_progress:off got a
             # None callback — so _thinking scratch bubbles never relayed even
             # though the progress queue was created for them.
-            agent.tool_progress_callback = progress_callback if needs_progress_queue else None
+            agent.tool_progress_callback = (
+                progress_callback if (needs_progress_queue or log_mode_enabled) else None
+            )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -18120,6 +18191,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
+        # Start the tool-call log writer when tool_progress == "log".
+        log_task = None
+        if log_mode_enabled:
+            log_task = asyncio.create_task(write_tool_log())
+
         # Start stream consumer task — polls for consumer creation since it
         # happens inside run_sync (thread pool) after the agent is constructed.
         stream_task = None
@@ -18871,6 +18947,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
+            if log_task:
+                log_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
 
@@ -18917,7 +18995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
                         await task

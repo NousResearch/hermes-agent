@@ -2899,12 +2899,13 @@ class GatewaySlashCommandsMixin:
             return t("gateway.verbose.not_enabled")
 
         # --- cycle mode (per-platform) ----------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["off", "new", "all", "verbose", "log"]
         descriptions = {
             "off": t("gateway.verbose.mode_off"),
             "new": t("gateway.verbose.mode_new"),
             "all": t("gateway.verbose.mode_all"),
             "verbose": t("gateway.verbose.mode_verbose"),
+            "log": t("gateway.verbose.mode_log"),
         }
 
         # Read current effective mode for this platform via the resolver

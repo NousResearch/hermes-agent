@@ -5,3 +5,5 @@ author: "Jean-Billie (greffe sur Hermes Agent — MIT, Nous Research)"
 kind: standalone
 middleware:
   - tool_execution
+provides_tools:
+  - creer_support

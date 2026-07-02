@@ -35,6 +35,11 @@ def activity_url() -> str:
     return f"http://{_draft_addr()}/v1/activity"
 
 
+def produce_url() -> str:
+    """URL où POSTer une intention de PRODUCTION d'un support brandé (cf. produce.py)."""
+    return f"http://{_draft_addr()}/v1/produce"
+
+
 def _push_url() -> str:
     return os.getenv("JB_DECISION_PUSH_URL", _DEFAULT_PUSH_URL).strip() or _DEFAULT_PUSH_URL
 

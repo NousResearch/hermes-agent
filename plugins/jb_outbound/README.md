@@ -45,6 +45,25 @@ customs), id du skill, id du job.
   (`label` = nom lisible du job). **Gated par `JB_ACTIVITY_EVENTS=1`** (défaut OFF — la route
   daemon n'existe pas encore). Timeout 2 s, échecs avalés : ne bloque jamais un job.
 
+## Outil « creer_support » (Ma marque, Option A)
+
+Le plugin enregistre aussi un **outil** (`ctx.register_tool`, zéro patch du cœur) : `creer_support`.
+Quand le client demande un support (« fais-moi un carrousel », un devis, une présentation…), l'agent
+émet une INTENTION structurée `{ type, contenu }` — il ne dessine jamais lui-même. Le POST part sur
+le **loopback du daemon** (`http://{JB_DRAFT_ADDR}/v1/produce`), qui le relaie au control-plane avec
+son identité mTLS (même chemin que les drafts / `request_tool_connection`) ; la plateforme rend le
+support de façon **déterministe** (gabarits fixes, charte du client) et le range dans l'Espace
+Documents. L'URL signée revient à l'agent, qui la partage **telle quelle** dans la conversation.
+
+- 9 familles (enum fermé) : `presentation`, `devis`, `facture`, `post`, `carrousel`, `story`,
+  `prospectus`, `signature`, `lettre` — contenu re-validé/borné côté plateforme.
+- **Purement interne** : le document est déposé chez le client, rien ne part vers un tiers.
+  L'ENVOI ultérieur du document repasse par la boucle de proposition ci-dessus.
+- **Gated** comme le reste du plugin (`JB_DECISION_PUSH_URL`) : hors box Jean-Billie, l'outil est
+  invisible (`check_fn`). Relais indisponible → message franc, jamais de bluff.
+- Toolset plugin `jb_studio` (activé par défaut sur toutes les plateformes, désactivable via
+  `hermes tools`).
+
 ## Rate-limit « burst » (deux verrous, défaut OFF)
 
 Deux garde-fous de débit **additifs**, activés par `JB_RATE_LIMIT_ENABLED=1` (défaut OFF → comportement

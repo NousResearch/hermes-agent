@@ -950,6 +950,30 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
+def _parse_gateway_session_key(session_key: str) -> "tuple[str, str, str | None] | None":
+    """Decode a gateway session key into ``(platform, chat_id, thread_id)``.
+
+    Mirrors ``gateway/run.py:_parse_session_key`` for the historical key
+    format ``agent:<ns>:<platform>:<chat_type>:<chat_id>[:<extra>]`` (the
+    namespace slot is ``main`` for the default profile or a profile name
+    under multi-profile multiplexing — see
+    ``gateway/session.py:_session_key_namespace``).
+
+    ``<extra>`` is only treated as a thread_id for ``dm`` / ``thread`` chat
+    types, where it is unambiguous; for group/channel sessions it may be a
+    per-user isolation suffix instead. Returns None when the key is not a
+    gateway session key (e.g. a genuine TUI/desktop session key).
+    """
+    parts = (session_key or "").split(":")
+    if len(parts) < 5 or parts[0] != "agent" or not parts[2] or not parts[4]:
+        return None
+    platform, chat_type, chat_id = parts[2], parts[3], parts[4]
+    thread_id = None
+    if len(parts) >= 6 and chat_type in ("dm", "thread") and parts[5]:
+        thread_id = parts[5]
+    return platform, chat_id, thread_id
+
+
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     """Auto-subscribe the calling session to task completion / block events.
 
@@ -971,14 +995,15 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
       messaging gateway before agent dispatch. The notification poller
       already keys off these, so we just register a row.
 
-    - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
-      are intentionally cleared (TUI is a single-channel local UI, not
-      a multi-tenant chat surface), but the agent subprocess inherits
-      ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
-      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
-      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
-      for these rows and posts the completion message into the running
-      session.
+    - **Session-key fallback**: when the platform/chat_id ContextVars are
+      unset (TUI sessions clear them; dispatcher-spawned workers never
+      had them), the agent subprocess inherits ``HERMES_SESSION_KEY``
+      from the parent session. If the key is a *gateway* session key
+      (``agent:<ns>:<platform>:...``) we decode it and subscribe to the
+      real platform/chat/thread so the gateway notifier can deliver.
+      Otherwise we record ``platform="tui"`` / ``chat_id=<key>`` —
+      note no poller currently consumes these rows, so they are
+      best-effort bookkeeping only.
 
     - **CLI / cron / test / unattached**: no persistent delivery channel,
       no-op.
@@ -1003,29 +1028,37 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         from gateway.session_context import get_session_env
         platform = get_session_env("HERMES_SESSION_PLATFORM", "")
         chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         if not platform or not chat_id:
-            # TUI / desktop fallback: platform/chat_id ContextVars are
-            # cleared for TUI sessions, but the parent process exports
-            # HERMES_SESSION_KEY into the subprocess env. Treat that
-            # as a "tui" subscription so the TUI notification poller
-            # (tui_gateway/server.py) can pick it up.
+            # Fallback: platform/chat_id ContextVars are cleared for TUI
+            # sessions and not propagated into dispatcher-spawned worker
+            # subprocesses, but the parent exports HERMES_SESSION_KEY.
             #
             # HERMES_SESSION_ID is intentionally NOT a fallback here:
             # it is set by ACP / the agent subprocess for telemetry
             # regardless of whether the parent is a TUI or a CLI, so
             # treating it as a notification target would auto-subscribe
             # every CLI invocation, which is exactly the over-eager
-            # behaviour that got #19718 reverted upstream. The TUI
-            # poller keys on HERMES_SESSION_KEY.
+            # behaviour that got #19718 reverted upstream.
             session_key = (
                 get_session_env("HERMES_SESSION_KEY", "")
                 or os.environ.get("HERMES_SESSION_KEY", "")
             )
             if not session_key:
                 return False  # CLI / cron / test — no persistent channel
-            platform = "tui"
-            chat_id = session_key
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+            parsed = _parse_gateway_session_key(session_key)
+            if parsed:
+                # Gateway session key (agent:<ns>:<platform>:<chat_type>:...):
+                # subscribe to the REAL platform/chat so the gateway notifier
+                # can deliver. Recording these as platform="tui" produced
+                # permanently undeliverable rows — the notifier only sends
+                # via connected platform adapters, and no TUI poller consumes
+                # kanban_notify_subs.
+                platform, chat_id, key_thread_id = parsed
+                thread_id = thread_id or key_thread_id
+            else:
+                platform = "tui"
+                chat_id = session_key
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")

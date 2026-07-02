@@ -3,6 +3,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import {
+  $currentCwd,
   setAvailablePersonalities,
   setCurrentCwd,
   setCurrentFastMode,
@@ -52,8 +53,11 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       const cwd = (config.terminal?.cwd ?? '').trim()
 
       if (cwd && cwd !== '.') {
-        setCurrentCwd(cwd)
-        void refreshProjectBranch(cwd)
+        // Configured terminal.cwd beats a stale remembered workspace cwd
+        // (#38855) — but never yank the workspace out from under an active
+        // session; those keep their own cwd until the user detaches.
+        setCurrentCwd(prev => (activeSessionIdRef.current ? prev : cwd))
+        void refreshProjectBranch($currentCwd.get() || cwd)
       }
 
       const reasoning = (config.agent?.reasoning_effort ?? '').trim()

@@ -1,5 +1,5 @@
-import { act, renderHook } from '@testing-library/react'
 // @vitest-environment jsdom
+import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getHermesConfig } from '@/hermes'
@@ -10,10 +10,13 @@ import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
-  getHermesConfigDefaults: vi.fn().mockResolvedValue({}),
+  getHermesConfigDefaults: vi.fn().mockResolvedValue({})
 }))
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+
+const mockConfig = (config: Record<string, unknown>) =>
+  vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)
 
 describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
@@ -27,15 +30,13 @@ describe('useHermesConfig refreshHermesConfig', () => {
     persistString(WORKSPACE_CWD_KEY, '/Users/old/stale-project')
     setCurrentCwd('/Users/old/stale-project')
 
-    vi.mocked(getHermesConfig).mockResolvedValue({
-      terminal: { cwd: '/Users/example/new-workspace' },
-    } as any)
+    mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
 
     const { result } = renderHook(() =>
       useHermesConfig({
         activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined),
-      }),
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
     )
 
     await act(async () => {
@@ -46,14 +47,35 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentCwd.get()).toBe('/Users/example/new-workspace')
   })
 
+  it('keeps the active session workspace when a session is running', async () => {
+    setCurrentCwd('/workspace/attached-project')
+
+    mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: 'session-1' },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    // Config refreshes mid-session must not yank the workspace out from
+    // under the attached session.
+    expect($currentCwd.get()).toBe('/workspace/attached-project')
+  })
+
   it('uses empty string when terminal.cwd is not set and localStorage is empty', async () => {
-    vi.mocked(getHermesConfig).mockResolvedValue({} as any)
+    mockConfig({})
 
     const { result } = renderHook(() =>
       useHermesConfig({
         activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined),
-      }),
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
     )
 
     await act(async () => {
@@ -64,15 +86,13 @@ describe('useHermesConfig refreshHermesConfig', () => {
   })
 
   it('ignores terminal.cwd when it is "."', async () => {
-    vi.mocked(getHermesConfig).mockResolvedValue({
-      terminal: { cwd: '.' },
-    } as any)
+    mockConfig({ terminal: { cwd: '.' } })
 
     const { result } = renderHook(() =>
       useHermesConfig({
         activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined),
-      }),
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
     )
 
     await act(async () => {
@@ -86,15 +106,13 @@ describe('useHermesConfig refreshHermesConfig', () => {
     const refreshProjectBranch = vi.fn().mockResolvedValue(undefined)
     setCurrentCwd('')
 
-    vi.mocked(getHermesConfig).mockResolvedValue({
-      terminal: { cwd: '/workspace/project-a' },
-    } as any)
+    mockConfig({ terminal: { cwd: '/workspace/project-a' } })
 
     const { result } = renderHook(() =>
       useHermesConfig({
         activeSessionIdRef: { current: null },
-        refreshProjectBranch,
-      }),
+        refreshProjectBranch
+      })
     )
 
     await act(async () => {
@@ -102,5 +120,25 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/project-a')
+  })
+
+  it('refreshes the branch for the session cwd (not config) when a session is active', async () => {
+    const refreshProjectBranch = vi.fn().mockResolvedValue(undefined)
+    setCurrentCwd('/workspace/attached-project')
+
+    mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: 'session-1' },
+        refreshProjectBranch
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/attached-project')
   })
 })

@@ -463,6 +463,32 @@ def _truncate_with_footer(
     return model_text, True
 
 
+def _result_final_url(result: Dict[str, Any]) -> str:
+    """Return the provider-reported final URL for an extract result."""
+    url = str(result.get("url") or "").strip()
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict):
+        url = str(metadata.get("sourceURL") or metadata.get("url") or url).strip()
+    return normalize_url_for_request(url) if url else ""
+
+
+async def _apply_extract_final_url_guard(results: List[Dict[str, Any]]) -> None:
+    """Block provider results whose final URL is private/internal."""
+    for result in results:
+        if result.get("error"):
+            continue
+        final_url = _result_final_url(result)
+        if not final_url:
+            continue
+        if await async_is_safe_url(final_url):
+            result["url"] = final_url
+            continue
+        result["url"] = final_url
+        result["content"] = ""
+        result["raw_content"] = ""
+        result["error"] = "Blocked: final URL targets a private or internal network address"
+
+
 
 # ─── Exa / Parallel inline helpers — moved into plugins ──────────────────────
 # After PR #25182, the exa client + search/extract and parallel client +
@@ -771,6 +797,8 @@ async def web_extract_tool(
                 results = await asyncio.to_thread(
                     provider.extract, safe_urls, format=format
                 )
+
+            await _apply_extract_final_url_guard(results)
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

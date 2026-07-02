@@ -3664,6 +3664,19 @@ class TestHandleMaxIterations:
         assert "error" in result.lower()
         assert "API down" in result
 
+    def test_api_failure_closes_synthetic_summary_request(self, agent):
+        """Summary API failures must not leave a dangling synthetic user turn."""
+        agent.client.chat.completions.create.side_effect = Exception("API down")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert "API down" in result
+        assert messages[-2]["role"] == "user"
+        assert "maximum number of tool-calling iterations" in messages[-2]["content"]
+        assert messages[-1] == {"role": "assistant", "content": result}
+
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"

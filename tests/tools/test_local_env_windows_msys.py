@@ -24,9 +24,12 @@ from unittest.mock import patch
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
+    _make_run_env,
     _msys_to_windows_path,
     _resolve_safe_cwd,
+    _sanitize_subprocess_env,
     _windows_to_msys_path,
+    hermes_subprocess_env,
 )
 
 
@@ -226,6 +229,36 @@ class TestExtractCwdFromOutputWindowsMsys:
             env._extract_cwd_from_output(result)
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# MSYS_NO_PATHCONV — native Windows command flags (#56700)
+# ---------------------------------------------------------------------------
+
+class TestWindowsMsysPathconvDefaults:
+    def test_make_run_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({})
+        assert run_env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_sanitize_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = _sanitize_subprocess_env({})
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_hermes_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = hermes_subprocess_env()
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_no_pathconv_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS_NO_PATHCONV" not in _make_run_env({})
+
+    def test_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS_NO_PATHCONV": "0"})
+        assert run_env.get("MSYS_NO_PATHCONV") == "0"
 
 
 # ---------------------------------------------------------------------------

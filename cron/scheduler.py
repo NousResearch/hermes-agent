@@ -216,7 +216,7 @@ def _effective_fallback_chain(job: dict, cfg: dict) -> list[dict[str, Any]]:
     """
     raw = job.get("fallback_providers")
     if raw is None:
-        raw = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+        return get_fallback_chain(cfg)
     elif not isinstance(raw, (list, dict)):
         # Malformed per-job value (hand-edited storage; create/update reject
         # these). Fail closed to "no fallback" rather than silently widening
@@ -1958,6 +1958,20 @@ def _run_job_script(script_path: str, timeout: int | None = None) -> tuple[bool,
         return False, f"Script execution failed: {exc}"
 
 
+def _run_job_script_with_job_timeout(script_path: str, job: dict) -> tuple[bool, str]:
+    """Run a cron script, passing timeout only when configured.
+
+    Tests and some integrations monkeypatch ``_run_job_script`` with a
+    one-argument stub. Avoid passing ``timeout=None`` so those remain
+    compatible while configured per-job timeouts still override the global
+    timeout.
+    """
+    timeout = job.get("timeout")
+    if timeout is None:
+        return _run_job_script(script_path)
+    return _run_job_script(script_path, timeout=timeout)
+
+
 def _parse_wake_gate(script_output: str) -> bool:
     """Parse the last non-empty stdout line of a cron job's pre-check script
     as a wake gate.
@@ -2011,7 +2025,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path, timeout=job.get("timeout"))
+            success, script_output = _run_job_script_with_job_timeout(script_path, job)
         if success:
             if script_output:
                 prompt = (
@@ -2351,7 +2365,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path, timeout=job.get("timeout"))
+            ok, output = _run_job_script_with_job_timeout(script_path, job)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2440,7 +2454,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path, timeout=job.get("timeout"))
+        prerun_script = _run_job_script_with_job_timeout(script_path, job)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

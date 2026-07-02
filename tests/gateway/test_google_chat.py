@@ -197,7 +197,7 @@ def _make_pubsub_message(data: dict, *, attributes=None):
 
 def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type="HUMAN",
                        msg_name=None, thread_name=None, attachments=None,
-                       slash_command=None):
+                       slash_command=None, quoted_message_metadata=None):
     """Build a realistic Google Chat CloudEvents-style envelope body."""
     msg = {
         "name": msg_name or "spaces/S/messages/M.M",
@@ -216,6 +216,8 @@ def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type=
         msg["attachment"] = attachments
     if slash_command is not None:
         msg["slashCommand"] = slash_command
+    if quoted_message_metadata is not None:
+        msg["quotedMessageMetadata"] = quoted_message_metadata
 
     return {
         "chat": {
@@ -784,6 +786,59 @@ class TestBuildMessageEvent:
         event2 = await adapter._build_message_event(msg2, env2)
         # Second time same thread = user re-engaged → isolated session.
         assert event2.source.thread_id == "spaces/S/threads/T1"
+
+    @pytest.mark.asyncio
+    async def test_quoted_message_metadata_populates_reply_context(self, adapter):
+        env = _make_chat_envelope(
+            text="what did you mean?",
+            quoted_message_metadata={
+                "name": "spaces/S/messages/quoted-1",
+                "quotedMessageSnapshot": {
+                    "text": "Original answer",
+                    "sender": {
+                        "name": "users/other",
+                        "email": "other@example.com",
+                        "displayName": "Other User",
+                    },
+                },
+            },
+        )
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event.reply_to_message_id == "spaces/S/messages/quoted-1"
+        assert event.reply_to_text == "Original answer"
+        assert event.reply_to_author_id == "users/other"
+        assert event.reply_to_author_name == "Other User"
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_quoted_bot_message_marks_own_reply_context(self, adapter):
+        adapter._bot_user_id = "users/BOT_ID"
+        env = _make_chat_envelope(
+            text="explain this",
+            quoted_message_metadata={
+                "name": "spaces/S/messages/bot-msg",
+                "quotedMessageSnapshot": {
+                    "text": "Bot answer",
+                    "sender": {
+                        "name": "users/BOT_ID",
+                        "displayName": "Hermes",
+                        "type": "BOT",
+                    },
+                },
+            },
+        )
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event.reply_to_message_id == "spaces/S/messages/bot-msg"
+        assert event.reply_to_text == "Bot answer"
+        assert event.reply_to_author_id == "users/BOT_ID"
+        assert event.reply_to_author_name == "Hermes"
+        assert event.reply_to_is_own_message is True
 
     @pytest.mark.asyncio
     async def test_dm_side_thread_caches_thread_for_outbound(self, adapter):

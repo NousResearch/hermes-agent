@@ -1549,6 +1549,29 @@ class GoogleChatAdapter(BasePlatformAdapter):
         text = msg.get("argumentText") or msg.get("text") or ""
         text = text.strip()
 
+        quoted = msg.get("quotedMessageMetadata") or {}
+        quoted_snapshot = quoted.get("quotedMessageSnapshot") or {}
+        reply_to_text = (quoted_snapshot.get("text") or "").strip() or None
+        reply_to_message_id = (
+            quoted.get("name")
+            or quoted.get("quotedMessage")
+            or quoted.get("quotedMessageName")
+            or None
+        )
+        quoted_sender = quoted_snapshot.get("sender") or {}
+        reply_to_author_id = quoted_sender.get("name") or None
+        reply_to_author_name = (
+            quoted_sender.get("displayName")
+            or quoted_sender.get("email")
+            or reply_to_author_id
+            or None
+        )
+        reply_to_is_own = bool(
+            reply_to_author_id
+            and self._bot_user_id
+            and reply_to_author_id == self._bot_user_id
+        )
+
         # Slash command: emit MessageType.COMMAND with normalized text.
         slash = msg.get("slashCommand") or {}
         is_slash = bool(slash)
@@ -1648,6 +1671,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
             message_id=msg.get("name") or None,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
         )
 
     async def _download_attachment(

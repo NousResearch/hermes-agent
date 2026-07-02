@@ -43,4 +43,24 @@ fi
 # ---------------------------------------------------------------------------
 export PYTHONPATH="${HERMES_AGENT_ROOT}:${PYTHONPATH:-}"
 
-exec "${PYTHON}" -m session_orchestration.watcher
+# Load secrets from ~/.hermes/.env so the feed digest can post to Discord via
+# the REST API. The gateway loads .env into its own process, but this cron
+# subprocess does not inherit it — without DISCORD_BOT_TOKEN the watcher detects
+# attention items but silently skips every feed post ("discord_failed").
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+if [[ -f "${HERMES_HOME}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    source "${HERMES_HOME}/.env" 2>/dev/null || true
+    set +a
+fi
+
+# Tee the watcher's own logs (INFO to stderr via basicConfig) to a rotating-ish
+# logfile. stdout stays empty so the no_agent delivery rule still treats the run
+# as silent — but transitions, feed posts, and post failures become observable
+# instead of vanishing into a discarded stderr. Without this, a silently-skipped
+# feed ping (missing token, Discord 4xx, no transition) leaves zero trace.
+WATCH_LOG="${HERMES_HOME}/logs/session-orchestration-watch.log"
+mkdir -p "${HERMES_HOME}/logs" 2>/dev/null || true
+
+exec "${PYTHON}" -m session_orchestration.watcher 2>> "${WATCH_LOG}"

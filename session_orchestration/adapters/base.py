@@ -81,7 +81,13 @@ class AgentAdapter(ABC):
         """
 
     @abstractmethod
-    def drive(self, handle: SessionHandle, message: str) -> None:
+    def drive(
+        self,
+        handle: SessionHandle,
+        message: str,
+        *,
+        pre_keys: list[str] | None = None,
+    ) -> None:
         """Deliver ``message`` to the running session.
 
         Implementations must perform a prompt-readiness check before
@@ -95,6 +101,10 @@ class AgentAdapter(ABC):
             The ``SessionHandle`` returned by ``launch()``.
         message:
             The user message to send to the agent.
+        pre_keys:
+            Optional tmux key names (e.g. ``["Escape"]``) to send before the
+            readiness check + paste. Used to cancel a selection menu so a
+            natural-language answer can be pasted into the freed composer.
         """
 
     @abstractmethod

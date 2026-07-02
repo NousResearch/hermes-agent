@@ -71,6 +71,10 @@ class FakeTmuxRunner:
         # Return configured output for capture-pane calls; empty for others.
         if args and args[0] == "capture-pane":
             return self._capture_output
+        # launch() resolves the real pane id via `list-panes -F '#{pane_id}'`
+        # and indexes [0]; return a deterministic id so the fake doesn't 500.
+        if args and args[0] == "list-panes":
+            return "%0"
         return ""
 
     def set_capture(self, text: str) -> None:

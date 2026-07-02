@@ -124,6 +124,7 @@ class SessionRelay:
         message: str,
         *,
         retry_on_conflict: bool = False,
+        pre_keys: list[str] | None = None,
     ) -> None:
         """Send ``message`` to the session identified by ``task_id``/``handle``.
 
@@ -177,6 +178,10 @@ class SessionRelay:
                     task_id,
                 )
                 self._adapter.resume(handle, message)
+            elif pre_keys:
+                # Only thread pre_keys when present so adapters/fakes with the
+                # 2-arg drive() signature keep working on the common path.
+                self._adapter.drive(handle, message, pre_keys=pre_keys)
             else:
                 self._adapter.drive(handle, message)
         finally:

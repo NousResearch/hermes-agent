@@ -363,3 +363,35 @@ def test_lock_released_on_drive_exception(registry):
     # Lock must be released even after exception.
     row = registry.get(task_id)
     assert row["lock_holder"] is None, "Lock must be released in finally block on exception"
+
+
+# ---------------------------------------------------------------------------
+# pre_keys threading (answerable menu answer route)
+# ---------------------------------------------------------------------------
+
+
+def test_send_message_threads_pre_keys_to_drive(registry):
+    """A menu answer supplies pre_keys=['Escape']; the relay must forward them
+    to adapter.drive so the menu is cancelled before the paste."""
+    task_id = str(uuid.uuid4())
+    _seed_registry(registry, task_id)
+
+    class _PreKeysAdapter(_FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(lifecycle=SessionLifecycle.WAITING_USER)
+            self.pre_keys_seen = "unset"
+
+        def drive(self, handle, message, *, pre_keys=None):
+            self.pre_keys_seen = pre_keys
+            self.drive_calls.append(message)
+
+    adapter = _PreKeysAdapter()
+    relay = SessionRelay(registry, adapter, ttl_seconds=30.0)
+    handle = _make_handle()
+
+    relay.send_message(
+        task_id, handle, "The user chose option 2", pre_keys=["Escape"]
+    )
+
+    assert adapter.drive_calls == ["The user chose option 2"]
+    assert adapter.pre_keys_seen == ["Escape"]

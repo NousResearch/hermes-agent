@@ -45,11 +45,42 @@ from session_orchestration.adapters.omp import (
     OmpAdapter,
     build_interactive_argv,
     build_oneshot_argv,
+    pane_is_idle_waiting,
     parse_oneshot_result,
     parse_pane_lifecycle,
     tail_rpc_stream,
     translate_rpc_line,
 )
+
+
+class TestPaneIsIdleWaiting:
+    """Free-form wait signal: omp idles at its composer with no ❯/menu/spinner."""
+
+    _IDLE = (
+        " What task do you want me to work on?\n"
+        "╭──  GPT-5.5 ·  med   ~/dev/z-harness ──╮\n"
+        "╰─                                     ─╯"
+    )
+
+    def test_idle_composer_no_spinner_is_waiting(self):
+        assert pane_is_idle_waiting(self._IDLE) is True
+
+    def test_busy_spinner_is_not_waiting(self):
+        assert pane_is_idle_waiting(self._IDLE + "\n⠹ Requesting task") is False
+
+    def test_menu_footer_is_not_free_form_wait(self):
+        # A selection menu is handled directly by parse_pane_lifecycle.
+        assert pane_is_idle_waiting(self._IDLE + "\n up/down  enter select  esc cancel") is False
+
+    def test_prompt_char_is_not_free_form_wait(self):
+        assert pane_is_idle_waiting("Proceed?\n❯") is False
+
+    def test_empty_pane_is_not_waiting(self):
+        assert pane_is_idle_waiting("") is False
+
+    def test_no_tui_box_is_not_waiting(self):
+        # Plain scrollback with no composer chrome — not a confirmed idle wait.
+        assert pane_is_idle_waiting("just some log output\nmore output") is False
 from session_orchestration.markers import (
     MARKER_DONE,
     MARKER_HEARTBEAT,
@@ -84,6 +115,10 @@ class FakeTmuxRunner:
         self.calls.append(list(args))
         if args and args[0] == "capture-pane":
             return self._capture_output
+        # launch() resolves the real pane id via `list-panes -F '#{pane_id}'`
+        # and indexes [0]; return a deterministic id so the fake doesn't 500.
+        if args and args[0] == "list-panes":
+            return "%0"
         return ""
 
     def set_capture(self, text: str) -> None:
@@ -548,8 +583,10 @@ class TestRunOneshot:
 
 class TestDrive:
     def setup_method(self):
-        # Pane shows ">" so readiness check passes immediately.
-        self.fake_tmux = FakeTmuxRunner(capture_output="last line\n> ")
+        # omp's _wait_for_ready looks for TUI box chrome (╭/╰) and NOT a busy
+        # spinner — omp never renders a ">"/"❯" input char. Provide an idle box
+        # so the readiness check passes immediately.
+        self.fake_tmux = FakeTmuxRunner(capture_output="╭─ idle ─╮\nlast line\n╰──────╯")
         self.adapter = OmpAdapter(
             omp_runner=FakeOmpRunner(),
             tmux_runner=self.fake_tmux,
@@ -704,6 +741,9 @@ class TestLaunchMarkerInjection:
         fake_tmux = FakeTmuxRunner(capture_output="last line\n> ")
         adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
         with (
+            # launch() now waits via _wait_for_launch (TUI box chrome), not
+            # _wait_for_prompt; patch it so the fake pane needn't render a box.
+            patch.object(adapter, "_wait_for_launch"),
             patch.object(adapter, "_wait_for_prompt"),
             patch("os.makedirs"),
         ):

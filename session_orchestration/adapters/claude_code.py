@@ -236,7 +236,6 @@ class ClaudeCodeAdapter(AgentAdapter):
         """
         session_id = str(uuid.uuid4())
         tmux_session = f"{self._session_prefix}-{session_id[:8]}"
-        pane = f"{tmux_session}:0.0"
 
         # Compute the marker file path and ensure its parent directory exists.
         marker_path = f"{workdir}/.hermes/sessions/{session_id}.jsonl"
@@ -250,6 +249,14 @@ class ClaudeCodeAdapter(AgentAdapter):
             "-y", str(self._pane_height),
             "-e", f"HERMES_MARKER_FILE={marker_path}",
         ])
+
+        # Resolve the REAL pane id rather than assuming ':0.0'. A hardcoded
+        # ':0.0' breaks under `set -g base-index 1` / `pane-base-index 1`
+        # (the first pane is then ':1.1'). The stable pane id (e.g. '%12') is
+        # immune to base-index and to later window/pane renumbering.
+        pane = self._tmux.run([
+            "list-panes", "-t", tmux_session, "-F", "#{pane_id}",
+        ]).splitlines()[0].strip()
 
         # 2. Launch Claude Code inside the session.
         cmd = f"cd {_shell_quote(workdir)} && claude --dangerously-skip-permissions"
@@ -277,11 +284,18 @@ class ClaudeCodeAdapter(AgentAdapter):
     # drive()  [testable with stubbed TmuxRunner]
     # ------------------------------------------------------------------
 
-    def drive(self, handle: SessionHandle, message: str) -> None:
+    def drive(
+        self,
+        handle: SessionHandle,
+        message: str,
+        *,
+        pre_keys: list[str] | None = None,
+    ) -> None:
         """Deliver ``message`` to the Claude Code session via load-buffer/paste-buffer.
 
         Steps
         -----
+        0. Send any ``pre_keys`` (e.g. ``Escape`` to cancel a selection menu).
         1. Poll pane for ❯ prompt (readiness).  Raises ``TimeoutError`` after
            ``_LAUNCH_READY_TIMEOUT`` seconds if the pane never reaches readiness.
         2. Write ``message`` to a named tmux buffer.
@@ -298,7 +312,12 @@ class ClaudeCodeAdapter(AgentAdapter):
             The ``SessionHandle`` returned by ``launch()``.
         message:
             Text to send.  May contain newlines; they are preserved verbatim.
+        pre_keys:
+            Optional tmux key names sent before the readiness poll (e.g.
+            ``Escape`` to cancel a selection menu).
         """
+        for key in pre_keys or []:
+            self._tmux.run(["send-keys", "-t", handle.pane, key])
         self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
 
         buf_name = f"hermes-{handle.session_id[:8]}"

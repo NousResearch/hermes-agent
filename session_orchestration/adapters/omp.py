@@ -72,6 +72,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -95,6 +96,14 @@ _POLL_INTERVAL: float = 0.5
 #: Maximum seconds to wait for omp prompt after launching.
 _LAUNCH_READY_TIMEOUT: float = 30.0
 
+#: Maximum seconds to wait for omp's TUI to first render on COLD start. Larger
+#: than _LAUNCH_READY_TIMEOUT because a cold start does an update check + MCP
+#: server connection + heavy splash render before drawing box chrome; on a slow
+#: network that legitimately exceeds 30s (observed omp/16.1.15 tripping the old
+#: 30s budget even though the TUI came up fine seconds later). drive()/resume()
+#: keep the shorter budget since omp is already running by then.
+_LAUNCH_START_TIMEOUT: float = 90.0
+
 #: omp prints ">" or "❯" when waiting for user input.
 #: Use a pattern that matches either variant.
 PROMPT_PATTERN: re.Pattern[str] = re.compile(r"[>❯]\s*$", re.MULTILINE)
@@ -105,6 +114,17 @@ HANDOFF_MARKER: str = "HERMES_HANDOFF"
 #: Active-work indicator pattern for omp (tool-use spinner text).
 #: omp shows "⠋" / "⠙" / "⠹" etc. spinner characters and "Running" text.
 ACTIVITY_REGEX: re.Pattern[str] = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Running tool")
+
+#: Interactive input request pattern for omp. Selection menus and prompt
+#: dialogs (including z-harness AskUser gates rendered inside omp) end in a
+#: navigation footer — "up/down navigate  enter select  esc cancel" — and do
+#: NOT use a "❯"/">" input char, so PROMPT_PATTERN misses them. omp also keeps
+#: a spinner ("⠹ Requesting task") visible while the menu waits, which would
+#: otherwise be misread as RUNNING. This pattern must therefore take precedence
+#: over ACTIVITY_REGEX in the lifecycle decision.
+INPUT_REQUEST_REGEX: re.Pattern[str] = re.compile(
+    r"enter\s+select|esc\s+cancel|↵\s*select|⏎\s*select", re.IGNORECASE
+)
 
 #: Default executable path for omp.
 _OMP_BINARY: str = "omp"
@@ -271,11 +291,43 @@ def parse_pane_lifecycle(pane_text: str) -> SessionLifecycle:
     """
     if HANDOFF_MARKER in pane_text:
         return SessionLifecycle.PAUSED_HANDOFF
-    if PROMPT_PATTERN.search(pane_text):
+    # An interactive menu/prompt takes precedence over the spinner: omp keeps a
+    # "⠹ Requesting task" spinner visible WHILE a selection menu waits, so the
+    # input-request check must run before ACTIVITY_REGEX or a waiting session
+    # would be misread as RUNNING and never surface in the feed.
+    if INPUT_REQUEST_REGEX.search(pane_text) or PROMPT_PATTERN.search(pane_text):
         return SessionLifecycle.WAITING_USER
     if ACTIVITY_REGEX.search(pane_text):
         return SessionLifecycle.RUNNING
     return SessionLifecycle.RUNNING
+
+
+#: omp's composer/status chrome — the rounded box it draws around the input line.
+_TUI_BOX_CHARS = ("╭", "╰")
+
+
+def pane_is_idle_waiting(pane_text: str) -> bool:
+    """True when omp has finished its turn and is idling at its composer.
+
+    omp emits no marker and no ``❯`` when it asks a *free-form* question and
+    waits (unlike a selection menu, which shows an ``enter select`` footer). The
+    only signal is: the TUI composer box is drawn AND no active-work spinner is
+    present AND it isn't already a menu/prompt/handoff. This is a *candidate*
+    wait — the watcher additionally requires the pane to be stable across a tick
+    before promoting RUNNING → WAITING_USER, so a momentary mid-turn idle does
+    not flap the session into a spurious notification.
+    """
+    if not pane_text or not pane_text.strip():
+        return False
+    if HANDOFF_MARKER in pane_text:
+        return False
+    # Menus/prompts are already WAITING_USER via parse_pane_lifecycle; a busy
+    # spinner means omp is still working.
+    if INPUT_REQUEST_REGEX.search(pane_text) or PROMPT_PATTERN.search(pane_text):
+        return False
+    if ACTIVITY_REGEX.search(pane_text):
+        return False
+    return any(ch in pane_text for ch in _TUI_BOX_CHARS)
 
 
 def build_oneshot_argv(
@@ -650,7 +702,6 @@ class OmpAdapter(AgentAdapter):
         """
         session_id = str(uuid.uuid4())
         tmux_session = f"{self._session_prefix}-{session_id[:8]}"
-        pane = f"{tmux_session}:0.0"
 
         # Compute the marker file path and ensure its parent directory exists.
         marker_file = f"{workdir}/.hermes/sessions/{session_id}.jsonl"
@@ -665,13 +716,38 @@ class OmpAdapter(AgentAdapter):
             "-e", f"HERMES_MARKER_FILE={marker_file}",
         ])
 
-        # 2. Build and send the omp command into the session.
-        argv = build_interactive_argv(prompt=prompt, workdir=workdir)
-        cmd = " ".join([self._binary] + argv)
+        # Resolve the REAL pane id rather than assuming ':0.0'. A hardcoded
+        # ':0.0' breaks under `set -g base-index 1` / `pane-base-index 1`
+        # (the first pane is then ':1.1', and every send-keys/capture against
+        # ':0.0' fails with "can't find window: 0"). The stable pane id (e.g.
+        # '%12') is immune to base-index and to later window/pane renumbering.
+        pane = self._tmux.run([
+            "list-panes", "-t", tmux_session, "-F", "#{pane_id}",
+        ]).splitlines()[0].strip()
+
+        # 2. Boot omp BARE (no prompt) so it comes up at an idle prompt. The
+        #    first prompt is seeded separately via the relay/``drive()`` after
+        #    launch (see spawn_session step 7) — matching the claude adapter.
+        #    Passing the prompt here too would (a) deliver it twice and (b) make
+        #    omp immediately busy, so the post-launch ``drive()`` wait-for-idle
+        #    would time out. ``prompt`` is intentionally unused.
+        argv = build_interactive_argv(workdir=workdir)
+        cmd = shlex.join([self._binary] + argv)
         self._tmux.run(["send-keys", "-t", pane, cmd, "Enter"])
 
-        # 3. Wait for the omp prompt (ready state).
-        self._wait_for_prompt(pane, timeout=_LAUNCH_READY_TIMEOUT)
+        # 3. Confirm omp actually started (took over the pane). Do NOT wait for
+        #    the idle prompt — a launch prompt makes omp immediately busy, so
+        #    the idle prompt won't appear until the first turn completes.
+        #    On failure, kill the tmux session so a slow/failed launch doesn't
+        #    leave an orphaned, unwatched omp running in a detached pane.
+        try:
+            self._wait_for_launch(pane, timeout=_LAUNCH_START_TIMEOUT)
+        except TimeoutError:
+            try:
+                self._tmux.run(["kill-session", "-t", tmux_session])
+            except Exception:
+                pass
+            raise
 
         return SessionHandle(
             session_id=session_id,
@@ -685,11 +761,18 @@ class OmpAdapter(AgentAdapter):
     # drive()  [testable with stubbed TmuxRunner]
     # ------------------------------------------------------------------
 
-    def drive(self, handle: SessionHandle, message: str) -> None:
+    def drive(
+        self,
+        handle: SessionHandle,
+        message: str,
+        *,
+        pre_keys: list[str] | None = None,
+    ) -> None:
         """Deliver ``message`` to the running omp session via load-buffer/paste-buffer.
 
         Steps
         -----
+        0. Send any ``pre_keys`` (e.g. ``Escape`` to cancel a selection menu).
         1. Poll pane for prompt readiness (``>`` or ``❯`` visible).
         2. Write ``message`` to a named tmux buffer via ``_load_buffer``.
         3. ``paste-buffer -d`` into the pane.
@@ -705,8 +788,14 @@ class OmpAdapter(AgentAdapter):
             The ``SessionHandle`` returned by ``launch()``.
         message:
             Text to send.  May contain newlines; they are preserved verbatim.
+        pre_keys:
+            Optional tmux key names sent (one send-keys each) BEFORE the
+            readiness poll — used to ``Escape`` out of a selection menu into
+            the freed composer so a natural-language answer can be pasted.
         """
-        self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
+        for key in pre_keys or []:
+            self._tmux.run(["send-keys", "-t", handle.pane, key])
+        self._wait_for_ready(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
 
         buf_name = f"hermes-omp-{handle.session_id[:8]}"
         self._load_buffer(buf_name, message)
@@ -739,6 +828,12 @@ class OmpAdapter(AgentAdapter):
         if pane_text is None:
             return SessionLifecycle.ERROR
         return parse_pane_lifecycle(pane_text)
+
+    def idle_waiting(self, pane_text: str) -> bool:
+        """Candidate free-form wait signal for the watcher (see
+        ``pane_is_idle_waiting``). The watcher gates this on pane stability
+        before promoting RUNNING → WAITING_USER."""
+        return pane_is_idle_waiting(pane_text)
 
     # ------------------------------------------------------------------
     # resume()  [testable with stubbed TmuxRunner + OmpRunner]
@@ -775,7 +870,7 @@ class OmpAdapter(AgentAdapter):
 
         # Send omp -c to continue the previous session in this pane.
         argv = build_interactive_argv(prompt=prompt, continue_last=True)
-        cmd = " ".join([self._binary] + argv)
+        cmd = shlex.join([self._binary] + argv)
         self._tmux.run(["send-keys", "-t", handle.pane, cmd, "Enter"])
         self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
 
@@ -835,6 +930,53 @@ class OmpAdapter(AgentAdapter):
             time.sleep(_POLL_INTERVAL)
         raise TimeoutError(
             f"omp prompt not visible in pane {pane!r} after {timeout:.0f}s"
+        )
+
+    def _wait_for_launch(self, pane: str, timeout: float) -> None:
+        """Wait until omp's TUI has actually rendered in the pane.
+
+        A prompt passed at launch makes omp immediately busy, so it will NOT
+        return to the idle ``❯`` prompt within the launch window — waiting for
+        that (as ``_wait_for_prompt`` does) times out on every real task even
+        though omp is running fine. Instead, wait for omp's TUI chrome to draw:
+        its rounded box borders (``╭``/``╰``) are TUI-only and never produced by
+        the shell, so their presence confirms omp took over the pane. This also
+        catches a failed launch (e.g. a shell glob/quoting error) — the shell
+        never draws a box, so this raises rather than returning a dead handle.
+        Succeed early if the idle prompt is already visible (instant tasks).
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            text = self._capture_pane(pane)
+            if text is not None:
+                # omp TUI chrome (rounded box corners) or an already-idle prompt.
+                if "╭" in text or "╰" in text or PROMPT_PATTERN.search(text):
+                    return
+            time.sleep(_POLL_INTERVAL)
+        raise TimeoutError(
+            f"omp did not start in pane {pane!r} after {timeout:.0f}s"
+        )
+
+    def _wait_for_ready(self, pane: str, timeout: float) -> None:
+        """Wait until omp's TUI is up AND idle, so a pasted message lands in the
+        input box instead of being dropped or interleaved with a response.
+
+        omp does NOT render a ``>``/``❯`` input char (so ``PROMPT_PATTERN`` never
+        matches it). Its idle state is the status-bar box (``╭…╮`` / ``╰…╯``)
+        with NO active-work spinner; its busy state matches ``ACTIVITY_REGEX``
+        (Braille spinner / "Running tool"). Ready == box present and not busy.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            text = self._capture_pane(pane)
+            if text is not None:
+                tui_up = ("╰" in text) or ("╭" in text)
+                busy = bool(ACTIVITY_REGEX.search(text))
+                if tui_up and not busy:
+                    return
+            time.sleep(_POLL_INTERVAL)
+        raise TimeoutError(
+            f"omp not ready for input in pane {pane!r} after {timeout:.0f}s"
         )
 
     def _load_buffer(self, buf_name: str, content: str) -> None:

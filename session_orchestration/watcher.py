@@ -59,6 +59,7 @@ from typing import Any, Callable, Dict, List, Optional
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import verify_adapters
 from session_orchestration.markers import marker_kind_to_lifecycle, read_markers_since
+from session_orchestration.menu_parse import extract as extract_menu_context
 from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import SessionHandle, SessionLifecycle
 
@@ -1264,6 +1265,7 @@ class SessionWatcher:
         # Adapter-side terminate: kill tmux + optional restart (AFTER registry row
         # is already marked terminal by _apply_intent above).
         terminate_intents = [i for i in intents if i.get("intent") == "terminate"]
+        terminate_reaped = False
         for term_intent in terminate_intents:
             try:
                 _handle_terminate_adapter(
@@ -1275,6 +1277,38 @@ class SessionWatcher:
                     term_intent,
                     exc,
                 )
+            # Reap attention/feed state for the terminated session. _apply_intent
+            # marks the row terminal but terminal rows are skipped by the active
+            # loop below, so _sync_attention_lifecycle never runs for them — a
+            # WAITING_USER attention item + feed router line would otherwise
+            # dangle after a thread-archive → terminate. Resolve every attention
+            # reason and clear the ping debounce here.
+            term_task_id = _intent_task_id(term_intent)
+            if not term_task_id:
+                continue
+            try:
+                for reason in (
+                    *_USER_ATTENTION_STATES,
+                    _ATTENTION_REASON_STALE_FROZEN,
+                ):
+                    if self._registry.resolve_attention_item(
+                        term_task_id, reason, resolution_reason="terminated"
+                    ):
+                        terminate_reaped = True
+                from session_orchestration.feed import clear_last_notified
+
+                clear_last_notified(term_task_id)
+            except Exception as exc:
+                logger.error(
+                    "watcher.tick: terminate reap failed for task_id=%s: %s",
+                    term_task_id,
+                    exc,
+                )
+        if terminate_reaped:
+            # Drop the resolved item(s) from the single feed-channel digest.
+            _reconcile_attention_digest(
+                self._registry, task_id=None, context="terminate_reap"
+            )
 
         # Step 2 — iterate active rows
         rows = self._registry.list()
@@ -1522,6 +1556,35 @@ class SessionWatcher:
                     )
             # new_lifecycle stays PAUSED_HANDOFF; _on_turn_change fires for the transition
 
+        # ------------------------------------------------------------------
+        # omp free-form wait promotion. omp gives no ❯/menu-footer/marker when
+        # it finishes a turn and idles at its composer, so detect() reports
+        # RUNNING and the session trips the hang ladder instead of surfacing its
+        # question. Promote a STABLE idle omp pane (unchanged since the prior
+        # tick, not busy) to WAITING_USER so the question reaches the thread.
+        # The stability gate (a prior hash exists AND equals this tick's hash)
+        # avoids flapping on a momentary mid-turn idle. Only adapters that opt
+        # in via idle_waiting() (omp) are affected; Claude uses ❯ and is already
+        # detected directly.
+        # ------------------------------------------------------------------
+        if new_lifecycle == SessionLifecycle.RUNNING and pane_text:
+            _idle_fn = getattr(adapter, "idle_waiting", None)
+            if callable(_idle_fn):
+                _cur_hash = hashlib.sha256(
+                    pane_text.encode(errors="replace")
+                ).hexdigest()[:16]
+                _prev_hash = row.get("last_pane_hash")
+                try:
+                    _is_idle = bool(_idle_fn(pane_text))
+                except Exception as exc:
+                    logger.debug(
+                        "watcher._process_row: idle_waiting() failed for %s: %s",
+                        task_id, exc,
+                    )
+                    _is_idle = False
+                if _prev_hash and _cur_hash == _prev_hash and _is_idle:
+                    new_lifecycle = SessionLifecycle.WAITING_USER
+
         new_state = new_lifecycle.value
         old_state = row.get("state", SessionLifecycle.RUNNING.value)
         previous_last_output_ts = _coerce_optional_float(row.get("last_output_ts"))
@@ -1569,13 +1632,36 @@ class SessionWatcher:
         if new_offset != old_marker_offset:
             update_fields["marker_offset"] = new_offset
 
-        # Store last_question from most recent needs_input marker (PART C)
+        # ------------------------------------------------------------------
+        # Answerable needs-input: persist the question + option labels so the
+        # feed can present them and a numeric reply can be resolved. Two paths:
+        #   (a) marker path (Claude Code emits a needs_input marker with a
+        #       structured question/options payload); authoritative when present.
+        #   (b) pane path (omp emits NO markers) — parse the captured pane text.
+        # These fields are only meaningful while WAITING_USER; clear
+        # last_input_kind when the session moves on so a stale "menu" can't
+        # mislead the answer route or the feed digest.
+        # ------------------------------------------------------------------
         needs_input_markers = [m for m in new_markers if m.get("kind") == "needs_input"]
         if needs_input_markers:
             ni_payload = needs_input_markers[-1].get("payload") or {}
             question = ni_payload.get("question", "")
+            options = ni_payload.get("options") or []
             if question:
                 update_fields["last_question"] = question
+            update_fields["last_options"] = json.dumps(options)
+            update_fields["last_input_kind"] = "menu" if options else "prompt"
+        elif new_state == SessionLifecycle.WAITING_USER.value and pane_text:
+            question, options, is_menu = extract_menu_context(pane_text)
+            if question:
+                update_fields["last_question"] = question
+            update_fields["last_options"] = json.dumps(options)
+            update_fields["last_input_kind"] = "menu" if is_menu else "prompt"
+        elif new_state not in _ATTENTION_STATES:
+            # Left the waiting state — drop the menu marker so the next
+            # free-form reply is not misrouted as a stale menu selection.
+            update_fields["last_input_kind"] = ""
+            update_fields["last_options"] = json.dumps([])
 
         # Write state update (single writer)
         self._registry.upsert(

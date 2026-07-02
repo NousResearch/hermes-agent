@@ -1011,6 +1011,61 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild_id,
                     )
 
+            async def _terminate_managed_session_for_thread(thread_id: int) -> None:
+                """Enqueue a terminate intent for the managed session whose
+                discord_thread_id matches *thread_id*.
+
+                Closing/archiving the session thread means the user is done with
+                the run — reap it. The gateway/adapter only ENQUEUES; the
+                single-writer watcher drains the intent and does the actual
+                kill + attention/feed reap (single-writer invariant).
+                """
+                def _enqueue() -> Optional[str]:
+                    try:
+                        from session_orchestration.registry import (
+                            SessionOrchestrationRegistry,
+                        )
+                    except ImportError:
+                        return None
+                    registry = SessionOrchestrationRegistry()
+                    for row in registry.list():
+                        if str(row.get("discord_thread_id") or "") == str(thread_id):
+                            task_id = row["task_id"]
+                            if row.get("state") in ("DONE", "ERROR"):
+                                return None  # already terminal — nothing to reap
+                            registry.enqueue_terminate(task_id)
+                            return task_id
+                    return None
+
+                try:
+                    task_id = await asyncio.to_thread(_enqueue)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "[%s] thread-archive terminate enqueue failed for %s: %s",
+                        adapter_self.name, thread_id, exc,
+                    )
+                    return
+                if task_id:
+                    logger.info(
+                        "[%s] managed thread %s archived/closed → terminate queued for %s",
+                        adapter_self.name, thread_id, task_id,
+                    )
+
+            @self._client.event
+            async def on_thread_update(before, after):
+                """A managed session thread being archived reaps the session."""
+                newly_archived = (
+                    getattr(after, "archived", False)
+                    and not getattr(before, "archived", False)
+                )
+                if newly_archived:
+                    await _terminate_managed_session_for_thread(after.id)
+
+            @self._client.event
+            async def on_thread_delete(thread):
+                """A managed session thread being deleted reaps the session."""
+                await _terminate_managed_session_for_thread(thread.id)
+
             # Register slash commands
             if self._slash_commands:
                 self._register_slash_commands()

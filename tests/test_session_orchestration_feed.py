@@ -19,6 +19,7 @@ All tests use fakes — no live Discord calls.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -174,12 +175,14 @@ class TestPushTurnChange:
             )
         ]
 
-    def test_waiting_user_notice_at_mentions_requesting_user(self):
-        """When the row carries discord_user_id, the thread notice must lead
-        with an <@uid> mention so the user is actually pinged."""
+    def test_at_mention_ping_goes_to_feed_thread_gets_detail(self):
+        """The @-ping lives in #feed (a fresh router post that links to the
+        thread); the thread message carries the detail with NO @-mention (so
+        the user isn't double-pinged)."""
         tracker = _FakePostTracker()
         row = _make_row(task_id="t-mention", thread_id="thread-333")
         row["discord_user_id"] = "555000111"
+        row["last_question"] = "What should I do next?"
 
         with patch.object(feed_mod, "_post_discord_message", tracker):
             result = push_turn_change(
@@ -191,13 +194,30 @@ class TestPushTurnChange:
             )
 
         assert result is True
-        assert tracker.calls == [
-            (
-                "thread-333",
-                "<@555000111> 🔔 **[claude] t-mention** needs your input | my-project\n"
-                "State: `RUNNING` → `WAITING_USER`",
+        channels = [c for c, _ in tracker.calls]
+        assert channels == ["thread-333", "feed-ch-001"], "thread detail + feed ping"
+
+        thread_body = dict(tracker.calls)["thread-333"]
+        feed_body = dict(tracker.calls)["feed-ch-001"]
+        # Thread: detail, NO @-mention.
+        assert "<@555000111>" not in thread_body
+        # Feed: the @-ping router linking to the thread, with a question snippet.
+        assert feed_body.startswith("<@555000111> ")
+        assert "<#thread-333>" in feed_body
+        assert "What should I do next?" in feed_body
+
+    def test_no_feed_ping_without_user_id(self):
+        """No discord_user_id → no feed router ping (only the thread detail)."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-nouid", thread_id="thread-777")
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-nouid", row, new_state="WAITING_USER", old_state="RUNNING",
+                feed_channel_id="feed-ch-001",
             )
-        ], "notice must be prefixed with the user mention"
+
+        assert [c for c, _ in tracker.calls] == ["thread-777"]
 
     def test_transition_to_paused_handoff_posts_once_to_thread(self):
         tracker = _FakePostTracker()
@@ -267,6 +287,56 @@ class TestPushTurnChange:
             "thread-444",
             "thread-444",
         ]
+
+    def test_menu_renders_question_and_numbered_options(self):
+        """A WAITING_USER menu row renders the question + numbered options."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-menu", thread_id="thread-menu")
+        row["last_question"] = "Apply the proposed edit?"
+        row["last_input_kind"] = "menu"
+        row["last_options"] = json.dumps(["Accept", "Defer", "Reject"])
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-menu", row, new_state="WAITING_USER", old_state="RUNNING",
+                feed_channel_id="feed-ch",
+            )
+
+        assert len(tracker.calls) == 1
+        _, body = tracker.calls[0]
+        assert "Apply the proposed edit?" in body
+        assert "1. Accept" in body
+        assert "2. Defer" in body
+        assert "3. Reject" in body
+        assert "Reply with the option number" in body
+
+    def test_new_question_within_waiting_user_renotifies(self):
+        """A different question in the same WAITING_USER state re-notifies
+        (debounce keys on state + question digest, not state alone)."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-multi", thread_id="thread-multi")
+        row["last_input_kind"] = "menu"
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            row["last_question"] = "First question?"
+            row["last_options"] = json.dumps(["A", "B"])
+            r1 = push_turn_change(
+                "t-multi", row, new_state="WAITING_USER", old_state="RUNNING",
+            )
+            # Same state, SAME question — suppressed.
+            r2 = push_turn_change(
+                "t-multi", row, new_state="WAITING_USER", old_state="WAITING_USER",
+            )
+            # Same state, NEW question — must re-notify.
+            row["last_question"] = "Second, different question?"
+            row["last_options"] = json.dumps(["C", "D"])
+            r3 = push_turn_change(
+                "t-multi", row, new_state="WAITING_USER", old_state="WAITING_USER",
+            )
+
+        assert r1 is True
+        assert r2 is False
+        assert r3 is True
 
     def test_no_feed_channel_only_thread_posts(self):
         """When no feed_channel_id is configured, the task thread may still post."""
@@ -415,7 +485,10 @@ class TestAttentionDigestRenderer:
         assert content.index("task-high-earlier") < content.index("task-high-later")
         assert content.index("task-high-later") < content.index("task-low")
 
-    def test_renderer_includes_required_row_fields(self):
+    def test_renderer_is_concise_at_mention_router(self):
+        """Each row is a one-line router: thread link + @-mention + identity +
+        reason + detail + a truncated question snippet. Verbose telemetry
+        (age / idle / nudges / priority prose) lives in the thread, not here."""
         now = "2026-06-29T02:00:00+00:00"
         items = [
             {
@@ -433,6 +506,8 @@ class TestAttentionDigestRenderer:
                 "project": "hermes-agent",
                 "tmux_session": "sess-1",
                 "discord_thread_id": "thread-1",
+                "discord_user_id": "555000",
+                "last_question": "Which migration strategy should I use?",
                 "last_output_ts": "2026-06-29T01:45:00+00:00",
                 "idle_ticks": 4,
                 "nudge_count": 2,
@@ -441,15 +516,29 @@ class TestAttentionDigestRenderer:
 
         content = render_attention_digest(items, sessions, now=now)
 
+        # Router essentials present.
+        assert "<#thread-1>" in content
+        assert "<@555000>" in content
         assert "tmux `sess-1`" in content
         assert "claude/hermes-agent" in content
         assert "reason `FROZEN_STALE`" in content
         assert "pane hash unchanged" in content
-        assert "P9/frozen/stuck" in content
-        assert "opened 30m ago" in content
-        assert "last output 15m ago" in content
-        assert "idle 4 tick(s), nudges 2" in content
-        assert "<#thread-1>" in content
+        assert "Which migration strategy should I use?" in content
+        # Verbose telemetry moved to the thread — kept off the board.
+        assert "opened 30m ago" not in content
+        assert "idle 4 tick(s)" not in content
+        assert "P9/frozen/stuck" not in content
+
+    def test_renderer_truncates_long_question(self):
+        now = "2026-06-29T02:00:00+00:00"
+        items = [{"id": 1, "task_id": "task-1", "reason": "WAITING_USER"}]
+        long_q = "word " * 60
+        sessions = {"task-1": {"agent": "omp", "discord_thread_id": "t-9",
+                               "last_question": long_q}}
+        content = render_attention_digest(items, sessions, now=now)
+        assert "…" in content
+        # No single rendered line should carry the full 300-char question.
+        assert long_q.strip() not in content
 
 
 class TestAttentionDigestReconciler:

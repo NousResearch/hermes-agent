@@ -38,6 +38,7 @@ Called by
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -288,13 +289,27 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _truncate(text: str, limit: int = 80) -> str:
+    """Collapse whitespace and clip *text* to *limit* chars with an ellipsis."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
 def render_attention_digest(
     attention_items: Sequence[Mapping[str, Any]],
     sessions_by_task_id: Optional[Mapping[str, Mapping[str, Any]]] = None,
     *,
     now: Any = None,
 ) -> str:
-    """Render unresolved attention items as a deterministic Discord checklist."""
+    """Render unresolved attention items as a concise @-mention router.
+
+    Each row leads with the clickable thread link and an @-mention of the
+    owner, then the session identity, reason, optional detail, and a truncated
+    question snippet. The full question + numbered options live in the thread
+    (see ``push_turn_change``); the board stays a one-line-per-item router.
+    """
     render_now = _coerce_datetime(now) or datetime.now(timezone.utc)
     sessions = sessions_by_task_id or {}
     ordered_items = sorted(attention_items, key=_sort_attention_item)
@@ -323,42 +338,29 @@ def render_attention_digest(
         if project:
             owner_parts.append(str(project))
         owner = f" · {'/'.join(owner_parts)}" if owner_parts else ""
-        opened_age = _format_age(item.get("opened_at"), render_now)
-        last_output_age = _format_age(
-            session.get("last_output_ts") or item.get("last_output_ts"),
-            render_now,
-        )
-        opened_part = (
-            f"opened {opened_age} ago" if opened_age != "unknown" else "opened unknown"
-        )
-        last_output_part = (
-            f"last output {last_output_age} ago"
-            if last_output_age != "unknown"
-            else "last output unknown"
-        )
-        idle_ticks = int(session.get("idle_ticks") or item.get("idle_ticks") or 0)
-        nudge_count = int(session.get("nudge_count") or item.get("nudge_count") or 0)
         thread_id = session.get("discord_thread_id") or item.get("discord_thread_id")
         detail = item.get("detail")
         detail_part = f" · {detail}" if detail else ""
+        # @-mention the owner so the feed board routes/pings the right person.
+        # (The digest is a single edited message; Discord does not re-ping on an
+        # unchanged mention, so this is a router hint, not spam.)
+        uid = session.get("discord_user_id") or item.get("discord_user_id")
+        mention = f"<@{uid}> " if uid else ""
+        # A short question snippet points into the thread where the full
+        # question + numbered options live; the board stays concise.
+        question = (session.get("last_question") or "").strip()
+        question_part = f" · {_truncate(question)}" if question else ""
         if thread_id:
-            # Clickable Discord thread link using native channel mention syntax
-            lines.append(
-                "- [ ] "
-                f"<#{thread_id}> "
-                f"({_session_identity(task_id, session)})"
-                f"{owner} · reason `{reason}`{detail_part} · {_priority_label(item)}"
-                f" · {opened_part} · {last_output_part}"
-                f" · idle {idle_ticks} tick(s), nudges {nudge_count}"
-            )
+            # Clickable Discord thread link using native channel mention syntax.
+            target = f"<#{thread_id}>"
         else:
-            lines.append(
-                "- [ ] "
-                f"**{task_id}** ({_session_identity(task_id, session)})"
-                f"{owner} · reason `{reason}`{detail_part} · {_priority_label(item)}"
-                f" · {opened_part} · {last_output_part}"
-                f" · idle {idle_ticks} tick(s), nudges {nudge_count}"
-            )
+            target = f"**{task_id}**"
+        lines.append(
+            "- [ ] "
+            f"{target} — {mention}"
+            f"({_session_identity(task_id, session)})"
+            f"{owner} · reason `{reason}`{detail_part}{question_part}"
+        )
     return "\n".join(lines)
 
 
@@ -457,6 +459,53 @@ def reconcile_attention_digest(
 # ---------------------------------------------------------------------------
 
 
+def _parse_options(row: Dict[str, Any]) -> List[str]:
+    """Decode the JSON ``last_options`` column into a list of labels."""
+    raw = row.get("last_options")
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def _render_needs_input_detail(row: Dict[str, Any]) -> str:
+    """Render the extracted question and (for a menu) a numbered option list.
+
+    The full question + options live in the thread; the ``#feed`` digest only
+    routes to it. Returns "" when there is nothing extracted to show.
+    """
+    question = (row.get("last_question") or "").strip()
+    options = _parse_options(row)
+    lines: List[str] = []
+    if question:
+        lines.append(question)
+    if row.get("last_input_kind") == "menu" and options:
+        if lines:
+            lines.append("")
+        lines.extend(f"{idx}. {label}" for idx, label in enumerate(options, start=1))
+        lines.append("")
+        lines.append("_Reply with the option number to choose._")
+    return "\n".join(lines).strip()
+
+
+def _notify_key(new_state: str, row: Dict[str, Any]) -> str:
+    """Debounce key = state + a digest of the current question.
+
+    Keying on state alone suppresses a *new* question that arrives within the
+    same ``WAITING_USER`` state — omp can render menu→menu faster than the
+    1-minute watcher tick. Folding the question digest in lets a genuinely new
+    prompt re-notify while a re-read of the same prompt stays debounced.
+    """
+    question = (row.get("last_question") or "").strip()
+    if not question:
+        return new_state
+    digest = hashlib.sha1(question.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{new_state}\x00{digest}"
+
+
 def push_turn_change(
     task_id: str,
     row: Dict[str, Any],
@@ -476,12 +525,15 @@ def push_turn_change(
 
     Returns True if a task-thread notice was posted, False otherwise.
     """
-    # Belt-and-suspenders: skip if we already notified this state for this task.
-    if _last_notified.get(task_id) == new_state:
+    # Belt-and-suspenders: skip if we already notified this state+question for
+    # this task. Keying on the question digest (not state alone) lets a new
+    # question within the same WAITING_USER state re-notify.
+    notify_key = _notify_key(new_state, row)
+    if _last_notified.get(task_id) == notify_key:
         logger.debug(
-            "feed.push_turn_change: debounce suppressed for task_id=%s state=%s",
+            "feed.push_turn_change: debounce suppressed for task_id=%s key=%s",
             task_id,
-            new_state,
+            notify_key,
         )
         return False
 
@@ -501,23 +553,25 @@ def push_turn_change(
         icon = "⏸️"
         verb = "paused — handoff detected"
 
-    # @-mention the requesting user so the notice actually pings them. An
-    # @-mention in the (bot-created) task thread notifies the user AND adds
-    # them to the thread even if they were never subscribed. Without this the
-    # notice posts silently and the user has no signal to check the feed.
     uid = row.get("discord_user_id")
-    mention = f"<@{uid}> " if uid else ""
+
+    # THREAD gets the DETAIL (question + numbered options for a menu), with NO
+    # @-mention — the actual @-ping lives in #feed now, so we don't double-ping.
     message = (
-        f"{mention}{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
+        f"{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
         f"State: `{old_state}` → `{new_state}`"
     )
+    if new_state == "WAITING_USER":
+        detail = _render_needs_input_detail(row)
+        if detail:
+            message = f"{message}\n\n{detail}"
 
     posted = False
     if thread_id and thread_id != resolved_feed_channel:
         thread_msg_id = _post_discord_message(thread_id, message, token=token)
         if thread_msg_id:
             logger.info(
-                "feed.push_turn_change: posted to thread=%s msg_id=%s task_id=%s",
+                "feed.push_turn_change: posted detail to thread=%s msg_id=%s task_id=%s",
                 thread_id,
                 thread_msg_id,
                 task_id,
@@ -530,8 +584,31 @@ def push_turn_change(
     else:
         logger.debug("feed.push_turn_change: no discord_thread_id; skipping thread post")
 
-    # Record the notified state (debounce marker)
-    _last_notified[task_id] = new_state
+    # #feed gets a FRESH @-mention router message (a NEW post, so Discord
+    # actually notifies the user — unlike the silently-edited board digest),
+    # pointing at the thread where the full context lives. The board digest
+    # (reconcile_attention_digest) remains the persistent state view + reap
+    # target; this is the live "needs you" ping.
+    if resolved_feed_channel and uid:
+        thread_link = f"<#{thread_id}>" if thread_id else f"`{task_label}`"
+        question = (row.get("last_question") or "").strip()
+        snippet = f"\n> {_truncate(question)}" if question else ""
+        router_ping = (
+            f"<@{uid}> {icon} **[{agent}]** {verb}{project_part} → {thread_link}"
+            f"{snippet}"
+        )
+        feed_msg_id = _post_discord_message(resolved_feed_channel, router_ping, token=token)
+        if feed_msg_id:
+            logger.info(
+                "feed.push_turn_change: posted @-ping router to feed=%s msg_id=%s task_id=%s",
+                resolved_feed_channel,
+                feed_msg_id,
+                task_id,
+            )
+            posted = True
+
+    # Record the notified state+question (debounce marker)
+    _last_notified[task_id] = notify_key
 
     return posted
 

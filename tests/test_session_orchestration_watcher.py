@@ -23,6 +23,7 @@ All tests use:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -205,6 +206,152 @@ class TestTickWritesState:
         row = registry.get(task_id)
         assert row is not None
         assert row["state"] == "WAITING_USER"
+
+    def test_menu_question_and_options_persisted_from_pane(self, registry, db_path):
+        """omp emits no markers: the watcher parses the pane and persists the
+        question, ordered options, and last_input_kind='menu' on WAITING_USER."""
+        task_id = "t-menu-001"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        menu_pane = (
+            " Apply the proposed edit?\n"
+            "────────────────────────────\n"
+            "│ Accept (Recommended)     │\n"
+            "│    Apply it now.         │\n"
+            "│ Defer                    │\n"
+            "────────────────────────────\n"
+            " up/down navigate  enter select  esc cancel"
+        )
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        capture = FakeCapture(menu_pane)
+        watcher = _make_watcher(registry, adapter, capture)
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "posted"},
+            ),
+            patch("session_orchestration.feed.push_turn_change", return_value=False),
+        ):
+            watcher.tick()
+
+        row = registry.get(task_id)
+        assert row["state"] == "WAITING_USER"
+        assert row["last_input_kind"] == "menu"
+        assert json.loads(row["last_options"]) == ["Accept (Recommended)", "Defer"]
+        assert "Apply the proposed edit?" in (row["last_question"] or "")
+
+    def test_input_kind_cleared_when_leaving_waiting(self, registry, db_path):
+        """A stale 'menu' marker must not survive the return to RUNNING."""
+        task_id = "t-menu-002"
+        _seed_row(registry, task_id=task_id, state="WAITING_USER")
+        registry.upsert(task_id, agent="fake", last_input_kind="menu",
+                        last_options=json.dumps(["A", "B"]))
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("⠹ working…")
+        watcher = _make_watcher(registry, adapter, capture)
+        with patch("session_orchestration.feed.push_turn_change", return_value=False):
+            watcher.tick()
+
+        row = registry.get(task_id)
+        assert row["state"] == "RUNNING"
+        assert row["last_input_kind"] == ""
+
+    def test_session_end_while_waiting_reaps_attention_and_pings(
+        self, registry, db_path
+    ):
+        """A session that ends (DONE) while WAITING_USER must resolve its
+        attention item (drops from the feed digest) and clear the ping
+        debounce so no further @-pings fire."""
+        import session_orchestration.feed as feed_mod
+
+        task_id = "t-reap-end"
+        _seed_row(registry, task_id=task_id, state="WAITING_USER")
+        registry.open_attention_item(task_id, "WAITING_USER", priority=100)
+        feed_mod._last_notified[task_id] = "WAITING_USER"
+
+        # Attention item is open before the tick.
+        assert any(
+            it["reason"] == "WAITING_USER"
+            for it in registry.list_unresolved_attention_items()
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.DONE)
+        watcher = _make_watcher(registry, adapter, FakeCapture("done."))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ):
+            watcher.tick()
+
+        # Attention item resolved → falls out of the digest.
+        assert not [
+            it
+            for it in registry.list_unresolved_attention_items()
+            if it["reason"] == "WAITING_USER"
+        ]
+        # Ping debounce cleared → no lingering @-ping state.
+        assert task_id not in feed_mod._last_notified
+
+    def test_terminate_intent_reaps_attention_and_marks_terminal(
+        self, registry, db_path
+    ):
+        """A terminate intent (thread archived/closed) kills the session AND
+        reaps its attention item + feed line + ping debounce, even though the
+        now-terminal row is never re-iterated by the active loop."""
+        import session_orchestration.feed as feed_mod
+
+        task_id = "t-archive-term"
+        _seed_row(registry, task_id=task_id, state="WAITING_USER")
+        registry.open_attention_item(task_id, "WAITING_USER", priority=100)
+        feed_mod._last_notified[task_id] = "WAITING_USER"
+        registry.enqueue_terminate(task_id)
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("menu…"))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ):
+            watcher.tick()
+
+        row = registry.get(task_id)
+        assert row["state"] in ("DONE", "ERROR"), "session marked terminal"
+        assert not registry.list_unresolved_attention_items(), "attention reaped"
+        assert task_id not in feed_mod._last_notified, "ping debounce cleared"
+
+    def test_omp_stable_idle_promotes_running_to_waiting_user(self, registry, db_path):
+        """omp free-form wait: a detect()=RUNNING pane that idle_waiting() flags
+        is promoted to WAITING_USER only after it is STABLE across a tick (guards
+        against flapping). First tick stays RUNNING (no prior hash); second tick
+        with an identical pane promotes."""
+        class IdleAdapter(FakeAdapter):
+            def idle_waiting(self, pane_text):  # opt-in signal, always idle here
+                return True
+
+        task_id = "t-idle-omp"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        adapter = IdleAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture(" What do you want me to do?\n╭── omp ──╮\n╰─  ─╯")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        with (
+            patch("session_orchestration.feed.push_turn_change", return_value=False),
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "posted"},
+            ),
+        ):
+            watcher.tick()
+            row_after_1 = registry.get(task_id)
+            watcher.tick()
+            row_after_2 = registry.get(task_id)
+
+        assert row_after_1["state"] == "RUNNING", "1st tick: not yet stable"
+        assert row_after_2["state"] == "WAITING_USER", "2nd tick: stable idle → waiting"
+        assert row_after_2["last_input_kind"] == "prompt"
+        assert "What do you want me to do?" in (row_after_2["last_question"] or "")
 
     def test_no_spurious_notification_on_same_state(self, registry, db_path):
         """Tick must NOT raise or produce side-effects when state unchanged."""

@@ -8708,13 +8708,13 @@ class GatewayRunner:
         if _thread_id_for_drive:
             _so_enabled_drive = False
             try:
-                from hermes_cli.config import cfg_get as _cfg_get_drive
-                _cfg_drive = self.config if isinstance(self.config, dict) else (
-                    self.config.__dict__ if hasattr(self.config, "__dict__") else {}
-                )
-                _so_enabled_drive = bool(
-                    _cfg_get_drive(_cfg_drive, "session_orchestration", "enabled", default=False)
-                )
+                # Use the canonical session_orchestration config reader, which
+                # loads the raw ~/.hermes/config.yaml. self.config is a typed
+                # GatewayConfig that drops the session_orchestration block, so
+                # reading it here always yielded False and the managed-thread
+                # drive gate never fired live.
+                from session_orchestration.config import is_enabled as _so_is_enabled
+                _so_enabled_drive = bool(_so_is_enabled())
             except Exception:
                 pass
 
@@ -10902,12 +10902,20 @@ class GatewayRunner:
         platform = getattr(source, "platform", None)
         platform_adapter = self.adapters.get(platform) if platform else None
 
+        # handle_spawn_command gates on cfg_get(config, "session_orchestration",
+        # "enabled"). self.config is a typed GatewayConfig that drops that block,
+        # so passing self.config.__dict__ here would always read enabled=False and
+        # block the native /so-spawn command. Load the raw Hermes config instead.
+        try:
+            from hermes_cli.config import load_config_readonly
+            _so_config = load_config_readonly()
+        except Exception:
+            _so_config = self.config if isinstance(self.config, dict) else {}
+
         return await handle_spawn_command(
             event,
             args_text,
-            config=self.config if isinstance(self.config, dict) else (
-                self.config.__dict__ if hasattr(self.config, "__dict__") else {}
-            ),
+            config=_so_config,
             platform_adapter=platform_adapter,
         )
 
@@ -10969,6 +10977,7 @@ class GatewayRunner:
         """
         try:
             from session_orchestration.adapters.base import AgentAdapter
+            from session_orchestration.menu_parse import resolve_menu_answer
             from session_orchestration.registry import SessionOrchestrationRegistry
             from session_orchestration.relay import LockConflictError, SessionRelay
             from session_orchestration.spawn import get_adapter
@@ -11003,10 +11012,15 @@ class GatewayRunner:
             )
             return None
 
-        # Reconstruct the SessionHandle from the registry row.  The pane is
-        # derived from tmux_session (same convention as adapter.launch()).
+        # Reconstruct the SessionHandle from the registry row.  Use the BARE
+        # tmux_session as the pane target (matching the watcher's
+        # _build_handle_from_row): `tmux capture/send-keys -t <session>` resolves
+        # to the session's ACTIVE pane regardless of base-index. A hardcoded
+        # ':0.0' breaks under `set -g base-index 1` / `pane-base-index 1` (the
+        # first pane is ':1.1'), which made drive()'s _wait_for_ready capture a
+        # nonexistent pane and time out after 30s ("pane did not become ready").
         tmux_session = matched_row.get("tmux_session") or ""
-        pane = matched_row.get("pane") or (f"{tmux_session}:0.0" if tmux_session else "")
+        pane = matched_row.get("pane") or tmux_session
         from datetime import datetime, timezone as _tz
         handle = SessionHandle(
             session_id=task_id,
@@ -11029,14 +11043,21 @@ class GatewayRunner:
 
         relay = SessionRelay(registry, adapter)
 
+        # Menu-aware answer: on a WAITING_USER menu row a bare "2" selects
+        # nothing (arrow-key menu). resolve_menu_answer turns a valid option
+        # number into an Escape (cancel the menu) + a natural-language
+        # selection; every other reply passes through unchanged.
+        drive_text, drive_pre_keys = resolve_menu_answer(matched_row, message_text)
+
         logger.info(
-            "drive_loop: routing thread reply to task_id=%s agent=%s len=%d",
-            task_id, agent_name, len(message_text),
+            "drive_loop: routing thread reply to task_id=%s agent=%s len=%d menu_select=%s",
+            task_id, agent_name, len(drive_text), bool(drive_pre_keys),
         )
 
         try:
             await asyncio.to_thread(
-                relay.send_message, task_id, handle, message_text
+                relay.send_message, task_id, handle, drive_text,
+                pre_keys=drive_pre_keys,
             )
         except LockConflictError as exc:
             logger.warning(

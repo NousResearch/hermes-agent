@@ -79,7 +79,11 @@ class _SubprocessProbeRunner:
                 [binary, "--help"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                # omp's `--help` is slow (~8s: update-check + init) and slower
+                # under load; a 10s budget timed out intermittently, returning
+                # empty text that then read as "every flag missing" and disabled
+                # the adapter. Give it generous headroom.
+                timeout=30,
             )
             return result.stdout + result.stderr
         except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
@@ -123,7 +127,12 @@ class AdapterProbeSpec:
 _CLAUDE_SPEC = AdapterProbeSpec(
     binary="claude",
     supports_print_mode_flag="--print",
-    has_hooks_flag="--hook",
+    # Claude Code no longer exposes a bare `--hook` flag (hooks are configured
+    # via settings.json); its help lists `--include-hook-events`. The old
+    # `--hook` probe string never matched, so verify_adapters disabled the
+    # entire claude adapter every tick even though has_hooks is unused at
+    # runtime. Probe the flag that actually proves hook support.
+    has_hooks_flag="--include-hook-events",
     rpc_mode_flag=None,       # claude does not declare rpc_mode
     json_mode_flag="--output-format",
 )
@@ -180,6 +189,21 @@ def _check_capabilities(
 
     # Fetch help text once and reuse for all flag checks.
     help_text = runner.help_text(spec.binary)
+
+    # The binary EXISTS (checked above) but `--help` returned nothing — a slow
+    # or timed-out probe (omp's --help does an update-check + init and can be
+    # slow, especially under load). We cannot verify flags against empty text;
+    # treating every flag as "missing" here would spuriously DISABLE a healthy
+    # adapter, which stops the watcher from processing its sessions entirely
+    # (no state detection, no idle notification). Unverifiable ≠ broken: skip
+    # the flag checks and keep the adapter available.
+    if not help_text.strip():
+        _logger.warning(
+            "verify_adapters: '%s --help' returned no output (slow/timed-out "
+            "probe); skipping capability checks and keeping adapter available.",
+            spec.binary,
+        )
+        return mismatches
 
     def _flag_present(flag: str | None) -> bool:
         if flag is None:

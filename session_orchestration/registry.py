@@ -365,6 +365,26 @@ class SessionOrchestrationRegistry:
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent
 
+            # Answerable needs-input: the ordered option labels (JSON array) and
+            # the input kind ("menu" | "prompt" | "") extracted from the pane on
+            # WAITING_USER. omp emits no markers, so the watcher populates these
+            # by pane-text parsing (see session_orchestration/menu_parse.py).
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN last_options TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN last_input_kind TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
         self._write(_do)
 
     def _write(self, fn, conn: Optional[sqlite3.Connection] = None) -> Any:

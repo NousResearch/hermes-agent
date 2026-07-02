@@ -71,8 +71,34 @@ WebUI tests: no changes needed (Agent response shape unchanged)
 - `unbind_run(run_id)` cleans up on run terminal (completion, failure, cancel, sweep) for both API-server and messaging-platform paths
 - GatewayRunner-level binding is now complete: GatewayRunner creates runtime run_id per messaging turn, binds at agent promotion, unbinds at terminal cleanup
 - Messaging-platform approval and clarify events are recorded in RunManager with redacted payloads via bridge.request_approval / request_clarify in the gateway approval/clarify callbacks
-- GatewayRunner `/approve` and `/deny` slash commands do not update RunManager pending state directly (REST API path handles it)
+- GatewayRunner `/approve` and `/deny` slash commands now sync RunManager state via `_sync_runtime_approval_state()` helper (Phase 14)
+- Duplicate slash-command resolution returns conflict without duplicating events
+- Unknown approval IDs map to not_found; terminal runs map to conflict (Phase 14)
+- Non-API GatewayRunner execution now transitions run status to completed/failed before unbinding (Phase 14)
 - `hermes gateway run` full startup blocked by messaging adapter dependencies in test environments
+
+## Phase 14 Changes (this PR)
+
+### Non-API runtime execution plane:
+- Fixed invalid `status` parameter in `RunManager.create_run()` call in messaging path
+- Added terminal status transitions (completed/failed) before `_release_running_agent_state()` unbinds
+- Exception paths in `_handle_message()` correctly mark runs as failed
+
+### Slash-command state sync:
+- `_handle_approve_command` now syncs RunManager state after resolving gateway approval
+- `_handle_deny_command` now syncs RunManager state with `choice="deny"` after denial
+- New `_sync_runtime_approval_state()` helper resolves pending approval IDs in RunManager
+- Duplicate resolution, not_found, and conflict handling via existing RunManager primitives
+
+### New tests:
+- `tests/gateway/test_runtime_non_api_execution.py` — 17 tests
+- `tests/gateway/test_runtime_slash_approval.py` — 17 tests
+- 1 pre-existing test fix in `tests/gateway/test_restart_resume_pending.py`
+
+### Test results:
+- 304 tests passed, 0 failed across 10 runtime test files
+- 10 live smoke tests passed
+- All Phase 11B-13 tests continue to pass
 
 ## Rollback Plan
 

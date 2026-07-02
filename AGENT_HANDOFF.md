@@ -661,4 +661,82 @@ Phase 13 — PR submission or further GatewayRunner-level runtime binding.
 3. `_runtime_session_runs` dict may accumulate stale entries if unbind is missed on an exception path (mitigated by pop-on-cleanup at multiple cleanup sites)
 
 **Next task:**
-Phase 14 — Execution plane for non-API-server runtime runs, or cross-repo integration testing.
+Phase 15 — Cross-repo integration testing or remaining deferred items.
+
+---
+
+## Phase 14 — Non-API runtime execution plane and slash-command state sync (complete)
+
+### Commit
+- **TODO** (after `git commit`)
+
+### Summary
+Phase 14 wires the runtime execution plane for non-API-server GatewayRunner runs and makes gateway `/approve` and `/deny` slash-command actions update RunManager state consistently with the runtime approval lifecycle.
+
+### What was implemented
+
+**Non-API runtime execution plane:**
+1. Non-API GatewayRunner agent runs already had runtime run_id creation from Phase 13 (line 9895-9909). Fixed invalid `status="queued"` parameter passed to `RunManager.create_run()`.
+2. Terminal status transitions (completed/failed) are set in `_handle_message()` before unbinding, using the agent result's `completed` flag.
+3. Exception paths correctly mark runs as failed before unbinding.
+4. All existing bind_run/unbind_run wiring from Phase 12-13 remains valid.
+5. Events (run.started, run.status, approval.requested, approval.resolved, done) are appended throughout the lifecycle.
+
+**Where terminal status transitions are set:**
+- `gateway/run.py`: `_handle_message()` — before calling `_release_running_agent_state()`, checks agent result and transitions to `completed` or `failed`
+- `gateway/run.py`: `_release_running_agent_state()` — accepts optional `final_status` kwarg for setting terminal status before unbinding
+
+**Slash-command RunManager state sync:**
+1. `_handle_approve_command` — after resolving gateway approval, calls `_sync_runtime_approval_state()` to sync RunManager
+2. `_handle_deny_command` — after resolving gateway denial, calls `_sync_runtime_approval_state()` with "deny" choice
+3. Helper method `_sync_runtime_approval_state(session_key, count, choice)` finds the bound run_id and resolves pending approval IDs in RunManager FIFO
+4. RunManager's existing `resolve_approval()` handles duplicate detection (returns conflict), unknown IDs (returns not_found), and terminal runs (returns conflict)
+5. Secrets are redacted in all approval event payloads
+
+**How /approve updates RunManager state:**
+1. Gateway approval queue is resolved via `resolve_gateway_approval(session_key, choice, ...)` (existing behavior)
+2. Bridge is located via `self._runtime_control_bridge`
+3. Run ID is found via `self._runtime_session_runs.get(session_key)`
+4. Pending approval IDs are read from `RunManager.get_status()`
+5. Oldest `count` approval IDs are resolved via `RunManager.resolve_approval()`
+6. Each resolution appends exactly one `approval.resolved` event
+
+**How /deny updates RunManager state:**
+Same flow as /approve but with `choice="deny"`, which follows the existing event contract (event type is `approval.resolved` with choice field set to "deny").
+
+### What was NOT done (explicit decisions):
+- No clarify slash-command equivalent was added (no such command exists in the gateway)
+- No changes to the existing gateway approval primitive (resolve_gateway_approval remains unchanged)
+- No changes to WebUI — Agent response shape unchanged, no new bridge status values introduced
+
+### File changes in Phase 14:
+- `gateway/run.py` — Fixed `create_run()` call (removed invalid `status` parameter), added terminal status transitions in `_handle_message()`, added `final_status` kwarg to `_release_running_agent_state()`
+- `gateway/slash_commands.py` — Added `_sync_runtime_approval_state()` helper method, wired `/approve` and `/deny` handlers to sync RunManager state
+- `tests/gateway/test_runtime_non_api_execution.py` — new file (17 tests): non-API run creation, lifecycle, bind/unbind, completed/failed/cancelled transitions, events, secrets redaction, standalone fallback
+- `tests/gateway/test_runtime_slash_approval.py` — new file (17 tests): /approve sync, /deny sync, duplicate resolution, unknown IDs, terminal runs, pending ID removal, multiple approvals, secrets redaction
+- `tests/gateway/test_restart_resume_pending.py` — Fixed pre-existing test mock that didn't accept `run_id` kwarg added in Phase 13
+
+### Test results:
+- 304 tests passed, 0 failed across 10 runtime test files
+- All existing Phase 12 and Phase 13 tests continue to pass
+- 1 pre-existing test regression fixed (test_restart_resume_pending mock)
+- Broader gateway suite: 5 pre-existing failures remain (wecom XML parsing, session race guard, etc.)
+
+### Live smoke:
+- 10 live smoke tests passed through direct RunManager/RuntimeControlBridge API
+- Verified: run creation, bind/unbind lifecycle, completed/failed/cancelled transitions
+- Verified: /approve sync (pending IDs removed, events appended)
+- Verified: /deny sync (pending IDs removed, events appended)
+- Verified: duplicate resolution returns conflict without duplicating events
+- Verified: unknown approval IDs return not_found
+- Verified: terminal run resolution returns conflict
+- Verified: secrets redacted in all event payloads
+- External messaging-platform credentials and provider/tool execution not required for Phase 14 smoke
+
+### Remaining risks:
+1. `_sync_runtime_approval_state` resolves FIFO from RunManager, but RunManager's pending_approval_ids order may not perfectly match gateway approval queue order in edge cases (both are FIFO, so this should be correct)
+2. `_runtime_session_runs` dict is keyed by session_key — if a session has multiple concurrent runs, only the most recent run_id is stored
+3. `/approve` and `/deny` Resolution with GatewayRunner mock agents is not tested end-to-end with real messaging platform adapters (blocked on external credentials)
+
+### Next task:
+Phase 15 — Cross-repo integration testing, remaining deferred items (execution plane for non-API-server runtime runs, or broader live verification with real adapters).

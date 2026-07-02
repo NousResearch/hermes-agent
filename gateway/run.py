@@ -9903,11 +9903,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_id=run_id,
                     session_id=_quick_key,
                     model=getattr(self, "_resolved_gateway_model", "") or "",
-                    status="queued",
                 )
             except Exception:
                 logger.debug("Failed to create runtime run for messaging session", exc_info=True)
 
+        _agent_failed = False
         try:
             _agent_result = await self._handle_message_with_agent(
                 event, source, _quick_key, _run_generation, run_id=run_id,
@@ -9940,24 +9940,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
+            _agent_failed = isinstance(_agent_result, dict) and not _agent_result.get("completed", True)
             return _agent_result
+        except Exception:
+            _agent_failed = True
+            raise
         finally:
-            # MoA one-shot restore must run on EVERY exit path, not just
-            # success. The restore data lives on the per-turn event object
-            # (_moa_restore_override), which is discarded once the event goes
-            # out of scope — so if _handle_message_with_agent raises, a restore
-            # in the try block would be skipped and the MoA override would leak
-            # permanently (every later message silently fans out through MoA).
-            # Putting it in finally guarantees the revert on success, exception,
-            # and interrupt alike.
+            # MoA one-shot restore
             self._restore_moa_one_shot(event, _quick_key)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
+            # Runtime terminal status before unbinding
+            if run_id:
+                bridge = getattr(self, "_runtime_control_bridge", None)
+                if bridge is not None:
+                    try:
+                        if _agent_failed:
+                            bridge.run_manager.fail_run(run_id)
+                        else:
+                            bridge.run_manager.complete_run(run_id)
+                    except Exception:
+                        logger.debug(
+                            "Failed to set terminal status for run %s", run_id, exc_info=True,
+                        )
             self._release_running_agent_state(_quick_key)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
@@ -15281,6 +15284,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         *,
         run_generation: Optional[int] = None,
+        **kwargs,
     ) -> bool:
         """Pop ALL per-running-agent state entries for ``session_key``.
 
@@ -15304,6 +15308,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         clobbering a newer run's state during its own unwind.  Returns
         True when the slot was cleared, False when an ownership guard
         blocked it.
+
+        ``final_status`` (keyword-only, via **kwargs) sets the terminal
+        status on the bound runtime run before unbinding — "completed" or
+        "failed".  If not supplied, no status transition occurs.
         """
         if not session_key:
             return False
@@ -15331,6 +15339,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if bridge is not None:
             run_id = self._runtime_session_runs.pop(session_key, None)
             if run_id:
+                try:
+                    final_status = kwargs.get("final_status")
+                    if final_status == "completed":
+                        bridge.run_manager.complete_run(run_id)
+                    elif final_status == "failed":
+                        bridge.run_manager.fail_run(run_id)
+                except Exception:
+                    logger.debug(
+                        "Failed to set terminal status for run %s", run_id, exc_info=True,
+                    )
                 try:
                     bridge.unbind_run(run_id)
                 except Exception:

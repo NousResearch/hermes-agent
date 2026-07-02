@@ -506,3 +506,80 @@ All 11 runtime test files: 307 passed, 0 failed
 - `gateway/run.py` — control bridge wiring, run_id lifecycle, approval/clarify recording
 - `gateway/platforms/api_server.py` — set bridge on GatewayRunner
 - `tests/gateway/test_runtime_messaging_binding.py` — new file (36 tests)
+
+## Phase 14 — Non-API Runtime Execution Plane and Slash-Command State Sync (complete)
+
+### Summary
+
+Phase 14 wires the runtime execution plane for non-API-server GatewayRunner runs and makes gateway `/approve` and `/deny` slash-command actions update RunManager state consistently with the runtime approval lifecycle.
+
+### What Was Implemented
+
+**Non-API runtime execution plane:**
+1. Fixed invalid `status="queued"` parameter passed to `RunManager.create_run()` in the non-API messaging path (line 9902). The `create_run()` method does not accept a `status` parameter; status is always initialized to "queued" internally.
+2. Terminal status transitions (completed/failed) are now set in `_handle_message()` before `_release_running_agent_state()` unbinds the run. The agent result's `completed` flag determines completed vs failed.
+3. Exception paths in `_handle_message()` correctly mark runs as failed before unbinding.
+4. `_release_running_agent_state()` accepts an optional `final_status` kwarg for setting terminal status before unbinding.
+
+**Slash-command RunManager state sync:**
+1. Added `_sync_runtime_approval_state(session_key, count, choice)` helper to `GatewaySlashCommandsMixin` that:
+   - Resolves the bridge from `_runtime_control_bridge`
+   - Finds the bound `run_id` from `_runtime_session_runs`
+   - Reads pending approval IDs from RunManager
+   - Resolves the oldest `count` approval IDs with the given choice
+2. `_handle_approve_command` calls the helper after resolving gateway approval
+3. `_handle_deny_command` calls the helper with `choice="deny"` after resolving gateway denial
+
+### How /approve Updates RunManager
+
+1. Gateway approval queue resolved via `resolve_gateway_approval(session_key, choice, ...)` (existing)
+2. Bridge found via `self._runtime_control_bridge`
+3. Run ID found via `self._runtime_session_runs.get(session_key)`
+4. Pending approval IDs read from `RunManager.get_status()["pending_approval_ids"]`
+5. Oldest `count` IDs resolved via `RunManager.resolve_approval(run_id, approval_id, choice)`
+6. Each resolution appends exactly one `approval.resolved` event
+
+### How /deny Updates RunManager
+
+Same flow as /approve but with `choice="deny"`. The event type is `approval.resolved` with payload choice set to "deny", following existing event contract.
+
+### Files Changed in Phase 14
+
+- `gateway/run.py` — Fixed `create_run()` call, added terminal status transitions in `_handle_message()`, added `final_status` kwarg to `_release_running_agent_state()`
+- `gateway/slash_commands.py` — Added `_sync_runtime_approval_state()` helper, wired `/approve` and `/deny` to sync RunManager
+- `tests/gateway/test_runtime_non_api_execution.py` — new file (17 tests)
+- `tests/gateway/test_runtime_slash_approval.py` — new file (17 tests)
+- `tests/gateway/test_restart_resume_pending.py` — Fixed pre-existing test mock missing `run_id` kwarg
+
+### Tests Run
+
+```
+10 runtime test files: 304 tests passed, 0 failed
+  - test_runtime_non_api_execution.py: 17 tests (new)
+  - test_runtime_slash_approval.py: 17 tests (new)
+  - test_runtime_messaging_binding.py: 36 tests (Phase 13)
+  - test_runtime_gateway_binding.py: 38 tests (Phase 12)
+  - test_runtime_control_bridge.py: 33 tests (Phase 11C)
+  - test_runtime_approval_clarify.py: 38 tests (Phase 11B)
+  - test_runtime_run_manager.py: 40 tests (Phase 4/9)
+  - test_runtime_server_mount.py: 42 tests (Phase 10A)
+  - test_runtime_routes.py: 23 tests (Phase 4/9)
+  - test_runtime_models.py: 20 tests (Phase 4/9)
+```
+
+### Live Smoke
+
+10 live smoke tests passed via direct RunManager/RuntimeControlBridge API:
+- Run creation, bind/unbind lifecycle, completed/failed/cancelled transitions
+- /approve sync (pending IDs removed, events appended)
+- /deny sync (pending IDs removed, events appended)
+- Duplicate resolution returns conflict without duplicating events
+- Unknown approval IDs return not_found
+- Terminal run resolution returns conflict
+- Secrets redacted in all event payloads
+
+### Remaining Risks
+
+1. `_runtime_session_runs` is keyed by session_key — concurrent runs for the same session may see only the most recent run_id
+2. Full end-to-end testing with real messaging platform adapters blocked on external credentials
+3. Gateway `/approve` and `/deny` RunManager sync is best-effort FIFO; edge case ordering mismatches between gateway queue and RunManager are theoretically possible but unlikely in practice

@@ -4320,6 +4320,8 @@ class GatewaySlashCommandsMixin:
         if not count:
             return t("gateway.approve.no_pending")
 
+        self._sync_runtime_approval_state(session_key, count, choice)
+
         # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
         if _adapter:
@@ -4357,6 +4359,8 @@ class GatewaySlashCommandsMixin:
         if not count:
             return t("gateway.deny.no_pending")
 
+        self._sync_runtime_approval_state(session_key, count, "deny")
+
         # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
         if _adapter:
@@ -4366,6 +4370,40 @@ class GatewaySlashCommandsMixin:
         if count > 1:
             return t("gateway.deny.denied_plural", count=count)
         return t("gateway.deny.denied_singular")
+
+    def _sync_runtime_approval_state(self, session_key: str, count: int, choice: str) -> None:
+        """Sync resolved gateway approvals into RunManager pending-approval state.
+
+        After ``resolve_gateway_approval`` unblocks agent threads, this removes
+        the corresponding pending approval IDs from RunManager and appends
+        ``approval.resolved`` events so the runtime control APIs are consistent.
+        """
+        if not session_key or count <= 0:
+            return
+        bridge = getattr(self, "_runtime_control_bridge", None)
+        if bridge is None:
+            return
+        run_id = self._runtime_session_runs.get(session_key)
+        if not run_id:
+            return
+        try:
+            rm = bridge.run_manager
+            status = rm.get_status(run_id)
+            if not status:
+                return
+            pending_ids = list(status.get("pending_approval_ids", []))
+            for i in range(min(count, len(pending_ids))):
+                try:
+                    rm.resolve_approval(run_id, pending_ids[i], choice)
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve approval %s in RunManager for run %s",
+                        pending_ids[i], run_id, exc_info=True,
+                    )
+        except Exception:
+            logger.debug(
+                "Failed to sync RunManager approval state for session %s", session_key, exc_info=True,
+            )
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.

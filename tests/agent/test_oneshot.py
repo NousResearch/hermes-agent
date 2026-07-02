@@ -96,6 +96,46 @@ class TestRunOneshot:
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"
 
+    def test_no_timeout_honors_configured_task_timeout(self):
+        # Regression for the residual of #32729/#56322 on the oneshot path: when the
+        # caller (e.g. the llm.oneshot RPC) passes no timeout, the configured
+        # auxiliary.<task>.timeout must reach call_llm instead of a hard-coded default.
+        with patch(
+            "agent.oneshot.call_llm",
+            return_value=self._mock_response("ok"),
+        ) as llm, patch(
+            "agent.oneshot._get_task_timeout", return_value=90.0
+        ) as get_timeout:
+            run_oneshot(instructions="x", user_input="y", task="my_task")
+
+        get_timeout.assert_called_once_with("my_task", default=60.0)
+        assert llm.call_args.kwargs["timeout"] == 90.0
+
+    def test_no_timeout_falls_back_to_60_when_unconfigured(self):
+        # With no explicit timeout and no auxiliary.<task>.timeout configured, the
+        # historical 60s oneshot default is preserved (no behavior change for
+        # unconfigured callers) -- _get_task_timeout returns its supplied default.
+        with patch(
+            "agent.oneshot.call_llm",
+            return_value=self._mock_response("ok"),
+        ) as llm, patch(
+            "agent.oneshot._get_task_timeout",
+            side_effect=lambda task, default: default,
+        ):
+            run_oneshot(instructions="x", user_input="y")
+
+        assert llm.call_args.kwargs["timeout"] == 60.0
+
+    def test_explicit_timeout_is_forwarded_and_skips_resolution(self):
+        with patch(
+            "agent.oneshot.call_llm",
+            return_value=self._mock_response("ok"),
+        ) as llm, patch("agent.oneshot._get_task_timeout") as get_timeout:
+            run_oneshot(instructions="x", user_input="y", timeout=5.0)
+
+        get_timeout.assert_not_called()
+        assert llm.call_args.kwargs["timeout"] == 5.0
+
 
 class TestHelpers:
     def test_truncate_under_limit_unchanged(self):

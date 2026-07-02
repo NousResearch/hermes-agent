@@ -1,0 +1,14 @@
+name: tookie-osint
+version: 0.1.0
+description: "Tookie-OSINT username scanner bridge for Hermes."
+author: "Hermes local plugin"
+kind: standalone
+requires_env:
+  - name: TOOKIE_OSINT_ROOT
+    description: "Optional path to an Alfredredbird/tookie-osint checkout. If omitted, Hermes uses ~/.hermes/tookie-osint/root.txt."
+    secret: false
+provides_tools:
+  - tookie_status
+  - tookie_scan_username
+provides_cli:
+  - tookie-osint

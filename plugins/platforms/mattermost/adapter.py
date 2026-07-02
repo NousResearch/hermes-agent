@@ -870,9 +870,10 @@ class MattermostAdapter(BasePlatformAdapter):
         if (
             not thread_id
             and self._reply_mode == "thread"
-            and channel_type_raw != "D"
             and post_id
         ):
+            # Top-level posts (DMs included) root their own thread so the
+            # session that answers the first message is the thread's session.
             thread_id = post_id
 
         # Determine message type.

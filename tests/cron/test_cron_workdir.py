@@ -220,7 +220,7 @@ class TestTickWorkdirPartition:
         calls: list[tuple[str, str]] = []
         order_lock = threading.Lock()
 
-        def fake_run_job(job):
+        def fake_run_job(job, **_kw):
             # Return a minimal tuple matching run_job's signature.
             with order_lock:
                 calls.append((job["id"], threading.current_thread().name))
@@ -305,7 +305,7 @@ class TestRunJobTerminalCwd:
         )
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
-        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, extra_prompt=None: "hi")
         monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)

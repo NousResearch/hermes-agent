@@ -79,3 +79,29 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is False
         assert "boom" in res["error"]
         m_mark.assert_called_once()
+
+    def test_run_passes_extra_prompt_to_run_one_job(self):
+        """action='run' with prompt threads it as extra_prompt through the chain."""
+        ran = {"job": "after-run", "last_status": "ok", "last_error": None}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=ran):
+            cronjob(action="run", job_id="job-run-1", prompt="CONTEXT: client=Foo")
+
+        m_run.assert_called_once()
+        _, kwargs = m_run.call_args
+        assert kwargs["extra_prompt"] == "CONTEXT: client=Foo"
+
+    def test_run_without_prompt_passes_none_extra_prompt(self):
+        """action='run' without prompt passes extra_prompt=None (no mutation)."""
+        ran = {"job": "after-run", "last_status": "ok", "last_error": None}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=ran):
+            cronjob(action="run", job_id="job-run-1")
+
+        m_run.assert_called_once()
+        _, kwargs = m_run.call_args
+        assert kwargs.get("extra_prompt") is None

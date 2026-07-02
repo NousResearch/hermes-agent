@@ -1721,6 +1721,28 @@ def init_agent(
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
+    # Nous Hermes 3/4 are chat models, not tool-call-tuned — surface the
+    # warning on every platform (CLI already did this; gateway/TUI did not).
+    if not agent.quiet_mode:
+        try:
+            from hermes_cli.model_switch import _check_hermes_model_warning
+
+            _hermes_warn = _check_hermes_model_warning(agent.model or "")
+            if _hermes_warn:
+                _user_msg = (
+                    "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
+                    "lack reliable tool-calling for agent workflows (delegation, "
+                    "cron, proactive tools). Consider an agentic model instead "
+                    "(Claude, GPT, Gemini, Qwen-Coder, etc.)."
+                )
+                if hasattr(agent, "_emit_warning"):
+                    agent._emit_warning(_user_msg)
+                else:
+                    print(f"\n{_user_msg}\n", file=sys.stderr)
+                _ra().logger.warning(_hermes_warn)
+        except Exception:
+            pass
+
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
     # Skip names that are already present — the _ra().get_tool_definitions()
     # quiet_mode cache returned a shared list pre-#17335, so a stray

@@ -496,6 +496,68 @@ def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
 
+def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
+    """Return True when the on-disk context cache must not short-circuit probing.
+
+    LM Studio excludes caching because loaded context is transient — the user
+    can reload the model with a different context_length at any time.
+   """
+    return provider == "lmstudio"
+
+
+def _maybe_cache_local_context_length(
+    model: str,
+    base_url: str,
+    length: int,
+) -> None:
+    """Persist a locally probed context length only when it meets Hermes minimum.
+
+    Sub-minimum live windows (e.g. vLLM ``--max-model-len 32768``) are still
+    returned to callers so ``agent_init`` can fail with the existing
+    minimum-context guidance — they must not be normalized into the on-disk cache
+    as if they were valid operating limits.
+    """
+    if length >= MINIMUM_CONTEXT_LENGTH:
+        save_context_length(model, base_url, length)
+
+
+def _reconcile_local_cached_context_length(
+    model: str,
+    base_url: str,
+    cached: int,
+    api_key: str = "",
+) -> int:
+    """Return *cached* unless a live local probe reports a different limit.
+
+    vLLM/Ollama operators can restart with a new ``--max-model-len`` / ``num_ctx``
+    without changing the model id.  When the server is reachable, prefer its
+    reported window over a stale disk entry; when the probe fails (offline tests,
+    network blip), keep the cached value.
+
+    Live probes below :data:`MINIMUM_CONTEXT_LENGTH` invalidate stale cache
+    entries but are not persisted — startup should reject them, not bless a
+    sub-64K window as config.
+    """
+    live_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+    if live_ctx and live_ctx > 0 and live_ctx != cached:
+        if live_ctx < MINIMUM_CONTEXT_LENGTH:
+            logger.info(
+                "Live local probe for %s@%s reports %s (< minimum %s); "
+                "invalidating stale cache — agent init should reject",
+                model, base_url, f"{live_ctx:,}", f"{MINIMUM_CONTEXT_LENGTH:,}",
+            )
+            _invalidate_cached_context_length(model, base_url)
+            return live_ctx
+        logger.info(
+            "Reconciling stale local cache entry %s@%s: %s -> %s (live probe)",
+            model, base_url, f"{cached:,}", f"{live_ctx:,}",
+        )
+        _invalidate_cached_context_length(model, base_url)
+        _maybe_cache_local_context_length(model, base_url, live_ctx)
+        return live_ctx
+    return cached
+
+
 def is_local_endpoint(base_url: str) -> bool:
     """Return True if base_url points to a local machine.
 
@@ -1006,6 +1068,8 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
+        r'max_model_len\s+(\d{4,})',  # vLLM: "exceeds the max_model_len 32768"
+        r'maximum model length\s+(\d{4,})',  # vLLM alt: "exceeds maximum model length 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
@@ -1805,8 +1869,8 @@ def get_model_context_length(
        e. Ollama native /api/show probe (any base_url, provider-agnostic)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
     6. OpenRouter live API metadata (Kimi-family 32k guard)
-    7. Hardcoded defaults (broad family patterns, longest-key-first)
-    8. Local server query (last resort)
+    7. Local server query (before hardcoded defaults for local endpoints)
+    8. Hardcoded defaults (broad family patterns, longest-key-first)
     9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1866,7 +1930,7 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
-    if base_url and provider != "lmstudio":
+    if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1931,6 +1995,10 @@ def get_model_context_length(
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             else:
+                if is_local_endpoint(base_url):
+                    return _reconcile_local_cached_context_length(
+                        model, base_url, cached, api_key=api_key,
+                    )
                 return cached
 
     # 1b. AWS Bedrock — use static context length table.
@@ -1975,14 +2043,15 @@ def get_model_context_length(
             # 404/405 quickly.  Fall through on failure.
             ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
             if ctx is not None:
-                save_context_length(model, base_url, ctx)
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
                 return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    if provider != "lmstudio":
-                        save_context_length(model, base_url, local_ctx)
+                    if not _skip_persistent_context_cache(base_url, provider):
+                        _maybe_cache_local_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -2088,7 +2157,8 @@ def get_model_context_length(
     if base_url:
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
-            save_context_length(model, base_url, ctx)
+            if not _skip_persistent_context_cache(base_url, provider):
+                save_context_length(model, base_url, ctx)
             return ctx
     # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
     # models. OpenRouter's catalog carries per-model context_length (e.g.
@@ -2147,7 +2217,15 @@ def get_model_context_length(
             else:
                 return or_ctx
 
-    # 7. (reserved)
+    # 7. Query local server before hardcoded defaults — model names like
+    # ``Hermes-3-Llama-3.1-70B`` substring-match ``llama`` (131072) even when
+    # vLLM is running at a lower ``--max-model-len`` (e.g. 32768 on limited VRAM).
+    if base_url and is_local_endpoint(base_url):
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+        if local_ctx and local_ctx > 0:
+            if not _skip_persistent_context_cache(base_url, provider):
+                _maybe_cache_local_context_length(model, base_url, local_ctx)
+            return local_ctx
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
@@ -2160,15 +2238,7 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Query local server as last resort
-    if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
-        if local_ctx and local_ctx > 0:
-            if provider != "lmstudio":
-                save_context_length(model, base_url, local_ctx)
-            return local_ctx
-
-    # 10. Default fallback — 256K
+    # 9. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
 
 

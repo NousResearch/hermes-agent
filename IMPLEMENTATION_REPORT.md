@@ -886,3 +886,60 @@ Date: 2026-07-02
 2. Run real DeepSeek cross-repo Agent to WebUI smoke with DEEPSEEK_API_KEY.
 3. Run Telegram reference messaging-adapter live smoke with TELEGRAM_BOT_TOKEN and a safe private test chat.
 4. Complete full approval/clarify e2e resolution while the run is non-terminal.
+
+---
+
+## Phase 21 -- Pauseable Pending-Action Smoke
+
+Date: 2026-07-02
+
+### Summary
+
+Phase 21 adds deterministic fake-mode delay support so approval and clarify pending actions can be resolved while an executor-owned run is still non-terminal.
+
+### Changes
+
+- Added fake-mode delay support to the runtime fake agent path.
+- Added --fake-delay-seconds to scripts/standalone_runtime_server.py.
+- Added scripts/smoke_runtime_pending_actions.sh.
+- No production-only injection endpoints were added.
+- Real DefaultAgentFactory execution remains unchanged.
+
+### Verification
+
+- Pending approval and clarify IDs are visible while terminal=false.
+- Approval resolution removes apr-fake-001.
+- Clarify resolution removes clar-fake-001.
+- approval.resolved and clarify.resolved are each appended exactly once.
+- The delayed fake run completes after pending-action resolution.
+- Existing deterministic runtime and cross-repo smokes continue passing.
+
+---
+
+## Phase 21 -- Final Verification Results
+
+Date: 2026-07-02
+
+### Summary
+
+Phase 21 completed deterministic pauseable pending-action smoke coverage for executor-owned runtime runs.
+
+### Verification
+
+- Pauseable pending-action smoke: PASSED.
+- Existing Agent deterministic smoke: PASSED, 7 passed, 0 failed.
+- Cross-repo deterministic smoke: PASSED, 11 passed, 0 failed.
+- Agent focused runtime tests: PASSED, 150 passed, 0 failed.
+- WebUI focused default tests: PASSED, 77 passed.
+- WebUI agent-runs env focused tests: 69 passed, 8 expected failures.
+  - The expected failures are direct/journal runtime route assertions from tests/test_runtime_routes.py under forced agent-runs mode.
+
+### Preserved behavior
+
+- RuntimeExecutor remains the execution owner for execute:true runtime runs.
+- RuntimeControlBridge remains preserved.
+- DefaultAgentFactory real-provider execution remains unchanged.
+- API-server runtime path remains preserved.
+- Messaging-platform runtime binding remains preserved.
+- Slash-command state sync remains preserved.
+- No production-only pending-action injection endpoint was added.

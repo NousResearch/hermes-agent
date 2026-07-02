@@ -146,3 +146,70 @@ Preferred real-smoke target:
 - Provider: DeepSeek
 - Model: deepseek-v4-flash
 - Prompt: Return exactly: hermes runtime real smoke ok
+
+---
+
+## Phase 21 -- Pauseable Pending-Action Smoke
+
+Date: 2026-07-02
+
+### Goal
+
+Validate approval and clarify resolution while an executor-owned fake run is still non-terminal.
+
+### Implementation
+
+- Added fake-mode delay support to RuntimeExecutor fake-agent execution.
+- Added standalone runtime server flag: --fake-delay-seconds.
+- Added smoke script: scripts/smoke_runtime_pending_actions.sh.
+- The delay is fake-mode-only and does not affect DefaultAgentFactory or real provider execution.
+
+### Verified behavior
+
+- approval.requested appears while the run is non-terminal.
+- clarify.requested appears while the run is non-terminal.
+- POST /v1/runs/{run_id}/approval resolves apr-fake-001 while the run is non-terminal.
+- POST /v1/runs/{run_id}/clarify resolves clar-fake-001 while the run is non-terminal.
+- pending_approval_ids and pending_clarify_ids are cleared after resolution.
+- approval.resolved is appended exactly once.
+- clarify.resolved is appended exactly once.
+- The run reaches completed after the fake delay.
+- No production-only injection endpoint was added.
+
+---
+
+## Phase 21 -- Final Verification Results
+
+Date: 2026-07-02
+
+### Smoke results
+
+- Pauseable pending-action smoke: PASSED.
+  - pending approval and clarify visible while run was non-terminal.
+  - approval resolved with choice=approve.
+  - clarify resolved with answer=yes.
+  - pending IDs removed after resolution.
+  - resolved events appended exactly once.
+  - run completed after pending-action resolution.
+- Existing Agent deterministic smoke: PASSED.
+  - 7 passed, 0 failed, 0 skipped.
+- Cross-repo deterministic smoke: PASSED.
+  - 11 passed, 0 failed.
+- Agent focused runtime tests: PASSED.
+  - 150 passed, 0 failed.
+- WebUI focused default tests: PASSED.
+  - 77 passed.
+- WebUI agent-runs env focused tests: EXPECTED PARTIAL.
+  - 69 passed, 8 expected failures.
+  - Failures are direct/journal runtime route assertions in tests/test_runtime_routes.py when HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs is forced.
+  - This matches the prior expected-failure pattern for agent-runs env coverage.
+
+### Completion status
+
+Phase 21 completed the previously deferred full approval/clarify e2e lifecycle resolution for deterministic fake-mode runtime runs.
+
+### Remaining deferred items
+
+- Real DeepSeek live Agent-only smoke requires DEEPSEEK_API_KEY.
+- Real DeepSeek cross-repo smoke requires DEEPSEEK_API_KEY.
+- Telegram reference messaging-adapter live smoke requires TELEGRAM_BOT_TOKEN and a safe test chat.

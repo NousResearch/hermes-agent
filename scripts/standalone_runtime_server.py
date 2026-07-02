@@ -35,6 +35,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8642)
     parser.add_argument("--fake", action="store_true")
+    parser.add_argument("--fake-delay-seconds", type=float, default=0.0)
     args = parser.parse_args()
 
     _ensure_api_server_key()
@@ -64,9 +65,10 @@ def main():
             },
             request_approval=_fake_request_approval,
             request_clarify=_fake_request_clarify,
+            delay_seconds=args.fake_delay_seconds,
         )
         executor = RuntimeExecutor(rm, agent_factory=factory)
-        logger.info("Using FakeAgentFactory (deterministic mode with approval/clarify triggers)")
+        logger.info("Using FakeAgentFactory (deterministic mode with approval/clarify triggers, delay=%s)", args.fake_delay_seconds)
     else:
         from gateway.runtime.agent_factory import DefaultAgentFactory
         from gateway.runtime.executor import RuntimeExecutor

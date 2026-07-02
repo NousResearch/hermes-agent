@@ -110,6 +110,7 @@ class FakeAgentFactory:
         fail_message: str = "fake agent error",
         request_approval: Optional[Callable] = None,
         request_clarify: Optional[Callable] = None,
+        delay_seconds: float = 0.0,
         delay: float = 0,
     ):
         self._result = result or {
@@ -120,6 +121,7 @@ class FakeAgentFactory:
         self._fail_message = fail_message
         self._request_approval = request_approval
         self._request_clarify = request_clarify
+        self._delay_seconds = max(0.0, float(delay_seconds or 0.0))
         self._delay = delay
         self.created_agents: list[Any] = []
 
@@ -138,6 +140,7 @@ class FakeAgentFactory:
             fail_message=self._fail_message,
             request_approval=self._request_approval,
             request_clarify=self._request_clarify,
+            delay_seconds=self._delay_seconds,
             delay=self._delay,
         )
         self.created_agents.append(agent)
@@ -155,6 +158,7 @@ class _FakeAgent:
         fail_message: str = "fake agent error",
         request_approval: Optional[Callable] = None,
         request_clarify: Optional[Callable] = None,
+        delay_seconds: float = 0.0,
         delay: float = 0,
     ):
         self._run_id = run_id
@@ -163,6 +167,7 @@ class _FakeAgent:
         self._fail_message = fail_message
         self._request_approval = request_approval
         self._request_clarify = request_clarify
+        self._delay_seconds = max(0.0, float(delay_seconds or 0.0))
         self._delay = delay
         self.interrupted = False
 
@@ -182,6 +187,9 @@ class _FakeAgent:
 
         if self._request_clarify:
             self._request_clarify(self._run_id)
+
+        if self._delay_seconds > 0:
+            await asyncio.sleep(self._delay_seconds)
 
         if self._interrupt_requested():
             return {"failed": True, "error": "interrupted"}

@@ -4844,6 +4844,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     self._app["runtime_control_bridge"] = control_bridge
                     self._app["runtime_run_manager"] = run_manager
+
+                    try:
+                        runner = _gw_ref() if _gw_ref is not None else None
+                        if runner is not None:
+                            runner.set_runtime_control_bridge(control_bridge)
+                    except Exception:
+                        logger.debug(
+                            "[%s] Failed to set runtime control bridge on GatewayRunner",
+                            self.name, exc_info=True,
+                        )
                 except Exception:
                     control_bridge = None
                 self._app.router.add_post("/v1/runs", self._handle_runs)

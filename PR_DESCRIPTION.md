@@ -48,13 +48,13 @@ The WebUI currently instantiates `AIAgent` directly for chat. The long-term goal
 ## Tests Run
 
 ```
-188 runtime-focused tests: 188 passed, 0 failed (6 files)
-8845 full gateway suite: 8845 passed, 3 failed (pre-existing, unrelated)
-193 existing api_server tests: 193 passed, 0 failed
-23 existing api_server_runs tests: 23 passed, 0 failed
-104 WebUI tests: 104 passed, 0 failed
-Import/construct smoke: PASS
-Integration HTTP smoke: PASS
+Phase 13 complete: 307 runtime tests, all passed
+  - 11 runtime test files covering models, run_manager, routes, server_mount,
+    approval_clarify, control_bridge, gateway_binding, messaging_binding
+  - 36 new tests in test_runtime_messaging_binding.py
+Phase 12: 188 runtime tests passed
+Full gateway suite: main runtime tests pass (gateway startup blocked by messaging adapters in test env)
+WebUI tests: no changes needed (Agent response shape unchanged)
 ```
 
 ## Compatibility Notes
@@ -67,9 +67,11 @@ Integration HTTP smoke: PASS
 
 - Approval/clarify resolution has a full lifecycle in RunManager with bridge to live gateway primitives via `RuntimeControlBridge` (`tools.approval.resolve_gateway_approval` and `tools.clarify_gateway.resolve_gateway_clarify`)
 - True live agent interruption is bridged via `RuntimeControlBridge.stop_run()` which uses direct agent reference (from `bind_run`) or GatewayRunner `_running_agents` via weakref
-- `bind_run(run_id, session_key, agent)` is called at API server runtime run spawn time, establishing the mapping for approval/clarify/stop
-- `unbind_run(run_id)` cleans up on run terminal (completion, failure, cancel, sweep)
-- Full GatewayRunner-level binding for non-API-server sessions is deferred: the bridge infrastructure is ready, but GatewayRunner does not yet call `bind_run` when spawning runtime-tracked agents
+- `bind_run(run_id, session_key, agent)` is called at API server runtime run spawn time AND at GatewayRunner messaging-platform agent promotion time, establishing the mapping for approval/clarify/stop
+- `unbind_run(run_id)` cleans up on run terminal (completion, failure, cancel, sweep) for both API-server and messaging-platform paths
+- GatewayRunner-level binding is now complete: GatewayRunner creates runtime run_id per messaging turn, binds at agent promotion, unbinds at terminal cleanup
+- Messaging-platform approval and clarify events are recorded in RunManager with redacted payloads via bridge.request_approval / request_clarify in the gateway approval/clarify callbacks
+- GatewayRunner `/approve` and `/deny` slash commands do not update RunManager pending state directly (REST API path handles it)
 - `hermes gateway run` full startup blocked by messaging adapter dependencies in test environments
 
 ## Rollback Plan

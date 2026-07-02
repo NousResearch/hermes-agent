@@ -444,3 +444,65 @@ WebUI tests: 104 passed, 0 failed (no WebUI changes needed)
 - `gateway/platforms/api_server.py` — runtime mode: bind_run at spawn, unbind at terminal, _app guard
 - `tests/gateway/test_runtime_control_bridge.py` — 8 new agent-ref/unbind tests
 - `tests/gateway/test_runtime_gateway_binding.py` — new file (38 tests)
+
+---
+
+## Phase 13 — Messaging-platform GatewayRunner Binding (completed)
+
+### What's Implemented
+
+1. **GatewayRunner bridge integration**: GatewayRunner now accepts a `RuntimeControlBridge` via `set_runtime_control_bridge()` and uses it to track messaging-platform agent runs.
+
+2. **Per-turn run_id creation**: In `_process_message`, when the bridge is available, a runtime `run_id` is generated and registered in `RunManager` before the agent starts. The run_id is threaded through `_handle_message_with_agent` → `_run_agent` → `_run_agent_inner`.
+
+3. **Bind at agent promotion**: `bridge.bind_run(run_id, session_key, agent)` is called in the `track_agent()` callback after the AIAgent is promoted to `_running_agents`. The run status transitions to "running".
+
+4. **Unbind at terminal**: `bridge.unbind_run(run_id)` is called in:
+   - `_release_running_agent_state()` — the canonical cleanup path for all agent turns
+   - `_clear_session_boundary_security_state()` — session reset/switch cleanup
+
+5. **Approval recording**: When `_approval_notify_sync` fires during a messaging run, a unique `approval_id` is generated and `bridge.request_approval(run_id, approval_id, payload)` records the pending approval in RunManager with redacted payload.
+
+6. **Clarify recording**: When `_clarify_callback_sync` fires, `bridge.request_clarify(run_id, clarify_id, payload)` records the pending clarify in RunManager.
+
+7. **Final status**: `bridge.run_manager.complete_run()` or `.fail_run()` is called in the finally block of `_run_agent_inner` before unbind.
+
+8. **API server bridge sharing**: The API server's `_start_api_routes` now sets the bridge on GatewayRunner via `runner.set_runtime_control_bridge(control_bridge)` so both API-server and messaging-platform paths share the same bridge.
+
+### What's Complete
+
+- Messaging-platform run_id → session_key binding
+- Messaging-platform live approval continuation (record + resolve through REST API)
+- Messaging-platform live clarify continuation (record + resolve through REST API)
+- Messaging-platform live interrupt (direct agent ref, GatewayRunner fallback)
+- All Phase 12 API server binding preserved
+- All Phase 11B/11C behavior preserved
+- 307 total runtime tests pass (36 new in this phase)
+
+### What's Deferred
+
+- Execution plane for non-API-server runtime runs
+- GatewayRunner `/approve` and `/deny` slash commands updating RunManager state
+
+### Tests Run
+
+```
+All 11 runtime test files: 307 passed, 0 failed
+  - test_runtime_messaging_binding.py: 36 tests (new)
+  - test_runtime_gateway_binding.py: 38 tests
+  - test_runtime_control_bridge.py: 33 tests
+  - test_runtime_approval_clarify.py: 38 tests
+  - test_runtime_run_manager.py: 40 tests
+  - test_runtime_server_mount.py: 42 tests
+  - test_runtime_routes.py: 23 tests
+  - test_runtime_models.py: 20 tests
+  - test_runtime_footer.py: 25 tests
+  - test_runtime_config_env_expansion.py: 9 tests
+  - test_runtime_env_reload_config_authority.py: 3 tests
+```
+
+### Files Changed in Phase 13
+
+- `gateway/run.py` — control bridge wiring, run_id lifecycle, approval/clarify recording
+- `gateway/platforms/api_server.py` — set bridge on GatewayRunner
+- `tests/gateway/test_runtime_messaging_binding.py` — new file (36 tests)

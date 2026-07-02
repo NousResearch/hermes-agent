@@ -2857,6 +2857,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # Runtime control bridge — set by API server or external caller when
+        # runtime run tracking is active, so messaging-platform agent runs can
+        # be tracked, approved, clarified, and interrupted through the
+        # /v1/runs runtime API.
+        self._runtime_control_bridge: Optional[Any] = None
+        self._runtime_session_runs: Dict[str, str] = {}
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -3356,6 +3363,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @property
     def exit_code(self) -> Optional[int]:
         return self._exit_code
+
+    def set_runtime_control_bridge(self, bridge: Any) -> None:
+        self._runtime_control_bridge = bridge
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
@@ -9882,8 +9892,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        run_id = None
+        bridge = getattr(self, "_runtime_control_bridge", None)
+        if bridge is not None:
+            import uuid as _uuid
+            run_id = f"msg-{_uuid.uuid4().hex[:16]}"
+            self._runtime_session_runs[_quick_key] = run_id
+            try:
+                bridge.run_manager.create_run(
+                    run_id=run_id,
+                    session_id=_quick_key,
+                    model=getattr(self, "_resolved_gateway_model", "") or "",
+                    status="queued",
+                )
+            except Exception:
+                logger.debug("Failed to create runtime run for messaging session", exc_info=True)
+
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(
+                event, source, _quick_key, _run_generation, run_id=run_id,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10291,7 +10319,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int, run_id: Optional[str] = None):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -11069,6 +11097,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
+                run_id=run_id,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
@@ -15297,6 +15326,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # between lifecycle transitions.  Preserves gateway_state (see
         # _persist_active_agents).
         self._persist_active_agents()
+
+        bridge = getattr(self, "_runtime_control_bridge", None)
+        if bridge is not None:
+            run_id = self._runtime_session_runs.pop(session_key, None)
+            if run_id:
+                try:
+                    bridge.unbind_run(run_id)
+                except Exception:
+                    logger.debug(
+                        "Failed to unbind runtime run %s for session %s",
+                        run_id, session_key, exc_info=True,
+                    )
+
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -15345,6 +15387,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 e,
             )
+
+        bridge = getattr(self, "_runtime_control_bridge", None)
+        if bridge is not None:
+            run_id = self._runtime_session_runs.pop(session_key, None)
+            if run_id:
+                try:
+                    bridge.unbind_run(run_id)
+                except Exception:
+                    logger.debug(
+                        "Failed to unbind runtime run %s during session boundary cleanup %s",
+                        run_id, session_key, exc_info=True,
+                    )
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh run generation token for ``session_key``.
@@ -16063,6 +16117,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_id: str,
         session_key: str = None,
         run_generation: Optional[int] = None,
+        run_id: Optional[str] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -16083,6 +16138,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
+                run_id=run_id,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -16094,6 +16150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
+                run_id=run_id,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -16124,6 +16181,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_id: str,
         session_key: str = None,
         run_generation: Optional[int] = None,
+        run_id: Optional[str] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -17554,6 +17612,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     choices=list(choices) if choices else None,
                 )
 
+                bridge = getattr(self, "_runtime_control_bridge", None)
+                if bridge is not None and run_id:
+                    try:
+                        bridge.request_clarify(run_id, clarify_id, payload={
+                            "question": question,
+                        })
+                    except Exception:
+                        pass
+
                 # Pause typing — like approval, we don't want a "thinking..."
                 # status to obscure the prompt or block the user from typing
                 # an "Other" response on platforms that disable input while
@@ -17695,6 +17762,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (send_exec_approval) and plain-text fallback paths below use
                 # the redacted value.
                 cmd = _redact_approval_command(cmd)
+
+                bridge = getattr(self, "_runtime_control_bridge", None)
+                if bridge is not None and run_id:
+                    import uuid as _uuid
+                    _approval_id = f"apr-{_uuid.uuid4().hex[:10]}"
+                    try:
+                        bridge.request_approval(run_id, _approval_id, payload={
+                            "command": cmd,
+                            "description": desc,
+                        })
+                    except Exception:
+                        pass
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -18298,6 +18377,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents[session_key] = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
+
+            bridge = getattr(self, "_runtime_control_bridge", None)
+            if bridge is not None and run_id:
+                try:
+                    bridge.bind_run(run_id, session_key or "", agent_holder[0])
+                    bridge.run_manager.transition_status(run_id, "running")
+                except Exception:
+                    logger.debug(
+                        "Failed to bind runtime run %s to session %s",
+                        run_id, session_key, exc_info=True,
+                    )
         
         tracking_task = asyncio.create_task(track_agent())
         
@@ -19047,6 +19137,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Clean up tracking
             tracking_task.cancel()
             if session_key:
+                # Update runtime run final status before unbind
+                bridge = getattr(self, "_runtime_control_bridge", None)
+                if bridge is not None and run_id:
+                    try:
+                        _res = result_holder[0]
+                        if isinstance(_res, dict) and _res.get("failed"):
+                            bridge.run_manager.fail_run(
+                                run_id,
+                                error=str(_res.get("error", ""))[:500],
+                            )
+                        else:
+                            bridge.run_manager.complete_run(run_id)
+                    except Exception:
+                        pass
                 # Only release the slot if this run's generation still owns
                 # it.  A /stop or /new that bumped the generation while we
                 # were unwinding has already installed its own state; this

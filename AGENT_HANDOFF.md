@@ -597,3 +597,68 @@ Full gateway suite: 8845 passed, 3 failed (pre-existing `test_wecom_callback.py`
 
 ### Next task
 Phase 13 — PR submission or further GatewayRunner-level runtime binding.
+
+---
+
+### Phase 13 — Messaging-platform GatewayRunner Binding (completed)
+
+**Commit:** TBD (next commit)
+
+**What was implemented:**
+1. GatewayRunner now has a `_runtime_control_bridge` attribute and `set_runtime_control_bridge()` method
+2. GatewayRunner's `_process_message` creates a runtime `run_id` per messaging turn when a bridge is available
+3. `run_id` is threaded through `_handle_message_with_agent` → `_run_agent` → `_run_agent_inner`
+4. `bind_run(run_id, session_key, agent_ref)` is called in the `track_agent()` callback when the messaging agent is promoted to `_running_agents`
+5. `unbind_run(run_id)` is called in `_release_running_agent_state` and `_clear_session_boundary_security_state` when the messaging turn terminates
+6. Approval requests during messaging runs record `request_approval` in RunManager via the bridge, with redacted secrets
+7. Clarify requests during messaging runs record `request_clarify` in RunManager via the bridge
+8. Final run status is updated (completed/failed) in `_run_agent_inner`'s finally block
+9. API server sets the control bridge on GatewayRunner via `set_runtime_control_bridge()` when runtime mode is active
+10. Stop/cancel uses bound messaging-platform live agent reference through bridge
+
+**Where bind_run is called:**
+- `gateway/run.py`: `_run_agent_inner` → `track_agent()` callback (after agent promotion to `_running_agents`)
+
+**Where unbind_run is called:**
+- `gateway/run.py`: `_release_running_agent_state()` (after pop of `_running_agents`, `_running_agents_ts`, etc.)
+- `gateway/run.py`: `_clear_session_boundary_security_state()` (during session reset/clear)
+
+**What is complete:**
+- Messaging-platform run_id → session_key binding is complete
+- Messaging-platform live approval continuation is complete: approval events recorded in RunManager, resolution bridges through bound session_key to `resolve_gateway_approval()`
+- Messaging-platform live clarify continuation is complete: clarify events recorded in RunManager, resolution bridges through globally unique `clarify_id` to `resolve_gateway_clarify()`
+- Messaging-platform live interrupt is complete: stop uses bound agent reference, falls back to GatewayRunner `_running_agents` lookup
+- All existing API server runtime binding from Phase 12 remains valid
+- Standalone RunManager fallback remains valid
+- All acceptance requirements (404, 409, secrets redaction, not_found, URL run_id precedence) verified
+
+**What is still deferred:**
+- Execution plane for non-API-server runtime runs (runs created directly via `/v1/runs` without agent execution)
+- GatewayRunner `/approve` and `/deny` slash commands do not update RunManager pending approval state when resolved directly via chat (they still resolve through `resolve_gateway_approval` which is independent of RunManager)
+
+**Tests run:**
+- 307 tests across 11 runtime test files — 307 passed, 0 failed
+- New file: `tests/gateway/test_runtime_messaging_binding.py` — 36 tests covering:
+  - GatewayRunner binding (bind_run, unbind_run, multiple runs per session)
+  - Messaging approval lifecycle (request, resolve, 404/409/conflict, secrets redaction)
+  - Messaging clarify lifecycle (request, resolve, 404/409/conflict, secrets redaction)
+  - Stop/interrupt (direct agent reference, GatewayRunner fallback, no-live-agent, terminal)
+  - GatewayRunner control bridge setter
+  - Event lifecycle and non-duplication
+  - URL path run_id precedence
+  - Standalone RunManager fallback
+
+**File changes in Phase 13:**
+- `gateway/run.py` — `_runtime_control_bridge`, `_runtime_session_runs`, `set_runtime_control_bridge()`, run_id creation, bind_run/unbind_run, approval/clarify recording, final status updates
+- `gateway/platforms/api_server.py` — sets bridge on GatewayRunner after creation
+- `tests/gateway/test_runtime_messaging_binding.py` — new file (36 tests)
+
+**Live smoke:** Not performed due to missing external messaging platform credentials. All code paths verified through unit tests with mock agents, mock GatewayRunner instances, and fake session primitives.
+
+**Remaining risks:**
+1. The `/approve` and `/deny` slash commands resolve approvals directly via `resolve_gateway_approval()` without updating RunManager — the REST API path `/v1/runs/{run_id}/approval` handles RunManager state correctly
+2. Messaging GatewayRunner does not automatically register runtime runs for existing sessions — only turns after the bridge is set are tracked
+3. `_runtime_session_runs` dict may accumulate stale entries if unbind is missed on an exception path (mitigated by pop-on-cleanup at multiple cleanup sites)
+
+**Next task:**
+Phase 14 — Execution plane for non-API-server runtime runs, or cross-repo integration testing.

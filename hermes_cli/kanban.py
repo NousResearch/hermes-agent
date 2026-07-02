@@ -702,8 +702,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
     p_nsub.add_argument(
+        "--chat-type",
+        choices=("dm", "group", "channel", "thread"),
+        default=None,
+        help="Originating source chat_type, recorded so the active-wake "
+             "delivery modes resolve the operator's real session. Omit to "
+             "leave an existing sub unchanged (new subs default to 'dm').",
+    )
+    p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+    p_nsub.add_argument(
+        "--delivery-mode",
+        # Single source of truth shared with the DB/watcher enum.
+        choices=kb._NOTIFY_DELIVERY_MODES,
+        default=None,
+        help="How the kanban-notifier reacts to terminal events for this "
+             "subscription: 'notify' (passive message only; default), "
+             "'notify+wake' (message AND wake the destination gateway agent so "
+             "it reads the full board context and replies in its own voice), or "
+             "'wake' (wake the agent only, no passive message). Omit to leave an "
+             "existing subscription's mode unchanged (new subs default to 'notify').",
     )
 
     p_nlist = sub.add_parser(
@@ -2440,7 +2460,9 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
+            chat_type=getattr(args, "chat_type", None),
             notifier_profile=args.notifier_profile or _profile_author(),
+            delivery_mode=getattr(args, "delivery_mode", None),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -2460,8 +2482,12 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        dmode = s.get("delivery_mode") or "notify"
+        mode = "" if dmode == "notify" else f"  mode={dmode}"
+        ctype = s.get("chat_type") or "dm"
+        ct = "" if ctype == "dm" else f"  chat_type={ctype}"
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+              f"  (since event {s['last_event_id']}){owner}{ct}{mode}")
     return 0
 
 

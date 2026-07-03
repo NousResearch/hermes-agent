@@ -154,7 +154,7 @@ def make_tool_progress_cb(
         queue.append(tc_id)
 
         snapshot = None
-        if name in {"read_file", "write_file", "patch", "skill_manage"}:
+        if name in {"read_file", "write_file", "patch", "skill_manage", "terminal"}:
             try:
                 from agent.display import capture_local_edit_snapshot
 
@@ -227,6 +227,19 @@ def make_step_cb(
     """
 
     def _step(api_call_count: int, prev_tools: Any = None) -> None:
+        # BUILD composite terminal snapshots BEFORE popping from tool_call_meta.
+        # _step() processes tools one by one and pops each from tool_call_meta
+        # at line 284.  If read_file is processed before terminal, its snapshot
+        # is already gone by the time terminal tries to build a composite.
+        # Pre-collect all _read_path entries here so terminal always sees them.
+        _turn_read_snapshots: dict[str, str | None] = {}
+        for tc, m in list(tool_call_meta.items()):
+            rp = m.get("_read_path")
+            if rp:
+                snap = m.get("snapshot")
+                if snap is not None and hasattr(snap, "before") and rp in snap.before:
+                    _turn_read_snapshots[rp] = snap.before[rp]
+
         if prev_tools and isinstance(prev_tools, list):
             for tool_info in prev_tools:
                 tool_name = None
@@ -259,27 +272,20 @@ def make_step_cb(
                     tc_id = queue.popleft()
 
                     # For terminal: build composite snapshot from read_file snapshots
-                    # accumulated during this turn. read_file entries are still in
-                    # tool_call_meta (not yet popped).
-                    if tool_name == "terminal":
-                        known: dict[str, str | None] = {}
-                        for tc, m in list(tool_call_meta.items()):
-                            rp = m.get("_read_path")
-                            if rp:
-                                snap = m.get("snapshot")
-                                if snap is not None and hasattr(snap, "before") and rp in snap.before:
-                                    known[rp] = snap.before[rp]
-                        if known:
-                            from pathlib import Path
-                            from agent.display import LocalEditSnapshot
-                            tool_call_meta.setdefault(tc_id, {})["snapshot"] = LocalEditSnapshot(
-                                paths=[Path(p) for p in known],
-                                before=known,
-                            )
-                            logger.debug(
-                                "terminal composite snapshot: %d paths from %d reads",
-                                len(known), sum(1 for m in tool_call_meta.values() if m.get("_read_path")),
-                            )
+                    # collected at the start of _step().  Using _turn_read_snapshots
+                    # instead of tool_call_meta avoids the ordering bug where read_file
+                    # entries have already been popped by the time terminal is processed.
+                    if tool_name == "terminal" and _turn_read_snapshots:
+                        from pathlib import Path
+                        from agent.display import LocalEditSnapshot
+                        tool_call_meta.setdefault(tc_id, {})["snapshot"] = LocalEditSnapshot(
+                            paths=[Path(p) for p in _turn_read_snapshots],
+                            before=_turn_read_snapshots,
+                        )
+                        logger.debug(
+                            "terminal composite snapshot: %d paths",
+                            len(_turn_read_snapshots),
+                        )
 
                     meta = tool_call_meta.pop(tc_id, {})
                     update = build_tool_complete(

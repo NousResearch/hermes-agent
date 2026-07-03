@@ -150,6 +150,48 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+DESKTOP_ATTACHMENTS_REF_PREFIX = ".hermes/desktop-attachments"
+
+
+def get_desktop_attachments_dir() -> Path:
+    """Return the gateway directory for Desktop-uploaded file attachments."""
+    return get_hermes_home() / "desktop-attachments"
+
+
+def resolve_desktop_attachment_ref(raw: str) -> Path | None:
+    """Map a ``.hermes/desktop-attachments/...`` ref to a path under HERMES_HOME.
+
+    Desktop stages remote uploads under ``$HERMES_HOME/desktop-attachments/``,
+    but keeps the historical ``@file:.hermes/desktop-attachments/...`` ref shape
+    so session transcripts stay stable. Resolve that alias against HERMES_HOME,
+    not the session cwd (which may be the read-only Docker install tree).
+    """
+    text = str(raw or "").strip().replace("\\", "/")
+    prefix = DESKTOP_ATTACHMENTS_REF_PREFIX
+    if text == prefix:
+        return get_desktop_attachments_dir()
+    if not text.startswith(f"{prefix}/"):
+        return None
+    suffix = text[len(prefix) + 1 :]
+    if not suffix or ".." in Path(suffix).parts:
+        return None
+    return get_desktop_attachments_dir() / suffix
+
+
+def format_desktop_attachment_ref(target: Path) -> str | None:
+    """Return the canonical ``.hermes/desktop-attachments/...`` ref for *target*."""
+    resolved = target.resolve()
+    root = get_desktop_attachments_dir().resolve()
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return None
+    if rel.parts and ".." in rel.parts:
+        return None
+    suffix = rel.as_posix()
+    return f"{DESKTOP_ATTACHMENTS_REF_PREFIX}/{suffix}" if suffix else DESKTOP_ATTACHMENTS_REF_PREFIX
+
+
 def _get_packaged_data_dir(name: str) -> Path | None:
     """Return an installed data-files directory if one exists.
 

@@ -349,9 +349,15 @@ async def _default_url_fetcher(url: str) -> str:
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
-    path = Path(os.path.expanduser(target))
-    if not path.is_absolute():
-        path = cwd / path
+    from hermes_constants import resolve_desktop_attachment_ref
+
+    mapped = resolve_desktop_attachment_ref(target)
+    if mapped is not None:
+        path = mapped
+    else:
+        path = Path(os.path.expanduser(target))
+        if not path.is_absolute():
+            path = cwd / path
     resolved = path.resolve()
     if allowed_root is not None:
         try:

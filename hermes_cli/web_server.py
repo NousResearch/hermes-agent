@@ -940,8 +940,10 @@ class MoaModelSlot(BaseModel):
 class MoaPresetPayload(BaseModel):
     reference_models: list[MoaModelSlot] = []
     aggregator: MoaModelSlot = MoaModelSlot()
-    reference_temperature: float = 0.6
-    aggregator_temperature: float = 0.4
+    # None = temperature omitted from API calls (provider default), matching
+    # single-model agent behavior.
+    reference_temperature: Optional[float] = None
+    aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
     enabled: bool = True
 
@@ -954,8 +956,8 @@ class MoaConfigPayload(BaseModel):
     # clients during this PR's transition window.
     reference_models: list[MoaModelSlot] = []
     aggregator: MoaModelSlot = MoaModelSlot()
-    reference_temperature: float = 0.6
-    aggregator_temperature: float = 0.4
+    reference_temperature: Optional[float] = None
+    aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
     enabled: bool = True
     profile: Optional[str] = None

@@ -77,6 +77,7 @@ def _swarm_context(root_id: str, goal: str) -> str:
 
 
 def _write_swarm_root_evidence(
+    conn: sqlite3.Connection,
     root_id: str,
     *,
     goal: str,
@@ -88,7 +89,10 @@ def _write_swarm_root_evidence(
     Avoid storing the raw goal here: the root card already contains it, and the
     evidence gate only needs a non-secret file proving the topology action.
     """
-    evidence_dir = kb.kanban_home() / "kanban" / "evidence" / "swarm"
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = db_row["file"] if db_row and "file" in db_row.keys() else None
+    base_dir = Path(db_file).resolve().parent if db_file else kb.kanban_home()
+    evidence_dir = base_dir / "kanban-evidence" / "swarm"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     path = evidence_dir / f"{root_id}.json"
     payload = {
@@ -172,6 +176,7 @@ def create_swarm(
             )
 
     root_evidence = _write_swarm_root_evidence(
+        conn,
         root,
         goal=goal,
         worker_count=len(worker_specs),

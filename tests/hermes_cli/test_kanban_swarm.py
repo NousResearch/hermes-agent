@@ -1,3 +1,4 @@
+from pathlib import Path
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_swarm import (
@@ -30,6 +31,15 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         synthesizer = kb.get_task(conn, created.synthesizer_id)
 
         assert root.status == "done"
+        root_run = kb.latest_run(conn, created.root_id)
+        assert root_run is not None
+        assert root_run.metadata is not None
+        evidence_refs = root_run.metadata["evidence_refs"]
+        assert len(evidence_refs) == 1
+        evidence_path = Path(evidence_refs[0])
+        assert evidence_path.is_file()
+        assert evidence_path.parent == tmp_path / "kanban-evidence" / "swarm"
+        assert "Map the target market" not in evidence_path.read_text(encoding="utf-8")
         assert root.assignee == "orchestrator"
         assert [task.status for task in workers] == ["ready", "ready"]
         assert [task.assignee for task in workers] == ["researcher-a", "researcher-b"]

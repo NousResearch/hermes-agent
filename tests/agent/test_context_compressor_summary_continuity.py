@@ -229,6 +229,21 @@ def test_restart_handoff_in_protected_tail_is_folded_not_preserved():
     ) == 1
 
 
+def test_restart_handoff_fallback_preserves_rehydrated_summary_body():
+    """Deterministic fallback should retain the rehydrated old summary."""
+    compressor = _compressor(protect_first_n=3)
+    old_summary = "FALLBACK-OLD-SUMMARY durable fact must survive"
+
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        result = compressor.compress(_messages_with_default_handoff(old_summary))
+
+    result_text = "\n".join(str(msg.get("content", "")) for msg in result)
+    assert result_text.count(old_summary) == 1
+    assert sum(
+        1 for msg in result if ContextCompressor._is_context_summary_message(msg)
+    ) == 1
+
+
 def test_restart_probe_boundary_summary_just_inside_window_decays():
     """A summary at the last restart-probe index should still decay."""
     compressor = _compressor(protect_first_n=3)

@@ -225,6 +225,7 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 # only meant to preserve continuity anchors from the dropped window, not to
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
+_FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS = 3_000
 _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
@@ -1896,9 +1897,17 @@ class ContextCompressor(ContextEngine):
         )
         previous_summary_note = ""
         if self._previous_summary:
+            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
+                previous_summary = (
+                    previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
+                    + "\n...[previous summary snapshot truncated]"
+                )
             previous_summary_note = (
-                "\n\nPrevious compaction summary was present and should still be treated as "
-                "background continuity context, but the latest LLM summary update failed."
+                "\n\n## Previous Summary Snapshot\n"
+                f"{previous_summary}\n\n"
+                "The previous compaction summary above remains background "
+                "continuity context because the latest LLM summary update failed."
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""

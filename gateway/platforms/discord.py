@@ -45,6 +45,14 @@ class NaturalTaskIntakeResult:
         return self.matched
 
 
+@dataclass
+class NaturalTaskContext:
+    task_id: str
+    title: str
+    updated_at: float
+    message_id: str = ""
+
+
 _TASK_MAINTENANCE_CONTEXT = (
     "安全前提:\n"
     "- 対象はGootHandsが管理している許可済み環境として扱う。\n"
@@ -64,6 +72,51 @@ _TASK_MAINTENANCE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("抜き取る", "必要情報を確認する"),
     ("ハッキング", "セキュリティ確認"),
     ("ハック", "セキュリティ確認"),
+)
+
+_NATURAL_TASK_ACTION_RE = re.compile(
+    r"("
+    r"調べ|確認|見て|見直|直し|直して|直せ|修正|作っ|作成|作って|追加|登録|"
+    r"反映|進め|対応|実装|テスト|チェック|レビュー|デバッグ|整理|まとめ|"
+    r"探し|教えて|出して|消して|なくして|入れて|変えて|ダウンロード|格納|"
+    r"通知|送って|公開|デプロイ|マージ|push"
+    r")",
+    re.IGNORECASE,
+)
+
+_NATURAL_TASK_PROBLEM_RE = re.compile(
+    r"("
+    r"届いてます|届いた|見づらい|変です|変な|直ってない|なおってない|"
+    r"追加されない|登録されない|反映されない|動かない|出ない|消えない|"
+    r"失敗|エラー|警告|問題|不具合|落ちる|止まる|停止|謎の返事|"
+    r"領収書|請求書|freee|フリー|添付|メール"
+    r")",
+    re.IGNORECASE,
+)
+
+_NATURAL_TASK_CONTEXT_ONLY_RE = re.compile(
+    r"^("
+    r"ん|ん？|ん\\?|え|え？|え\\?|は|は？|は\\?|"
+    r"どういうこと|どうすればいい|なに|何|なんで|なぜ|どこ|どれ|"
+    r"本当|ほんと|平気|大丈夫|意味わか|説明して|もう一回.*説明|"
+    r"はい|うん|了解|ok|OK|ありがとう|それで|で|長い|端的に|"
+    r"違う|違います|そうじゃない|そっちじゃない"
+    r")[。.!！?？\\s]*$",
+    re.IGNORECASE,
+)
+
+_NATURAL_TASK_INFORMATION_QUESTION_RE = re.compile(
+    r"(何|なに|どういう|どうすれば|なぜ|なんで|どんな|どれ|どこ|いつ|誰|"
+    r"本当|ほんと|平気|大丈夫|意味|心当たり|原因).*[?？]$",
+    re.IGNORECASE,
+)
+
+_NATURAL_TASK_RECENT_FOLLOWUP_RE = re.compile(
+    r"("
+    r"さっき|この件|その件|前の|直前|同じ|まだ|直ってない|なおってない|"
+    r"差し戻|やり直|もう一回|OK|ok|進めて|続けて|直して|修正して"
+    r")",
+    re.IGNORECASE,
 )
 
 
@@ -674,6 +727,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Last natural-language task per Discord conversation. This keeps
+        # follow-ups like "直して" or "OK、進めて" attached to the active task
+        # instead of becoming unrelated new cards.
+        self._natural_task_context: Dict[str, NaturalTaskContext] = {}
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2649,7 +2706,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             await interaction.response.send_message(
-                "You're not authorized to use this command.",
+                "この操作は許可されていません。必要なら権限設定を確認します。",
                 ephemeral=True,
             )
         except Exception as e:
@@ -3154,9 +3211,59 @@ class DiscordAdapter(BasePlatformAdapter):
         normalized = re.sub(r"\s+", " ", (prompt or "").strip())
         if not normalized or normalized.startswith("/"):
             return False
-        if len(normalized) < 2:
+        if _NATURAL_TASK_CONTEXT_ONLY_RE.search(normalized):
             return False
-        return True
+        if _NATURAL_TASK_ACTION_RE.search(normalized):
+            return True
+        if _NATURAL_TASK_INFORMATION_QUESTION_RE.search(normalized):
+            return False
+        return bool(_NATURAL_TASK_PROBLEM_RE.search(normalized))
+
+    @staticmethod
+    def _looks_like_recent_task_followup(prompt: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        if not normalized or normalized.startswith("/"):
+            return False
+        return bool(_NATURAL_TASK_RECENT_FOLLOWUP_RE.search(normalized))
+
+    @staticmethod
+    def _natural_task_context_key(chat_id: str, thread_id: Optional[str]) -> str:
+        return str(thread_id or chat_id or "")
+
+    def _remember_natural_task_context(
+        self,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+        task_id: str,
+        title: str,
+        message_id: str = "",
+    ) -> None:
+        key = self._natural_task_context_key(chat_id, thread_id)
+        if not key or not task_id:
+            return
+        self._natural_task_context[key] = NaturalTaskContext(
+            task_id=task_id,
+            title=title or task_id,
+            updated_at=time.time(),
+            message_id=message_id,
+        )
+
+    def _recent_natural_task_context(
+        self,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> Optional[NaturalTaskContext]:
+        key = self._natural_task_context_key(chat_id, thread_id)
+        context = self._natural_task_context.get(key)
+        if context is None:
+            return None
+        ttl_seconds = float(os.getenv("DISCORD_NATURAL_TASK_CONTEXT_TTL_SECONDS", "21600"))
+        if ttl_seconds > 0 and (time.time() - context.updated_at) > ttl_seconds:
+            self._natural_task_context.pop(key, None)
+            return None
+        return context
 
     def _build_task_payload(
         self,
@@ -3309,6 +3416,42 @@ class DiscordAdapter(BasePlatformAdapter):
         finally:
             conn.close()
 
+    def _append_to_recent_ai_company_task(
+        self,
+        *,
+        context: NaturalTaskContext,
+        prompt: str,
+        author: str,
+    ) -> Dict[str, str]:
+        from hermes_cli import kanban_db as kb
+
+        board = (
+            os.getenv("HERMES_TASK_KANBAN_BOARD")
+            or os.getenv("HERMES_KANBAN_BOARD")
+            or "ai-company-2-0"
+        )
+        conn = kb.connect(board=board)
+        try:
+            task = kb.get_task(conn, context.task_id)
+            if task is None:
+                raise ValueError(f"unknown task {context.task_id}")
+            kb.add_comment(conn, context.task_id, author or "Discord", prompt)
+            if getattr(task, "status", "") == "blocked" and re.search(
+                r"(OK|ok|はい|了解|進めて|続けて|やって)",
+                prompt,
+                re.IGNORECASE,
+            ):
+                kb.unblock_task(conn, context.task_id)
+                task = kb.get_task(conn, context.task_id) or task
+            return {
+                "id": context.task_id,
+                "title": getattr(task, "title", context.title) or context.title,
+                "assignee": getattr(task, "assignee", "") or "",
+                "status": getattr(task, "status", "") or "",
+            }
+        finally:
+            conn.close()
+
     def _format_task_created_notice(self, task_data: Dict[str, str]) -> str:
         return "依頼として受け取りました。AI側で進めます。"
 
@@ -3374,6 +3517,44 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._natural_task_requests_enabled():
             return NaturalTaskIntakeResult()
+
+        recent_context = self._recent_natural_task_context(
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
+        if recent_context and self._looks_like_recent_task_followup(prompt):
+            try:
+                payload = self._build_natural_task_payload(message, prompt)
+            except ValueError:
+                return NaturalTaskIntakeResult()
+            try:
+                task_data = await asyncio.to_thread(
+                    self._append_to_recent_ai_company_task,
+                    context=recent_context,
+                    prompt=prompt,
+                    author=payload["created_by"],
+                )
+                self._remember_natural_task_context(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    task_id=task_data.get("id") or recent_context.task_id,
+                    title=task_data.get("title") or recent_context.title,
+                    message_id=str(getattr(message, "id", "") or ""),
+                )
+                logger.info(
+                    "[%s] Attached natural Discord follow-up to kanban task %s",
+                    self.name,
+                    task_data.get("id", "?"),
+                )
+                return NaturalTaskIntakeResult(
+                    matched=True,
+                    created=False,
+                    task_id=task_data.get("id"),
+                )
+            except Exception:
+                logger.exception("[%s] Failed to attach natural Discord follow-up to kanban task", self.name)
+                return NaturalTaskIntakeResult(matched=True, created=False)
+
         if not self._looks_like_natural_task_request(prompt):
             return NaturalTaskIntakeResult()
 
@@ -3401,6 +3582,13 @@ class DiscordAdapter(BasePlatformAdapter):
             "[%s] Registered natural Discord request as kanban task %s",
             self.name,
             task_data.get("id", "?"),
+        )
+        self._remember_natural_task_context(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            task_id=task_data.get("id") or "",
+            title=task_data.get("title") or payload.get("title") or "",
+            message_id=str(getattr(message, "id", "") or ""),
         )
         return NaturalTaskIntakeResult(
             matched=True,
@@ -3482,6 +3670,13 @@ class DiscordAdapter(BasePlatformAdapter):
             "[%s] Registered natural Discord event as kanban task %s",
             self.name,
             task_data.get("id", "?"),
+        )
+        self._remember_natural_task_context(
+            chat_id=str(source.chat_id or ""),
+            thread_id=getattr(source, "thread_id", None),
+            task_id=task_data.get("id") or "",
+            title=task_data.get("title") or payload.get("title") or "",
+            message_id=str(getattr(event, "message_id", "") or ""),
         )
         return NaturalTaskIntakeResult(
             matched=True,
@@ -3910,8 +4105,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 entry = self._skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
-                        f"Unknown skill: `{name}`. Start typing for "
-                        f"autocomplete suggestions.",
+                        f"`{name}` というスキルは見つかりません。入力途中の候補から選んでください。",
                         ephemeral=True,
                     )
                     return

@@ -1097,9 +1097,93 @@ def test_natural_language_classifier_registers_regular_discord_messages():
     assert DiscordAdapter._looks_like_natural_task_request(
         "どんなスキルがあるかを箇条書きで出して"
     )
-    assert DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
+    assert DiscordAdapter._looks_like_natural_task_request("このメールが届いてます")
+    assert DiscordAdapter._looks_like_natural_task_request("スマホで見づらい")
+    assert DiscordAdapter._looks_like_natural_task_request("さっきの件まだ変です")
     assert DiscordAdapter._looks_like_natural_task_request("直して")
+    assert DiscordAdapter._looks_like_natural_task_request("原因見て")
+    assert DiscordAdapter._looks_like_natural_task_request("本番に反映して")
+    assert not DiscordAdapter._looks_like_natural_task_request("ん？")
+    assert not DiscordAdapter._looks_like_natural_task_request("どういうこと？")
+    assert not DiscordAdapter._looks_like_natural_task_request("OK")
+    assert not DiscordAdapter._looks_like_natural_task_request("原因は？")
+    assert not DiscordAdapter._looks_like_natural_task_request("停止中って何？")
+    assert not DiscordAdapter._looks_like_natural_task_request("GitHubって何？")
+    assert not DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
     assert not DiscordAdapter._looks_like_natural_task_request("/status")
+
+
+@pytest.mark.asyncio
+async def test_natural_language_context_question_stays_in_chat(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+
+    fake_create_task = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+
+    adapter.handle_message = AsyncMock()
+    adapter.send = AsyncMock()
+
+    msg = _fake_message(_FakeTextChannel(), content="ん？")
+
+    await adapter._handle_message(msg)
+
+    fake_create_task.assert_not_called()
+    adapter.handle_message.assert_awaited_once()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_natural_language_followup_attaches_to_recent_task(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    fake_add_comment = MagicMock()
+    fake_unblock_task = MagicMock(return_value=True)
+    fake_create_task = MagicMock()
+
+    def fake_connect(*, board=None):
+        return fake_conn
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="前のタスク",
+            assignee="operations-orchestrator",
+            status="blocked",
+        )
+
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_comment", fake_add_comment)
+    monkeypatch.setattr("hermes_cli.kanban_db.unblock_task", fake_unblock_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+
+    adapter._remember_natural_task_context(
+        chat_id="100",
+        thread_id=None,
+        task_id="t_previous",
+        title="前のタスク",
+    )
+
+    msg = _fake_message(_FakeTextChannel(channel_id=100), content="OK、進めてください")
+
+    result = await adapter._maybe_handle_natural_task_request(
+        message=msg,
+        prompt="OK、進めてください",
+        chat_id="100",
+        thread_id=None,
+        has_attachments=False,
+    )
+
+    assert result.matched is True
+    assert result.created is False
+    assert result.task_id == "t_previous"
+    fake_create_task.assert_not_called()
+    fake_add_comment.assert_called_once()
+    fake_unblock_task.assert_called_once_with(fake_conn, "t_previous")
 
 
 def test_task_payload_frames_security_wording_as_authorized_maintenance(adapter):
@@ -1124,7 +1208,7 @@ def test_task_payload_frames_security_wording_as_authorized_maintenance(adapter)
 
 
 @pytest.mark.asyncio
-async def test_natural_language_question_registers_and_defers_immediate_reply(adapter, monkeypatch):
+async def test_natural_language_understanding_check_stays_in_chat(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
@@ -1166,10 +1250,9 @@ async def test_natural_language_question_registers_and_defers_immediate_reply(ad
     await adapter._handle_message(msg)
 
     adapter.send.assert_not_awaited()
-    adapter.handle_message.assert_not_awaited()
-    assert created["board"] == "ai-company-2-0"
-    assert created["kwargs"]["title"] == "この説明の意味わかりますか？"
-    fake_add_notify_sub.assert_called_once()
+    adapter.handle_message.assert_awaited_once()
+    assert created == {}
+    fake_add_notify_sub.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1426,7 +1509,7 @@ def test_register_skill_command_handles_unknown_skill_gracefully(adapter):
     asyncio.run(skill_cmd.callback(interaction, name="does-not-exist"))
 
     assert len(sent) == 1
-    assert "Unknown skill" in sent[0]["text"]
+    assert "スキルは見つかりません" in sent[0]["text"]
     assert "does-not-exist" in sent[0]["text"]
     assert sent[0]["ephemeral"] is True
 

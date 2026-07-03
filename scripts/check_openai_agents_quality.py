@@ -23,8 +23,11 @@ SCOPED_PATHS = [
     "docs/openai-agents-governed-runtime-spec.md",
     "docs/openai-agents-git-workflow.md",
     "docs/openai-agents-project-tracking.json",
+    "docs/openai-agents-source-manifest.json",
     "schemas/openai-agents-receipt.schema.json",
     "evals/openai_agents/governance_cases.json",
+    "scripts/check_openai_agents_quality.py",
+    "scripts/generate_openai_agents_proof_bundle.py",
     "pyproject.toml",
     "uv.lock",
 ]
@@ -298,6 +301,40 @@ def validate_project_tracking() -> None:
     )
 
 
+def validate_source_manifest() -> None:
+    path = ROOT / "docs/openai-agents-source-manifest.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("project_id") != "OASDK-HARDENING":
+        raise RuntimeError("source manifest project_id must be OASDK-HARDENING")
+    package = data.get("sdk_package") or {}
+    if package.get("distribution") != "openai-agents" or package.get("import_name") != "agents":
+        raise RuntimeError("source manifest must identify openai-agents / agents package")
+    sources = data.get("official_sources") or []
+    if len(sources) < 4:
+        raise RuntimeError("source manifest must include core OpenAI Agents docs")
+    ids = _ensure_unique_ids(sources, field="official_source")
+    required_ids = {
+        "OAI-AGENTS-DOCS-HOME",
+        "OAI-AGENTS-DOCS-AGENTS",
+        "OAI-AGENTS-DOCS-RESULTS",
+        "OAI-AGENTS-DOCS-GUARDRAILS",
+    }
+    missing = required_ids - ids
+    if missing:
+        raise RuntimeError(f"source manifest missing required docs: {sorted(missing)}")
+    for source in sources:
+        url = str(source.get("url") or "")
+        if not url.startswith("https://openai.github.io/openai-agents-python/"):
+            raise RuntimeError(f"source manifest contains non-official SDK URL: {url}")
+        for key in ("retrieved_at_utc", "local_relevance", "implementation_bindings"):
+            if not source.get(key):
+                raise RuntimeError(f"source {source['id']} missing {key}")
+    assumptions = data.get("local_assumptions") or []
+    if not assumptions:
+        raise RuntimeError("source manifest requires local_assumptions")
+    print(f"source manifest: {len(sources)} official source(s), {len(assumptions)} local assumption(s) ok")
+
+
 def check_registration() -> None:
     from hermes_cli.plugins import discover_plugins
     from tools.registry import registry
@@ -346,7 +383,7 @@ def main() -> int:
     parser.add_argument("--skip-pytest", action="store_true", help="Skip pytest (for unit-testing this script)")
     args = parser.parse_args()
 
-    run([sys.executable, "-m", "py_compile", "plugins/openai_agents/__init__.py", "plugins/openai_agents/tools.py", "scripts/check_openai_agents_quality.py"])
+    run([sys.executable, "-m", "py_compile", "plugins/openai_agents/__init__.py", "plugins/openai_agents/tools.py", "scripts/check_openai_agents_quality.py", "scripts/generate_openai_agents_proof_bundle.py"])
     if not args.skip_pytest:
         run(["uv", "run", "--with", "pytest", "--with", "pytest-xdist", "python", "-m", "pytest", "tests/plugins/test_openai_agents_bridge.py", "tests/test_toolsets.py", "-q", "-o", "addopts="])
     run(["git", "diff", "--check", "--", *SCOPED_PATHS])
@@ -357,6 +394,7 @@ def main() -> int:
     check_registration()
     run_governance_evals()
     validate_project_tracking()
+    validate_source_manifest()
     validate_recent_receipts()
     if args.live_smoke:
         live_smoke()

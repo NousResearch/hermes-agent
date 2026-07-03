@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "project_id": "OASDK-HARDENING",
+  "generated_at_utc": "2026-07-03T23:01:22Z",
+  "source_policy": {
+    "authority": "Official OpenAI Agents SDK documentation plus installed package version; local code comments are not source of truth when docs differ.",
+    "refresh_required_before": [
+      "changing SDK runtime semantics",
+      "enabling SDK sessions, handoffs, tracing, tool guardrails, MCP, or sandbox agents",
+      "pushing/PRing SDK bridge changes upstream",
+      "starting Helix/NAS/Postgres migration architecture work"
+    ],
+    "blocked_sources": [
+      "Chinese-origin model/provider/tooling docs and packages are out of scope by trust policy"
+    ]
+  },
+  "sdk_package": {
+    "distribution": "openai-agents",
+    "import_name": "agents",
+    "expected_installed_version": "0.17.7",
+    "verified_by_gate": true
+  },
+  "official_sources": [
+    {
+      "id": "OAI-AGENTS-DOCS-HOME",
+      "url": "https://openai.github.io/openai-agents-python/",
+      "title": "OpenAI Agents SDK",
+      "retrieved_at_utc": "2026-07-03T23:01:22Z",
+      "local_relevance": [
+        "Agents SDK is production-ready Python package for agentic apps.",
+        "Core primitives include agents, handoffs/agents-as-tools, guardrails, tracing, sessions, MCP, and sandbox agents.",
+        "Responses API and Agents SDK can coexist; SDK is best for managed workflows."
+      ],
+      "implementation_bindings": [
+        "plugins/openai_agents/tools.py uses Agent and Runner.run_sync for bounded lanes.",
+        "Hermes remains the top-level orchestrator; SDK workers are subordinate lanes."
+      ]
+    },
+    {
+      "id": "OAI-AGENTS-DOCS-AGENTS",
+      "url": "https://openai.github.io/openai-agents-python/agents/",
+      "title": "Agents",
+      "retrieved_at_utc": "2026-07-03T23:01:22Z",
+      "local_relevance": [
+        "Agent supports instructions, tools, handoffs, guardrails, structured outputs, lifecycle hooks, and tool-use behavior.",
+        "Agent plus Runner provides orchestration for turns, tools, guardrails, handoffs, and sessions."
+      ],
+      "implementation_bindings": [
+        "GovernedAgentOutput is used as output_type for structured proof.",
+        "Current implementation intentionally does not enable SDK tools, sessions, or handoffs yet."
+      ]
+    },
+    {
+      "id": "OAI-AGENTS-DOCS-RESULTS",
+      "url": "https://openai.github.io/openai-agents-python/results/",
+      "title": "Results",
+      "retrieved_at_utc": "2026-07-03T23:01:22Z",
+      "local_relevance": [
+        "Runner.run_sync returns RunResult with final_output, new_items, raw_responses, and replay/state surfaces.",
+        "final_output may be typed output, string, or None depending on run state."
+      ],
+      "implementation_bindings": [
+        "_coerce_structured_output consumes final_output defensively.",
+        "_extract_usage reads raw_responses for best-effort token usage."
+      ]
+    },
+    {
+      "id": "OAI-AGENTS-DOCS-GUARDRAILS",
+      "url": "https://openai.github.io/openai-agents-python/guardrails/",
+      "title": "Guardrails",
+      "retrieved_at_utc": "2026-07-03T23:01:22Z",
+      "local_relevance": [
+        "Blocking input guardrails run before expensive model execution and prevent token/tool spend on tripwire.",
+        "Output guardrails validate final agent output; tool guardrails are needed for every custom tool call in delegated workflows."
+      ],
+      "implementation_bindings": [
+        "_build_agent_guardrail_kwargs uses run_in_parallel=False for input scope guardrails.",
+        "SDK tool guardrails are future work because SDK workers intentionally lack side-effect tools today."
+      ]
+    }
+  ],
+  "local_assumptions": [
+    {
+      "id": "ASSUME-NO-SDK-SESSIONS-YET",
+      "claim": "Hermes owns session/memory orchestration; SDK sessions are disabled until isolated multi-turn SDK workflows are explicitly designed.",
+      "status": "intentional_local_policy",
+      "recheck_trigger": "Before adding SDK sessions or handoffs."
+    },
+    {
+      "id": "ASSUME-TRACING-DISABLED",
+      "claim": "SDK tracing remains disabled and sensitive trace data excluded until a sanitized opt-in trace processor is designed.",
+      "status": "intentional_local_policy",
+      "recheck_trigger": "Before enabling OpenAI tracing or dashboards."
+    },
+    {
+      "id": "ASSUME-TOOLS-OUTSIDE-SDK",
+      "claim": "SDK workers do not inherit Hermes terminal/file/browser/memory tools; Hermes orchestrator handles side effects.",
+      "status": "intentional_local_policy",
+      "recheck_trigger": "Before adding SDK function tools, MCP tools, or sandbox agents."
+    }
+  ]
+}

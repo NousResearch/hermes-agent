@@ -111,6 +111,36 @@
         "Successful retry responses include retry metadata and first-failure receipt hash."
       ],
       "approval_boundary": "local repo code/docs/tests only; no push, no migration"
+    },
+    {
+      "id": "OASDK-HARDEN-007",
+      "title": "OpenAI Agents SDK source freshness manifest",
+      "status": "in_progress",
+      "linked_commit_refs": [],
+      "linked_receipt_groups": [
+        "OASDK-RCPT-GATE"
+      ],
+      "acceptance": [
+        "Manifest records official OpenAI Agents SDK docs used for local implementation assumptions.",
+        "Quality gate validates required official docs, package identity, source relevance, and local assumptions.",
+        "Future SDK sessions, handoffs, tracing, tools, or migration work require manifest refresh."
+      ],
+      "approval_boundary": "local repo docs/scripts/tests plus read-only official docs lookup; no push or migration"
+    },
+    {
+      "id": "OASDK-HARDEN-008",
+      "title": "OpenAI Agents SDK local proof bundle generator",
+      "status": "in_progress",
+      "linked_commit_refs": [],
+      "linked_receipt_groups": [
+        "OASDK-RCPT-GATE"
+      ],
+      "acceptance": [
+        "Generator produces a read-only local proof bundle with git state, artifact hashes, manifest hashes, and latest SDK receipts.",
+        "Generated bundle has SHA-256 proof handle and no external side effects.",
+        "Quality gate compiles generator and validates source/tracking manifests."
+      ],
+      "approval_boundary": "local repo scripts/docs only; no push, no migration, no live model calls"
     }
   ],
   "receipt_groups": [
@@ -223,6 +253,32 @@
       "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-006"
+      ],
+      "required_approval_level": "normal_local_repo_change",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": false,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-006",
+      "title": "Wire OpenAI SDK source freshness manifest into local gate",
+      "status": "in_progress",
+      "linked_roadmap_items": [
+        "OASDK-HARDEN-007"
+      ],
+      "required_approval_level": "normal_local_repo_change",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": false,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-007",
+      "title": "Generate local OpenAI SDK hardening proof bundle",
+      "status": "in_progress",
+      "linked_roadmap_items": [
+        "OASDK-HARDEN-008"
       ],
       "required_approval_level": "normal_local_repo_change",
       "destructive": false,

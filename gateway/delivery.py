@@ -500,8 +500,11 @@ class DeliveryRouter:
                 )
 
             # Step 2 — truncation (only for non-chunking adapters).
-            if getattr(adapter, "splits_long_messages", False):
-                # Adapter chunks natively — deliver full payload.
+            if (
+                getattr(adapter, "splits_long_messages", False)
+                or getattr(adapter, "preserves_long_messages", False)
+            ):
+                # Adapter chunks natively or its transport accepts the body directly.
                 if saved_path:
                     logger.info(
                         "Cron output preserved for chunking adapter (%d chars) — "

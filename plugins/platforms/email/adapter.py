@@ -422,6 +422,10 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    # SMTP accepts report-sized plaintext bodies directly; unlike chat adapters,
+    # Email does not need to split the body to preserve it.
+    preserves_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

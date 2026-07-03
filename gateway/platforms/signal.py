@@ -26,7 +26,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 import httpx
 
@@ -419,7 +419,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
+        url = f"{self.http_url}/api/v1/events"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:

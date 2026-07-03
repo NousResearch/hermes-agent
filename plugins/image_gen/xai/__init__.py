@@ -137,6 +137,11 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     import base64
     import os as _os
 
+    # Enforce the shared credential-read guard before reading local bytes
+    # (same boundary the OpenAI / OpenRouter / Codex image providers apply).
+    from agent.file_safety import raise_if_read_blocked
+
+    raise_if_read_blocked(source)
     with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
         raw = fh.read()
     ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()

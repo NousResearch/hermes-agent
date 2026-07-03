@@ -146,17 +146,10 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
         if "image/" in header:
             ext = header.split("image/", 1)[1].split(";", 1)[0] or "png"
         return base64.b64decode(b64), f"image.{ext}"
-    # Local file path.
-    try:
-        from agent.file_safety import get_read_block_error
+    # Local file path — enforce the shared credential-read guard before reading.
+    from agent.file_safety import raise_if_read_blocked
 
-        blocked = get_read_block_error(ref)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - preserve existing local-file behavior
-        logger.debug("OpenAI image input read guard unavailable: %s", exc)
+    raise_if_read_blocked(ref)
     with open(ref, "rb") as fh:
         data = fh.read()
     name = os.path.basename(ref) or "image.png"

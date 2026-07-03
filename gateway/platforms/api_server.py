@@ -43,7 +43,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     from aiohttp import web
@@ -93,6 +93,38 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
+# --- /v1/runs `attachments` (KarinAI managed runs) ------------------------------
+# The KarinAI backend materializes a conversation's uploaded files into the
+# workspace BEFORE dispatch and sends a manifest of confirmed-present files in
+# body["attachments"] ({file_id, safe_name, mime, size, local_path, purpose}).
+# The agent must be TOLD about them (a context note per file, mirroring how the
+# messaging platforms handle inbound documents) or it has no idea they exist.
+#
+# Context model note (drives the design below): /v1/runs builds the model's
+# context SOLELY from the request body — the backend stores the CLEAN user input
+# and resends clean history, so nothing the gateway prepends here survives into
+# later runs' context. Path notes are therefore re-injected on EVERY run (they
+# are small and never duplicated in backend history); only the expensive content
+# INLINING is deduped per session (first surfacing inlines, later runs carry the
+# path note and the agent tool-reads on demand).
+#
+# Per-file inline cap matches the platform adapters' MAX_TEXT_INJECT_BYTES:
+# all-or-nothing, no truncation — an over-cap text file degrades to a path note.
+MAX_ATTACHMENT_INLINE_BYTES = 100 * 1024
+# Aggregate inline budget per run: a many-file manifest must not blow the prompt
+# (inlined bytes come from DISK, so MAX_REQUEST_BYTES does not bound them).
+# Files past the budget get path notes and stay eligible for a later run.
+MAX_ATTACHMENT_INLINE_TOTAL_BYTES = 256 * 1024
+# Inlining reads file bytes into the prompt, so it is restricted to paths under
+# the managed workspace mount (the same dir the runtime validates at startup).
+# Anything else still gets a path note (the agent's own tools enforce their own
+# sandboxing when it goes to read the file).
+ATTACHMENT_INLINE_ROOT = (
+    os.getenv("KARINAI_ATTACHMENT_INLINE_ROOT") or os.getenv("KARINAI_WORKSPACE_DIR") or "/workspace"
+)
+# Cap on sessions tracked for inline dedup.
+MAX_ATTACHMENT_DEDUP_SESSIONS = 2048
+
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
@@ -100,6 +132,128 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _validate_run_attachments(raw: Any) -> Optional[str]:
+    """Validate body["attachments"] shape; return a human-readable error or None.
+
+    Mirrors the conversation_history validation style: per-index messages, fail
+    the request loudly — the manifest comes from the trusted runtime-manager, so
+    a malformed entry is a programming error, not user input to tolerate."""
+    if not isinstance(raw, list):
+        return "'attachments' must be an array of attachment objects"
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            return f"attachments[{i}] must be an object"
+        for key in ("safe_name", "local_path"):
+            if not isinstance(entry.get(key), str) or not entry.get(key, "").strip():
+                return f"attachments[{i}] must have non-empty '{key}'"
+    return None
+
+
+def _attachment_dedup_key(entry: Dict[str, Any]) -> str:
+    file_id = entry.get("file_id")
+    return str(file_id) if file_id else str(entry.get("local_path", ""))
+
+
+def _is_text_attachment(safe_name: str, mime: str) -> bool:
+    # Same gate the platform adapters use: extension allowlist OR text/* MIME —
+    # deliberately NOT a blind UTF-8 sniff (PDF/zip can start decodable).
+    from gateway.platforms.base import _TEXT_INJECT_EXTENSIONS
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    return ext in _TEXT_INJECT_EXTENSIONS or (mime or "").startswith("text/")
+
+
+def _read_inline_attachment_text(local_path: str) -> Optional[str]:
+    """Read a text attachment for prompt inlining, or None when it must degrade
+    to a path note: outside the workspace inline root, missing, over the 100 KB
+    all-or-nothing cap (matching platform adapters — no truncation), or not
+    valid UTF-8."""
+    try:
+        resolved = Path(local_path).resolve()
+        root = Path(ATTACHMENT_INLINE_ROOT).resolve()
+        if root not in resolved.parents:
+            return None
+        if resolved.stat().st_size > MAX_ATTACHMENT_INLINE_BYTES:
+            return None
+        return resolved.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _prepare_run_attachment_blocks(
+    attachments: List[Dict[str, Any]],
+    already_inlined: Set[str],
+) -> Tuple[List[str], Set[str]]:
+    """Map the backend's materialized-attachment manifest to prompt context blocks.
+
+    EVERY file gets a context note on EVERY run (reusing the platforms' document
+    note builder): /v1/runs context is rebuilt per request from backend-clean
+    history, so a note injected only once would vanish from turn 2 onward and
+    the model would forget the file exists.
+
+    Content INLINING is the deduped part: a text file's content (platforms'
+    "[Content of X]:" shape) is inlined the first time this session surfaces it
+    — answerable without a tool round-trip — and later runs carry the path note
+    instead (the agent tool-reads on demand). An aggregate per-run budget
+    (MAX_ATTACHMENT_INLINE_TOTAL_BYTES) bounds many-file manifests; files past
+    the budget degrade to path notes and stay eligible for a later run. Binary,
+    oversized, unreadable, or non-UTF-8 files get the self-extraction note (the
+    instruction the platforms use so the model reads the file with its tools
+    instead of punting back to the user).
+
+    Returns (blocks, newly_inlined_keys). The CALLER must commit newly_inlined
+    into the session's dedup set only after the run actually executes — marking
+    at request time would let a pre-flight failure permanently swallow the
+    content (the backend retries with the same manifest).
+    """
+    from gateway.run import _build_document_context_note
+
+    blocks: List[str] = []
+    newly_inlined: Set[str] = set()
+    seen_this_run: Set[str] = set()
+    inline_budget = MAX_ATTACHMENT_INLINE_TOTAL_BYTES
+    for entry in attachments:
+        key = _attachment_dedup_key(entry)
+        if key in seen_this_run:
+            continue
+        seen_this_run.add(key)
+        safe_name = str(entry.get("safe_name", ""))
+        local_path = str(entry.get("local_path", ""))
+        display_name = re.sub(r"[^\w.\- ]", "_", safe_name)
+        mime = str(entry.get("mime") or "") or "application/octet-stream"
+
+        inline_text: Optional[str] = None
+        if key not in already_inlined and inline_budget > 0 and _is_text_attachment(safe_name, mime):
+            candidate = _read_inline_attachment_text(local_path)
+            if candidate is not None:
+                candidate_bytes = len(candidate.encode("utf-8"))
+                if candidate_bytes <= inline_budget:
+                    inline_text = candidate
+                    inline_budget -= candidate_bytes
+                else:
+                    logger.info(
+                        "Run attachment %s (%d bytes) skipped inlining: per-run budget exhausted; path note only.",
+                        display_name,
+                        candidate_bytes,
+                    )
+
+        if inline_text is not None:
+            newly_inlined.add(key)
+            # Force a text/* mtype so the note says "content has been included
+            # below" — which is now actually true.
+            note_mime = mime if mime.startswith("text/") else "text/plain"
+            blocks.append(_build_document_context_note(display_name, local_path, note_mime))
+            blocks.append(f"[Content of {display_name}]:\n{inline_text}")
+        else:
+            # Path note only. Force the non-text wording: it instructs the agent
+            # to extract the content itself with its tools, which is right for
+            # binary files, for text files that failed the inline gate, AND for
+            # files whose content was inlined in an earlier run (the note must
+            # never claim content was included when it wasn't — in THIS message).
+            blocks.append(_build_document_context_note(display_name, local_path, "application/octet-stream"))
+    return blocks, newly_inlined
 
 
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -791,6 +945,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Attachment INLINE dedup: session_id -> keys of files whose content was
+        # already inlined into a run that executed. Path notes are re-injected on
+        # every run (per-request context — see _prepare_run_attachment_blocks);
+        # only the expensive content inlining happens once per session. In-memory:
+        # after a container restart a file is re-inlined once, which is harmless.
+        self._inlined_run_attachments: Dict[str, Set[str]] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -3647,6 +3807,22 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent execution
     # ------------------------------------------------------------------
 
+    def _inlined_attachments_for_session(self, session_id: str) -> Set[str]:
+        """The dedup set of attachment keys whose content was already inlined
+        into an executed run of this session.
+
+        Bounded: when the map exceeds MAX_ATTACHMENT_DEDUP_SESSIONS, the oldest
+        sessions (insertion order) are dropped — re-inlining a file once in a
+        very old resumed session is harmless, unbounded growth is not."""
+        inlined = self._inlined_run_attachments.get(session_id)
+        if inlined is None:
+            while len(self._inlined_run_attachments) >= MAX_ATTACHMENT_DEDUP_SESSIONS:
+                oldest = next(iter(self._inlined_run_attachments))
+                del self._inlined_run_attachments[oldest]
+            inlined = set()
+            self._inlined_run_attachments[session_id] = inlined
+        return inlined
+
     def _concurrency_limited_response(self) -> Optional["web.Response"]:
         """Return a 429 response if the concurrent-run cap is reached, else None.
 
@@ -3936,6 +4112,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+
+        # KarinAI managed runs: surface backend-materialized conversation files
+        # to the agent. The backend confirms each file on disk before dispatch
+        # and sends the manifest in body["attachments"]; without this step the
+        # agent is never told the files exist (see _prepare_run_attachment_blocks).
+        # Notes are injected on EVERY run (per-request context); content inlining
+        # is deduped per session, committed only after the run executes.
+        newly_inlined_attachments: Set[str] = set()
+        raw_attachments = body.get("attachments")
+        if raw_attachments:
+            attachments_error = _validate_run_attachments(raw_attachments)
+            if attachments_error:
+                return web.json_response(_openai_error(attachments_error), status=400)
+            attachment_blocks, newly_inlined_attachments = _prepare_run_attachment_blocks(
+                raw_attachments, self._inlined_attachments_for_session(session_id)
+            )
+            if attachment_blocks:
+                context_block = "\n\n".join(attachment_blocks)
+                if isinstance(user_message, list):
+                    # Content-parts input: prepend the context as a text part.
+                    user_message = [{"type": "text", "text": context_block}, *user_message]
+                else:
+                    user_message = f"{context_block}\n\n{user_message}"
+
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -4056,6 +4256,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                # run_conversation executed, so the enriched message (incl. any
+                # inlined attachment content) reached the agent turn — NOW commit
+                # the inline dedup. Committing at request time would let a
+                # pre-flight failure (_create_agent throwing, early stop)
+                # permanently swallow the content for the session: the backend
+                # retries with the same manifest and dedup would skip it.
+                if newly_inlined_attachments:
+                    self._inlined_attachments_for_session(session_id).update(newly_inlined_attachments)
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).

@@ -12,10 +12,25 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+import time
 
 import pytest
 
 import tools.lazy_deps as ld
+
+
+@pytest.fixture(autouse=True)
+def _reset_install_failure_cache():
+    """Keep the module-level negative install cache from leaking across tests.
+
+    ``_install_failures`` is a per-process dict; subprocess isolation gives
+    each test a fresh copy in CI, but under ``--no-isolate`` (and a plain
+    ``pytest`` invocation) it would otherwise carry a recorded failure from
+    one test into the next — several tests reuse the ``test.feat`` key.
+    """
+    ld._install_failures.clear()
+    yield
+    ld._install_failures.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +220,100 @@ class TestEnsure:
         )
         with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
             ld.ensure("test.cache", prompt=False)
+
+
+# ---------------------------------------------------------------------------
+# Negative cache — failed install attempts short-circuit within a cooldown
+#
+# Without this, a missing-and-uninstallable backend (offline, sandboxed venv,
+# PyPI 404) re-runs the full uv/pip subprocess ladder on every ensure() call.
+# The discord requirements check runs on every load_gateway_config(), which the
+# dashboard's /api/messaging/platforms endpoint fanned out ~30x per request —
+# turning one bad install into ~10s of stacked, doomed pip invocations.
+# ---------------------------------------------------------------------------
+
+
+class TestNegativeCache:
+    def test_failed_install_not_retried_within_cooldown(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.neg", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        calls = {"n": 0}
+
+        def fake_install(specs, **kw):
+            calls["n"] += 1
+            return ld._InstallResult(False, "", "ERROR: offline")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        # First call actually attempts the install and fails.
+        with pytest.raises(ld.FeatureUnavailable, match="pip install failed"):
+            ld.ensure("test.neg", prompt=False)
+        # Second call short-circuits via the negative cache — pip is NOT rerun.
+        with pytest.raises(ld.FeatureUnavailable, match="not retrying yet"):
+            ld.ensure("test.neg", prompt=False)
+
+        assert calls["n"] == 1, "pip must run once, not on the cached retry"
+
+    def test_install_reported_success_but_missing_is_cached(self, monkeypatch):
+        # pip claims success but packages stay unimportable → treated as a
+        # failed attempt so the next call short-circuits too.
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.ghost", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        calls = {"n": 0}
+
+        def fake_install(specs, **kw):
+            calls["n"] += 1
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
+            ld.ensure("test.ghost", prompt=False)
+        with pytest.raises(ld.FeatureUnavailable, match="not retrying yet"):
+            ld.ensure("test.ghost", prompt=False)
+
+        assert calls["n"] == 1
+
+    def test_cache_cleared_when_feature_becomes_available(self, monkeypatch):
+        # A cached failure must not permanently block a feature whose packages
+        # later appear by other means (user ran `hermes tools`, etc.).
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.recover", ("zzzfake>=1",))
+        ld._record_install_failure("test.recover")
+        assert ld._recent_install_failure("test.recover") is True
+
+        # feature_missing() now returns empty → ensure() returns and clears.
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        ld.ensure("test.recover", prompt=False)  # no raise
+        assert ld._recent_install_failure("test.recover") is False
+
+    def test_successful_install_clears_cache(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.win", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        # Missing pre-install, present post-install.
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        ld.ensure("test.win", prompt=False)
+        assert "test.win" not in ld._install_failures
+
+    def test_cooldown_expiry_allows_retry(self, monkeypatch):
+        # A failure older than the cooldown must not block a retry.
+        monkeypatch.setattr(ld, "_INSTALL_FAILURE_COOLDOWN_S", 300.0)
+        ld._install_failures["test.expired"] = time.monotonic() - 301.0
+        assert ld._recent_install_failure("test.expired") is False
+        # Expired entry is pruned on read.
+        assert "test.expired" not in ld._install_failures
 
 
 # ---------------------------------------------------------------------------

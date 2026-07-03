@@ -75,11 +75,66 @@ import site
 import subprocess
 import sys
 import sysconfig
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Per-process negative cache for failed install attempts.
+#
+# When a feature's packages are missing AND the install fails (offline,
+# sandboxed venv with no network, PyPI 404/quarantine), nothing used to
+# remember the failure — so every caller re-ran the full uv/pip subprocess
+# ladder. Discord's requirements check runs on every load_gateway_config(),
+# which the dashboard's /api/messaging/platforms endpoint fanned out per
+# platform; each doomed pip install cost hundreds of ms and stacked into a
+# ~10s, UX-timing-out request.
+#
+# The cache records the monotonic time of the last failed attempt per feature
+# and short-circuits subsequent ensure() calls within a cooldown window,
+# raising FeatureUnavailable immediately instead of shelling out again. It is
+# intentionally per-process and forgetful: the cheap feature_missing() check
+# still runs first (so packages that appeared by other means succeed and clear
+# the entry), a successful install clears the entry, and the cooldown expiry
+# lets a user who fixed their network retry without restarting the process.
+# =============================================================================
+
+_INSTALL_FAILURE_COOLDOWN_S = 300.0
+_install_failures: dict[str, float] = {}
+_install_failures_lock = threading.Lock()
+
+
+def _recent_install_failure(feature: str) -> bool:
+    """Return True if ``feature`` failed to install within the cooldown window.
+
+    Expired entries are pruned on read so a stale failure doesn't linger past
+    its cooldown.
+    """
+    with _install_failures_lock:
+        ts = _install_failures.get(feature)
+        if ts is None:
+            return False
+        if (time.monotonic() - ts) >= _INSTALL_FAILURE_COOLDOWN_S:
+            del _install_failures[feature]
+            return False
+        return True
+
+
+def _record_install_failure(feature: str) -> None:
+    """Remember that a lazy install for ``feature`` just failed."""
+    with _install_failures_lock:
+        _install_failures[feature] = time.monotonic()
+
+
+def _clear_install_failure(feature: str) -> None:
+    """Forget any recorded failure for ``feature`` (install succeeded / deps present)."""
+    with _install_failures_lock:
+        _install_failures.pop(feature, None)
 
 
 # =============================================================================
@@ -737,7 +792,21 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
 
     missing = feature_missing(feature)
     if not missing:
+        # Deps are present (installed by us earlier, by `hermes tools`, or by
+        # the user directly). Drop any stale negative-cache entry and succeed.
+        _clear_install_failure(feature)
         return
+
+    # Negative cache: a recent install attempt for this feature already failed.
+    # Don't pay for another doomed uv/pip subprocess within the cooldown. The
+    # feature_missing() check above runs first, so packages that became
+    # available by other means still succeed and clear the cache above.
+    if _recent_install_failure(feature):
+        raise FeatureUnavailable(
+            feature, missing,
+            "recent install attempt failed; not retrying yet "
+            f"(cooldown {int(_INSTALL_FAILURE_COOLDOWN_S)}s)",
+        )
 
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
@@ -787,6 +856,9 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
     result = _venv_pip_install(missing)
     if not result.success:
+        # Remember the failure so the next call within the cooldown short-
+        # circuits instead of re-running pip (the whole point of the cache).
+        _record_install_failure(feature)
         # Surface the actual pip error so the user can debug PyPI-side
         # issues (404 quarantine, network down, etc.).
         snippet = (result.stderr or result.stdout or "").strip()
@@ -809,12 +881,17 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
 
     still_missing = feature_missing(feature)
     if still_missing:
+        # pip claimed success but the packages aren't importable (wrong venv,
+        # metadata cache, needs a restart). Treat it as a failed attempt so we
+        # don't keep re-running the install that can't take effect this process.
+        _record_install_failure(feature)
         raise FeatureUnavailable(
             feature, still_missing,
             "install reported success but packages still not importable "
             "(may require Python restart)"
         )
 
+    _clear_install_failure(feature)
     logger.info("Lazy install complete for feature %r", feature)
 
 

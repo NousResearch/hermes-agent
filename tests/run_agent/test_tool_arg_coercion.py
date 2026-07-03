@@ -146,6 +146,35 @@ class TestCoerceValue:
         """A non-numeric string in [number, string] should stay a string."""
         assert _coerce_value("hello", ["number", "string"]) == "hello"
 
+    def test_union_integer_string_leading_zeros_preserved(self):
+        """Issue 55369: '007' in [integer, string] must stay as '007', not coerced to 7."""
+        result = _coerce_value("007", ["integer", "string"])
+        assert result == "007"
+        assert isinstance(result, str)
+
+    def test_union_integer_string_plain_int_still_coerced(self):
+        """Plain integer-like strings without formatting should still coerce."""
+        assert _coerce_value("42", ["integer", "string"]) == 42
+        assert isinstance(_coerce_value("42", ["integer", "string"]), int)
+
+    def test_union_integer_string_leading_zeros_reversed_order(self):
+        """Same behavior when union is [string, integer]."""
+        result = _coerce_value("007", ["string", "integer"])
+        assert result == "007"
+        assert isinstance(result, str)
+
+    def test_union_number_string_leading_zeros_preserved(self):
+        """"007" in [number, string] should also stay as "007"."""
+        result = _coerce_value("007", ["number", "string"])
+        assert result == "007"
+        assert isinstance(result, str)
+
+    def test_union_integer_string_trailing_dot_zero_preserved(self):
+        """"3.0" in [integer, string] should stay as string (round-trip lossy)."""
+        result = _coerce_value("3.0", ["integer", "string"])
+        assert result == "3.0"
+        assert isinstance(result, str)
+
     def test_array_type_parsed_from_json_string(self):
         """Stringified JSON arrays are parsed into native lists."""
         assert _coerce_value('["a", "b"]', "array") == ["a", "b"]
@@ -408,3 +437,25 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    def test_union_integer_string_leading_zeros_preserved(self):
+        """Issue 55369: union integer|string arg with leading zero is kept as string."""
+        schema = self._mock_schema({
+            "code": {"type": ["integer", "string"]},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"code": "007"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["code"] == "007"
+            assert isinstance(result["code"], str)
+
+    def test_union_integer_string_plain_int_still_coerced(self):
+        """Union integer|string with plain int string still coerces to int."""
+        schema = self._mock_schema({
+            "limit": {"type": ["integer", "string"]},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"limit": "42"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["limit"] == 42
+            assert isinstance(result["limit"], int)

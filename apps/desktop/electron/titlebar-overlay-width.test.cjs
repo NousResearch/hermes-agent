@@ -4,8 +4,10 @@ const test = require('node:test')
 const {
   MACOS_TAHOE_DARWIN_MAJOR,
   OVERLAY_FALLBACK_WIDTH,
+  TITLEBAR_OVERLAY_COLOR,
   macTitleBarOverlayHeight,
-  nativeOverlayWidth
+  nativeOverlayWidth,
+  titleBarOverlayOptions
 } = require('./titlebar-overlay-width.cjs')
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
@@ -51,4 +53,62 @@ test('Tahoe (Darwin 25+) drops the overlay height to 0 to avoid electron#49183',
 
 test('macTitleBarOverlayHeight tolerates missing args (unknown platform → 0)', () => {
   assert.equal(macTitleBarOverlayHeight(), 0)
+})
+
+test('WSLg gets Electron titlebar overlay options', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      isWsl: true,
+      titlebarHeight: 34,
+      symbolColor: '#f7f7f7'
+    }),
+    {
+      color: TITLEBAR_OVERLAY_COLOR,
+      height: 34,
+      symbolColor: '#f7f7f7'
+    }
+  )
+})
+
+test('plain Linux keeps Electron titlebar overlay options', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      isWindows: false,
+      isWsl: false,
+      titlebarHeight: 34,
+      symbolColor: '#242424'
+    }),
+    {
+      color: TITLEBAR_OVERLAY_COLOR,
+      height: 34,
+      symbolColor: '#242424'
+    }
+  )
+})
+
+test('Windows gets Electron titlebar overlay options', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      isWindows: true,
+      titlebarHeight: 34,
+      symbolColor: '#f7f7f7'
+    }),
+    {
+      color: TITLEBAR_OVERLAY_COLOR,
+      height: 34,
+      symbolColor: '#f7f7f7'
+    }
+  )
+})
+
+test('macOS titlebar overlay options only carry the traffic-light height', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      isMac: true,
+      darwinMajor: MACOS_TAHOE_DARWIN_MAJOR - 1,
+      titlebarHeight: 34,
+      symbolColor: '#f7f7f7'
+    }),
+    { height: 34 }
+  )
 })

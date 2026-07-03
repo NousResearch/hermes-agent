@@ -1,50 +1,52 @@
-"""Benchmark + diagnostic for the interruptible_api_call main-thread busy-poll.
-
-Issue: https://github.com/NousResearch/hermes-agent/issues/57903
+"""Diagnostic for issue #57903: interruptible_api_call main-thread blocking.
 
 The non-streaming ``interruptible_api_call`` in
-``agent/chat_completion_helpers.py`` blocks the main thread in a busy-poll
-loop (``t.join(timeout=0.3)``) while waiting for the LLM API call to
-return. Between joins the asyncio event loop in the same process (uvicorn
-+ tui_gateway WebSocket server) cannot service its 2s heartbeat, the
-5s-stall watchdog in ``hermes_cli/web_server.py`` fires, and the desktop
-WebSocket trips its 10s timeout — manifesting as "Gateway offline" /
-"не отвечает" flashes during long-running LLM calls.
+``agent/chat_completion_helpers.py`` runs the SDK call in a worker
+thread and busy-polls ``t.join(timeout=0.3)`` on the main thread. The
+busy-poll does release the GIL while the join is blocked (Python's
+``_Condition.wait`` releases the GIL on Windows), so other Python
+threads continue to make progress. The actual harm is to the asyncio
+event loop running on the same thread (uvicorn + tui_gateway): the
+sync ``t.join(timeout=0.3)`` blocks the event loop from servicing
+its 2s heartbeat and the desktop's WebSocket heartbeats, which trips
+the 5s-stall watchdog and the desktop's 10s WS timeout.
 
-This script reproduces the symptom locally and quantifies the
-regression by running a simulated ``_call`` that sleeps for N seconds and
-measuring how many times a parallel "heartbeat" thread gets to tick
-while the busy-poll is in progress.
+This script measures two things:
+  1. **GIL yield**: how many times a parallel heartbeat thread gets to
+     tick while ``interruptible_api_call`` is blocked. Confirms the
+     current code is GIL-friendly (Python releases the GIL inside
+     ``t.join``).
+  2. **Interrupt latency**: how quickly ``interruptible_api_call``
+     returns after ``_interrupt_requested`` is set during a long SDK
+     call. The current 300ms poll caps this at ~300ms plus socket
+     teardown time.
+
+Together these two measurements characterize the *real* symptom
+(event-loop starvation) by ruling out the *plausible* symptoms
+(GIL starvation, slow interrupt detection). The fix — replacing
+the sync ``t.join`` busy-poll with an async-aware bridge that lets the
+event loop run between waits — needs a different kind of measurement
+(see the tests in ``tests/agent/test_interruptible_api_call_yields_gil.py``
+for an end-to-end regression guard).
 
 Usage::
 
-    # Run with the current (broken) code:
-    python scripts/bench_interruptible_api_call.py --seconds 30
-    # → expect ~100 heartbeat ticks (GIL is held for the full 300ms poll)
+    python scripts/bench_interruptible_api_call.py --seconds 10
 
-    # After a fix that replaces t.join(timeout=0.3) with
-    # future.result(timeout=0.05) (or equivalent):
-    # → expect ~600 heartbeat ticks (GIL released every 50ms)
-
-A 5x increase in heartbeat ticks per 30s window is the success criterion.
-If your machine shows less than 3x, the fix is not aggressive enough;
-if it shows ~100 ticks, the busy-poll is still starving the event loop.
-
-The benchmark only uses sync primitives available in the stdlib — no
-asyncio, no fixtures, no model provider, no API keys.
+Exit code 0 = healthy on both metrics; 1 = interrupt latency > 500ms
+(probably the 300ms poll is the bottleneck); 2 = GIL yield below
+floor (probably a GIL regression introduced by future changes).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 import threading
 import time
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-# Bootstrap: when invoked directly (not via pytest), add repo root to path.
-import pathlib
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -52,25 +54,26 @@ if str(_REPO_ROOT) not in sys.path:
 from agent import chat_completion_helpers as cch  # noqa: E402
 
 
-def _make_agent(duration_seconds: float) -> MagicMock:
-    """An agent mock whose SDK call sleeps for ``duration_seconds``.
+HEARTBEAT_INTERVAL_SECONDS = 0.1
+INTERRUPT_LATENCY_BUDGET_SECONDS = 0.5  # 300ms poll + ~100ms socket teardown + CI headroom
+GIL_YIELD_FLOOR_TICKS_PER_SECOND = 8.0  # current code yields ~10/s; threshold = 8/s
 
-    The agent's surface is the minimum needed to drive
-    ``interruptible_api_call`` through the non-streaming
-    ``chat_completions`` path. All Codex / Anthropic / Bedrock /
-    MoA branches short-circuit to the default chat_completions path
-    so we can use the simplest mock.
+
+def _make_slow_agent(duration_seconds: float) -> tuple[MagicMock, list]:
+    """Agent whose SDK call sleeps for ``duration_seconds`` and returns a
+    minimal chat-completions response. The second list element is a
+    1-element scratchpad the caller can use to record timestamps.
     """
     agent = MagicMock()
     agent.api_mode = "chat_completions"
     agent._interrupt_requested = False
-    agent._compute_non_stream_stale_timeout.return_value = max(60.0, duration_seconds * 3)
+    agent._compute_non_stream_stale_timeout.return_value = max(
+        60.0, duration_seconds * 3
+    )
 
     fake_client = MagicMock()
 
     def _slow_create(**_kwargs):
-        # Simulate a long-running LLM call that returns a minimal
-        # chat.completions response.
         time.sleep(duration_seconds)
         response = MagicMock()
         response.choices = [MagicMock()]
@@ -84,114 +87,141 @@ def _make_agent(duration_seconds: float) -> MagicMock:
     agent._create_request_openai_client.return_value = fake_client
     agent._close_request_openai_client = MagicMock()
     agent._abort_request_openai_client = MagicMock()
+    return agent, [None]
+
+
+def _make_interrupting_agent(duration_seconds: float) -> MagicMock:
+    """Agent whose SDK call flips ``_interrupt_requested`` mid-flight and
+    raises a transport error to simulate the force-close.
+    """
+    import httpx
+
+    agent = MagicMock()
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    agent._compute_non_stream_stale_timeout.return_value = 60.0
+
+    fake_client = MagicMock()
+
+    def _slow_create(**_kwargs):
+        time.sleep(duration_seconds)
+        agent._interrupt_requested = True
+        time.sleep(0.05)
+        raise httpx.RemoteProtocolError("forced close (bench)")
+
+    fake_client.chat.completions.create.side_effect = _slow_create
+    agent._create_request_openai_client.return_value = fake_client
+    agent._close_request_openai_client = MagicMock()
+    agent._abort_request_openai_client = MagicMock()
     return agent
 
 
-def _heartbeat_worker(counter: list, interval: float = 0.1, stop: threading.Event | None = None) -> None:
-    """Tick ``counter[0] += 1`` every ``interval`` seconds.
-
-    Stops when ``stop`` is set, or runs forever if ``stop`` is None.
-    Uses ``time.sleep(interval)`` which releases the GIL on every
-    iteration — this is a *contender* for the GIL, not a privileged
-    scheduler. The number of ticks we accumulate while
-    ``interruptible_api_call`` runs is the proxy for "how much does the
-    main thread's busy-poll block other threads from doing work".
-    """
-    deadline = time.monotonic() + 60 * 60  # upper bound, safety
-    while True:
-        if stop is not None and stop.is_set():
-            return
-        if time.monotonic() > deadline:
-            return
+def _heartbeat_worker(counter: list, interval: float, stop: threading.Event) -> None:
+    deadline = time.monotonic() + 60.0
+    while not stop.is_set() and time.monotonic() < deadline:
         counter[0] += 1
         time.sleep(interval)
 
 
-def run_benchmark(duration_seconds: float) -> dict:
-    """Run the benchmark and return a dict of measurements."""
-    agent = _make_agent(duration_seconds)
+def measure_gil_yield(duration_seconds: float) -> dict:
+    """Run a long SDK call and count parallel heartbeat ticks."""
+    agent, _ = _make_slow_agent(duration_seconds)
     ticks: list = [0]
     stop = threading.Event()
     heartbeat = threading.Thread(
         target=_heartbeat_worker,
-        args=(ticks, 0.1, stop),
+        args=(ticks, HEARTBEAT_INTERVAL_SECONDS, stop),
         daemon=True,
         name="bench-heartbeat",
     )
-
-    # Warm up the heartbeat thread so the very first tick doesn't
-    # under-count the contention window.
     heartbeat.start()
     time.sleep(0.2)
-
-    # Reset the counter and start the timed window.
     ticks[0] = 0
     t0 = time.monotonic()
     response = cch.interruptible_api_call(agent, {"model": "x", "messages": []})
     elapsed = time.monotonic() - t0
     stop.set()
     heartbeat.join(timeout=2.0)
-
-    # ``response`` is a MagicMock from _slow_create; just check it has
-    # the expected attribute, the value is not interesting.
-    assert getattr(response, "choices", None) is not None, (
-        "interruptible_api_call returned no response after sleeping "
-        f"{duration_seconds:.1f}s; the helper is broken or the mock is wrong"
-    )
-
-    expected_ticks_at_50ms = duration_seconds * 20  # 1000 / 50
-    expected_ticks_at_100ms = duration_seconds * 10  # 1000 / 100
-    expected_ticks_at_300ms = duration_seconds / 0.3  # current code baseline
-
+    assert getattr(response, "choices", None) is not None
     return {
-        "duration_seconds": round(duration_seconds, 2),
-        "elapsed_seconds": round(elapsed, 3),
+        "call_duration_seconds": round(duration_seconds, 2),
+        "wall_clock_seconds": round(elapsed, 3),
         "heartbeat_ticks": ticks[0],
-        "expected_baseline_300ms_poll": round(expected_ticks_at_300ms, 1),
-        "expected_fixed_50ms_poll": round(expected_ticks_at_50ms, 1),
-        "ratio_to_baseline": round(ticks[0] / expected_ticks_at_300ms, 2)
-            if expected_ticks_at_300ms > 0 else 0.0,
+        "ticks_per_second": round(ticks[0] / elapsed, 2) if elapsed > 0 else 0.0,
+        "expected_perfect_ticks": round(duration_seconds / HEARTBEAT_INTERVAL_SECONDS, 1),
+    }
+
+
+def measure_interrupt_latency(call_setup_seconds: float) -> dict:
+    """Run an SDK call that flips ``_interrupt_requested`` mid-flight and
+    measure wall-clock time from flip to ``interruptible_api_call``
+    return.
+    """
+    agent = _make_interrupting_agent(call_setup_seconds)
+    flag_holder: list = [None]
+
+    real_slow_create = agent._create_request_openai_client.return_value.chat.completions.create.side_effect
+
+    def _timed_create(**kwargs):
+        time.sleep(call_setup_seconds)
+        flag_holder[0] = time.monotonic()
+        agent._interrupt_requested = True
+        time.sleep(0.05)
+        import httpx
+        raise httpx.RemoteProtocolError("forced close (bench)")
+
+    agent._create_request_openai_client.return_value.chat.completions.create.side_effect = _timed_create
+
+    t0 = time.monotonic()
+    try:
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+    except Exception:
+        pass
+    elapsed = time.monotonic() - t0
+
+    assert flag_holder[0] is not None, "interrupt flag was never set"
+    interrupt_to_return = (t0 + elapsed) - flag_holder[0]
+    return {
+        "call_setup_seconds": round(call_setup_seconds, 2),
+        "wall_clock_seconds": round(elapsed, 3),
+        "interrupt_to_return_seconds": round(interrupt_to_return, 3),
+        "budget_seconds": INTERRUPT_LATENCY_BUDGET_SECONDS,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--seconds",
-        type=float,
-        default=30.0,
-        help="How long the simulated LLM call should sleep (default: 30s).",
-    )
-    parser.add_argument(
-        "--output",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: text).",
-    )
+    parser.add_argument("--seconds", type=float, default=8.0,
+                        help="Duration of the simulated LLM call (default: 8s).")
+    parser.add_argument("--output", choices=("text", "json"), default="text")
     args = parser.parse_args()
-
     if args.seconds < 0.5:
-        parser.error("--seconds must be at least 0.5 (need a long-enough call to measure)")
+        parser.error("--seconds must be >= 0.5")
 
-    result = run_benchmark(args.seconds)
+    gil = measure_gil_yield(args.seconds)
+    intr = measure_interrupt_latency(args.seconds)
+
+    result = {"gil_yield": gil, "interrupt_latency": intr}
 
     if args.output == "json":
         print(json.dumps(result, indent=2))
     else:
-        print(f"Simulated LLM call duration:  {result['duration_seconds']}s")
-        print(f"Wall-clock duration:           {result['elapsed_seconds']}s")
-        print(f"Heartbeat ticks during call:   {result['heartbeat_ticks']}")
-        print(f"  Baseline (300ms poll, current code): {result['expected_baseline_300ms_poll']}")
-        print(f"  Target   (50ms poll, fixed code):     {result['expected_fixed_50ms_poll']}")
-        ratio = result["ratio_to_baseline"]
-        if ratio >= 4.0:
-            print(f"Ratio to baseline: {ratio}x  → FIXED (>= 4x is the success criterion)")
-            return 0
-        if ratio >= 2.0:
-            print(f"Ratio to baseline: {ratio}x  → PARTIAL (better but not the target)")
-            return 1
-        print(f"Ratio to baseline: {ratio}x  → BROKEN (< 2x means the busy-poll still wins)")
-        return 2
+        print(f"=== GIL yield during {args.seconds}s simulated call ===")
+        print(f"  Heartbeat ticks: {gil['heartbeat_ticks']} "
+              f"({gil['ticks_per_second']}/s, theoretical max {gil['expected_perfect_ticks']})")
+        print(f"=== Interrupt latency ===")
+        print(f"  Wall-clock from flag flip to return: {intr['interrupt_to_return_seconds']}s "
+              f"(budget {intr['budget_seconds']}s)")
+        print()
+
+    # Pass/fail: interrupt latency is the actionable metric.
+    intr_ok = intr["interrupt_to_return_seconds"] <= INTERRUPT_LATENCY_BUDGET_SECONDS
+    gil_ok = gil["ticks_per_second"] >= GIL_YIELD_FLOOR_TICKS_PER_SECOND
+    if intr_ok and gil_ok:
+        return 0
+    if not intr_ok:
+        return 1
+    return 2
 
 
 if __name__ == "__main__":

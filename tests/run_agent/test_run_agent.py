@@ -6027,7 +6027,16 @@ class TestRetryExhaustion:
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
-        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        api_error = RuntimeError("rate limited")
+        api_error.body = {
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "rate limited",
+                "resets_at": 2_000_000_000,
+            }
+        }
+        api_error.response = SimpleNamespace(headers={})
+        agent.client.chat.completions.create.side_effect = api_error
         from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
@@ -6042,6 +6051,9 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        assert result.get("failure_reason") == "rate_limit"
+        assert result.get("error_context", {}).get("message") == "rate limited"
+        assert result.get("error_context", {}).get("reset_at") == 2_000_000_000
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
@@ -6391,6 +6403,26 @@ class TestCredentialPoolRecovery:
 
         assert context["reason"] == "usage_limit_reached"
         assert context["message"] == "The usage limit has been reached"
+
+    def test_extract_api_error_context_normalizes_resets_in_seconds(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "resets_in_seconds": 3_600,
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "usage_limit_reached"
+        assert context["reset_at"] == 4_600.0
 
     def test_extract_api_error_context_parses_resets_in_hours_and_minutes(self, agent, monkeypatch):
         from agent import agent_runtime_helpers

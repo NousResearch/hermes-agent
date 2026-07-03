@@ -730,6 +730,10 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    # Earliest unix timestamp at which a deferred continuation may run.
+    # Used by provider rate-limit recovery so the promise survives a gateway
+    # restart without replaying before the provider's reset window.
+    resume_not_before: Optional[float] = None
 
     # Session-scoped /model override (model/provider/base_url ONLY — never
     # credentials).  ``_session_model_overrides`` in the gateway runner is
@@ -766,6 +770,7 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "resume_not_before": self.resume_not_before,
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -841,6 +846,7 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            resume_not_before=data.get("resume_not_before"),
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1893,8 +1899,18 @@ class SessionStore:
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"
             elif _entry_for_checks.resume_pending:
-                _reset_reason = self._should_reset(_entry_for_checks, source)
-                if not _reset_reason:
+                # Provider-limit waits can legitimately span the normal
+                # one-hour recovery freshness window or a daily reset.  They
+                # carry an explicit future deadline and must retain the
+                # original transcript until that deadline is drained.
+                if _entry_for_checks.resume_reason == "provider_rate_limit":
+                    _reset_reason = None
+                else:
+                    _reset_reason = self._should_reset(_entry_for_checks, source)
+                if (
+                    not _reset_reason
+                    and _entry_for_checks.resume_reason != "provider_rate_limit"
+                ):
                     _fw = auto_continue_freshness_window()
                     _ref_time = (
                         _entry_for_checks.last_resume_marked_at
@@ -2114,8 +2130,9 @@ class SessionStore:
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        not_before: Optional[float] = None,
     ) -> bool:
-        """Mark a session as resumable after a restart interruption.
+        """Mark a session as resumable after an interruption or deferred wait.
 
         Unlike ``suspend_session()``, this preserves the existing
         ``session_id`` and the transcript.  The next call to
@@ -2135,17 +2152,35 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
+                entry.resume_not_before = not_before
                 self._save()
                 return True
         return False
 
-    def clear_resume_pending(self, session_key: str) -> bool:
-        """Clear the resume-pending flag after a successful resumed turn.
+    def is_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Return whether a live, unsuspended resume marker still matches."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.suspended or not entry.resume_pending:
+                return False
+            return reason is None or entry.resume_reason == reason
 
-        Called from the gateway after ``run_conversation()`` returns a
-        final response for a session that had ``resume_pending=True``,
-        signalling that recovery succeeded.
+    def clear_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Clear a matching resume-pending flag after success or supersession.
 
+        ``reason`` makes stale-continuation cancellation compare-and-clear: a
+        newer recovery marker installed for a different cause is never erased.
         Returns True if a flag was cleared.
         """
         with self._lock:
@@ -2153,9 +2188,12 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or not entry.resume_pending:
                 return False
+            if reason is not None and entry.resume_reason != reason:
+                return False
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            entry.resume_not_before = None
             self._save()
             return True
 

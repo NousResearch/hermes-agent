@@ -496,6 +496,38 @@ class TestVisionSafetyGuards:
         mock_llm.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_local_env_file_blocked_via_read_guard(self, tmp_path):
+        """A .env file must be blocked even if given an image-like path.
+
+        Mirrors the video_analyze_tool regression: the local-file branch
+        must route through agent.file_safety.raise_if_read_blocked before
+        vision_analyze_tool ever opens the file, not rely solely on the
+        magic-byte mime check as an accidental side effect.
+        """
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
+
+        assert result["success"] is False
+        assert "secret-bearing environment file" in result["error"]
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_native_fast_path_local_env_file_blocked_via_read_guard(self, tmp_path):
+        """Same read guard must apply to the native vision fast path."""
+        from tools.vision_tools import _vision_analyze_native
+
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
+
+        result = json.loads(await _vision_analyze_native(str(secret), "extract text"))
+
+        assert result["success"] is False
+        assert "secret-bearing environment file" in result["error"]
+
+    @pytest.mark.asyncio
     async def test_blocked_remote_url_short_circuits_before_download(self):
         blocked = {
             "host": "blocked.test",

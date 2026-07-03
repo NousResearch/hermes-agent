@@ -117,6 +117,22 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
     # path outside the caches never yields the host's bytes.
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
+        # Shared credential-read guard (agent.file_safety, #57698): refuse
+        # secret-bearing files (.env, auth.json, ...) with an intentional,
+        # specific error instead of relying on the magic-byte sniff to
+        # reject them incidentally. Same chokepoint the image-gen/video-gen
+        # provider plugins enforce on model-supplied local paths. Import is
+        # best-effort (guard unavailability must not break image loading);
+        # a real block always propagates.
+        try:
+            from agent.file_safety import raise_if_read_blocked
+        except Exception:  # noqa: BLE001 — guard unavailable: proceed
+            raise_if_read_blocked = None
+        if raise_if_read_blocked is not None:
+            try:
+                raise_if_read_blocked(str(host_target))
+            except ValueError as exc:
+                raise SourceUnsafe(str(exc), src=s, origin="file")
         data = await asyncio.to_thread(host_target.read_bytes)
         return _finalize(data, "", "file", s)
     if _is_local_terminal_backend():

@@ -51,8 +51,8 @@
     {
       "id": "OASDK-HARDEN-004",
       "title": "Project management and traceability manifest",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": ["a36a79845"],
       "linked_receipt_groups": ["OASDK-RCPT-GATE"],
       "acceptance": [
         "Roadmap items, local commits, receipt groups, and next actions are tracked in a machine-readable manifest.",
@@ -96,7 +96,7 @@
     {
       "id": "OASDK-NEXT-001",
       "title": "Commit project tracking manifest and gate validation",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": ["OASDK-HARDEN-004"],
       "required_approval_level": "normal_local_repo_change",
       "destructive": false,

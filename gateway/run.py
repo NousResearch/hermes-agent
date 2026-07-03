@@ -17566,11 +17566,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        _is_under_systemd = bool(os.environ.get("INVOCATION_ID"))
+        if _is_under_systemd:
+            logger.info(
+                "Exiting with code 1 (signal-initiated shutdown without restart "
+                "request) so systemd Restart=on-failure can revive the gateway."
+            )
+            return False  # → sys.exit(1) in the caller
         logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "Signal-initiated shutdown without restart request — "
+            "exiting cleanly (non-systemd service manager)."
         )
-        return False  # → sys.exit(1) in the caller
+        return True
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.

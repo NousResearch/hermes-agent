@@ -3372,7 +3372,6 @@ def generate_launchd_plist() -> str:
         [
             "<string>gateway</string>",
             "<string>run</string>",
-            "<string>--replace</string>",
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)

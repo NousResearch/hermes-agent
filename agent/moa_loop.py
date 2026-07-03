@@ -490,14 +490,35 @@ def _extract_text(response: Any) -> str:
         return ""
 
 
+def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
+    """Read an optional temperature from a preset.
+
+    Returns None when the key is absent, empty, or explicitly null — meaning
+    "don't send temperature; let the provider default apply", exactly like a
+    single-model Hermes agent (which never sends temperature unless
+    configured). The old coercion ``float(preset.get(key, 0.6) or 0.6)``
+    made unset impossible: absent, null, and even 0 all collapsed to the
+    hardcoded default, so MoA advisors/aggregator always ran at 0.6/0.4
+    while the same model running solo used the provider default.
+    """
+    value = preset.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("ignoring non-numeric %s=%r in MoA preset", key, value)
+        return None
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
     api_messages: list[dict[str, Any]],
     reference_models: list[dict[str, str]],
     aggregator: dict[str, str],
-    temperature: float = 0.6,
-    aggregator_temperature: float = 0.4,
+    temperature: float | None = None,
+    aggregator_temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
@@ -510,6 +531,11 @@ def aggregate_moa_context(
     the parameter entirely when it is ``None`` (see its docstring), which also
     sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
     here previously truncated long aggregator syntheses.
+
+    ``temperature`` / ``aggregator_temperature`` are ``None`` by default:
+    like max_tokens, ``call_llm`` omits temperature when None so the
+    provider default applies — matching single-model agent behavior. Presets
+    may still pin explicit values.
     """
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
@@ -726,8 +752,15 @@ class MoAChatCompletions:
         # The acting aggregator is never capped here (its output is the
         # user-visible answer).
         reference_max_tokens = preset.get("reference_max_tokens")
-        temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
-        aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
+        # None (the default) = don't send temperature; provider default
+        # applies, matching single-model agent behavior. Presets may pin
+        # explicit values. See _preset_temperature.
+        temperature = _preset_temperature(preset, "reference_temperature")
+        aggregator_temperature = _preset_temperature(preset, "aggregator_temperature")
+        if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
+            # The acting agent's own configured temperature (if any) still
+            # applies to the aggregator, which IS the acting model.
+            aggregator_temperature = api_kwargs.get("temperature")
 
         # When the preset is disabled, skip the reference fan-out and let the
         # configured aggregator act alone — it is the preset's acting model, so

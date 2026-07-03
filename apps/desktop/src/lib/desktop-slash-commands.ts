@@ -34,6 +34,7 @@ export type DesktopActionId =
   | 'handoff'
   | 'hatch'
   | 'help'
+  | 'journey'
   | 'new'
   | 'pet'
   | 'profile'
@@ -121,6 +122,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
     surface: action('browser'),
     args: true
+  },
+  {
+    name: '/journey',
+    description: 'Open the memory graph — skills + memories over time',
+    aliases: ['/learning', '/memory-graph'],
+    surface: action('journey')
   },
 
   // Overlay pickers

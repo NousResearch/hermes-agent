@@ -76,7 +76,7 @@ import {
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
-import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -191,6 +191,7 @@ export function DesktopController() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
     profilesOpen,
     settingsOpen,
     starmapOpen,
@@ -483,13 +484,17 @@ export function DesktopController() {
             storedSessionId
           )
 
-          // Seed the status stack's todo group from history — but only while
-          // the plan is still in flight, so reopening an old chat doesn't pin
-          // its finished todo list above the composer forever.
-          const todos = latestSessionTodos(messages)
+          // Rehydration runs *after* a turn completes, so an "active" stored
+          // list (last `todo` still pending/in_progress) means the turn ended
+          // without a final update — it's stale, not in-flight. Re-seeding it
+          // would re-pin "Tasks N/M" above the composer and undo the turn-end
+          // clear (and survive restarts, since it's read back from history).
+          // todosForHydration restores only a *finished* list (its short linger
+          // shows the last checkmark); anything still active is dropped.
+          const restored = todosForHydration(latestSessionTodos(messages))
 
-          if (todos && todoListActive(todos)) {
-            setSessionTodos(runtimeSessionId, todos)
+          if (restored) {
+            setSessionTodos(runtimeSessionId, restored)
           } else {
             clearSessionTodos(runtimeSessionId)
           }
@@ -739,6 +744,7 @@ export function DesktopController() {
     busyRef,
     createBackendSessionForSend,
     handleSkinCommand,
+    openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,

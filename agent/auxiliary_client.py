@@ -4207,7 +4207,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # ── xAI Grok OAuth (device code → Responses API) ───────────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
     # silently re-routing every auxiliary task (compression, web extract,
@@ -5902,7 +5902,7 @@ def call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,
@@ -6533,7 +6533,7 @@ async def async_call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,

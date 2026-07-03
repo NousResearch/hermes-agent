@@ -21,6 +21,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
+const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -35,7 +36,7 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
-const { createLinkTitleWindow } = require('./link-title-window.cjs')
+const { createLinkTitleWindow, guardLinkTitleSession } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -45,7 +46,10 @@ const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-ma
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
-const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const {
+  nativeOverlayWidth: computeNativeOverlayWidth,
+  macTitleBarOverlayHeight
+} = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -160,6 +164,9 @@ const IS_PACKAGED = app.isPackaged
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
+// Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
+// build SDK, so gate Tahoe workarounds on Darwin instead.
+const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
 
 function hiddenWindowsChildOptions(options = {}) {
@@ -532,7 +539,10 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
 function getTitleBarOverlayOptions() {
   if (IS_MAC) {
-    return { height: TITLEBAR_HEIGHT }
+    // Tahoe (Darwin 25+) misplaces the traffic lights when the overlay has a
+    // nonzero height (electron#49183); 0 there keeps them at the configured
+    // inset. See macTitleBarOverlayHeight.
+    return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
   }
 
   // WSLg paints WCO via the RDP host's own min/max/close, so requesting
@@ -3499,6 +3509,7 @@ function getLinkTitleSession() {
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
   })
+  guardLinkTitleSession(linkTitleSession)
   return linkTitleSession
 }
 
@@ -5419,19 +5430,24 @@ function profileNameFromDeleteRequest(request) {
   return name.toLowerCase()
 }
 
+// Returns the profile name whose backend was torn down, or null when the
+// request is not a profile-delete.  The caller uses this to skip ensureBackend
+// for the just-torn-down profile — otherwise ensureBackend respawns a pool
+// backend whose ensure_hermes_home() recreates the deleted profile directory.
 async function prepareProfileDeleteRequest(request) {
   const profile = profileNameFromDeleteRequest(request)
   if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
-    return
+    return null
   }
 
   if (profile === primaryProfileKey()) {
     writeActiveDesktopProfile('default')
     await teardownPrimaryBackendAndWait()
-    return
+    return profile
   }
 
   await teardownPoolBackendAndWait(profile)
+  return profile
 }
 
 async function startHermes() {
@@ -6465,10 +6481,15 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return rerouted
   }
 
-  await prepareProfileDeleteRequest(request)
+  const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
-  const connection = await ensureBackend(profile)
+  // After tearing down a backend for profile deletion, route to the primary
+  // backend instead of spawning a fresh pool backend.  A freshly spawned
+  // backend calls ensure_hermes_home() which recreates the profile directory,
+  // defeating the deletion and leaving a zombie process.
+  const routeProfile = tornDownProfile ? null : profile
+  const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
     globalRemote: globalRemoteActive(),

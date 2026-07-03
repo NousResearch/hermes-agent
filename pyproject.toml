@@ -138,6 +138,7 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  "headroom-ai>=0.29.0",
 ]
 
 [project.optional-dependencies]
@@ -392,3 +393,8 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

@@ -1597,6 +1597,16 @@ def _get_platform_tools(
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
+    # Auto-enable headroom retrieval when headroom compression is active.
+    # The compression hook (transform_tool_result) runs globally whenever
+    # headroom.enabled: true — compressed output arrives with a retrieval
+    # handle that the LLM cannot use unless headroom_retrieve is in its
+    # tool list. Unlike spotify (opt-in plugin toolset), headroom's hook
+    # is already running; the retrieval tool is its necessary companion.
+    _headroom_cfg = config.get("headroom") or {}
+    if _headroom_cfg.get("enabled", False) and "headroom" in plugin_ts_keys:
+        enabled_toolsets.add("headroom")
+
     # Context-engine tools are runtime-provided by the active engine, so they
     # are not part of any static platform composite. When a non-default engine
     # is selected, keep its recovery/status tools available even after a user

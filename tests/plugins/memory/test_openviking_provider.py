@@ -2781,10 +2781,13 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     finally:
         _mod._VikingClient = real_client_cls
 
-    assert captured_paths == ["/api/v1/content/write"]
-    assert captured_payloads[0]["content"] == "remember this"
-    assert captured_payloads[0]["mode"] == "create"
-    assert captured_payloads[0]["uri"].startswith(
+    assert captured_paths == ["/api/v1/fs/mkdir", "/api/v1/content/write"]
+    assert captured_payloads[0] == {
+        "uri": captured_payloads[1]["uri"].rsplit("/", 1)[0],
+    }
+    assert captured_payloads[1]["content"] == "remember this"
+    assert captured_payloads[1]["mode"] == "create"
+    assert captured_payloads[1]["uri"].startswith(
         "viking://user/peers/hermes/memories/preferences/mem_"
     )
 
@@ -2810,6 +2813,8 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
             pass
 
         def post(self, path, payload=None, **kwargs):
+            if path == "/api/v1/fs/mkdir":
+                return {}
             assert path == "/api/v1/content/write"
             worker_started.set()
             release_worker.wait(timeout=2.0)
@@ -2835,6 +2840,30 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     assert not returned_before_worker_finished
     assert worker_finished.is_set()
     assert provider._memory_write_threads == set()
+
+
+def test_viking_remember_creates_parent_before_content_write():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.side_effect = [
+        {"status": "ok", "result": {"uri": "viking://user/peers/hermes/memories/entities"}},
+        {"status": "ok", "result": {"written_bytes": 12}},
+    ]
+    provider._agent = "hermes"
+
+    result = json.loads(provider.handle_tool_call(
+        "viking_remember",
+        {"content": "remember this", "category": "entity"},
+    ))
+
+    mkdir_call, write_call = provider._client.post.call_args_list
+    assert mkdir_call.args[0] == "/api/v1/fs/mkdir"
+    assert mkdir_call.kwargs == {}
+    parent_uri = mkdir_call.args[1]["uri"]
+    assert parent_uri.startswith("viking://user/peers/hermes/memories/entities")
+    assert write_call.args[0] == "/api/v1/content/write"
+    assert write_call.args[1]["uri"].startswith(f"{parent_uri}/mem_")
+    assert result["status"] == "stored"
 
 
 @pytest.mark.parametrize(

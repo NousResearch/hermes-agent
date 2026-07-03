@@ -4237,7 +4237,13 @@ def complete_task(
                     "branch_name": branch_name,
                 },
             )
-        repo_root = _repo_root_for_worktree_target(worktree_path.parent)
+        # Resolve the repo from the linked worktree checkout itself, not its
+        # parent directory. Kanban worktrees often live in a board workspace
+        # directory outside the repo root, so `worktree_path.parent` is just a
+        # container folder with no git metadata. The checkout's own `.git`
+        # file points back to the common git dir, which is enough to recover
+        # the real repo root even for externally-located linked worktrees.
+        repo_root = _repo_root_for_worktree_target(worktree_path)
         if repo_root is None:
             _block_completion(
                 conn,

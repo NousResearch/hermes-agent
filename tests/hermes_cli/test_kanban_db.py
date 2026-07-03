@@ -2448,6 +2448,41 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
     assert f"branch refs/heads/{branch}" in listed
 
 
+def test_complete_task_accepts_external_linked_worktree_checkout(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = tmp_path / "board-workspaces" / "external-task"
+    branch = "wt/external-task"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target), "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship",
+            assignee="alice",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name=branch,
+        )
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="external linked worktree completes cleanly",
+            metadata={"ci": {"passed": True}},
+        )
+        task = kb.get_task(conn, tid)
+
+    assert ok is True
+    assert task is not None
+    assert task.status == "done"
+
+
 def test_dispatch_worktree_task_persists_materialized_workspace_and_branch(kanban_home, tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _init_git_repo(repo)

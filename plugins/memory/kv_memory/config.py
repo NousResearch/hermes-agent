@@ -17,7 +17,7 @@ class KVMemoryConfig:
 
     # ── Storage ───────────────────────────────────────────────────
     db_path: str = ""            # SQLite database path (default: $HERMES_HOME/kv_memory.db)
-    storage_mode: str = "hybrid" # "hybrid" | "fp16" | "q4" — embedding precision
+    storage_mode: str = "fp16"   # "fp16" (safe, 2x, 0.99 ranking) | "q4" (aggressive, 4-6x, ~0.5-0.7 tau)
 
     # ── Model ─────────────────────────────────────────────────────
     embedding_backend: str = "auto"  # "auto" | "sentence-transformers" | "api"
@@ -29,10 +29,10 @@ class KVMemoryConfig:
     min_similarity: float = 0.5      # minimum cosine similarity threshold
     temporal_decay_half_life: float = 7.0  # days; 0 = no decay
     causal_boost: float = 0.1        # boost for same-session / linked-session results
-    diversity_lambda: float = 0.3    # MMR diversity weight (0 = no diversity reranking)
+    diversity_lambda: float = 1.0    # MMR relevance weight (1.0 = pure relevance, <1.0 = diversity)
 
     # ── Q4 Quantization ───────────────────────────────────────────
-    q4_channel_size: int = 0         # 0 = auto (head_dim); override for custom grouping
+    q4_channel_size: int = 16         # elements per block (16 = best fidelity, 5-6x compression)
 
     # ── Memory governance ─────────────────────────────────────────
     max_stored_turns: int = 10000    # max turns before compaction triggers

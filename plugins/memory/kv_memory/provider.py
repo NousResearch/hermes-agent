@@ -269,16 +269,14 @@ class KVMemoryProvider(MemoryProvider):
             embedding = self._backend.encode(combined)
             embedding_dim = embedding.shape[0]
 
-            # Determine channel size for Q4 quantization
-            channel_size = self._config.q4_channel_size or 128  # head_dim default
+            # Determine storage mode
+            storage_mode = self._config.storage_mode
+            channel_size = self._config.q4_channel_size or 16
+            q4_packed, q4_scales = None, None
+            if storage_mode == "q4":
+                q4_packed, q4_scales = quantize_q4_per_channel(embedding, channel_size)
 
-            # Q4 quantize
-            q4_packed, q4_scales = quantize_q4_per_channel(embedding, channel_size)
-
-            # Generate a lightweight summary (first ~200 chars of user content)
             summary = user_content[:200] if user_content else ""
-
-            # Extract tool calls from messages if available
             tool_calls_list = []
             if messages:
                 for msg in messages:
@@ -290,7 +288,6 @@ class KVMemoryProvider(MemoryProvider):
                         ]
                         break
 
-            # Store turn
             self._turn_number += 1
             turn_id = self._db.store_turn(
                 session_id=sid,
@@ -302,13 +299,13 @@ class KVMemoryProvider(MemoryProvider):
                 tool_calls=tool_calls_list,
                 model_id=self._model_id,
                 head_dim=channel_size,
-                num_layers=0,  # not applicable for sentence-transformers
-                num_kv_heads=embedding_dim // channel_size,
+                num_layers=0,
+                num_kv_heads=embedding_dim // max(channel_size, 1),
                 metadata={
                     "backend": self._backend.backend_name,
-                    "storage_mode": "q4",
+                    "storage_mode": storage_mode,
                 },
-                store_fp16=self._config.store_fp16_fidelity_check,
+                store_fp16=(storage_mode != "q4"),
             )
 
             logger.debug("KV-Memory stored turn %s (dim=%d)", turn_id, embedding_dim)

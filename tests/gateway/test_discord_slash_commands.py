@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
 import sys
 
 import pytest
@@ -842,6 +843,7 @@ async def test_natural_language_task_request_creates_ready_kanban_task_without_i
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_TYPING_SECONDS", "0")
     monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
     monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
 
@@ -874,13 +876,18 @@ async def test_natural_language_task_request_creates_ready_kanban_task_without_i
     adapter._active_profile_name = MagicMock(return_value="rino")
     adapter.handle_message = AsyncMock()
     adapter.send = AsyncMock()
+    adapter.send_typing = AsyncMock()
+    adapter.stop_typing = AsyncMock()
 
     msg = _fake_message(_FakeTextChannel(), content="この表示を直してください")
 
     await adapter._handle_message(msg)
+    await asyncio.sleep(0)
 
     adapter.handle_message.assert_not_awaited()
     adapter.send.assert_not_awaited()
+    adapter.send_typing.assert_awaited_once_with("100", metadata=None)
+    adapter.stop_typing.assert_awaited_once_with("100")
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == "この表示を直してください"
     assert created["kwargs"]["assignee"] == "operations-orchestrator"
@@ -1137,6 +1144,7 @@ async def test_natural_language_context_question_stays_in_chat(adapter, monkeypa
 @pytest.mark.asyncio
 async def test_natural_language_followup_attaches_to_recent_task(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_TYPING_SECONDS", "0")
 
     fake_conn = MagicMock()
     fake_conn.close = MagicMock()
@@ -1160,6 +1168,8 @@ async def test_natural_language_followup_attaches_to_recent_task(adapter, monkey
     monkeypatch.setattr("hermes_cli.kanban_db.add_comment", fake_add_comment)
     monkeypatch.setattr("hermes_cli.kanban_db.unblock_task", fake_unblock_task)
     monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    adapter.send_typing = AsyncMock()
+    adapter.stop_typing = AsyncMock()
 
     adapter._remember_natural_task_context(
         chat_id="100",
@@ -1177,10 +1187,13 @@ async def test_natural_language_followup_attaches_to_recent_task(adapter, monkey
         thread_id=None,
         has_attachments=False,
     )
+    await asyncio.sleep(0)
 
     assert result.matched is True
     assert result.created is False
     assert result.task_id == "t_previous"
+    adapter.send_typing.assert_awaited_once_with("100", metadata=None)
+    adapter.stop_typing.assert_awaited_once_with("100")
     fake_create_task.assert_not_called()
     fake_add_comment.assert_called_once()
     fake_unblock_task.assert_called_once_with(fake_conn, "t_previous")

@@ -1,0 +1,47 @@
+name: linear_agent
+version: 0.3.0
+description: Linear Agent Session platform adapter for Hermes.
+author: Hermes Agent
+kind: platform
+# Credentials are alternatives (a static access token OR OAuth client
+# credentials), so everything lives in optional_env; validate_config enforces
+# that at least one credential path is present at startup.
+requires_env: []
+optional_env:
+  - name: LINEAR_AGENT_ACCESS_TOKEN
+    description: "Static Linear app access token. Alternative to client-credentials OAuth."
+    prompt: "Linear Agent access token (or empty to use client credentials)"
+    password: true
+  - name: LINEAR_AGENT_CLIENT_ID
+    description: "Linear OAuth application client ID for client-credentials app-actor tokens."
+    prompt: "Linear OAuth client ID"
+    url: "https://linear.app/settings/api/applications"
+    password: false
+  - name: LINEAR_AGENT_CLIENT_SECRET
+    description: "Linear OAuth application client secret."
+    prompt: "Linear OAuth client secret"
+    password: true
+  - name: LINEAR_AGENT_WEBHOOK_SECRET
+    description: "Shared secret for verifying Linear webhook signatures. Unsigned webhooks are rejected unless allow_unsigned_webhooks is explicitly enabled."
+    prompt: "Linear webhook signing secret"
+    password: true
+  - name: LINEAR_AGENT_HOME_TARGET
+    description: "Issue ID or identifier (e.g. ENG-123) that receives cron/notification deliveries as comments."
+    prompt: "Home issue for cron delivery (or empty)"
+    password: false
+  - name: LINEAR_AGENT_ALLOWED_USERS
+    description: "Comma-separated Linear user IDs allowed to drive agent sessions."
+    prompt: "Allowed Linear user IDs (comma-separated)"
+    password: false
+  - name: LINEAR_AGENT_ALLOW_ALL_USERS
+    description: "Set to true to allow any workspace user to drive agent sessions."
+    prompt: "Allow all workspace users? (true/false)"
+    password: false
+  - name: LINEAR_AGENT_WORKSPACE_ID
+    description: "Restrict webhook processing to this Linear workspace ID."
+    prompt: "Workspace ID (or empty)"
+    password: false
+  - name: LINEAR_AGENT_PROXY
+    description: "Outbound proxy for Linear API traffic (http/https/socks URL). Falls back to HTTPS_PROXY etc."
+    prompt: "Proxy URL (or empty)"
+    password: false

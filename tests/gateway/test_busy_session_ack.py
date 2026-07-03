@@ -180,6 +180,48 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_discord_busy_session_suppresses_intermediate_ack(self):
+        """Discord should keep only the final answer, not busy/interruption chrome."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="discord")
+
+        event = _make_event(text="new Discord request", platform_val="discord")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+        }
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert sk in adapter._pending_messages
+        agent.interrupt.assert_called_once_with("new Discord request")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_discord_draining_session_suppresses_gateway_status(self):
+        """Discord should not receive Gateway stopping/restarting status chrome."""
+        runner, sentinel = _make_runner()
+        runner._draining = True
+        adapter = _make_adapter(platform_val="discord")
+
+        event = _make_event(text="request while draining", platform_val="discord")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

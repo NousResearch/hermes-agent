@@ -3166,6 +3166,8 @@ class GatewayRunner:
                 message = self._draining_busy_message(queued=True)
             else:
                 message = self._draining_busy_message(queued=False)
+            if _gateway_platform_value(event.source.platform) == "discord":
+                return True
             if event.source.platform == Platform.DISCORD:
                 message = _strip_discord_gateway_chrome_emoji(message)
 
@@ -3239,6 +3241,9 @@ class GatewayRunner:
         busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
+            return True  # input still processed, just no ack sent
+        if _gateway_platform_value(event.source.platform) == "discord":
+            logger.debug("Busy ack suppressed for Discord session %s", session_key)
             return True  # input still processed, just no ack sent
 
         # Debounce: only send an acknowledgment once every 30 seconds per session

@@ -77,6 +77,16 @@ interface SessionActionsOptions {
   ) => ClientSessionState
 }
 
+interface ResumeSessionOptions {
+  /**
+   * Force a persisted transcript refresh instead of trusting the warm runtime
+   * cache. Used after a websocket reconnect: the backend may have continued a
+   * turn and persisted several messages while Desktop was offline, while the
+   * local cached state still reflects the pre-disconnect transcript.
+   */
+  refreshTranscript?: boolean
+}
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -562,7 +572,9 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, options?: ResumeSessionOptions) => {
+      void replaceRoute
+      const refreshTranscript = options?.refreshTranscript === true
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -615,7 +627,7 @@ export function useSessionActions({
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
-      if (cachedRuntimeId && cachedState) {
+      if (!refreshTranscript && cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
 
         const cachedViewState =
@@ -709,6 +721,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)

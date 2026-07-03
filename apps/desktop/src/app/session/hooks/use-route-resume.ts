@@ -11,7 +11,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, options?: { refreshTranscript?: boolean }) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -147,7 +147,11 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        if (gatewayBecameOpen) {
+          void resumeSession(routedSessionId, true, { refreshTranscript: true })
+        } else {
+          void resumeSession(routedSessionId, true)
+        }
       }
 
       return
@@ -200,6 +204,7 @@ export function useRouteResume({
     // the store/session.ts + use-session-actions.ts comments promise. (Point 2)
     const wasExhausted = prevResumeExhaustedRef.current
     prevResumeExhaustedRef.current = resumeExhaustedSessionId
+
     if (wasExhausted && wasExhausted === routedSessionId && resumeExhaustedSessionId !== wasExhausted) {
       retrySessionIdRef.current = routedSessionId
       retryAttemptRef.current = 0

@@ -14,7 +14,7 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, options?: { refreshTranscript?: boolean }) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
   routedSessionId: null | string
@@ -196,7 +196,7 @@ describe('useRouteResume', () => {
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
   })
 
-  it('resumes the selected route again when the gateway reconnects', () => {
+  it('resumes the selected route again when the gateway reconnects and refreshes the transcript', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
@@ -261,7 +261,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, { refreshTranscript: true })
   })
 })
 
@@ -424,11 +424,13 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     // the store, which doesn't feed back into the prop in this harness.
     const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
     resumeSession.mockClear()
+
     for (let i = 0; i < 8; i += 1) {
       vi.advanceTimersByTime(8_000)
       rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />)
       rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
     }
+
     expect(resumeSession.mock.calls.length).toBe(4) // capped
     expect($resumeExhaustedSessionId.get()).toBe('session-1')
 
@@ -464,6 +466,7 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     const { rerender } = render(
       <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
     )
+
     for (let j = 0; j < 8; j += 1) {
       rerender(
         <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />

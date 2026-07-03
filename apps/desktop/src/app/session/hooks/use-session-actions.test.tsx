@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
 
@@ -14,6 +15,7 @@ import { useSessionActions } from './use-session-actions'
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
@@ -126,10 +128,31 @@ describe('createBackendSessionForSend profile routing', () => {
 // succeeds must NOT leave the flag armed.
 function ResumeHarness({
   onReady,
-  requestGateway
+  requestGateway,
+  runtimeIdByStoredSessionId = new Map<string, string>(),
+  sessionStateByRuntimeId = new Map<string, ClientSessionState>(),
+  syncSessionStateToView = vi.fn(),
+  updateSessionState = (
+    _sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState
+  ) => updater({} as ClientSessionState)
 }: {
-  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onReady: (
+    resume: (
+      storedSessionId: string,
+      replaceRoute?: boolean,
+      options?: { refreshTranscript?: boolean }
+    ) => Promise<unknown>
+  ) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionId?: Map<string, string>
+  sessionStateByRuntimeId?: Map<string, ClientSessionState>
+  syncSessionStateToView?: (sessionId: string, state: ClientSessionState) => void
+  updateSessionState?: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -142,12 +165,12 @@ function ResumeHarness({
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: ref(runtimeIdByStoredSessionId),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
-    syncSessionStateToView: vi.fn(),
-    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+    sessionStateByRuntimeIdRef: ref(sessionStateByRuntimeId),
+    syncSessionStateToView,
+    updateSessionState
   })
 
   useEffect(() => {
@@ -168,7 +191,14 @@ describe('resumeSession failure recovery', () => {
   async function runResume(
     requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   ): Promise<void> {
-    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    let resume:
+      | ((
+          storedSessionId: string,
+          replaceRoute?: boolean,
+          options?: { refreshTranscript?: boolean }
+        ) => Promise<unknown>)
+      | null = null
+
     render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
@@ -255,5 +285,69 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('refreshes persisted transcript on reconnect instead of returning the warm cached runtime', async () => {
+    let resume:
+      | ((
+          storedSessionId: string,
+          replaceRoute?: boolean,
+          options?: { refreshTranscript?: boolean }
+        ) => Promise<unknown>)
+      | null = null
+
+    const runtimeIdByStoredSessionId = new Map([['stored-1', 'runtime-old']])
+
+    const cachedMessages = [
+      {
+        id: 'cached-old-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'old cached answer before disconnect' }],
+        pending: false
+      } as ChatMessage
+    ]
+
+    const sessionStateByRuntimeId = new Map<string, ClientSessionState>([
+      ['runtime-old', { messages: cachedMessages } as ClientSessionState]
+    ])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.usage') {
+        return { total: 1 } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-new',
+          resumed: params?.session_id,
+          messages: [{ content: 'fresh persisted answer after reconnect', role: 'assistant', timestamp: 2 }],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'fresh persisted answer after reconnect', role: 'assistant', timestamp: 2 }],
+      session_id: 'stored-1'
+    } as never)
+
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={runtimeIdByStoredSessionId}
+        sessionStateByRuntimeId={sessionStateByRuntimeId}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    await resume!('stored-1', true, { refreshTranscript: true })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: 'stored-1' }))
+    expect(requestGateway).not.toHaveBeenCalledWith('session.usage', expect.anything())
+    expect(vi.mocked(getSessionMessages)).toHaveBeenCalledWith('stored-1', undefined)
+    expect(chatMessageText($messages.get()[$messages.get().length - 1])).toContain('fresh persisted answer')
   })
 })

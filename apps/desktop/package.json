@@ -123,7 +123,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/d3-force": "^3.0.10",
     "@types/hast": "^3.0.4",
-    "@types/node": "^24.13.2",
+    "@types/node": "^22.20.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.59.1",

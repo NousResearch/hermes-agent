@@ -3180,6 +3180,80 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
         pass
 
 
+def _detect_terminal_size() -> tuple[int, int]:
+    """Detect terminal dimensions robustly across tmux/screen/kitty.
+
+    ``shutil.get_terminal_size()`` checks ``COLUMNS``/``LINES`` env vars first,
+    then falls back to ``TIOCGWINSZ`` on fd 0.  But inside tmux the pane's PTY
+    winsize may briefly lag a resize (or the env vars may be stale from a
+    parent shell), causing a fallback to 80×24 even when the visible pane is
+    much larger.  This helper tries several strategies in order and returns the
+    largest plausible result so the layout never gets a height shorter than the
+    real pane (#57393).
+    """
+    best_cols, best_rows = 80, 24
+
+    # 1 — ioctl on stdout, stdin, stderr (covers the common case directly).
+    for fd in (1, 0, 2):
+        try:
+            size = os.get_terminal_size(fd)
+            if size.columns > 0 and size.lines > 0:
+                return size.columns, size.lines
+        except (OSError, ValueError):
+            continue
+
+    # 2 — shutil.get_terminal_size (honours COLUMNS/LINES then ioctl on fd 0).
+    try:
+        size = shutil.get_terminal_size()
+        if size.columns > 0 and size.lines > 0:
+            best_cols, best_rows = size.columns, size.lines
+    except Exception:
+        pass
+
+    # 3 — tput / ttysize subprocess (works when the PTY winsize is stale but
+    #      the terminal itself knows its dimensions, e.g. inside tmux).
+    if sys.platform != "win32":
+        for cmd in (["tput", "cols"], ["tput", "lines"]):
+            try:
+                import subprocess as _sp
+                result = _sp.run(
+                    cmd, capture_output=True, text=True, timeout=1,
+                    env={**os.environ, "TERM": os.environ.get("TERM", "xterm")},
+                )
+                val = int(result.stdout.strip())
+                if val > 0:
+                    if cmd[1] == "cols":
+                        best_cols = max(best_cols, val)
+                    else:
+                        best_rows = max(best_rows, val)
+            except Exception:
+                pass
+
+    return best_cols, best_rows
+
+
+def _make_window_too_small_widget():
+    """Create a diagnostic ``window_too_small`` container for the root ``HSplit``.
+
+    prompt_toolkit's default shows a bare ``" Window too small... "`` message
+    with no size information.  When the terminal is visibly large enough but the
+    message still appears (size misdetection inside tmux/kitty — #57393), the
+    user has no way to tell whether this is a real geometry issue or a detection
+    bug.  This widget shows the detected terminal dimensions so the error is
+    immediately diagnosable.
+    """
+    def _get_text():
+        try:
+            cols, rows = _detect_terminal_size()
+            return [("class:window-too-small",
+                     f" Window too small — detected {cols}×{rows}. "
+                     "Try resizing or check tmux/kitty pane size.")]
+        except Exception:
+            return [("class:window-too-small", " Window too small... ")]
+
+    return Window(FormattedTextControl(text=_get_text))
+
+
 def _terminal_may_leak_cpr() -> bool:
     """Detect terminals where CPR (ESC[6n) replies are likely to leak.
 
@@ -12986,7 +13060,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # space stays above, not below.  This prints enough blank lines to
         # scroll the cursor to the last row before any content is rendered.
         try:
-            _term_lines = shutil.get_terminal_size().lines
+            _term_lines = _detect_terminal_size()[1]
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
         except Exception:
@@ -14774,7 +14848,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     input_rule_bot=input_rule_bot,
                     voice_status_bar=voice_status_bar,
                     completions_menu=completions_menu,
-                )
+                ),
+                window_too_small=_make_window_too_small_widget(),
             )
         )
         
@@ -14833,6 +14908,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            # Diagnostic "Window too small" fallback (#57393)
+            'window-too-small': '#FF6B6B bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
 

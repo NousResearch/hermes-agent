@@ -2711,6 +2711,7 @@ def stream_tts_to_speaker(
 
         def _play_via_tempfile(audio_iter, stop_evt):
             """Write PCM chunks to a temp WAV file and play it."""
+            tmp = None
             tmp_path = None
             try:
                 import wave
@@ -2724,11 +2725,23 @@ def stream_tts_to_speaker(
                         if stop_evt.is_set():
                             break
                         wf.writeframes(chunk)
+                # wave.open() given a file object flushes but does NOT close it
+                # (it only closes files it opened itself, by name), so the OS
+                # handle to tmp stays open.  On Windows an open write handle
+                # blocks the system player from reading the file and blocks the
+                # os.unlink() below (WinError 32, swallowed → temp .wav files
+                # pile up).  Release the handle before playback and cleanup.
+                tmp.close()
                 from tools.voice_mode import play_audio_file
                 play_audio_file(tmp_path)
             except Exception as exc:
                 logger.warning("Temp-file TTS fallback failed: %s", exc)
             finally:
+                if tmp is not None:
+                    try:
+                        tmp.close()  # idempotent; ensures close on early error
+                    except Exception:
+                        pass
                 if tmp_path:
                     try:
                         os.unlink(tmp_path)

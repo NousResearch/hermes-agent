@@ -2974,3 +2974,98 @@ class TestShouldAutoTtsForChat:
         fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
         assert fn(adapter, "chat1") is True
         assert fn(adapter, "chat2") is False
+
+
+class TestStreamTtsTempfileFallback:
+    """Regression for the temp-WAV fallback in stream_tts_to_speaker.
+
+    When no sounddevice output stream is available the streaming path falls
+    back to writing each sentence to a temp WAV and playing it via the system
+    player.  ``wave.open()`` given a *file object* flushes but does NOT close
+    it (it only closes files it opened itself, by name), so the OS handle to
+    the temp file stays open.  On Windows that open write handle blocks the
+    player from reading the file and blocks ``os.unlink()`` (WinError 32,
+    silently swallowed), leaving orphaned temp .wav files behind.  The fix
+    closes the handle before playback/cleanup; this test asserts the close
+    happens before the play call.
+    """
+
+    def test_tempfile_handle_closed_before_playback(self, monkeypatch):
+        import wave
+        import tools.tts_tool as tts_mod
+        import tools.voice_mode as vm
+        from tools.tts_tool import stream_tts_to_speaker
+
+        # Fake ElevenLabs client so `client` is non-None and convert() yields PCM.
+        class _FakeTTS:
+            def convert(self, text, voice_id, model_id, output_format):
+                yield b"\x00\x00" * 240
+                yield b"\x00\x00" * 240
+
+        class _FakeClient:
+            def __init__(self, api_key):
+                self.text_to_speech = _FakeTTS()
+
+        monkeypatch.setattr(
+            tts_mod, "get_env_value",
+            lambda name, default=None: (
+                "k" if name == "ELEVENLABS_API_KEY" else (default or "")
+            ),
+        )
+        monkeypatch.setattr(tts_mod, "_import_elevenlabs", lambda: _FakeClient)
+
+        # Force sounddevice unavailable → output_stream is None → tempfile fallback.
+        def _no_sounddevice():
+            raise ImportError("sounddevice unavailable in test")
+        monkeypatch.setattr(tts_mod, "_import_sounddevice", _no_sounddevice)
+
+        events = []  # ordered log of ("close", name) / ("play", path)
+
+        # Spy on NamedTemporaryFile to record when the handle is closed.
+        real_ntf = tts_mod.tempfile.NamedTemporaryFile
+
+        def _spy_ntf(*args, **kwargs):
+            f = real_ntf(*args, **kwargs)
+            orig_close = f.close
+
+            def _tracked_close():
+                events.append(("close", f.name))
+                return orig_close()
+
+            f.close = _tracked_close
+            return f
+
+        monkeypatch.setattr(tts_mod.tempfile, "NamedTemporaryFile", _spy_ntf)
+
+        played = []
+
+        def _fake_play(path):
+            events.append(("play", path))
+            played.append(path)
+            # At play time the file must be a fully written, readable WAV.
+            with wave.open(path, "rb") as wf:
+                assert wf.getnframes() > 0
+
+        monkeypatch.setattr(vm, "play_audio_file", _fake_play)
+
+        text_q = queue.Queue()
+        stop_evt = threading.Event()
+        done_evt = threading.Event()
+        text_q.put("This is a spoken sentence for the fallback. ")
+        text_q.put(None)
+
+        stream_tts_to_speaker(text_q, stop_evt, done_evt)
+
+        assert done_evt.is_set()
+        assert played, "temp-file fallback player was never invoked"
+
+        play_idx = next(i for i, e in enumerate(events) if e[0] == "play")
+        closes_before_play = [
+            i for i, e in enumerate(events[:play_idx]) if e[0] == "close"
+        ]
+        assert closes_before_play, (
+            "temp WAV handle must be closed BEFORE play_audio_file — an open "
+            "write handle blocks playback and os.unlink() on Windows"
+        )
+        # And the temp file is cleaned up afterwards.
+        assert not os.path.exists(played[0]), "temp WAV was not unlinked"

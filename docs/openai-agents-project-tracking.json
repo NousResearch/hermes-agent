@@ -236,12 +236,15 @@
       "e3401f585",
       "a36a79845",
       "060bc1648",
-      "0efd2c44a"
+      "0efd2c44a",
+      "HEAD"
     ],
     "integration_targets": {
       "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",
       "hermes_kanban": "blocked_waiting_for_explicit_external_tracking_scope",
       "cron_digest": "blocked_waiting_for_explicit_recurring_spend_scope"
-    }
+    },
+    "current_tip_ref": "HEAD",
+    "current_tip_note": "HEAD is intentionally tracked symbolically so the latest local manifest/status commit is covered without impossible self-referential SHA churn."
   }
 }

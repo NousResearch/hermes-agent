@@ -97,8 +97,10 @@
     {
       "id": "OASDK-HARDEN-006",
       "title": "Generic SDK structured-output retry and recovery",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": [
+        "00ad3ffa3"
+      ],
       "linked_receipt_groups": [
         "OASDK-RCPT-FAILURE",
         "OASDK-RCPT-GATE"
@@ -218,7 +220,7 @@
     {
       "id": "OASDK-NEXT-005",
       "title": "Implement generic structured-output retry for SDK lanes",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-006"
       ],
@@ -266,7 +268,8 @@
       "a36a79845",
       "060bc1648",
       "0efd2c44a",
-      "HEAD"
+      "HEAD",
+      "00ad3ffa3"
     ],
     "integration_targets": {
       "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",

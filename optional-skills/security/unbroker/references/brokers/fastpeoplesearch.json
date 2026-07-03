@@ -10,6 +10,7 @@
     "fetch": "browser",
     "antibot": "datadome",
     "match_signal": "result",
+    "match_signal_notes": "SEO TRAP: title/H1/intro echoes the query ('Over 100+ FREE public records found for {Name}') with no real match behind it, and /name/{first}-{last} list pages are fuzzy-SURNAME namesakes (different states, no address overlap). Record `found` ONLY on a result CARD corroborated by the subject's address or DOB. Ignore templated title/intro/H1 text.",
     "by": ["name", "phone", "address"],
     "url_patterns": {
       "name": "https://www.fastpeoplesearch.com/name/{first}-{last}"

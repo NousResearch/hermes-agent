@@ -10,6 +10,7 @@
     "fetch": "browser",
     "antibot": "datadome",
     "match_signal": "result",
+    "match_signal_notes": "SEO TRAP: the page title/H1/intro auto-inserts the query ('FREE public records found for {Name} in {City}') even with ZERO real matches. That templated echo is NOT a result. Record `found` ONLY on an actual result CARD corroborated by the subject's address or DOB; unrelated same-name cards in other states are namesakes. Ignore the title/intro/H1 text entirely.",
     "by": ["name", "phone", "address", "email"],
     "url_patterns": {
       "name": "https://www.truepeoplesearch.com/results?name={First%20Last}&citystatezip={City,%20ST}"

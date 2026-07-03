@@ -63,7 +63,9 @@ verifying re-scan.
 
 - `python3` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
-  one it detects - each one converts a class of human tasks into agent actions):
+  one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
+  Hermes already loads for its own tools are picked up without re-exporting - each one converts a
+  class of human tasks into agent actions):
   - **Cloud browser (recommended default): `BROWSERBASE_API_KEY`.** `setup --auto` selects it
     whenever the key is present, and it is the intended baseline: a real residential-IP cloud
     browser **clears soft/managed CAPTCHAs (Cloudflare Turnstile, hCaptcha/reCAPTCHA checkbox) as
@@ -74,8 +76,13 @@ verifying re-scan.
   - Email automation, two credential-free-or-not options:
     - **Browser mode (no password): `setup --email-mode browser`.** The agent sends opt-out/CCPA
       emails and opens verification links through the operator's **logged-in webmail** using
-      `browser_*` tools. Nothing is stored. Needs the inbox signed in in the browser Hermes uses
-      (a cloud browser like Browserbase won't hold the session; use a local/operator browser).
+      `browser_*` tools. Nothing is stored. This requires Hermes to be pointed at the operator's own
+      logged-in browser, **NOT** a cloud browser: a headless cloud browser (Browserbase) holds no
+      webmail session and is itself Cloudflare/DataDome-gated on webmail and on session-bound broker
+      gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
+      `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
+      debug profile signed into the webmail once, not the Default profile) and connect the browser
+      tools to `127.0.0.1:9222`. See `references/methods.md` -> "Browser backends: scan vs execute".
       Falls back to drafts for an email if the inbox isn't reachable.
     - **SMTP/IMAP (stored creds): `EMAIL_ADDRESS` + `EMAIL_PASSWORD`** (+ `EMAIL_SMTP_HOST` /
       `EMAIL_IMAP_HOST` for non-mainstream providers; gmail/outlook/yahoo/icloud/fastmail inferred).
@@ -110,8 +117,9 @@ breaks reading the dossier).
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
 | `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
-| `$PDD fanout <subject> [--priority crucial] [--size 8]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs) |
+| `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
+| `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
 | `$PDD send-email <subject> <broker> --listing <url> [--kind ccpa_indirect ...]` | Render + record the request (recipient locked to the broker's own address). **browser** mode returns a `compose` payload to send via webmail (no password); **programmatic** mode SMTP-sends |
 | `$PDD verify-link <subject> <broker> --text '<body>'` | **browser mode**: extract a broker's verification link from webmail text you read (anti-phishing scored) |
 | `$PDD poll-verification <subject> [--broker <id>]` | **programmatic mode**: poll IMAP for verification links (anti-phishing scored); auto-advances `submitted → verification_pending` |

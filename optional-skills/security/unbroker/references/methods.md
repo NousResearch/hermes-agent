@@ -88,6 +88,28 @@ listing:
     third party's record - the consent gate correctly blocks acting on it. See "Indirect exposure" in
     the web_form section for what the subject *can* still request.
 
+Two more false-positive traps that a naive scan records as `found` when it should not:
+  - **Property record != PII (address-anchored sites).** Reverse-address / property sites (rehold,
+    clustrmaps-style) can match on a public **property record** (build year, beds/baths, last sale
+    price, incidents) without exposing the subject's personal info - the resident/owner NAME is behind
+    a "View full report" paywall/signup. Distinguish "this address exists in a public property DB"
+    (non-removable, `not_found`) from "the subject's personal profile is displayed" (removable,
+    `found`). Record `found` ONLY if a resident name matching the subject is publicly shown; an
+    address-only match is `not_found` - there is nothing to opt out of, and public property records are
+    not removable anyway. See `rehold.json` `search.match_signal_notes`.
+  - **SEO-templated title/H1 fakes a "found".** Many people-search sites auto-insert the query into the
+    page `<title>`, H1, and intro copy ("FREE public records found for {Name} in {City}", "Over 100+
+    FREE public records found for {Name}"). That echo is **templating, not a result** - the actual
+    result cards are often unrelated namesakes in other states. A `match_signal` on title/intro text
+    yields false positives. Require a real result **card** corroborated by the subject's address or
+    DOB, and ignore the templated title/intro/H1 entirely. See `truepeoplesearch.json` /
+    `fastpeoplesearch.json` `search.match_signal_notes`.
+
+Both are why the **parent re-verifies every `found` before acting** rule is load-bearing (`pdd.py show
+<subject> <broker>` reads back a subagent's recorded evidence so the parent can re-verify without
+re-deriving the listing URL). If a `found` turns out to be a false positive, correct it with a fresh
+`record ... not_found` carrying an evidence note explaining the retraction.
+
 ## web_form
 
 1. `browser_navigate` to `optout.url`; `browser_snapshot` to read the form.
@@ -181,6 +203,44 @@ scoring that flags the session) becomes a fallback: `record ... blocked` and req
 stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
 browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
 T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+
+## Browser backends: scan vs execute
+
+Two different jobs need two different browsers. Getting this wrong is the single biggest cause of a
+run stalling in Phase 2.
+
+- **Phase 1 (scan, read-only):** a cloud stealth browser (Browserbase) or the `scrapling` skill is
+  ideal. On a residential IP with a real fingerprint it passes managed challenges (Cloudflare
+  Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_extract` and the
+  proxyless agent browser cannot. This is what the skill's `browser_backend` setting governs
+  (`auto` picks Browserbase when `BROWSERBASE_API_KEY` is present - now also read from
+  `$HERMES_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Hermes
+  already loads for its own tools).
+- **Phase 2 (execute: opt-out forms, webmail sends, session-bound multi-step gates):** the work must
+  run in the **operator's own everyday browser** - real fingerprint, residential IP, AND the
+  operator's logged-in sessions. A headless cloud browser is the WRONG default here for two reasons:
+  (1) it is not signed into the operator's webmail, so browser-mode email sends and confirmation-link
+  opens have no inbox to act in; and (2) it is itself Cloudflare/DataDome-gated on exactly the
+  multi-step flows that matter (e.g. PeopleConnect guided-mode, whose verify link is session- and
+  device-bound to the browser that opens it - a cloud browser both fails the challenge and breaks the
+  binding).
+- **How to drive the operator's browser (CDP).** Point Hermes's browser tools at the operator's real
+  Chrome over the DevTools protocol: launch
+  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and connect the
+  browser backend to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
+  operator's Default Chrome profile, and have the operator sign into their webmail (and any needed
+  broker accounts) in that profile once. That single browser then carries residential IP + real
+  fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
+  browser setup, not a `pdd` config value; `browser_backend` above only selects the Phase-1 scan
+  browser.)
+- **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
+  (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
+  before submit. It never fails; it just needs a human present.
+
+Backend precedence, most to least autonomous: **operator Chrome over CDP** (Phase 2, hands-off once
+the profile is signed in) > **Browserbase cloud stealth** (Phase 1 scanning, plus managed-captcha
+forms that need no login) > **proxyless agent browser** (only already-unblocked sites) >
+**operator-in-the-loop** (paste-ready URLs; the last-resort unblock that always works).
 
 ## Ownership clusters - DO PARENTS FIRST (playbooks live in the broker records)
 

@@ -62,6 +62,26 @@ def save_config(cfg: dict) -> Path:
     return storage.write_json(paths.config_path(), merged)
 
 
+def dotenv_env() -> dict:
+    """Shell env overlaid on `$HERMES_HOME/.env`, so capability detection sees the creds Hermes
+    loads for its own tools (BROWSERBASE_API_KEY, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
+    terminal-tool shell doesn't export them. Shell env wins; the .env only fills gaps."""
+    merged: dict = {}
+    p = paths.hermes_home() / ".env"
+    if p.exists():
+        try:
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                merged[k.strip()] = v.strip().strip('"').strip("'")
+        except OSError:
+            pass
+    merged.update(os.environ)
+    return merged
+
+
 def detect_capabilities(env: dict | None = None) -> dict:
     """Report which opt-in upgrades are available without extra setup."""
     env = os.environ if env is None else env

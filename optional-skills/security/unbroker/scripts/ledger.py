@@ -21,7 +21,10 @@ TRANSITIONS: dict[str, set[str]] = {
     "new": {"searching", "found", "not_found", "indirect_exposure", "blocked"},
     "searching": {"not_found", "found", "indirect_exposure", "blocked"},
     "not_found": {"searching", "found", "indirect_exposure", "blocked"},
-    "found": {"action_selected", "submitted", "human_task_queued", "indirect_exposure", "blocked"},
+    # found -> not_found: a parent re-verification (or re-scan) found the "found" was a false
+    # positive (namesake, or an address-only property-record match) -- retract it with evidence.
+    "found": {"action_selected", "submitted", "human_task_queued", "indirect_exposure", "blocked",
+              "not_found"},
     # indirect_exposure: subject's PII (email/phone/name) sits on a THIRD PARTY's record. The
     # self-service opt-out form does not apply; the lever is a targeted CCPA/GDPR delete-my-PII
     # request (-> submitted) or a human task. Re-scan can clear it (-> not_found) or upgrade it to a
@@ -43,7 +46,10 @@ TRANSITIONS: dict[str, set[str]] = {
     # blocked: automated tools (web_extract/proxyless browser) couldn't read the site. A later pass
     # -- a stealth/cloud browser OR guiding the operator's own (residential) browser -- can resolve it
     # to any real scan verdict, so blocked reaches not_found / indirect_exposure too, not just found.
-    "blocked": {"searching", "found", "not_found", "indirect_exposure", "action_selected"},
+    # blocked -> human_task_queued: some blocked sites need an operator step to proceed at all
+    # (face-recognition sites needing a selfie/gov-ID, etc.), so route them to the digest.
+    "blocked": {"searching", "found", "not_found", "indirect_exposure", "action_selected",
+                "human_task_queued"},
 }
 
 

@@ -17,6 +17,8 @@ HARD_HUMAN = ("gov_id", "fax", "mail", "phone_voice")
 def select_tier(broker: dict, email_mode: str = "draft_only",
                 browser_clears_captcha: bool = False) -> str:
     req = ((broker.get("optout") or {}).get("requires")) or {}
+    if not isinstance(req, dict):
+        req = {}  # defensive: a malformed record (e.g. requires as a list) must not crash planning
 
     if any(req.get(k) for k in HARD_HUMAN):
         return "T3"
@@ -43,9 +45,20 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     for b in brokers_list:
         opt = b.get("optout") or {}
         search = b.get("search") or {}
+        # Defensive shape coercion: a subagent may have written a malformed record (requires as a
+        # list, quirks as a string). Normalize here so nothing downstream crashes on a bad broker file.
+        req = opt.get("requires") if isinstance(opt.get("requires"), dict) else {}
+        q = opt.get("quirks")
+        quirks = q if isinstance(q, list) else ([q] if isinstance(q, str) and q else [])
         tier = select_tier(b, email_mode, browser_clears_captcha)
         disclosure = dossier_mod.select_disclosure(subject_dossier, opt.get("inputs", []))
         svectors = vectors_mod.search_vectors(subject_dossier, b)
+        # Pre-warn (don't discover mid-flow): a broker whose identity gate hard-requires DOB will
+        # force a human touchpoint if DOB was not collected at intake (§4.1). Surface it now.
+        prewarn: list[str] = []
+        if req.get("dob") and not (subject_dossier.get("identity") or {}).get("date_of_birth"):
+            prewarn.append("date_of_birth: this broker's identity gate requires DOB to match records; "
+                           "collect it up front (intake --dob) or expect a mid-flow human pause")
         actions.append({
             "broker_id": b.get("id"),
             "broker_name": b.get("name"),
@@ -61,10 +74,11 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
             "optout_url": opt.get("url"),
             "optout_email": opt.get("email"),
             "disclosure_fields": sorted(disclosure.keys()),
+            "needs_operator_input": prewarn,
             "owns": b.get("owns") or [],
             "notes": opt.get("notes", ""),
-            "optout_quirks": opt.get("quirks") or [],
-            "optout_requires": opt.get("requires") or {},
+            "optout_quirks": quirks,
+            "optout_requires": req,
             # The DELETION lane (right-to-delete), distinct from listing suppression. Structured so
             # the autopilot can route to it: {via: email|in_flow|web_form, email?, url?, kinds?, notes?}
             "deletion": opt.get("deletion") or {},
@@ -75,7 +89,7 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     return actions
 
 
-def fanout(brokers_list: list[dict], batch_size: int = 8) -> dict:
+def fanout(brokers_list: list[dict], batch_size: int = 5) -> dict:
     """Group brokers into batches for parallel `delegate_task` scan subagents.
 
     Scanning many brokers serially is slow and burns context; above `batch_size`

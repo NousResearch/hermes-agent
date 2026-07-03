@@ -283,7 +283,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                     "broker_id": bid,
                     "command": f"python3 scripts/pdd.py poll-verification {subject_id} --broker {bid}",
                     "then": "browser_navigate the returned link IN THE SAME AGENT BROWSER (sessions are "
-                            f"browser-bound), complete the flow, then record: awaiting_processing",
+                            "browser-bound), complete the flow, then record: awaiting_processing",
                 })
             elif email_mode == "browser":
                 actions.append({
@@ -327,7 +327,21 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
     # 5) indirect exposure: targeted delete-my-PII requests
     for row in groups.get("indirect_exposure") or []:
         bid = row["broker_id"]
-        if (email_mode in ("programmatic", "alias") and mail["smtp"]) or email_mode == "browser":
+        has_email = bool(row.get("optout_email") or (row.get("deletion") or {}).get("email"))
+        if not has_email and row.get("optout_url"):
+            # No email lane (e.g. ThatsThem is web-form-only): drive the opt-out FORM, submitting
+            # ONLY the subject's own identifiers to scrub from the third party's record.
+            actions.append({
+                "type": "indirect_web_form",
+                "broker_id": bid, "confirm_first": confirm_first,
+                "optout_url": row.get("optout_url"),
+                "steps": [f"browser_navigate {row.get('optout_url')}",
+                          "submit ONLY the subject's own identifiers (the fields the form requires) to "
+                          "remove them from the third party's record; disclose nothing extra",
+                          "confirm the success state, screenshot into evidence/"],
+                "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted --channel web_form",
+            })
+        elif (email_mode in ("programmatic", "alias") and mail["smtp"]) or email_mode == "browser":
             actions.append({
                 "type": "indirect_email_send",
                 "broker_id": bid, "confirm_first": confirm_first,

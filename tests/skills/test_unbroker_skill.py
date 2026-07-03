@@ -472,11 +472,34 @@ def test_fanout_batches_large_runs():
     assert small["should_fanout"] is False and small["batches"] == [["x", "y"]]
 
 
+def test_fanout_default_batch_size_is_five():
+    # Field report: 8-broker batches time out; the default dropped to 5.
+    g = tiers.fanout([{"id": f"b{i}"} for i in range(12)])
+    assert all(len(b) <= 5 for b in g["batches"])
+    assert g["batches"][0] == [f"b{i}" for i in range(5)]
+    assert len(g["batches"]) == 3  # 5 + 5 + 2
+
+
 def test_plan_surfaces_antibot():
     d = _consenting()
     broker = {"id": "tps", "optout": {"requires": {}}, "search": {"antibot": "datadome", "by": ["name"]}}
     actions = tiers.plan(d, [broker], config.DEFAULT_CONFIG)
     assert actions[0]["antibot"] == "datadome"
+
+
+def test_plan_prewarns_when_dob_required_but_missing():
+    # requires.dob gated broker (e.g. PeopleConnect guided-mode): warn up front, not mid-flow.
+    broker = {"id": "intelius", "search": {"by": ["name"]},
+              "optout": {"requires": {"dob": True, "email_verification": True}, "inputs": ["contact_email"]}}
+    no_dob = _consenting()
+    no_dob["identity"].pop("date_of_birth")
+    warned = tiers.plan(no_dob, [broker], config.DEFAULT_CONFIG)[0]
+    assert any("date_of_birth" in w for w in warned["needs_operator_input"])
+    # A new requires key must not perturb tier selection.
+    assert warned["tier"] == tiers.select_tier(
+        {"optout": {"requires": {"email_verification": True}}}, "draft_only")
+    with_dob = tiers.plan(_consenting(), [broker], config.DEFAULT_CONFIG)[0]
+    assert with_dob["needs_operator_input"] == []
 
 
 def test_plan_surfaces_optout_quirks_and_email():
@@ -1267,6 +1290,43 @@ def test_send_email_is_idempotent_browser_mode():
         assert first.get("state") == "submitted" and first.get("send_via") == "browser"
         again = _run(["send-email", sid, "radaris", "--listing", "https://radaris.com/p/x"])
         assert again.get("skipped") is True         # not re-sent
+
+
+def test_show_reads_back_case_state_and_evidence():
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public",
+                    "--email", "jane@example.com", "--consent"])["subject_id"]
+        _run(["record", sid, "radaris", "found", "--found", "true",
+              "--evidence", '{"listing_urls": ["https://radaris.com/p/x"]}'])
+        shown = _run(["show", sid, "radaris"])
+        assert shown["broker"] == "radaris" and shown["state"] == "found"
+        assert shown["found"] is True
+        assert shown["evidence"].get("listing_urls") == ["https://radaris.com/p/x"]
+        # Unknown case returns a fresh (new) case, not an error.
+        empty = _run(["show", sid, "not_a_broker"])
+        assert empty["state"] == "new" and empty["evidence"] == {}
+
+
+def test_dotenv_env_fills_missing_creds_and_shell_wins():
+    prev_home = os.environ.get("HERMES_HOME")
+    prev_key = os.environ.get("BROWSERBASE_API_KEY")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["HERMES_HOME"] = d
+        (Path(d) / ".env").write_text(
+            '# comment\nBROWSERBASE_API_KEY="from_dotenv"\nFIRECRAWL_API_KEY=fc_123\n', encoding="utf-8")
+        try:
+            os.environ.pop("BROWSERBASE_API_KEY", None)
+            merged = config.dotenv_env()
+            assert merged["BROWSERBASE_API_KEY"] == "from_dotenv"   # filled from .env
+            assert merged["FIRECRAWL_API_KEY"] == "fc_123"          # quotes/comment handled
+            os.environ["BROWSERBASE_API_KEY"] = "from_shell"
+            assert config.dotenv_env()["BROWSERBASE_API_KEY"] == "from_shell"  # shell wins
+        finally:
+            for k, v in (("HERMES_HOME", prev_home), ("BROWSERBASE_API_KEY", prev_key)):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 def test_registry_candidate_urls_newest_first_with_floor():

@@ -58,9 +58,10 @@ def _require_subject(subject_id: str) -> dict:
 
 def cmd_setup(args) -> None:
     if getattr(args, "auto", False):
-        # Autonomous path: detect capabilities and pick the most autonomous valid
-        # config without asking anyone. Explicit flags still win below.
-        cfg = config_mod.auto_configure()
+        # Autonomous path: detect capabilities and pick the most autonomous valid config without
+        # asking anyone. Read creds from $HERMES_HOME/.env too (the terminal shell doesn't export
+        # them). Explicit flags still win below.
+        cfg = config_mod.auto_configure(env=config_mod.dotenv_env())
     else:
         cfg = config_mod.load_config()
     for key in ("autonomy", "email_mode", "browser_backend", "tracker_backend", "encryption"):
@@ -123,7 +124,7 @@ def cmd_doctor(args) -> None:
     import platform
 
     cfg = config_mod.load_config()
-    caps = config_mod.detect_capabilities()
+    caps = config_mod.detect_capabilities(config_mod.dotenv_env())  # see creds in $HERMES_HOME/.env too
     data = paths_mod.data_dir()
     writable = _check_writable(data)
     curated = len(brokers_mod._load_curated())
@@ -185,8 +186,17 @@ def cmd_doctor(args) -> None:
                  "verify links via your logged-in webmail); or set EMAIL_* for SMTP/IMAP.")
     elif cfg["email_mode"] == "browser":
         L.append("  Email mode: browser (no password) - the agent sends opt-outs and opens verify "
-                 "links via the operator's logged-in webmail. Ensure that inbox is signed in in the "
-                 "browser Hermes uses (a cloud browser won't hold the session); else it falls back to drafts.")
+                 "links via the operator's logged-in webmail. This needs Hermes pointed at the "
+                 "operator's OWN Chrome over CDP (launch with --remote-debugging-port=9222 "
+                 "--user-data-dir=~/.hermes/chrome-debug, signed into the webmail once); else it falls "
+                 "back to drafts. See methods.md 'Browser backends'.")
+        cloud_scan = cfg.get("browser_backend") == "browserbase" or (
+            cfg.get("browser_backend") == "auto" and caps.get("browserbase"))
+        if cloud_scan:
+            L.append("  NOTE: your scan backend is a cloud browser (Browserbase). It is great for "
+                     "Phase-1 scanning but CANNOT be the browser that sends webmail (no inbox session) "
+                     "and is itself Cloudflare/DataDome-gated on session-bound gates (e.g. PeopleConnect). "
+                     "For Phase-2 email/verify, drive the operator's Chrome over CDP as above.")
     if not crypto.is_engaged():
         L.append("  Storage: dossiers are PLAINTEXT JSON (0600 under HERMES_HOME). "
                  "Run `setup --encryption age` for at-rest encryption.")
@@ -390,18 +400,23 @@ def cmd_fanout(args) -> None:
     batches = []
     for i, ids in enumerate(grouping["batches"], 1):
         brief = (
-            f"You are scan worker {i} of {len(grouping['batches'])} for the `unbroker` "
-            f"skill. First load the `unbroker` skill and read its references/methods.md. "
-            f"Subject id: {args.subject}. Handle ONLY these brokers: {', '.join(ids)}. "
+            f"You are scan worker {i} of {len(grouping['batches'])} for the `unbroker` skill. First "
+            f"load the `unbroker` skill and read its references/methods.md. Use the `web` toolset "
+            f"(web_search `site:` + web_extract), NOT `browser` (browser navigation is heavy and times "
+            f"out). Subject id: {args.subject}. Handle ONLY these brokers: {', '.join(ids)}. "
             f"For EACH broker: read references/brokers/<id>.json; run EVERY search vector from "
             f"`pdd.py plan {args.subject}` (filtered to your brokers); build URLs from search.url_patterns "
             f"and heed url_format_quirks; a 404 is INCONCLUSIVE (rebuild/try the on-site search box), not "
-            f"not_found; confirm the SUBJECT vs namesakes/relatives before recording; if search.antibot is "
-            f"set and no stealth/cloud browser is available, record `blocked`. Record each outcome via "
-            f"`pdd.py record {args.subject} <broker> <found|not_found|indirect_exposure|blocked> "
-            f"--found <bool> --evidence '{{\"listing_urls\":[...]}}'`. Mode: {mode}. "
-            f"Log any newly-discovered URL/format quirks into the broker JSON. "
-            f"Return a concise structured per-broker report."
+            f"not_found. ECONOMY: at most ~3 web calls per broker; the moment a page shows antibot "
+            f"(Cloudflare 'just a moment'/DataDome) or hangs, record `blocked` and move on -- do NOT "
+            f"retry-loop. Confirm the SUBJECT vs namesakes/relatives by ADDRESS/DOB before recording "
+            f"`found` (ignore SEO-templated page titles/intro that just echo the query -- require a real "
+            f"result card; a public property/address record with no displayed personal NAME is "
+            f"not_found, not found). Record each outcome via `pdd.py record {args.subject} <broker> "
+            f"<found|not_found|indirect_exposure|blocked> --found <bool> --evidence '{{\"listing_urls\":[...]}}'`. "
+            f"Mode: {mode}. Broker JSON files are READ-ONLY for you -- do NOT edit them; if you discover "
+            f"a URL/quirk, put it in your report for the parent to fold in. Return a concise structured "
+            f"per-broker report."
         )
         batches.append({"batch": i, "brokers": ids, "brief": brief})
     _out({
@@ -631,6 +646,19 @@ def cmd_due(args) -> None:
           "note": "run `next` for the concrete follow-up action per case"})
 
 
+def cmd_show(args) -> None:
+    """Read a case's recorded state + evidence (so the parent can re-verify a subagent's `found`
+    without re-deriving listing URLs)."""
+    _require_subject(args.subject)
+    case = ledger_mod.get_case(args.subject, args.broker)
+    _out({"broker": args.broker, "state": case.get("state"), "found": case.get("found"),
+          "evidence": case.get("evidence") or {},
+          "disclosure_log": case.get("disclosure_log") or [],
+          "next_recheck_at": case.get("next_recheck_at"),
+          "human_task_reason": case.get("human_task_reason"),
+          "history": case.get("history") or []})
+
+
 def cmd_status(args) -> None:
     _require_subject(args.subject)
     print(report_mod.render_markdown(args.subject))
@@ -716,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("fanout", help="batch brokers into parallel delegate_task subagents (large runs)")
     s.add_argument("subject")
     s.add_argument("--priority", action="append", choices=["crucial", "high", "standard", "long_tail"])
-    s.add_argument("--size", type=int, default=8, help="brokers per subagent batch (default 8)")
+    s.add_argument("--size", type=int, default=5, help="brokers per subagent batch (default 5; 8+ times out)")
     s.add_argument("--optout", action="store_true",
                    help="brief authorizes opt-out submission (default: read-only scan)")
     s.set_defaults(func=cmd_fanout)
@@ -768,6 +796,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tasks", help="ONE consolidated human-task digest (present at end of run)")
     s.add_argument("subject")
     s.set_defaults(func=cmd_tasks)
+
+    s = sub.add_parser("show", help="read a case's state + evidence (for parent re-verification)")
+    s.add_argument("subject")
+    s.add_argument("broker")
+    s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("due", help="cases whose recheck window has arrived (cron re-scan queue)")
     s.add_argument("subject")

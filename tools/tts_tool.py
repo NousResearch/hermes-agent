@@ -1027,9 +1027,17 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # Determine response format from extension
+    # Determine response format from extension. Mirror the Mistral provider so a
+    # configured wav/flac output_format is honored instead of always forcing mp3.
+    # wav/flac are valid OpenAI audio.speech response_format values, and some
+    # OpenAI-compatible backends only implement native WAV (e.g. Chatterbox-TTS-Server),
+    # where forcing mp3 yields a hard "500: Failed to encode audio".
     if output_path.endswith(".ogg"):
         response_format = "opus"
+    elif output_path.endswith(".wav"):
+        response_format = "wav"
+    elif output_path.endswith(".flac"):
+        response_format = "flac"
     else:
         response_format = "mp3"
 

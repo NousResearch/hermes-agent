@@ -746,7 +746,10 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            page = browser.new_page(viewport={"width": 1200, "height": 100})
+            page = browser.new_page(
+                viewport={"width": 1200, "height": 100},
+                device_scale_factor=2,
+            )
             page.set_content(html)
             bbox = page.locator("table").bounding_box()
             clip = None
@@ -761,7 +764,11 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
                     "width": int(bbox["width"]) + 20,
                     "height": int(bbox["height"]) + 20,
                 })
-            return page.screenshot(clip=clip, full_page=False)
+            return page.screenshot(
+                clip=clip,
+                full_page=False,
+                scale="device",
+            )
         finally:
             browser.close()
 

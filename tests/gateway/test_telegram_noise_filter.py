@@ -127,6 +127,19 @@ def test_discord_final_response_strips_leading_acknowledgements_only():
     assert _sanitize_gateway_final_response(Platform.DISCORD, code) == code
 
 
+def test_discord_final_response_drops_checking_only_replies():
+    assert _sanitize_gateway_final_response(Platform.DISCORD, "確認します。") == ""
+    assert _sanitize_gateway_final_response(Platform.DISCORD, "では確認します。") == ""
+    assert _sanitize_gateway_final_response(Platform.DISCORD, "こちらで調べて回答します。") == ""
+    assert (
+        _sanitize_gateway_final_response(
+            Platform.DISCORD,
+            "確認して回答します。\n\n有効なスキルは102件です。",
+        )
+        == "有効なスキルは102件です。"
+    )
+
+
 def test_discord_final_response_returns_result_without_work_report_prefixes():
     skill_count = (
         "Hermesスキルを再確認しました。現在この環境では102個のスキルが有効で、"

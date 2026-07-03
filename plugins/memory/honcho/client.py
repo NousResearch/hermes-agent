@@ -855,6 +855,28 @@ class HonchoClientConfig:
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
+_cached_timeout: float | None = None
+
+
+def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
+    """Resolve the effective timeout from env, config.yaml, and the explicit config."""
+    timeout = config.timeout if config is not None else None
+    if timeout is None:
+        timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+    if timeout is None:
+        try:
+            from hermes_cli.config import load_config
+
+            hermes_cfg = load_config()
+            honcho_cfg = hermes_cfg.get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                timeout = _resolve_optional_float(
+                    honcho_cfg.get("timeout"),
+                    honcho_cfg.get("request_timeout"),
+                )
+        except Exception:
+            pass
+    return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -900,10 +922,20 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     first calls (double-checked locking via ``SingletonSlot``), so racing
     threads can't each construct a client and leak the loser's connection.
     """
+    global _cached_timeout
     cached = _honcho_client_slot.peek()
     if cached is not None:
-        _refresh_cached_oauth(cached, config)
-        return cached
+        # Detect timeout config changes in long-lived processes (gateway,
+        # dashboard).  If the user changed the timeout after the client was
+        # built, rebuild with the new value.
+        new_timeout = _resolve_timeout_from_sources(config)
+        if new_timeout != _cached_timeout:
+            _honcho_client_slot.reset()
+            _cached_timeout = None
+            cached = None
+        else:
+            _refresh_cached_oauth(cached, config)
+            return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -1014,6 +1046,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
+        global _cached_timeout
+        _cached_timeout = resolved_timeout
         return Honcho(**kwargs)
 
     return _honcho_client_slot.get(_build)
@@ -1021,4 +1055,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
+    global _cached_timeout
     _honcho_client_slot.reset()
+    _cached_timeout = None

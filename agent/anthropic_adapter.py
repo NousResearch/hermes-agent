@@ -1209,6 +1209,82 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return None
 
 
+_claude_code_cli_refresh_last_attempt: float = 0.0
+_CLAUDE_CODE_CLI_REFRESH_COOLDOWN_SECONDS = 300.0
+
+
+def _refresh_claude_code_credentials_via_cli(*, timeout: float = 120.0, force: bool = False) -> Optional[Dict[str, Any]]:
+    """Ask the official Claude Code CLI to refresh its credential store once.
+
+    Hermes normally reads Claude Code credentials directly. In long-lived
+    gateway/cron/subprocess environments we can still hit a stale state: both
+    persisted Claude Code sources are expired, Hermes' pure refresh loses the
+    single-use refresh-token race, but the official ``claude`` CLI can recover
+    by using its own keychain/session logic. This bounded fallback mirrors the
+    documented operator fix (run a tiny Claude Code prompt), but makes it a
+    programmatic last resort so Fable/Anthropic subprocesses do not fail with a
+    misleading ``No Anthropic credentials found``.
+
+    Returns fresh credentials after the CLI run, or ``None``. The CLI output is
+    deliberately ignored so tokens are never logged.
+    """
+    import shutil
+    import time
+
+    global _claude_code_cli_refresh_last_attempt
+
+    if os.getenv("HERMES_ANTHROPIC_DISABLE_CLAUDE_CLI_REFRESH", "").strip().lower() in {"1", "true", "yes"}:
+        logger.debug("Claude Code CLI credential refresh disabled by env")
+        return None
+
+    now = time.monotonic()
+    if not force and _claude_code_cli_refresh_last_attempt and (
+        now - _claude_code_cli_refresh_last_attempt < _CLAUDE_CODE_CLI_REFRESH_COOLDOWN_SECONDS
+    ):
+        logger.debug("Claude Code CLI credential refresh skipped during cooldown")
+        return None
+    _claude_code_cli_refresh_last_attempt = now
+
+    cli = shutil.which("claude") or shutil.which("claude-code")
+    if not cli:
+        logger.debug("Claude Code CLI not found; cannot refresh credentials via CLI")
+        return None
+
+    cmd = [
+        cli,
+        "-p",
+        "Reply exactly: OK_CLAUDE_REFRESH",
+        "--model",
+        "sonnet",
+        "--max-turns",
+        "1",
+        "--output-format",
+        "text",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("Claude Code CLI credential refresh failed to run: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        logger.debug("Claude Code CLI credential refresh exited %s", result.returncode)
+        return None
+
+    creds = read_claude_code_credentials()
+    if creds and is_claude_code_token_valid(creds):
+        logger.debug("Claude Code CLI refreshed usable credentials")
+        return creds
+    logger.debug("Claude Code CLI ran but no fresh credentials were found")
+    return None
+
+
 def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
@@ -1279,8 +1355,9 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
-      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. One bounded official Claude Code CLI refresh attempt, then re-read
+      5. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      6. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1307,12 +1384,22 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Hermes credential_pool OAuth entry.
+    # 4. Last-resort recovery through the official Claude Code CLI. This is
+    # intentionally after Hermes' pure refresh so the hot path stays fast and
+    # deterministic, but before pool/API-key fallbacks so Claude Max/Fable keeps
+    # using the documented refreshable Claude Code store when possible.
+    refreshed_creds = _refresh_claude_code_credentials_via_cli()
+    if refreshed_creds:
+        resolved_claude_token = _resolve_claude_code_token_from_credentials(refreshed_creds)
+        if resolved_claude_token:
+            return resolved_claude_token
+
+    # 5. Hermes credential_pool OAuth entry.
     resolved_pool_token = _resolve_anthropic_pool_token()
     if resolved_pool_token:
         return resolved_pool_token
 
-    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 6. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:

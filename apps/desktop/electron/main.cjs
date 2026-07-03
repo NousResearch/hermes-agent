@@ -55,7 +55,7 @@ const {
   macTitleBarOverlayHeight
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
-const { readLiveUpdateMarker } = require('./update-marker.cjs')
+const { readLiveUpdateMarker, writeUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
   decideRelaunchOutcome,
@@ -2315,6 +2315,17 @@ async function applyUpdates(opts = {}) {
     })
     child.unref()
 
+    // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
+    // quit dwell. The Tauri updater won't write its own marker for several
+    // seconds (window init + manifest), and during that gap our renderer
+    // can reconnect and spawn a fresh backend that re-locks .pyd files in
+    // the venv. By writing the marker ourselves the renderer's
+    // waitForUpdateToFinish() gate sees a live update and parks instead.
+    // The updater overwrites this with its own PID later; same format.
+    if (Number.isInteger(child.pid)) {
+      writeUpdateMarker(HERMES_HOME, child.pid)
+    }
+
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
@@ -2371,6 +2382,13 @@ async function handOffWindowsBootstrapRecovery(reason) {
     windowsHide: false
   })
   child.unref()
+
+  // Same marker pre-write as applyUpdates — see comment there. The recovery
+  // hand-off has the same window where the renderer can respawn a backend
+  // before the updater writes its own marker.
+  if (Number.isInteger(child.pid)) {
+    writeUpdateMarker(HERMES_HOME, child.pid)
+  }
 
   rememberLog(
     `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`

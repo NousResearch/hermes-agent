@@ -115,8 +115,10 @@
     {
       "id": "OASDK-HARDEN-007",
       "title": "OpenAI Agents SDK source freshness manifest",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": [
+        "94978ff40"
+      ],
       "linked_receipt_groups": [
         "OASDK-RCPT-GATE"
       ],
@@ -130,8 +132,10 @@
     {
       "id": "OASDK-HARDEN-008",
       "title": "OpenAI Agents SDK local proof bundle generator",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": [
+        "94978ff40"
+      ],
       "linked_receipt_groups": [
         "OASDK-RCPT-GATE"
       ],
@@ -263,7 +267,7 @@
     {
       "id": "OASDK-NEXT-006",
       "title": "Wire OpenAI SDK source freshness manifest into local gate",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-007"
       ],
@@ -276,7 +280,7 @@
     {
       "id": "OASDK-NEXT-007",
       "title": "Generate local OpenAI SDK hardening proof bundle",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-008"
       ],
@@ -325,7 +329,8 @@
       "060bc1648",
       "0efd2c44a",
       "HEAD",
-      "00ad3ffa3"
+      "00ad3ffa3",
+      "94978ff40"
     ],
     "integration_targets": {
       "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",

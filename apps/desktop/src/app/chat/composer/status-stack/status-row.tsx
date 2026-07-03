@@ -7,16 +7,12 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
 
-const toolLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(part => part[0]!.toUpperCase() + part.slice(1))
-    .join(' ') || name
+const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
 // Todo rows speak checkbox, not spinner-and-dot: a dashed ring while the item
 // is still open (pending), codicons once it resolves, a live spinner only on

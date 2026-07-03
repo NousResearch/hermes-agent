@@ -1,4 +1,4 @@
-import type { ReactNode, RefObject } from 'react'
+import { type ReactNode, type RefObject, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -10,6 +10,12 @@ interface SearchFieldProps {
   placeholder: string
   value: string
   onChange: (value: string) => void
+  /**
+   * Data-driven placeholder suggestions ("Try \u201ccreative\u201d") — one is picked at
+   * random per mount, the nudge that search understands more than names.
+   * Falls back to `placeholder` when absent/empty.
+   */
+  hints?: string[]
   containerClassName?: string
   inputClassName?: string
   loading?: boolean
@@ -22,12 +28,14 @@ interface SearchFieldProps {
 /**
  * Shared search field used everywhere (sessions sidebar, pages, overlays,
  * command center, cron). No box — borderless until focus, then an underline.
- * Width/placement come from `containerClassName`.
+ * Rests at low opacity until focused or filled. Width/placement come from
+ * `containerClassName`.
  */
 export function SearchField({
   placeholder,
   value,
   onChange,
+  hints,
   containerClassName,
   inputClassName,
   loading = false,
@@ -39,25 +47,37 @@ export function SearchField({
   const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
 
+  // One hint per mount, picked at random — fresh nudge every visit, no
+  // mid-page carousel.
+  const [hintIndex] = useState(() => Math.floor(Math.random() * 4096))
+  const hintCount = hints?.length ?? 0
+  const effectivePlaceholder = hintCount > 0 ? hints![hintIndex % hintCount] : placeholder
+
   return (
     <div
       className={cn(
-        'inline-flex max-w-full items-center gap-1.5 border-b border-transparent px-0.5 transition-colors focus-within:border-(--ui-stroke-secondary)',
+        // min-w-0 is load-bearing: without it the content-sized input sets the
+        // container's flex min-width and the field bulldozes its siblings
+        // instead of shrinking to fit its context.
+        'inline-flex min-w-0 max-w-full items-center gap-1.5 border-b border-transparent px-0.5 transition-[color,border-color,opacity]',
+        // Recede until the user reaches for it.
+        !value && 'opacity-30 focus-within:opacity-100',
         containerClassName
       )}
     >
       <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
       <input
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? placeholder}
         className={cn(
           // `field-sizing: content` grows the input to fit the placeholder/typed
-          // text, capped by the container's max-width — no awkward empty space.
+          // text; min-w-0 lets it shrink back below content size when the
+          // context is narrower — long queries scroll inside the field.
           // text-xs matches the form controls (Input/Select via controlVariants).
-          'h-7 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          'h-7 min-w-0 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
-        placeholder={placeholder}
+        placeholder={effectivePlaceholder}
         ref={inputRef}
         type="text"
         value={value}

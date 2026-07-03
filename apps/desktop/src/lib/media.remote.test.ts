@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+// downloadGatewayMediaFile drives an <a download> click, so these need a DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'

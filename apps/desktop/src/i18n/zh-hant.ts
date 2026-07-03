@@ -26,6 +26,7 @@ export const zhHant = defineLocale({
     done: '完成',
     error: '錯誤',
     failed: '失敗',
+    formatJson: '格式化 JSON',
     free: '免費',
     loading: '載入中…',
     notSet: '未設定',
@@ -160,8 +161,7 @@ export const zhHant = defineLocale({
   },
 
   remoteDisplayBanner: {
-    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
-    dismiss: '關閉'
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
 
   titlebar: {
@@ -596,8 +596,6 @@ export const zhHant = defineLocale({
       enterValueFirst: '請先輸入一個值。',
       couldNotSave: '無法儲存憑證。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '取得金鑰',
       saving: '儲存中'
     },
@@ -811,6 +809,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
     searchToolsets: '搜尋工具集...',
@@ -834,7 +833,14 @@ export const zhHant = defineLocale({
     toolsetEnabled: '工具集已啟用',
     toolsetDisabled: '工具集已停用',
     appliesToNewSessions: name => `${name} 將套用至新工作階段。`,
-    failedToUpdate: name => `更新 ${name} 失敗`
+    failedToUpdate: name => `更新 ${name} 失敗`,
+    sortMostUsed: '最常用',
+    sortAlpha: 'A–Z',
+    enableAll: '全部啟用',
+    disableAll: '全部停用',
+    bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
+    bulkNoChange: '沒有需要變更的內容。',
+    usageCount: count => `已使用 ${count} 次`
   },
 
   starmap: {
@@ -879,7 +885,6 @@ export const zhHant = defineLocale({
     ageHours: hours => `${hours} 小時前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokensK: k => `${k}k 詞元`,
     tokens: value => `${value} 詞元`
   },
 
@@ -896,7 +901,7 @@ export const zhHant = defineLocale({
     appearance: '外觀',
     settings: '設定',
     changeTheme: '變更主題',
-    changeColorMode: '變更色彩模式...',
+    changeColorMode: '變更色彩模式…',
     pets: {
       title: '寵物',
       placeholder: '搜尋寵物…',
@@ -942,7 +947,8 @@ export const zhHant = defineLocale({
       startOver: '重新開始'
     },
     installTheme: {
-      title: '安裝主題...',
+      title: '安裝主題…',
+      pageTitle: '安裝主題',
       placeholder: '搜尋 VS Code Marketplace...',
       loading: '正在搜尋 Marketplace...',
       error: '無法連接到 Marketplace。',
@@ -1151,9 +1157,9 @@ export const zhHant = defineLocale({
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
-    manageProfiles: '管理設定檔...',
+    manageProfiles: '管理設定檔…',
     actionsFor: name => `${name} 的動作`,
-    color: '顏色...',
+    color: '顏色…',
     colorFor: name => `${name} 的顏色`,
     setColor: color => `設定顏色 ${color}`,
     autoColor: '自動',
@@ -1166,6 +1172,8 @@ export const zhHant = defineLocale({
     env: 'env',
     defaultBadge: '預設',
     rename: '重新命名',
+    renameMenu: '重新命名…',
+    editSoul: '編輯 SOUL.md…',
     copySetup: '複製安裝指令',
     copying: '複製中…',
     modelLabel: '模型',
@@ -1419,8 +1427,7 @@ export const zhHant = defineLocale({
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',
-      staleBackend:
-        '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
+      staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
       startWork: '新增工作樹',
       newWorktreeTitle: '新增工作樹',

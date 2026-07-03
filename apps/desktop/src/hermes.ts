@@ -22,7 +22,6 @@ import type {
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
-  McpServerTestResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -343,6 +342,7 @@ export function getLogs(params: {
   file?: string
   level?: string
   lines?: number
+  search?: string
 }): Promise<LogsResponse> {
   const query = new URLSearchParams()
 
@@ -360,6 +360,10 @@ export function getLogs(params: {
 
   if (params.component && params.component !== 'all') {
     query.set('component', params.component)
+  }
+
+  if (params.search) {
+    query.set('search', params.search)
   }
 
   const suffix = query.toString()
@@ -589,6 +593,49 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
+  })
+}
+
+export interface McpTestResult {
+  ok: boolean
+  error?: string
+  tools: { name: string; description: string }[]
+  /** Capability counts (absent on older backends / failed probes). */
+  prompts?: number
+  resources?: number
+}
+
+/** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
+ *  for real) — well past the 15s default fetch timeout. */
+export function testMcpServer(name: string): Promise<McpTestResult> {
+  return window.hermesDesktop.api<McpTestResult>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+    method: 'POST',
+    timeoutMs: 60_000
+  })
+}
+
+/** Replace the whole `mcp_servers` map (the mcp.json editor's save). Unlike
+ *  `saveHermesConfig`, this REPLACES rather than deep-merges, so deletes,
+ *  re-enables (dropping `enabled: false`), and removed nested fields persist. */
+export function saveMcpServers(servers: Record<string, Record<string, unknown>>): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/mcp/servers',
+    method: 'PUT',
+    body: { servers }
+  })
+}
+
+/** Run the OAuth flow for an HTTP server — opens the system browser and blocks
+ *  until the user finishes (or gives up), hence the very generous timeout. */
+export function authMcpServer(name: string): Promise<McpTestResult> {
+  return window.hermesDesktop.api<McpTestResult>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+    method: 'POST',
+    timeoutMs: 300_000
   })
 }
 
@@ -981,6 +1028,7 @@ export function searchSkillsHub(query: string, source = 'all', limit = 20): Prom
 
 export function previewSkillHub(identifier: string): Promise<SkillHubPreview> {
   return window.hermesDesktop.api<SkillHubPreview>({
+    ...profileScoped(),
     path: `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
@@ -988,6 +1036,7 @@ export function previewSkillHub(identifier: string): Promise<SkillHubPreview> {
 
 export function scanSkillHub(identifier: string): Promise<SkillHubScanResult> {
   return window.hermesDesktop.api<SkillHubScanResult>({
+    ...profileScoped(),
     path: `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
@@ -1033,16 +1082,6 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
   })
 }
 
-export function testMcpServer(name: string): Promise<McpServerTestResponse> {
-  return window.hermesDesktop.api<McpServerTestResponse>({
-    ...profileScoped(),
-    path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
-    method: 'POST',
-    // Connect + list tools can be slow for stdio servers that boot a process.
-    timeoutMs: 60_000
-  })
-}
-
 export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
@@ -1062,8 +1101,8 @@ export function getMcpCatalog(): Promise<McpCatalogResponse> {
 export function installMcpCatalogEntry(
   name: string,
   env: Record<string, string> = {}
-): Promise<{ ok: boolean; name?: string; pid?: number; action?: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string }>({
+): Promise<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
     ...profileScoped(),
     path: '/api/mcp/catalog/install',
     method: 'POST',

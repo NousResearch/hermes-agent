@@ -414,7 +414,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           options={apiKeyOptions}
         />
         {manual ? null : (
-          <div className="flex justify-center border-t border-(--ui-stroke-tertiary) pt-3">
+          <div className="flex justify-center pt-1">
             <ChooseLaterLink />
           </div>
         )}

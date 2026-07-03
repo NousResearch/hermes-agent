@@ -71,6 +71,7 @@ export interface Translations {
     done: string
     error: string
     failed: string
+    formatJson: string
     free: string
     loading: string
     notSet: string
@@ -208,7 +209,6 @@ export interface Translations {
 
   remoteDisplayBanner: {
     message: (reason: string) => string
-    dismiss: string
   }
 
   titlebar: {
@@ -411,8 +411,6 @@ export interface Translations {
       enterValueFirst: string
       couldNotSave: string
       remove: string
-      or: string
-      escToCancel: string
       getKey: string
       saving: string
     }
@@ -656,6 +654,7 @@ export interface Translations {
   skills: {
     tabSkills: string
     tabToolsets: string
+    tabMcp: string
     tabHub: string
     all: string
     searchSkills: string
@@ -681,6 +680,13 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    sortMostUsed: string
+    sortAlpha: string
+    enableAll: string
+    disableAll: string
+    bulkUpdated: (count: number) => string
+    bulkNoChange: string
+    usageCount: (count: number | string) => string
     hub: {
       searchPlaceholder: string
       search: string
@@ -696,6 +702,7 @@ export interface Translations {
       install: string
       installing: string
       uninstall: string
+      uninstalling: string
       updateAll: string
       updating: string
       preview: string
@@ -779,8 +786,7 @@ export interface Translations {
     ageHours: (hours: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
-    tokensK: (k: string) => string
-    tokens: (value: number) => string
+    tokens: (value: number | string) => string
   }
 
   commandCenter: {
@@ -843,6 +849,7 @@ export interface Translations {
     }
     installTheme: {
       title: string
+      pageTitle: string
       placeholder: string
       loading: string
       error: string
@@ -1017,6 +1024,8 @@ export interface Translations {
     env: string
     defaultBadge: string
     rename: string
+    renameMenu: string
+    editSoul: string
     copySetup: string
     copying: string
     modelLabel: string

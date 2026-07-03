@@ -1,10 +1,15 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
+import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
+import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
+import { notifyError } from '@/store/notifications'
+import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
+
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 export interface NodeMenuTarget {
   id: string
@@ -15,8 +20,8 @@ export interface NodeMenuTarget {
 }
 
 interface NodeContextMenuProps {
-  onChanged: () => void
   onClose: () => void
+  onNodeRemoved: () => void
   target: NodeMenuTarget | null
 }
 
@@ -27,12 +32,26 @@ interface EditState {
 }
 
 /** Right-click actions for a star-map node: edit (modal) or delete (confirm). */
-export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuProps) {
+export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextMenuProps) {
   const [editing, setEditing] = useState<EditState | null>(null)
-  const [deleting, setDeleting] = useState<{ id: string; label: string } | null>(null)
+  const [deleting, setDeleting] = useState<Omit<NodeMenuTarget, 'x' | 'y'> | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+
+  // Bumped on profile switch so an in-flight openEdit fetch from profile A can't
+  // reopen the editor with A's node content after switching to B.
+  const editEpoch = useRef(0)
+
+  // A profile switch swaps the backend under an open edit/delete dialog — its
+  // node id belongs to the previous profile, so a Save/Delete after the switch
+  // would hit the newly active profile. Close everything on switch.
+  useOnProfileSwitch(() => {
+    editEpoch.current += 1
+    setEditing(null)
+    setDeleting(null)
+    setError(null)
+  })
 
   const noun = target?.kind === 'memory' ? 'memory' : 'skill'
 
@@ -41,10 +60,17 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
       return
     }
 
+    const epoch = editEpoch.current
     setLoading(true)
     setError(null)
+
     try {
       const detail = await getLearningNode(target.id)
+
+      if (editEpoch.current !== epoch) {
+        return
+      }
+
       setEditing({ content: detail.content, id: target.id, label: target.label })
       onClose()
     } catch (e) {
@@ -61,13 +87,16 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
 
     setSaving(true)
     setError(null)
+
     try {
       const res = await editLearningNode(editing.id, editing.content)
+
       if (!res.ok) {
         throw new Error(res.message)
       }
+
       setEditing(null)
-      onChanged()
+      void loadStarmapGraph(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -82,13 +111,16 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
       {menuOpen ? (
         <>
           <div className="fixed inset-0 z-50" onClick={onClose} onContextMenu={e => e.preventDefault()} />
+          {/* Styled to DropdownMenuContent/Item scale (rounded-lg card, p-1,
+              text-xs rows) — the hand-rolled fixed positioning stays because
+              the target is a canvas point, not a DOM anchor. */}
           <div
-            className="fixed z-50 min-w-36 overflow-hidden rounded-md border border-border bg-popover py-1 text-sm shadow-md"
+            className="fixed z-50 min-w-36 rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 shadow-md backdrop-blur-md"
             style={{ left: target.x, top: target.y }}
           >
-            <div className="truncate px-3 py-1 text-xs text-muted-foreground">{target.label}</div>
+            <div className="truncate px-2 py-1 text-[0.68rem] text-muted-foreground">{target.label}</div>
             <button
-              className="block w-full px-3 py-1 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs hover:bg-(--ui-control-active-background) hover:text-foreground disabled:opacity-50"
               disabled={loading}
               onClick={() => void openEdit()}
               type="button"
@@ -96,14 +128,14 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
               Edit {noun}…
             </button>
             <button
-              className="block w-full px-3 py-1 text-left text-destructive hover:bg-destructive/10"
+              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs text-destructive hover:bg-destructive/10"
               onClick={() => {
-                setDeleting({ id: target.id, label: target.label })
+                setDeleting({ id: target.id, kind: target.kind, label: target.label })
                 onClose()
               }}
               type="button"
             >
-              Delete {noun}
+              {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
             </button>
           </div>
         </>
@@ -114,11 +146,19 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
           <DialogHeader>
             <DialogTitle>Edit {editing?.label}</DialogTitle>
           </DialogHeader>
-          <Textarea
-            className="h-80 font-mono text-xs"
-            onChange={e => setEditing(prev => (prev ? { ...prev, content: e.target.value } : prev))}
-            value={editing?.content ?? ''}
-          />
+          <div className="h-80">
+            {editing && (
+              <CodeEditor
+                filePath={noun === 'skill' ? 'SKILL.md' : 'memory.md'}
+                framed
+                initialValue={editing.content}
+                key={editing.id}
+                onCancel={() => !saving && setEditing(null)}
+                onChange={content => setEditing(prev => (prev ? { ...prev, content } : prev))}
+                onSave={() => void save()}
+              />
+            )}
+          </div>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
           <DialogFooter>
             <Button disabled={saving} onClick={() => setEditing(null)} type="button" variant="ghost">
@@ -131,29 +171,49 @@ export function NodeContextMenu({ onChanged, onClose, target }: NodeContextMenuP
         </DialogContent>
       </Dialog>
 
-      <ConfirmDialog
-        confirmLabel="Delete"
-        description={
-          noun === 'skill'
-            ? 'The skill is archived and can be restored with `hermes curator restore`.'
-            : 'This memory is removed permanently.'
-        }
-        destructive
-        onClose={() => setDeleting(null)}
-        onConfirm={async () => {
-          if (!deleting) {
-            return
-          }
+      {deleting?.kind === 'skill' ? (
+        <ArchiveSkillConfirmDialog
+          onApply={() => {
+            onNodeRemoved()
 
-          const res = await deleteLearningNode(deleting.id)
-          if (!res.ok) {
-            throw new Error(res.message)
-          }
-          onChanged()
-        }}
-        open={Boolean(deleting)}
-        title={`Delete ${deleting?.label ?? ''}?`}
-      />
+            return evictStarmapNode(deleting.id)
+          }}
+          onClose={() => setDeleting(null)}
+          onFailure={(err, name) => notifyError(err, name)}
+          open
+          skillId={deleting.id}
+          skillName={deleting.label}
+        />
+      ) : (
+        <ConfirmDialog
+          confirmLabel="Delete"
+          description="This memory is removed permanently."
+          destructive
+          dismissOnConfirm
+          onClose={() => setDeleting(null)}
+          onConfirm={() => {
+            if (!deleting) {
+              return
+            }
+
+            const { id, label } = deleting
+            const rollback = evictStarmapNode(id)
+            onNodeRemoved()
+
+            fireOptimistic(
+              deleteLearningNode(id).then(res => {
+                if (!res.ok) {
+                  throw new Error(res.message)
+                }
+              }),
+              rollback,
+              err => notifyError(err, label)
+            )
+          }}
+          open={Boolean(deleting)}
+          title={`Delete ${deleting?.label ?? ''}?`}
+        />
+      )}
     </>
   )
 }

@@ -46,9 +46,25 @@ const save = (state: QueueState) => {
 
 export const $queuedPromptsBySession = atom<QueueState>(load())
 
+// Cross-window sync: every desktop window boots this store from the same
+// localStorage key, but without this listener each window keeps a private,
+// diverging snapshot forever. A window that enqueues/drains would then clobber
+// the others' entries on its next save (#46732: prompts resurrecting, vanishing,
+// or draining from a window the user never typed in). `storage` fires only in
+// the windows that did NOT write, so there is no self-echo to guard against.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === STORAGE_KEY || event.key === null) {
+      $queuedPromptsBySession.set(load())
+    }
+  })
+}
+
 const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
-  const current = $queuedPromptsBySession.get()
-  const next = { ...current }
+  // Merge over the freshly-persisted map, not the in-memory atom: another
+  // window may have written between our last sync event and now, and basing
+  // the save on a stale snapshot would silently revert its change.
+  const next = { ...load() }
 
   if (queue.length === 0) {
     delete next[sid]
@@ -230,7 +246,7 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
     return false
   }
 
-  const next = { ...$queuedPromptsBySession.get() }
+  const next = { ...load() }
   delete next[from]
   next[to] = [...queueFor(to), ...pending]
 

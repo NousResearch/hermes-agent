@@ -8,6 +8,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -187,7 +188,11 @@ export function useComposerQueue({
         return false
       }
 
-      const entry = pickEntry(queuedPrompts)
+      // Pick from the live store, not the rendered slice: with several windows
+      // open, another window may have drained (removed) this entry after our
+      // last render, and sending from the stale slice would double-submit the
+      // prompt into the session (#46732).
+      const entry = pickEntry(getQueuedPrompts(activeQueueSessionKey))
 
       if (!entry) {
         return false
@@ -213,7 +218,7 @@ export function useComposerQueue({
         drainingQueueRef.current = false
       }
     },
-    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
+    [activeQueueSessionKey, onSubmit, sessionId]
   )
 
   const pickDrainHead = useCallback(

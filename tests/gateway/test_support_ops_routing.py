@@ -3,7 +3,9 @@ from gateway.run import _prepare_gateway_status_message
 from gateway.support_ops_routing import (
     BACKEND_MENTION,
     EMIL_OWNER_MENTION,
+    EMIL_OWNER_USER_ID,
     FATIH_MENTION,
+    IVCHO_MENTION,
     KOZHUHAROV_MENTION,
     ALEX_MENTION,
     PLAMENA_MENTION,
@@ -81,6 +83,49 @@ def test_backend_resolver_mention_requires_backend_lane_without_keyword_inferenc
         text,
         chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
         thread_id="1521047924069371954",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_backend_resolver_mention_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
+
+
+def test_backend_resolver_mention_passes_when_thread_parent_is_backend_lane():
+    text = f"{ALEX_MENTION} моля за действие по клиентския бонус."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id="1521049963428053125",
+        thread_id="1521049963428053125",
+        parent_chat_id=SKYVISION_BACKEND_CHANNEL_ID,
+    )
+
+    assert result.ok is True
+
+
+def test_owner_can_answer_backend_teammate_in_current_thread_without_handoff_block():
+    text = f"{IVCHO_MENTION} Иво, нашият private Canonical Brain е отделен append-only слой."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id="1522496764408762388",
+        thread_id="1522496764408762388",
+        parent_chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        source_user_id=EMIL_OWNER_USER_ID,
+    )
+
+    assert result.ok is True
+
+
+def test_non_owner_current_thread_reply_to_backend_teammate_still_requires_backend_lane():
+    text = f"{IVCHO_MENTION} Иво, моля провери този клиентски казус."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id="1522496764408762388",
+        thread_id="1522496764408762388",
+        parent_chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        source_user_id="1282940574533423125",
     )
 
     assert result.ok is False

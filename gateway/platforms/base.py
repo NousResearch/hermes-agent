@@ -5038,6 +5038,8 @@ class BasePlatformAdapter(ABC):
                                 text_content,
                                 chat_id=str(event.source.chat_id or ""),
                                 thread_id=str(getattr(event.source, "thread_id", "") or "") or None,
+                                parent_chat_id=str(getattr(event.source, "parent_chat_id", "") or "") or None,
+                                source_user_id=str(getattr(event.source, "user_id", "") or "") or None,
                             )
                         except Exception as _lint_err:
                             logger.warning(
@@ -5056,7 +5058,16 @@ class BasePlatformAdapter(ABC):
                                 _target_lint.blocked_reason,
                                 _target_lint.expected_channel_id,
                             )
-                            text_content = ""
+                            expected = (
+                                f" Очакван канал: `{_target_lint.expected_channel_id}`."
+                                if _target_lint.expected_channel_id
+                                else ""
+                            )
+                            text_content = (
+                                "Не изпратих финалния отговор, защото routing guard блокира доставката: "
+                                f"`{_target_lint.blocked_reason}`.{expected} "
+                                "Моля уточнете правилния канал/получател или повторете задачата с точен target."
+                            )
 
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)

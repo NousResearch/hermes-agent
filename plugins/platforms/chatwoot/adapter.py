@@ -751,6 +751,19 @@ class ChatwootAdapter(BasePlatformAdapter):
         and swallows its own errors.
         """
         try:
+            from plugins.platforms.chatwoot import coach_context
+
+            raw = getattr(event, "raw_message", None)
+            sender = raw.get("sender") if isinstance(raw, dict) else {}
+            if isinstance(sender, dict):
+                attrs = sender.get("custom_attributes")
+                if isinstance(attrs, dict):
+                    hint = str(attrs.get("joincrwd_user_id") or "").strip() or None
+                    if hint:
+                        coach_context.bind_webhook_crwd_hint(hint)
+        except Exception:
+            logger.debug("[chatwoot] failed to bind webhook CRWD hint", exc_info=True)
+        try:
             from plugins.platforms.chatwoot import enrichment
             task = asyncio.create_task(enrichment.enrich(self, event))
             self._background_tasks.add(task)
@@ -1002,6 +1015,8 @@ def register(ctx) -> None:
     # Inject the current CRWD member's user_id into each turn so the coach can
     # call crwd_db user lookups directly (no get_user round-trip). Best-effort;
     # no-ops off Chatwoot or when the id can't be resolved.
-    from plugins.platforms.chatwoot import coach_context
+    from plugins.platforms.chatwoot import coach_context, user_scope
 
     ctx.register_hook("pre_llm_call", coach_context.member_context_hook)
+    ctx.register_middleware("tool_request", user_scope.on_tool_request)
+    ctx.register_hook("pre_tool_call", user_scope.on_pre_tool_call)

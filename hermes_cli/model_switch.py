@@ -1683,7 +1683,15 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
-        if pconfig and pconfig.api_key_env_vars:
+        # Skip providers that have no PROVIDER_REGISTRY entry. They appear
+        # in PROVIDER_TO_MODELS_DEV (so the picker sees their models.dev
+        # catalog and emits a row), but runtime resolution in
+        # resolve_provider() rejects them as "Unknown provider". Filter
+        # them here so the /model picker only ever lists providers that
+        # can actually be switched to. Fixes #57503 (mistral).
+        if not pconfig:
+            continue
+        if pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
             env_vars = pdata.get("env", [])

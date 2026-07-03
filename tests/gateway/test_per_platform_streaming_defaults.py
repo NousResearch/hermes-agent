@@ -16,6 +16,7 @@ def test_default_per_platform_streaming_flags():
     plats = DEFAULT_CONFIG["display"]["platforms"]
     assert plats["telegram"]["streaming"] is True
     assert plats["discord"]["streaming"] is False
+    assert plats["mattermost"]["streaming"] is False
 
 
 def test_resolver_telegram_on_discord_off_when_global_enabled():

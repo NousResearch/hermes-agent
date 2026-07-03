@@ -147,6 +147,30 @@ def _resolve_families(args):
     return fam
 
 
+# The two pinning policies the eval harnesses actually use. GEN pins only the generation
+# stages, deliberately leaving value_judge_model at the shipped default (deepseek) so the
+# projected Δ/stakes under validation are the REAL judge's; ALL pins every stage (cost parity
+# / fully-local runs), with derive_model="" preserving its follow-the-judge default.
+PIN_GEN = ("plan_model", "question_gen_model", "answer_model")
+PIN_ALL = _MODEL_KEYS
+
+
+def eval_cfg(gen_model=None, pin=PIN_GEN, **overrides):
+    """A fresh run() config for eval harnesses: DEFAULTS + the given model stages pinned to one
+    alias + keyword overrides. Replaces five copy-pasted `dict(DEFAULTS)` + pin-loop blocks
+    across evals/. Absent-key conventions still apply: no `families` block → flat generator; no
+    `auto_derive`/`value_judge_mode`/`answer_prob_mode` keys → those seams stay at their
+    byte-identical defaults."""
+    cfg = dict(DEFAULTS)
+    if gen_model:
+        for key in pin:
+            cfg[key] = gen_model
+        if "derive_model" in pin:
+            cfg["derive_model"] = ""   # "" -> value_judge_model, preserving the pin
+    cfg.update(overrides)
+    return cfg
+
+
 def families_cfg(premortem="auto", families_model=None, reach="auto"):
     """Families block for a harness-built cfg. The eval harnesses call run() directly with
     cfg = dict(DEFAULTS), which has NO 'families' key — so they silently ran the flat generator
@@ -588,15 +612,9 @@ def render_markdown(result):
     fr = result["framing"]
     bucket = result["bucket"]
 
-    if result["pre_answer"]:
-        pre = "\n".join(
-            f"{i + 1}. **{r['question']}**  \n   _why:_ {r.get('why', '')}  \n"
-            f"   _assume if skipped:_ {_fmt_default(r)}"
-            for i, r in enumerate(result["pre_answer"]))
-    else:
-        pre = "_None above the pre-answer threshold — the problem is well enough " \
-              "specified to proceed (resolve any ASSUME-DEFAULT items if convenient)._"
-
+    # (A standalone PRE_ANSWER section was removed with the template redesign: no template
+    # carries {{preanswer_list}} — the recommendation renders inline per ranked item, and
+    # result["pre_answer"] stays in the JSON output for programmatic callers.)
     rows = ["| # | value | uncert | answer-value | rec | question | resolves | assume-if-skipped |",
             "|---|------:|------:|------:|-----|----------|----------|-------------------|"]
     for i, r in enumerate(bucket):
@@ -649,7 +667,6 @@ def render_markdown(result):
         "{{decision}}": fr.get("decision", "") or "—",
         "{{success_criteria}}": crit_str or "—",
         "{{baseline_plan}}": fr.get("baseline_plan", "") or "—",
-        "{{preanswer_list}}": pre,
         "{{ranked_list}}": _ranked_list(bucket),
         "{{table}}": table,
         "{{discarded_note}}": note,
@@ -766,6 +783,8 @@ def _dry_run(problem, cfg, evidence=None):
     stages = ["DRY RUN — prompts only, no model calls.",
               "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem, evidence)]
     if fam.get("enabled"):
+        # illustrative: shows every lens block regardless of the auto-gates (a dry run has
+        # no framing to gate on)
         stages.append("STAGE 1a — generate_families:\n\n" + pipeline.families_prompt(
             problem, framing_stub, fam.get("n_scoped", 3), fam.get("contrarian", True), True,
             premortem=True, reach=True))

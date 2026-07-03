@@ -28,6 +28,25 @@ import testbank  # noqa: E402
 import validate_evsi  # noqa: E402
 
 
+class TestEvalCfg(unittest.TestCase):
+    """infogain.eval_cfg — the shared harness config builder (replaced five pin-loop copies)."""
+
+    def test_default_pin_leaves_judge_at_shipped_default(self):
+        cfg = infogain.eval_cfg("fast")
+        for k in ("plan_model", "question_gen_model", "answer_model"):
+            self.assertEqual(cfg[k], "fast")
+        self.assertEqual(cfg["value_judge_model"], infogain.DEFAULTS["value_judge_model"])
+        self.assertNotIn("families", cfg)          # absent-key conventions preserved
+        self.assertNotIn("auto_derive", cfg)
+
+    def test_pin_all_and_overrides(self):
+        cfg = infogain.eval_cfg("m", pin=infogain.PIN_ALL, max_rounds=1)
+        self.assertEqual(cfg["value_judge_model"], "m")
+        self.assertEqual(cfg["derive_model"], "")   # "" -> follows value_judge_model
+        self.assertEqual(cfg["max_rounds"], 1)
+        self.assertEqual(infogain.eval_cfg()["plan_model"], infogain.DEFAULTS["plan_model"])
+
+
 class TestFamiliesCfg(unittest.TestCase):
     def test_defaults(self):
         fam = infogain.families_cfg()

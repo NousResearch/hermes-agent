@@ -211,10 +211,7 @@ def solve_and_score(task, qa, solver_model, timeout=240):
 # ── question sources (the arms' only difference) ─────────────────────────────
 
 def questions_nbq(task, k, skill_model, auto_derive=False, max_rounds=None, judge_mode=None):
-    cfg = dict(infogain.DEFAULTS)
-    for key in infogain._MODEL_KEYS:
-        cfg[key] = skill_model
-    cfg["derive_model"] = ""            # -> value_judge_model
+    cfg = infogain.eval_cfg(skill_model, pin=infogain.PIN_ALL)
     cfg["families"] = infogain.families_cfg(families_model=skill_model)
     if max_rounds:
         cfg["max_rounds"] = max_rounds
@@ -238,11 +235,14 @@ def _parse_numbered(text, k):
     return qs[:k]
 
 
+def zeroshot_prompt(task, k):
+    return (f"You are about to implement this task:\n\nTASK: {task['ambiguous_prompt']}\n\n"
+            f"Before writing any code, ask the user the {k} best clarifying questions. "
+            f"Reply with ONLY the {k} questions, numbered 1..{k}.")
+
+
 def questions_zeroshot(task, k, model, timeout=120):
-    p = (f"You are about to implement this task:\n\nTASK: {task['ambiguous_prompt']}\n\n"
-         f"Before writing any code, ask the user the {k} best clarifying questions. "
-         f"Reply with ONLY the {k} questions, numbered 1..{k}.")
-    out = pipeline.raw_chat(model, p, timeout=timeout, num_predict=400)
+    out = pipeline.raw_chat(model, zeroshot_prompt(task, k), timeout=timeout, num_predict=400)
     return _parse_numbered(out.get("content"), k), {"raw": out.get("content", "")}
 
 
@@ -395,7 +395,7 @@ def main(argv=None):
         t = tasks[0]
         print("DRY RUN — prompts only.\n\n=== solve (baseline) ===\n" + solve_prompt(t, []))
         print("\n=== simulator ===\n" + simulator_prompt(t["hidden_spec"], "<question>"))
-        print("\n=== zeroshot ===\n" + questions_zeroshot.__doc__ if False else "")
+        print("\n=== zeroshot ===\n" + zeroshot_prompt(t, args.k))
         return 0
 
     models = {"skill": pipeline.resolve_alias(args.skill_model),

@@ -136,6 +136,24 @@ class TestArms(unittest.TestCase):
         self.assertEqual(qa[-1]["question"], "dq")                    # tombstone reaches solver
         self.assertIn("derived", qa[-1]["answer"])
 
+    def test_zeroshot_arm_one_call_numbered_parse_k_cap(self):
+        task = outcome_bank.TASKS[0]
+        calls = []
+
+        def fake_chat(model, prompt, timeout=0, num_predict=0, **kw):
+            calls.append(prompt)
+            return {"content": "1. Case sensitivity?\n2) Sort order?\n3. Locale?\n4. Extra?",
+                    "error": None}
+
+        with mock.patch.object(pipeline, "raw_chat", side_effect=fake_chat):
+            qs, meta = outcome_eval.questions_zeroshot(task, 3, "m")
+        self.assertEqual(len(calls), 1)                       # ONE naive call — the P4 control
+        self.assertIn(task["ambiguous_prompt"], calls[0])
+        self.assertIn("3 best clarifying questions", calls[0])
+        self.assertEqual(qs, ["Case sensitivity?", "Sort order?", "Locale?"])  # K cap applied
+        # dry-run shows the same prompt (the once-dead branch, now wired)
+        self.assertEqual(calls[0], outcome_eval.zeroshot_prompt(task, 3))
+
     def test_prompt_evsi_arm_is_one_call_with_framework(self):
         task = outcome_bank.TASKS[0]
         calls = []

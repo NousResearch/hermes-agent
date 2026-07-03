@@ -34,11 +34,11 @@ def load_cases(path):
 
 
 def build_cfg(args):
-    cfg = dict(infogain.DEFAULTS)
-    # Use one (fast, local) model for all generation stages so evals are quick and
-    # cheap; the JUDGE is a separate, stronger model for independence.
-    for k in ("plan_model", "question_gen_model", "answer_model", "value_judge_model"):
-        cfg[k] = args.gen_model
+    # One (fast, local) model for all generation stages so evals are quick and cheap;
+    # the adjudicator JUDGE is a separate, stronger model for independence.
+    cfg = infogain.eval_cfg(args.gen_model,
+                            pin=("plan_model", "question_gen_model", "answer_model",
+                                 "value_judge_model"))
     cfg["max_rounds"] = args.max_rounds
     cfg["answers_per_question"] = args.answers_per_question
     if args.families:

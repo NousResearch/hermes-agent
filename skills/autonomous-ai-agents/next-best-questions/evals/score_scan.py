@@ -99,9 +99,7 @@ def main(argv=None):
                    help="reach lens (#29) setting when --families is on.")
     args = p.parse_args(argv)
 
-    cfg = dict(infogain.DEFAULTS)
-    for k in ("plan_model", "question_gen_model", "answer_model"):
-        cfg[k] = args.gen_model
+    cfg = infogain.eval_cfg(args.gen_model)
     cfg["max_rounds"] = 1
     cfg["mode"] = "focus"  # value_judge stays at the shipped deepseek default
     if args.families:

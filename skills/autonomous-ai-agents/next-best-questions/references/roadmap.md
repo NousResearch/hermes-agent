@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-07-03)** — historical document. Both phases shipped; every open
+> item here has since been resolved or explicitly closed. Current state lives in
+> `../README.md` (key learnings) and `design-decisions.md`; validation verdicts in
+> `evsi-validation-findings.md`.
+
 # Roadmap — validate EVSI, then build the iterative context-builder
 
 Driven by the benchmark (`benchmark-findings.md`). Sequence is deliberate: **get the rating right

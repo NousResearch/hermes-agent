@@ -1118,6 +1118,106 @@ class TestModeConfig(unittest.TestCase):
 
 
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
+class TestPlumbing(unittest.TestCase):
+    """The real transport layer everything else mocks away: raw_chat's payload/accounting,
+    _call_json's retry+trace, _parallel's order preservation. A silent defect here corrupts
+    every run, which is exactly why these get direct tests despite being 'infrastructure'."""
+
+    def _fake_urlopen(self, captured, response_obj):
+        import io, contextlib
+
+        @contextlib.contextmanager
+        def fake(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            yield io.BytesIO(json.dumps(response_obj).encode("utf-8"))
+        return fake
+
+    def test_raw_chat_payload_accounting_and_content(self):
+        captured = {}
+        resp = {"message": {"content": "  hello  "}, "prompt_eval_count": 11, "eval_count": 7}
+        pipeline.reset_usage()
+        with mock.patch.object(pipeline.urllib.request, "urlopen",
+                               self._fake_urlopen(captured, resp)):
+            out = pipeline.raw_chat("some-model", "hi", timeout=42, temperature=0.7,
+                                    num_predict=123)
+        p = captured["payload"]
+        self.assertEqual(p["model"], "some-model")
+        self.assertFalse(p["stream"])
+        self.assertFalse(p["think"])                       # reasoning-channel suppression
+        self.assertEqual(p["options"], {"temperature": 0.7, "num_predict": 123})
+        self.assertEqual(captured["timeout"], 42)
+        self.assertEqual(out["content"], "hello")          # stripped
+        self.assertIsNone(out["error"])
+        self.assertEqual((out["input_tokens"], out["output_tokens"]), (11, 7))
+        u = pipeline.get_usage()
+        self.assertEqual((u["calls"], u["input_tokens"], u["output_tokens"]), (1, 11, 7))
+
+    def test_raw_chat_error_as_data_never_raises(self):
+        def boom(req, timeout=None):
+            raise OSError("connection refused")
+        with mock.patch.object(pipeline.urllib.request, "urlopen", boom):
+            out = pipeline.raw_chat("m", "hi")
+        self.assertEqual(out["content"], "")
+        self.assertIn("connection refused", out["error"])
+
+    def test_call_json_retry_nudge_and_sink(self):
+        calls = []
+
+        def fake_raw(model, content, timeout=0, num_predict=0, temperature=0.0):
+            calls.append(content)
+            if len(calls) == 1:
+                return {"content": "sorry, no json here", "elapsed": 0.1, "error": None}
+            return {"content": '{"ok": 1}', "elapsed": 0.1, "error": None}
+
+        sink = []
+        with mock.patch.object(pipeline, "raw_chat", side_effect=fake_raw):
+            parsed, err = pipeline._call_json("m", "PROMPT", 10, 100, sink=sink)
+        self.assertEqual(parsed, {"ok": 1})
+        self.assertIsNone(err)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Return ONLY valid JSON", calls[1])   # the retry nudge
+        self.assertEqual(sink[0]["attempts"], 2)
+
+    def test_call_json_exhausted_sinks_the_error(self):
+        with mock.patch.object(pipeline, "raw_chat",
+                               return_value={"content": "still prose", "elapsed": 0.1,
+                                             "error": None}):
+            sink = []
+            parsed, err = pipeline._call_json("m", "PROMPT", 10, 100, sink=sink)
+        self.assertIsNone(parsed)
+        self.assertIn("no parseable JSON", err)
+        self.assertEqual(sink[0]["attempts"], 2)
+        self.assertIsNotNone(sink[0]["error"])
+
+    def test_parallel_preserves_input_order_under_staggered_completion(self):
+        import time as _t
+        items = [{"i": 0, "sleep": 0.05}, {"i": 1, "sleep": 0.0}, {"i": 2, "sleep": 0.02}]
+
+        def work(it):
+            _t.sleep(it["sleep"])              # completion order 1,2,0 — result order must be 0,1,2
+            return dict(it, done=True)
+
+        out = pipeline._parallel(work, items)
+        self.assertEqual([r["i"] for r in out], [0, 1, 2])
+        self.assertTrue(all(r["done"] for r in out))
+
+    def test_parallel_exception_marks_item_without_killing_batch(self):
+        items = [{"i": 0}, {"i": 1}]
+
+        def work(it):
+            if it["i"] == 1:
+                raise RuntimeError("boom")
+            return dict(it, done=True)
+
+        out = pipeline._parallel(work, items)
+        self.assertTrue(out[0]["done"])
+        self.assertEqual(out[1]["error"], "boom")           # item survives, tagged
+        self.assertEqual(out[1]["i"], 1)
+
+
+@unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
 class TestBehaviorJudge(unittest.TestCase):
     """#28: Δplan elicited as BEHAVIOR change of the result (consequence, not code size)."""
 
@@ -1349,6 +1449,114 @@ class TestDeriveOrAsk(unittest.TestCase):
         self.assertEqual(cfg["derive_model"], "glm")
         self.assertEqual(cfg["derive_threshold"], 0.7)
         self.assertEqual(self._cfg(["p"])["derive_model"], "")           # "" -> judge model
+
+
+@unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
+class TestCliAndDryRun(unittest.TestCase):
+    """infogain.main — the live entry point: exit codes, evidence-file ingestion, output
+    dispatch — plus the _dry_run prompt assembly and the breadth-consolidation branch."""
+
+    def _fake_result(self):
+        return {"problem": "p", "evidence": [], "derived": [], "usage": {},
+                "framing": {"goal": "g", "decision": "d", "success_criteria": [],
+                            "baseline_plan": "b"},
+                "framing_error": None, "config": dict(infogain.DEFAULTS, mode="focus"),
+                "rounds_used": 1, "families": [], "candidates_considered": 0,
+                "all_scored": [], "bucket": [], "discarded_count": 0, "min_met": False,
+                "pre_answer": []}
+
+    def test_main_no_problem_exits_3(self):
+        self.assertEqual(infogain.main([]), 3)
+
+    def test_main_ollama_unreachable_exits_2(self):
+        with mock.patch.object(pipeline, "ollama_reachable", return_value=False):
+            self.assertEqual(infogain.main(["some problem"]), 2)
+
+    def test_main_evidence_file_json_and_output_write(self):
+        import tempfile
+        seen = {}
+
+        def fake_run(problem, cfg, progress=None, trace=False, evidence=None):
+            seen["evidence"] = evidence
+            return self._fake_result()
+
+        with tempfile.TemporaryDirectory() as td:
+            ev = os.path.join(td, "facts.txt")
+            with open(ev, "w") as f:
+                f.write("# a comment\nbudget: free tier\n\nusers: coaches\n")
+            out_path = os.path.join(td, "report.md")
+            with mock.patch.object(pipeline, "ollama_reachable", return_value=True), \
+                 mock.patch.object(infogain, "run", side_effect=fake_run):
+                rc = infogain.main(["problem text", "--evidence-file", ev,
+                                    "-o", out_path, "--quiet"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(seen["evidence"], ["budget: free tier", "users: coaches"])
+            with open(out_path) as f:
+                self.assertIn("Key Questions", f.read())     # markdown written to -o
+
+    def test_main_json_dispatch(self):
+        import io
+        from contextlib import redirect_stdout
+        with mock.patch.object(pipeline, "ollama_reachable", return_value=True), \
+             mock.patch.object(infogain, "run", return_value=self._fake_result()):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = infogain.main(["problem", "--json", "--quiet"])
+        self.assertEqual(rc, 0)
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(parsed["problem"], "p")
+
+    def test_dry_run_assembles_all_stage_prompts(self):
+        import io
+        from contextlib import redirect_stdout
+
+        def go(argv):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = infogain.main(argv)
+            self.assertEqual(rc, 0)
+            return buf.getvalue()
+
+        out = go(["a problem", "--dry-run"])
+        for marker in ("STAGE 0", "STAGE 1a", "STAGE 1b", "STAGE 2", "STAGE 3",
+                       "STAGE 3b"):                            # families default-on, derive on
+            self.assertIn(marker, out)
+        out_off = go(["a problem", "--dry-run", "--auto-derive", "off", "--no-families"])
+        self.assertNotIn("STAGE 3b", out_off)
+        self.assertNotIn("STAGE 1a", out_off)
+        self.assertIn("STAGE 1 —", out_off)                    # flat generator prompt instead
+
+    def test_breadth_consolidation_branch_runs(self):
+        # the only run() branch previously uncovered: gen_samples>1 routes candidates
+        # through consolidate_questions
+        cfg = {k: v for k, v in infogain.DEFAULTS.items()}
+        cfg["families"] = {"enabled": False}
+        cfg["max_rounds"] = 1
+        cfg["gen_samples"] = 2
+        called = {"n": 0}
+
+        def fake_consolidate(problem, qs, model, timeout, sink=None):
+            called["n"] += 1
+            return qs
+
+        with mock.patch.object(pipeline, "frame_and_plan",
+                               return_value=({"goal": "g", "decision": "d",
+                                              "success_criteria": [], "baseline_plan": "b"},
+                                             None)), \
+             mock.patch.object(pipeline, "generate_questions",
+                               side_effect=lambda *a, **k: ([{"question": "Q1", "target": "t1",
+                                                             "answers": [], "derivable_prob": 0.1},
+                                                            {"question": "Q2", "target": "t2",
+                                                             "answers": [], "derivable_prob": 0.1}],
+                                                            None)), \
+             mock.patch.object(pipeline, "consolidate_questions",
+                               side_effect=fake_consolidate), \
+             mock.patch.object(pipeline, "project_answers_batch",
+                               side_effect=lambda p, f, recs, *a, **k: recs), \
+             mock.patch.object(pipeline, "judge_plan_change_batch",
+                               side_effect=lambda p, f, b, recs, *a, **k: recs):
+            infogain.run("vague task", cfg)
+        self.assertEqual(called["n"], 1)
 
 
 @unittest.skipUnless(os.environ.get("INFOGAIN_TEST_LIVE"),

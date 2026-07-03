@@ -54,7 +54,8 @@ def _tally(n, comparisons):
 
 def win_fractions(n, comparisons, prior=0.5, prior_weight=2.0):
     """Beta/Laplace-smoothed win fraction per item, in (0, 1). Cheap, robust, monotone — a
-    transparent alternative to (and fallback for) Bradley-Terry. `prior_weight` pseudo-games at
+    transparent alternative to Bradley-Terry, kept for offline analysis (NOT wired as a
+    runtime fallback — production always uses bradley_terry). `prior_weight` pseudo-games at
     rate `prior` keep items with few or extreme records off the 0/1 rails."""
     wins, games = _tally(n, comparisons)
     played = [sum(row) for row in games]

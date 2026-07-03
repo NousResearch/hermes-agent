@@ -157,9 +157,7 @@ def main(argv=None):
     rows, t0 = [], time.time()
 
     if args.scored:
-        base_cfg = dict(infogain.DEFAULTS)
-        for k in ("plan_model", "question_gen_model", "answer_model"):
-            base_cfg[k] = args.gen_model
+        base_cfg = infogain.eval_cfg(args.gen_model)
         base_cfg["mode"] = "focus"
         base_cfg["max_rounds"] = 1                       # isolate breadth (no cross-round refill)
         base_cfg["gen_temperature"] = args.temperature   # >0 so extra samples actually diversify

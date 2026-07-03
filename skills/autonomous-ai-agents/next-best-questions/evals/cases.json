@@ -7,7 +7,7 @@
       "expectation": "underspecified",
       "expect_min_bucket": 2,
       "expect_max_bucket": 7,
-      "notes": "Source format/API, auth, sync cadence, dedup, and which calendar are all unstated."
+      "notes": "DELIBERATE hard case: the documented known-bad niche domain (benchmark-findings: 0/4 acceptable, relevance 0.20; excluded from testbank BANK for the same reason). A judged failure here reads as expected, not a regression; the structural bucket expectation is the meaningful part."
     },
     {
       "id": "microservice-monitoring",

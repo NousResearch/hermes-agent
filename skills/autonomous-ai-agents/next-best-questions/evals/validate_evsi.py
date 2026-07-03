@@ -292,9 +292,7 @@ def main(argv=None):
     if sum((args.ab, args.ab_probs, args.ab_solution)) > 1:
         p.error("--ab / --ab-probs / --ab-solution are separate experiments — run them separately")
 
-    cfg = dict(infogain.DEFAULTS)
-    for k in ("plan_model", "question_gen_model", "answer_model"):
-        cfg[k] = args.gen_model
+    cfg = infogain.eval_cfg(args.gen_model)
     # value_judge_model (elicitation) defaults to the shipped deepseek so the projected_delta we
     # validate is the REAL judge's; --elicit-model overrides it (needed on a host where cloud judges
     # aren't reachable — both absolute and pairwise arms share it, keeping the A/B fair).

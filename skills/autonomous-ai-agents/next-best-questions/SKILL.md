@@ -10,7 +10,7 @@ description: >
   recommendations (pre-answer / assume-default) using role-specialized local Ollama models. Reports
   only — it does not ask the user or answer the questions itself. Triggers: "what should I clarify",
   "what questions matter here", "is this spec complete", "what am I missing before I start".
-version: 1.3.2
+version: 1.3.3
 author: agent
 license: MIT
 platforms: [linux, macos, windows]

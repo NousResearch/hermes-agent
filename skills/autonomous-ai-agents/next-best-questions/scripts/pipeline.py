@@ -706,28 +706,40 @@ def project_answers_sampled(problem, framing, rec, model, m, timeout=120, captur
                                       evidence=evidence)
 
 
-def judge_plan_change(problem, framing, baseline_plan, rec, model, timeout=150, capture=False):
-    """Stage 3 (single question). Adds delta_plan + stakes to each answer in rec."""
+def _assign_delta_stakes(a, j, _k=None):
+    """Default per-answer assignment for the absolute/behavior judges."""
+    a["delta_plan"] = j.get("delta_plan", 0.0)
+    a["stakes"] = j.get("stakes", 0.0)
+
+
+def _judge_stage(prompt_text, rec, model, timeout, capture, assign, k=None):
+    """Shared stage-3 skeleton: _call_json → per-answer aligned assignment → error/trace tail.
+    All three judge variants (absolute, behavior #28, solution #27) differ only in the prompt
+    and the `assign(answer, judged_entry, k)` policy — keeping ONE parse body means the
+    off-by-default experiment judges cost nothing extra to maintain."""
     answers = rec.get("answers") or []
-    if not answers:
-        return rec
     sink = [] if capture else None
-    obj, err = _call_json(
-        model, judge_prompt(problem, framing, baseline_plan, rec["question"], answers),
-        timeout, num_predict=500, sink=sink,
-    )
+    obj, err = _call_json(model, prompt_text, timeout, num_predict=500, sink=sink)
     judged = obj.get("answers") if isinstance(obj, dict) else (
         obj if isinstance(obj, list) else [])
     judged = judged or []
     for i, a in enumerate(answers):
         j = judged[i] if i < len(judged) and isinstance(judged[i], dict) else {}
-        a["delta_plan"] = j.get("delta_plan", 0.0)
-        a["stakes"] = j.get("stakes", 0.0)
+        assign(a, j, k)
     if err:
         rec["error"] = err
     if capture and sink:
         rec.setdefault("_trace", {})["judge"] = sink[0]
     return rec
+
+
+def judge_plan_change(problem, framing, baseline_plan, rec, model, timeout=150, capture=False):
+    """Stage 3 (single question). Adds delta_plan + stakes to each answer in rec."""
+    if not (rec.get("answers") or []):
+        return rec
+    return _judge_stage(
+        judge_prompt(problem, framing, baseline_plan, rec["question"], rec["answers"]),
+        rec, model, timeout, capture, _assign_delta_stakes)
 
 
 # ── stage 3, behavior variant (off by default; #28) ──────────────────────────
@@ -772,26 +784,11 @@ def judge_behavior_prompt(problem, framing, baseline_plan, question, answers):
 def judge_plan_change_behavior(problem, framing, baseline_plan, rec, model, timeout=150,
                                capture=False):
     """Stage 3, behavior-Δ variant (#28). Same contract as judge_plan_change."""
-    answers = rec.get("answers") or []
-    if not answers:
+    if not (rec.get("answers") or []):
         return rec
-    sink = [] if capture else None
-    obj, err = _call_json(
-        model, judge_behavior_prompt(problem, framing, baseline_plan, rec["question"], answers),
-        timeout, num_predict=500, sink=sink,
-    )
-    judged = obj.get("answers") if isinstance(obj, dict) else (
-        obj if isinstance(obj, list) else [])
-    judged = judged or []
-    for i, a in enumerate(answers):
-        j = judged[i] if i < len(judged) and isinstance(judged[i], dict) else {}
-        a["delta_plan"] = j.get("delta_plan", 0.0)
-        a["stakes"] = j.get("stakes", 0.0)
-    if err:
-        rec["error"] = err
-    if capture and sink:
-        rec.setdefault("_trace", {})["judge"] = sink[0]
-    return rec
+    return _judge_stage(
+        judge_behavior_prompt(problem, framing, baseline_plan, rec["question"], rec["answers"]),
+        rec, model, timeout, capture, _assign_delta_stakes)
 
 
 def judge_plan_change_behavior_batch(problem, framing, baseline_plan, recs, model, timeout=150,
@@ -997,17 +994,8 @@ def judge_plan_change_solution(problem, framing, solutions, rec, model, timeout=
     answers = rec.get("answers") or []
     if not answers or not solutions:
         return rec
-    k = len(solutions)
-    sink = [] if capture else None
-    obj, err = _call_json(
-        model, solution_judge_prompt(problem, framing, solutions, rec["question"], answers),
-        timeout, num_predict=500, sink=sink,
-    )
-    judged = obj.get("answers") if isinstance(obj, dict) else (
-        obj if isinstance(obj, list) else [])
-    judged = judged or []
-    for i, a in enumerate(answers):
-        j = judged[i] if i < len(judged) and isinstance(judged[i], dict) else {}
+
+    def assign(a, j, k):
         viable = j.get("viable")
         if isinstance(viable, list):
             good = set()
@@ -1024,11 +1012,10 @@ def judge_plan_change_solution(problem, framing, solutions, rec, model, timeout=
             a["delta_plan"] = 0.0
             a["viable_solutions"] = None
         a["stakes"] = j.get("stakes", 0.0)
-    if err:
-        rec["error"] = err
-    if capture and sink:
-        rec.setdefault("_trace", {})["judge"] = sink[0]
-    return rec
+
+    return _judge_stage(
+        solution_judge_prompt(problem, framing, solutions, rec["question"], answers),
+        rec, model, timeout, capture, assign, k=len(solutions))
 
 
 # ── parallel batch helpers ───────────────────────────────────────────────────

@@ -92,6 +92,26 @@ any rows are produced: reasoning-channel models (e.g. `gpt-oss:20b`) return empt
 `message.content` via `raw_chat` and would silently null every judged value — the run aborts with
 exit 2 naming the model instead of finishing hours later all-null.
 
+## Coverage (2026-07-03 hygiene audit)
+
+Line coverage of the 191-test basic suite, measured with stdlib trace (no `coverage` module on
+host/container): `python3 -m trace --count --missing --coverdir=/tmp/nbq-cov tests/run.py`, then
+count `N:`-prefixed vs `>>>>>>` lines per `.cover` file.
+
+| tier | files (executed/executable) |
+|---|---|
+| live path | voi 97.7% · infogain 93.7% · pipeline 89.4% · pairwise 96.8% |
+| eval instruments | adjudicator 97.4% · validate_evsi 89.5% · analyze_evsi 89.2% · score_scan 87.7% · outcome_eval 72.2% · outcome_bank/testbank 100% |
+| **archival** (declared) | rejudge 55% · analyze_validity 39% · compare_domains 32% · run_evals 28% · saturation_scan 26% |
+
+**Archival policy:** benchmark, compare_domains, analyze_validity, saturation_scan, and the
+rejudge/run_evals CLI drivers produced findings that are already recorded; they are not on any
+live path. Their pure MATH helpers are pinned by tests (`TestArchivalHelpers` — knee detection,
+reorderings, P′-weighting); their print/CLI drivers are deliberately untested rather than
+theater-tested. Remaining uncovered lines in the live tier are render cosmetics, live-only
+network checks (`ollama_reachable`), and `pragma`-style defensive branches — reviewed and
+accepted in the 2026-07-03 audit (see git history for the audit reports).
+
 ## Run examples
 
 ```bash

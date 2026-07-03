@@ -57,11 +57,36 @@ class TestStructuralChecks(unittest.TestCase):
         r = _good_result(); r["framing"]["baseline_plan"] = ""
         self.assertFalse(adjudicator.structural_checks(r, self.case)["passed"])
 
-    def test_value_out_of_range_and_unsorted(self):
+    def test_value_out_of_range_fails(self):
         r = _good_result()
         r["bucket"][0]["value"] = 1.5
-        r["bucket"][1]["value"] = 0.9  # now higher than the (clamped-context) first
-        self.assertFalse(adjudicator.structural_checks(r, self.case)["passed"])
+        fails = adjudicator.structural_checks(r, self.case)["failures"]
+        self.assertTrue(any("out of [0,1]" in f for f in fails))
+
+    def test_unsorted_bucket_fails(self):
+        # The old combined test never exercised this branch: an out-of-range q0 takes the
+        # leading `if`, so `last` stays 2.0 and q1 can never exceed it. In-range values that
+        # genuinely invert the order are required to reach `elif v > last`.
+        r = _good_result()
+        r["bucket"][0]["value"] = 0.45
+        r["bucket"][0]["recommendation"] = "ASSUME_DEFAULT"   # keep other checks quiet
+        r["bucket"][1]["value"] = 0.62
+        r["bucket"][1]["recommendation"] = "PRE_ANSWER"
+        fails = adjudicator.structural_checks(r, self.case)["failures"]
+        self.assertTrue(any("not sorted" in f for f in fails), fails)
+
+    def test_hard_cap_bad_rec_and_below_discard_fail(self):
+        r = _good_result()
+        r["result_config"] = None
+        cfg = r.setdefault("config", {})
+        cfg["hard_cap"] = 1                                    # bucket of 2 exceeds it
+        r["bucket"][1]["recommendation"] = "MAYBE"             # invalid tag
+        r["bucket"][1]["value"] = 0.1                          # kept but below discard 0.30
+        fails = adjudicator.structural_checks(r, self.case)["failures"]
+        self.assertTrue(any("exceeds hard_cap" in f for f in fails), fails)
+        self.assertTrue(any("bad recommendation" in f for f in fails), fails)
+        self.assertTrue(any("below discard" in f or "< discard" in f or "discard" in f
+                            for f in fails), fails)
 
     def test_pre_answer_below_threshold_fails(self):
         r = _good_result(); r["bucket"][0]["value"] = 0.45  # PRE_ANSWER but < 0.60
@@ -195,6 +220,37 @@ class TestAnalyzeEvsi(unittest.TestCase):
         self.assertEqual({t[0] for t in analyze_evsi._GATE_TARGETS},
                          {"realized_regret", "realized_stakes", "realized_change"})
 
+    def _gate_rows(self, control_tracks_realized):
+        """4 prompts × 3 questions × 2 methods; realized_regret 0.1/0.5/0.9 shared. One method's
+        q_value tracks realized perfectly, the other inverts — a maximal, unambiguous gate case."""
+        rows = []
+        for pr in ("P1", "P2", "P3", "P4"):
+            for qi, regret in enumerate((0.1, 0.5, 0.9)):
+                tracking, inverted = regret, 1.0 - regret
+                for method in ("absolute", "pairwise"):
+                    is_control = method == "absolute"
+                    qv = (tracking if (is_control == control_tracks_realized) else inverted)
+                    rows.append(self._row(pr, f"q{qi}", method, 1.0, 0.5, regret, qv,
+                                          regret, 1.0))
+        return rows
+
+    def _capture_gate(self, rows):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            analyze_evsi.ab_within_task(rows)
+        return buf.getvalue()
+
+    def test_gate_verdict_adopts_a_clear_broad_winner(self):
+        out = self._capture_gate(self._gate_rows(control_tracks_realized=False))
+        self.assertIn("ADOPT pairwise", out)         # challenger wins 4/4, Δρ +2.0
+
+    def test_gate_verdict_keeps_control_when_challenger_loses(self):
+        out = self._capture_gate(self._gate_rows(control_tracks_realized=True))
+        self.assertIn("keep absolute", out)
+        self.assertNotIn("ADOPT", out)
+
     def test_split_methods_control_detection(self):
         # the shipped default present in the run is the control; everything else challenges it
         self.assertEqual(analyze_evsi.split_methods({"absolute", "pairwise"}),
@@ -286,6 +342,92 @@ class TestValidateEvsiRows(unittest.TestCase):
                                                source="all_scored")
         self.assertEqual(rows[0]["lens"], "")
         self.assertEqual(rows[0]["family"], "")
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestAnalysisDrivers(unittest.TestCase):
+    """p1a / p1c / per_lens are the printing drivers whose numbers decide shipping verdicts —
+    previously only their pure helpers were unit-tested."""
+
+    @staticmethod
+    def _capture(fn, *a, **kw):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn(*a, **kw)
+        return buf.getvalue()
+
+    def _q(self, prompt, qv, evsi, u, target, lens=""):
+        return {"prompt": prompt, "question": f"q{qv}", "n_ans": 1, "lens": lens, "family": "",
+                "q_u": u, "q_evsi": evsi, "q_value": qv, "max_delta": 0.5, "mean_delta": 0.5,
+                "mean_stakes": 0.5, "realized_change": target, "realized_evsi": target,
+                "realized_regret": target, "realized_stakes": target}
+
+    def test_p1a_perfect_calibration_reports_unity(self):
+        rows = [{"prompt": "P", "question": f"q{i}", "prob": 1.0,
+                 "projected_delta": v, "realized_change": v, "stakes": 0.5,
+                 "realized_stakes": v, "realized_regret": v, "q_u": 0.5, "q_evsi": v,
+                 "q_value": v} for i, v in enumerate((0.1, 0.3, 0.5, 0.7, 0.9))]
+        out = self._capture(analyze_evsi.p1a, rows, analyze_evsi.by_question(rows))
+        self.assertIn("Pearson  r = +1.000", out)
+        self.assertIn("Spearman ρ = +1.000", out)
+
+    def test_p1c_ranks_the_formula_that_tracks_realized(self):
+        qs = []
+        for pr in ("P1", "P2"):
+            for v in (0.2, 0.5, 0.8):
+                # q_value tracks the target perfectly; EVSI inverts; U constant
+                qs.append(self._q(pr, qv=v, evsi=1.0 - v, u=0.5, target=v))
+        out = self._capture(analyze_evsi.p1c, qs, target_key="realized_regret")
+        value_line = [ln for ln in out.splitlines() if "value √(U·EVSI)" in ln][0]
+        self.assertIn("+1.000", value_line)
+        self.assertIn("<- best", value_line)
+        evsi_line = [ln for ln in out.splitlines() if "EVSI-only" in ln][0]
+        self.assertIn("-1.000", evsi_line)
+
+    def test_per_lens_attribution_means(self):
+        qs = ([self._q("P", 0.5, 0.5, 0.5, target=0.8, lens="reach")] * 2
+              + [self._q("P", 0.5, 0.5, 0.5, target=0.2, lens="scoped")] * 2)
+        out = self._capture(analyze_evsi.per_lens, qs)
+        reach_line = [ln for ln in out.splitlines() if "reach" in ln][0]
+        scoped_line = [ln for ln in out.splitlines() if "scoped" in ln][0]
+        self.assertIn("0.800", reach_line)
+        self.assertIn("0.200", scoped_line)
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestRealizedInstruments(unittest.TestCase):
+    """change_judge + stakes_judge are the SHIPPED realized-measurement instruments every P1
+    calibration and A/B gate rests on — previously only the graded variant was asserted."""
+
+    def test_change_judge_prompt_parse_and_clamp(self):
+        seen = {}
+
+        def fake(model, p, timeout, num_predict=0, **kw):
+            seen["prompt"] = p
+            return {"change": 1.7}, None
+        with mock.patch.object(validate_evsi.pipeline, "_call_json", side_effect=fake):
+            out = validate_evsi.change_judge("P", "base", "new", "m", 10)
+        self.assertEqual(out, 1.0)                          # clamped
+        self.assertIn("RESPONSE A (baseline)", seen["prompt"])
+        self.assertIn('{"change": 0.0}', seen["prompt"])    # the JSON contract
+        with mock.patch.object(validate_evsi.pipeline, "_call_json", return_value=(None, "err")):
+            self.assertIsNone(validate_evsi.change_judge("P", "b", "n", "m", 10))
+
+    def test_stakes_judge_prompt_parse_and_clamp(self):
+        seen = {}
+
+        def fake(model, p, timeout, num_predict=0, **kw):
+            seen["prompt"] = p
+            return {"stakes": -0.3, "reason": "r"}, None
+        with mock.patch.object(validate_evsi.pipeline, "_call_json", side_effect=fake):
+            out = validate_evsi.stakes_judge("P", "base", "new", "m", 10)
+        self.assertEqual(out, 0.0)                          # clamped
+        self.assertIn("IGNORING how large the", seen["prompt"])  # size-independence anchor
+        self.assertIn("0.6 = clearly wants the better one", seen["prompt"])
+        with mock.patch.object(validate_evsi.pipeline, "_call_json", return_value=(None, "err")):
+            self.assertIsNone(validate_evsi.stakes_judge("P", "b", "n", "m", 10))
 
 
 @unittest.skipUnless(_OK, "skill scripts not importable")
@@ -465,6 +607,53 @@ class TestGradedJudgeAndRejudge(unittest.TestCase):
         gj.assert_called_once_with("P", "base", "new", "fast", 10)
         self.assertEqual(pairs[0]["orig"], 1.0)
         self.assertEqual(pairs[0]["graded"], 0.6)
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestArchivalHelpers(unittest.TestCase):
+    """The pure math inside the archival analysis scripts (saturation_scan, compare_domains,
+    analyze_validity) produced SHIPPED evidence — the knee that justified 'modest breadth', the
+    reordering count behind the U-inertness verdicts. Their drivers stay archival (see
+    evals/README §Coverage); the math gets pinned here."""
+
+    def test_saturation_knees(self):
+        import saturation_scan
+        steps = [{"samples": 1, "distinct_targets": 4, "max_value": 0.50},
+                 {"samples": 2, "distinct_targets": 7, "max_value": 0.62},
+                 {"samples": 3, "distinct_targets": 7, "max_value": 0.63},
+                 {"samples": 5, "distinct_targets": 8, "max_value": 0.63}]
+        self.assertEqual(saturation_scan._knee(steps), 2)        # coverage stalls at s=3
+        self.assertEqual(saturation_scan._value_knee(steps), 2)  # value plateaus (+0.01 < eps)
+        self.assertEqual(saturation_scan._knee([]), 0)
+        self.assertEqual(saturation_scan._value_knee([]), 0)
+
+    def test_compare_domains_reorderings_and_stats(self):
+        import compare_domains
+        # U constant -> value and EVSI order identically -> 0 flips
+        inert = [{"prompt": "P", "q_value": v, "q_evsi": v} for v in (0.2, 0.5, 0.8)]
+        flips, total = compare_domains.reorderings(inert)
+        self.assertEqual((flips, total), (0, 3))
+        # U flips one pair's order -> exactly that pair counts
+        active = [{"prompt": "P", "q_value": 0.9, "q_evsi": 0.1},
+                  {"prompt": "P", "q_value": 0.1, "q_evsi": 0.9}]
+        self.assertEqual(compare_domains.reorderings(active)[0], 1)
+        self.assertAlmostEqual(compare_domains._mean([1, 2, 3]), 2.0)
+        self.assertAlmostEqual(compare_domains._frac([1, 2, 3, 4], lambda x: x > 2), 0.5)
+
+    def test_analyze_validity_by_question_weighting(self):
+        import analyze_validity
+        rows = [{"prompt": "P", "question": "q", "cat": "devops", "prob": 0.75,
+                 "realized_change": 1.0, "realized_regret": 0.8, "realized_stakes": 0.8,
+                 "q_value": 0.5, "q_evsi": 0.5, "q_u": 0.5, "projected_delta": 0.5,
+                 "stakes": 0.5},
+                {"prompt": "P", "question": "q", "cat": "devops", "prob": 0.25,
+                 "realized_change": 0.0, "realized_regret": 0.4, "realized_stakes": 0.4,
+                 "q_value": 0.5, "q_evsi": 0.5, "q_u": 0.5, "projected_delta": 0.5,
+                 "stakes": 0.5}]
+        qs = analyze_validity.by_question(rows)
+        self.assertEqual(len(qs), 1)
+        self.assertAlmostEqual(qs[0]["rc"], 0.75, places=6)      # P'-weighted change
+        self.assertAlmostEqual(qs[0]["regret"], 0.7, places=6)   # 0.75*0.8 + 0.25*0.4
 
 
 @unittest.skipUnless(os.environ.get("INFOGAIN_TEST_LIVE"),

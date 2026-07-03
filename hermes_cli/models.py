@@ -285,17 +285,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
         "kimi-k2.7-code",
@@ -3454,6 +3451,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3500,6 +3498,12 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if isinstance(request_headers, dict):
+        # Per-provider custom headers can contain auth/proxy secrets. Merge
+        # last so endpoint-specific config wins, and never log the values.
+        from hermes_cli.config import normalize_extra_headers
+
+        headers.update(normalize_extra_headers(request_headers))
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -3532,13 +3536,20 @@ def fetch_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        timeout=timeout,
+        api_mode=api_mode,
+        request_headers=headers,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------

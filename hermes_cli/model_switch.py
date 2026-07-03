@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     ProviderDef,
@@ -1362,6 +1362,14 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+def _extra_headers_from_config(entry: Any) -> dict[str, str]:
+    if not isinstance(entry, dict):
+        return {}
+    from hermes_cli.config import normalize_extra_headers
+
+    return normalize_extra_headers(entry.get("extra_headers"))
+
+
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     """Warm the provider-models disk cache in a background daemon thread.
 
@@ -1993,7 +2001,11 @@ def list_authenticated_providers(
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
+                    live_models = fetch_api_models(
+                        api_key,
+                        api_url,
+                        headers=_extra_headers_from_config(ep_cfg) or None,
+                    )
                     if live_models:
                         models_list = live_models
                 except Exception:
@@ -2109,7 +2121,16 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
 
-            group_key = (api_url, credential_identity, api_mode)
+            # Per-provider extra_headers participate in the group identity:
+            # two entries sharing (api_url, credential, api_mode) but declaring
+            # different headers are distinct endpoints (e.g. different tenants
+            # behind one proxy URL, routed by header) and must probe /models
+            # with their own headers rather than collapsing into one row and
+            # silently adopting whichever header set was seen first.
+            entry_extra_headers = _extra_headers_from_config(entry)
+            headers_identity = tuple(sorted(entry_extra_headers.items()))
+
+            group_key = (api_url, credential_identity, api_mode, headers_identity)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
                 # "Ollama" for the grouped row. Em dash is the convention
@@ -2130,10 +2151,13 @@ def list_authenticated_providers(
                     "api_key": api_key,
                     "models": [],
                     "discover_models": discover,
+                    "extra_headers": entry_extra_headers,
                 }
             else:
                 if api_key and not groups[group_key].get("api_key"):
                     groups[group_key]["api_key"] = api_key
+                # extra_headers is part of group_key, so every entry in this
+                # group already carries identical headers — nothing to merge.
                 # If any entry in this group opts out of discovery,
                 # honour that for the whole grouped row.
                 if not discover:
@@ -2240,7 +2264,11 @@ def list_authenticated_providers(
                 try:
                     from hermes_cli.models import fetch_api_models
 
-                    live_models = fetch_api_models(api_key, api_url)
+                    live_models = fetch_api_models(
+                        api_key,
+                        api_url,
+                        headers=grp.get("extra_headers") or None,
+                    )
                     if live_models:
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)

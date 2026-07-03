@@ -847,6 +847,15 @@ def ensure_hermes_home():
     any files created (e.g. SOUL.md) are group-writable (0660).
     """
     home = get_hermes_home()
+    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
+    # If a stale process keeps running after the profile was renamed/deleted,
+    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
+    # and make the deleted profile reappear in Desktop/profile lists.
+    if home.parent.name == "profiles" and not home.exists():
+        raise FileNotFoundError(
+            f"Named profile home does not exist: {home}. "
+            "Create the profile explicitly before using it."
+        )
     if is_managed():
         old_umask = os.umask(0o007)
         try:
@@ -4609,11 +4618,9 @@ def _normalize_custom_provider_entry(
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
-    extra_headers = entry.get("extra_headers")
-    if isinstance(extra_headers, dict) and extra_headers:
-        normalized["extra_headers"] = {
-            str(k): str(v) for k, v in extra_headers.items() if v is not None
-        }
+    normalized_headers = normalize_extra_headers(entry.get("extra_headers"))
+    if normalized_headers:
+        normalized["extra_headers"] = normalized_headers
 
     ssl_ca_cert = entry.get("ssl_ca_cert")
     if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
@@ -4796,6 +4803,23 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
+def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
+    """Normalize a raw ``extra_headers`` value into a ``dict[str, str]``.
+
+    Stringifies keys and values and drops entries whose value is ``None``.
+    Returns ``{}`` for non-dict or empty inputs. This is the single shared
+    normalizer for per-provider ``extra_headers`` across config normalization,
+    runtime resolution, client construction, and live ``/models`` discovery.
+
+    SECURITY: header values routinely carry credentials (Cloudflare Access
+    service tokens, proxy auth, custom bearer schemes). Callers must never
+    log the returned values.
+    """
+    if not isinstance(extra_headers, dict) or not extra_headers:
+        return {}
+    return {str(k): str(v) for k, v in extra_headers.items() if v is not None}
+
+
 def get_custom_provider_extra_headers(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
@@ -4827,12 +4851,7 @@ def get_custom_provider_extra_headers(
         entry_url = (entry.get("base_url") or "").rstrip("/").lower()
         if not entry_url or entry_url != target_url:
             continue
-        extra_headers = entry.get("extra_headers")
-        if isinstance(extra_headers, dict) and extra_headers:
-            return {
-                str(k): str(v) for k, v in extra_headers.items() if v is not None
-            }
-        return {}
+        return normalize_extra_headers(entry.get("extra_headers"))
     return {}
 
 

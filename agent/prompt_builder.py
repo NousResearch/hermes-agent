@@ -278,6 +278,27 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+KANBAN_FEEDBACK_INTAKE_GUIDANCE = (
+    "# Kanban feedback intake\n"
+    "When the user explicitly complains about, corrects, or asks you to fix an "
+    "assistant/Hermes behavior, do not treat it as style alone. First handle any "
+    "immediate user request, then decide whether the remark names a concrete "
+    "product defect or recurring behavior that should be corrected. If it does "
+    "and the `kanban_create` tool is available, create a focused follow-up card "
+    "instead of only apologizing.\n"
+    "Create a card only for actionable product feedback: a reproducible failure, "
+    "unsafe/noisy behavior, missing notification, wrong default, confusing UX, or "
+    "a repeated correction. Do NOT create a card for vague mood, one-off phrasing "
+    "preferences, dangerous requests, secrets/log dumps, or anything already "
+    "covered by an existing visible card.\n"
+    "Use anti-spam defaults: make the title specific, include the user's complaint "
+    "and relevant task/session ids in the body, redact secrets and raw PII, assign "
+    "the best-fit existing profile, set an `idempotency_key` derived from the "
+    "normalized defect, and use triage when the fix path is unclear. After creating "
+    "(or deciding not to create) a card, tell the user what action you took in one "
+    "short sentence."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

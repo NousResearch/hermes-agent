@@ -202,6 +202,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
+    _kanban_feedback_guidance = getattr(agent, "_kanban_feedback_intake_guidance", "")
+    if _kanban_feedback_guidance:
+        tool_guidance.append(_kanban_feedback_guidance)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 

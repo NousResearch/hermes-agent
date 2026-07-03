@@ -25,6 +25,125 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+_INTERNAL_KANBAN_TITLE_MARKERS = (
+    "policy autonomie",
+    "autonomous evidence package",
+    "evidence package",
+    "package de preuve",
+    "preuves internes",
+)
+_INTERNAL_KANBAN_TITLE_PREFIXES = (
+    "review:",
+    "review —",
+    "review -",
+    "revue:",
+)
+
+
+def _first_line(text: str, limit: int) -> str:
+    lines = str(text or "").strip().splitlines()
+    value = lines[0] if lines else str(text or "")
+    return value[:limit]
+
+
+def _is_internal_kanban_task(title: str, reason: str = "") -> bool:
+    """Return True for internal policy/review/evidence cards that should not ping users."""
+    haystack = f"{title}\n{reason}".casefold()
+    title_cf = str(title or "").strip().casefold()
+    if any(marker in haystack for marker in _INTERNAL_KANBAN_TITLE_MARKERS):
+        return True
+    if any(title_cf.startswith(prefix) for prefix in _INTERNAL_KANBAN_TITLE_PREFIXES):
+        return True
+    if str(reason or "").strip().casefold().startswith("review-required"):
+        return True
+    return False
+
+
+def _kanban_notification_message(
+    *,
+    kind: str,
+    task,
+    sub: dict,
+    event_payload: Optional[dict],
+    board_tag: str,
+    tag: str,
+) -> Optional[str]:
+    """Build the short user-facing Kanban notification, or None to stay silent.
+
+    The notifier is subscribed to internal workflow cards too; those should
+    advance cursors without sending raw titles/summaries into a human chat.
+    Events that do matter use an explicit action line so the recipient can tell
+    whether Loïc needs to do anything.
+    """
+    title = (task.title if task else sub["task_id"])[:120]
+    reason = ""
+    if event_payload and event_payload.get("reason"):
+        reason = str(event_payload["reason"])
+    block_kind = ""
+    if event_payload and event_payload.get("kind"):
+        block_kind = str(event_payload["kind"])
+
+    internal = _is_internal_kanban_task(title, reason)
+    if internal and kind in {"completed", "status"}:
+        return None
+    if internal and kind == "blocked" and block_kind not in {"needs_input", "capability"}:
+        return None
+
+    prefix = f"{board_tag}{tag}Kanban {sub['task_id']}"
+    if kind == "completed":
+        handoff = ""
+        payload_summary = None
+        if event_payload and event_payload.get("summary"):
+            payload_summary = str(event_payload["summary"])
+        if payload_summary:
+            handoff = f"\nRésumé : {_first_line(payload_summary, 200)}"
+        elif task and task.result:
+            handoff = f"\nRésumé : {_first_line(str(task.result), 160)}"
+        return f"✔ {prefix} terminé.\nAction Loïc : aucune{handoff}"
+    if kind == "blocked":
+        if block_kind == "dependency":
+            return None
+        cause = _first_line(reason, 160) if reason else "intervention humaine requise"
+        if block_kind == "capability":
+            action = "lever la capacité manquante, puis débloquer la carte"
+        elif block_kind == "transient":
+            action = "attendre ou relancer seulement si le problème persiste"
+        else:
+            action = "répondre dans ce thread, puis débloquer la carte"
+        return (
+            f"⏸ {prefix} blocked.\n"
+            f"Cause : {cause}\n"
+            f"Prochaine action sûre : {action}"
+        )
+    if kind == "gave_up":
+        err = ""
+        if event_payload and event_payload.get("error"):
+            err = f"\nDétail : {_first_line(str(event_payload['error']), 200)}"
+        return (
+            f"✖ {prefix} gave up après échecs répétés.\n"
+            f"Action Loïc : aucune{err}"
+        )
+    if kind == "crashed":
+        return (
+            f"✖ {prefix} : worker crashed; le dispatcher va réessayer.\n"
+            f"Action Loïc : aucune"
+        )
+    if kind == "timed_out":
+        limit = 0
+        if event_payload and event_payload.get("limit_seconds"):
+            limit = int(event_payload["limit_seconds"])
+        return (
+            f"⏱ {prefix} timed out (max_runtime={limit}s); relance prévue.\n"
+            f"Action Loïc : aucune"
+        )
+    if kind == "status":
+        new_status = ""
+        if event_payload and event_payload.get("status"):
+            new_status = str(event_payload["status"])
+        return f"🔄 {prefix} → {new_status}.\nAction Loïc : aucune"
+    return None
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -334,8 +453,8 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
+                    notified_kinds: set[str] = set()
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -343,67 +462,18 @@ class GatewayKanbanWatchersMixin:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
-                        if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
-                        elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
-                        elif kind == "crashed":
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
-                        elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
-                        elif kind == "status":
-                            new_status = ""
-                            if ev.payload and ev.payload.get("status"):
-                                new_status = str(ev.payload["status"])
-                            msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
-                        else:
-                            # archived / unblocked are claimed by TERMINAL_KINDS
-                            # (so the cursor advances past them and they can't
-                            # wedge a later completed/blocked event behind an
-                            # unclaimed row) but are intentionally SILENT: an
-                            # archive needs no user ping, and unblocked is an
-                            # internal transition. They are also excluded from
-                            # _WAKE_KINDS below, so they never wake the creator.
+                        msg = _kanban_notification_message(
+                            kind=kind,
+                            task=task,
+                            sub=sub,
+                            event_payload=ev.payload,
+                            board_tag=board_tag,
+                            tag=tag,
+                        )
+                        if msg is None:
+                            # archived / unblocked and internal workflow cards
+                            # are claimed so they cannot wedge later events, but
+                            # they do not send user-visible chat noise.
                             continue
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
@@ -420,6 +490,7 @@ class GatewayKanbanWatchersMixin:
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
+                            notified_kinds.add(kind)
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
                             # ``kanban_complete(summary=..., artifacts=[...])``
@@ -490,7 +561,7 @@ class GatewayKanbanWatchersMixin:
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        _wake_kinds = {kind for kind in notified_kinds if kind in _WAKE_KINDS}
                         if _wake_kinds:
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""

@@ -29,6 +29,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    KANBAN_FEEDBACK_INTAKE_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -53,6 +54,13 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_feedback_guidance_has_intake_guardrails(self):
+        assert "complains" in KANBAN_FEEDBACK_INTAKE_GUIDANCE
+        assert "kanban_create" in KANBAN_FEEDBACK_INTAKE_GUIDANCE
+        assert "idempotency_key" in KANBAN_FEEDBACK_INTAKE_GUIDANCE
+        assert "vague mood" in KANBAN_FEEDBACK_INTAKE_GUIDANCE
+        assert "secrets/log dumps" in KANBAN_FEEDBACK_INTAKE_GUIDANCE
 
 
 # =========================================================================

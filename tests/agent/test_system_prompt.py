@@ -15,6 +15,7 @@ def _make_agent(**overrides):
         _tool_use_enforcement=False,
         _environment_probe=False,
         _kanban_worker_guidance="",
+        _kanban_feedback_intake_guidance="",
         _memory_store=None,
         _memory_manager=None,
         model="",
@@ -99,3 +100,20 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestKanbanFeedbackIntakeBlock:
+    def test_injected_when_agent_init_enables_it(self):
+        stable = _stable_prompt(
+            _make_agent(
+                valid_tool_names=["kanban_create"],
+                _kanban_feedback_intake_guidance="KANBAN_FEEDBACK_SENTINEL",
+            )
+        )
+
+        assert "KANBAN_FEEDBACK_SENTINEL" in stable
+
+    def test_absent_by_default_without_agent_init_flag(self):
+        stable = _stable_prompt(_make_agent(valid_tool_names=["kanban_create"]))
+
+        assert "Kanban feedback intake" not in stable

@@ -10,9 +10,13 @@ from hermes_cli import kanban_db as kb
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.handled = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
 
 
 class DisconnectedAdapters(dict):
@@ -135,6 +139,143 @@ def test_kanban_db_path_is_test_isolated_from_real_home():
 
     assert kb.kanban_db_path().resolve().is_relative_to(hermes_home.resolve())
     assert kb.kanban_db_path().resolve() != production_db.resolve()
+
+
+def test_internal_policy_card_completion_is_silent_and_does_not_wake_agent(tmp_path, monkeypatch):
+    """Internal policy/evidence/review cards must not surface as raw Discord/chat noise."""
+    db_path = tmp_path / "internal-policy.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="Policy autonomie Luna — finir les processus sans Loïc sauf dossier projects",
+            assignee="worker",
+            session_id="discord:chat-1:thread-1",
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="review-required handoff: preuve interne prête")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_internal_review_and_evidence_completions_are_silent(tmp_path, monkeypatch):
+    db_path = tmp_path / "internal-review-evidence.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        task_ids = []
+        for title in (
+            "Review: policy autonomie sans Loïc sauf projects",
+            "Autonomous evidence package for t_4841d870: Review privacy/security",
+        ):
+            tid = kb.create_task(conn, title=title, assignee="worker")
+            kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+            kb.complete_task(conn, tid, summary="preuve interne prête")
+            task_ids.append(tid)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    conn = kb.connect()
+    try:
+        for tid in task_ids:
+            assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_human_blocker_notification_uses_besoin_loic_wording(tmp_path, monkeypatch):
+    db_path = tmp_path / "human-blocker.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Connect production OAuth credential", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, kind="needs_input", reason="Choisir le compte OAuth à connecter")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "blocked" in text
+    assert "Cause : Choisir le compte OAuth à connecter" in text
+    assert "Prochaine action sûre : répondre dans ce thread, puis débloquer la carte" in text
+    assert "Action Loïc : aucune" not in text
+    assert "Connect production OAuth credential" not in text
+
+
+def test_push_impossible_capability_block_notifies_origin_with_safe_action(tmp_path, monkeypatch):
+    db_path = tmp_path / "push-impossible.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="Chaîne Discord reload: push final",
+            assignee="coder",
+            session_id="discord:loic-chat:reload-thread",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="loic-chat",
+            thread_id="reload-thread",
+            user_id="loic",
+            notifier_profile="luna",
+        )
+        kb.block_task(conn, tid, kind="capability", reason="push-impossible: remote rejected credentials")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._profile_adapters = {"luna": {Platform.DISCORD: adapter}}
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "luna"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    msg = adapter.sent[0]
+    assert msg["chat_id"] == "loic-chat"
+    assert msg["metadata"] == {"thread_id": "reload-thread"}
+    assert "push-impossible: remote rejected credentials" in msg["text"]
+    assert "Prochaine action sûre : lever la capacité manquante, puis débloquer la carte" in msg["text"]
+    assert "Chaîne Discord reload" not in msg["text"]
+    assert len(adapter.handled) == 1
 
 
 class FailingAdapter:

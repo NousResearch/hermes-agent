@@ -555,6 +555,41 @@ class TestProbeEnvResolution:
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
 
+class TestProbeTimeoutSelection:
+    """Every _probe_single_server caller must give interactive OAuth servers the
+    long login window automatically — the per-caller threading it replaced had
+    missed `mcp test`, `mcp configure`, catalog install, and the dashboard
+    /test route, all of which fell back to the 30s cap."""
+
+    def test_oauth_server_gets_long_window(self):
+        import hermes_cli.mcp_config as mc
+
+        assert (
+            mc._effective_probe_timeout({"auth": "oauth"}, None)
+            == mc._OAUTH_LOGIN_TIMEOUT
+        )
+
+    def test_non_oauth_server_gets_short_default(self):
+        import hermes_cli.mcp_config as mc
+
+        assert mc._effective_probe_timeout({"auth": "none"}, None) == 30.0
+        assert mc._effective_probe_timeout({}, None) == 30.0
+
+    def test_explicit_override_always_wins(self):
+        import hermes_cli.mcp_config as mc
+
+        assert mc._effective_probe_timeout({"auth": "oauth"}, 1) == 1
+        assert mc._effective_probe_timeout({}, 99) == 99
+
+    def test_oauth_window_outlasts_inner_callback_budget(self):
+        """Guards the race: the outer probe timeout must exceed the SDK's
+        hard-coded 300s _wait_for_callback budget so the user actually gets the
+        full paste window plus setup/token-exchange headroom."""
+        import hermes_cli.mcp_config as mc
+
+        assert mc._OAUTH_LOGIN_TIMEOUT > 300
+
+
 class TestStripBearerPrefix:
     """Pasted tokens that already include ``Bearer `` would otherwise produce
     ``Bearer Bearer <jwt>`` once the header template adds its own prefix."""
@@ -716,7 +751,7 @@ class TestMcpLogin:
         # Probe returns tools even though auth never completed.
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server",
-            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+            lambda name, cfg, **kwargs: [("search_files", "d"), ("read_file_content", "d")],
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -738,7 +773,7 @@ class TestMcpLogin:
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
-        def mock_probe(name, cfg):
+        def mock_probe(name, cfg, **kwargs):
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]

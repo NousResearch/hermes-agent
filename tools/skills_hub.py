@@ -412,7 +412,7 @@ class GitHubAuth:
             if resp.status_code == 201:
                 return resp.json().get("token")
         except Exception as e:
-            logger.debug(f"GitHub App auth failed: {e}")
+            logger.debug("GitHub App auth failed: %s", e)
 
         return None
 
@@ -572,7 +572,7 @@ class GitHubSource(SkillSource):
                     if query_lower in searchable:
                         results.append(skill)
             except Exception as e:
-                logger.debug(f"Failed to search {tap['repo']}: {e}")
+                logger.debug("Failed to search %s: %s", tap['repo'], e)
                 continue
 
         # Deduplicate by identifier, preferring higher trust levels.

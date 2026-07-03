@@ -91,3 +91,6 @@ Docker/Harbor workloads.
 - `OPENAI_API_KEY` defaults to `dummy`; it is only used to populate Hermes'
   custom provider config for the autoscaler endpoint.
 - Set `NO_TUNNEL=1` if a local tunnel or gateway is already running.
+- By default the script owns the inference tunnel. It checks `/v1/models`
+  periodically and restarts the SSH tunnel if it stops responding during a long
+  eval.

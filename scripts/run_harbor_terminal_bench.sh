@@ -23,6 +23,7 @@ Optional environment:
   EXCLUDE_TASK_NAME            Task glob to exclude (default: gpt2-codegolf)
   INCLUDE_TASK_NAME            Task glob to include instead of N_TASKS
   OPENAI_API_KEY               Dummy/custom provider key (default: dummy)
+  AUTOSCALER_HEALTH_INTERVAL   Tunnel health check interval seconds (default: 30)
   ALLOW_HEAD_NODE_RUN=1        Override the head-node safety guard
   NO_TUNNEL=1                  Do not start an SSH tunnel; use an existing local gateway
 
@@ -59,6 +60,9 @@ include_task_name="${INCLUDE_TASK_NAME:-}"
 api_key="${OPENAI_API_KEY:-dummy}"
 local_base_url="http://127.0.0.1:${local_port}/v1"
 docker_base_url="${DOCKER_BASE_URL:-http://host.docker.internal:${local_port}/v1}"
+health_interval="${AUTOSCALER_HEALTH_INTERVAL:-30}"
+tunnel_pid_file="${TUNNEL_PID_FILE:-${repo_root}/.harbor-autoscaler-tunnel.pid}"
+tunnel_supervisor_pid_file="${TUNNEL_SUPERVISOR_PID_FILE:-${repo_root}/.harbor-autoscaler-tunnel-supervisor.pid}"
 
 hostname_value="$(hostname -f 2>/dev/null || hostname)"
 if [[ "${ALLOW_HEAD_NODE_RUN:-0}" != "1" ]] \
@@ -128,40 +132,100 @@ curl_models() {
   curl -fsS --max-time 8 "${local_base_url}/models" >/dev/null
 }
 
-tunnel_pid=""
-cleanup() {
-  if [[ -n "${tunnel_pid}" ]]; then
-    kill "${tunnel_pid}" >/dev/null 2>&1 || true
+local_gateway_healthy() {
+  curl_models >/dev/null 2>&1
+}
+
+docker_gateway_healthy() {
+  docker run --rm curlimages/curl:latest \
+    -fsS --max-time 10 "${docker_base_url}/models" >/dev/null 2>&1
+}
+
+stop_pid_file_process() {
+  local pid_file="$1"
+  if [[ -f "${pid_file}" ]]; then
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "${pid}" >/dev/null 2>&1 || true
+    fi
+    rm -f "${pid_file}"
   fi
 }
-trap cleanup EXIT
 
-if [[ "${NO_TUNNEL:-0}" != "1" ]] && ! curl_models; then
+start_tunnel_once() {
   require_env AUTOSCALER_SSH_TARGET
   require_env AUTOSCALER_SSH_KEY
   require_env AUTOSCALER_REMOTE_GATEWAY
+  stop_pid_file_process "${tunnel_pid_file}"
 
   ssh -i "${AUTOSCALER_SSH_KEY}" \
     -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
     -N \
     -L "${local_port}:${AUTOSCALER_REMOTE_GATEWAY}" \
     "${AUTOSCALER_SSH_TARGET}" &
-  tunnel_pid="$!"
-  sleep 2
-  curl_models
-fi
+  echo "$!" > "${tunnel_pid_file}"
 
-if ! docker run --rm curlimages/curl:latest -fsS --max-time 10 "${docker_base_url}/models" >/dev/null; then
-  cat >&2 <<EOF
+  for _ in {1..15}; do
+    if local_gateway_healthy; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Tunnel started but ${local_base_url}/models did not become healthy." >&2
+  return 1
+}
+
+ensure_autoscaler_gateway() {
+  if [[ "${NO_TUNNEL:-0}" != "1" ]] && ! local_gateway_healthy; then
+    start_tunnel_once
+  fi
+
+  if ! docker_gateway_healthy; then
+    cat >&2 <<EOF
 Docker could not reach the autoscaler at ${docker_base_url}.
 
 On macOS/Windows, host.docker.internal should work. On Linux you may need to
 run Harbor with host networking or set DOCKER_BASE_URL to a container-reachable
 gateway URL.
 EOF
-  exit 1
-fi
+    exit 1
+  fi
+}
+
+start_tunnel_supervisor() {
+  if [[ "${NO_TUNNEL:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  require_env AUTOSCALER_SSH_TARGET
+  require_env AUTOSCALER_SSH_KEY
+  require_env AUTOSCALER_REMOTE_GATEWAY
+  stop_pid_file_process "${tunnel_supervisor_pid_file}"
+
+  (
+    while true; do
+      if ! local_gateway_healthy; then
+        echo "Autoscaler tunnel unhealthy; restarting..." >&2
+        start_tunnel_once || true
+      fi
+      sleep "${health_interval}"
+    done
+  ) &
+  echo "$!" > "${tunnel_supervisor_pid_file}"
+}
+
+cleanup() {
+  stop_pid_file_process "${tunnel_supervisor_pid_file}"
+  stop_pid_file_process "${tunnel_pid_file}"
+}
+trap cleanup EXIT
+
+ensure_autoscaler_gateway
+start_tunnel_supervisor
 
 ensure_harbor_checkout
 

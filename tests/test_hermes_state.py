@@ -4258,6 +4258,163 @@ class TestFTS5ToolCallMigration:
             session_db.close()
 
 
+class TestFTS5ExternalContentMigration:
+    """v17 → v18: inline-mode FTS tables become external-content backed by
+    the messages_fts_source view, emptying both *_content shadow tables."""
+
+    def _build_v17_db(self, db_path):
+        """Hand-build a v17-shaped DB: inline FTS tables + the v17 triggers."""
+        import sqlite3
+
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (17);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                started_at REAL,
+                ended_at REAL,
+                title TEXT,
+                parent_session_id TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                api_call_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_name TEXT,
+                tool_calls TEXT,
+                tool_call_id TEXT,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+                );
+            END;
+            CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.id;
+            END;
+
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content, tokenize='trigram'
+            );
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+                );
+            END;
+            CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+            END;
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, timestamp, role, content, tool_name) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("s1", time.time(), "assistant", "INLINEMODEMSG hello", "INLINETOOL"),
+        )
+        conn.commit()
+        # Sanity: inline mode stores a private copy in the shadow table.
+        stored = conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_content WHERE c0 IS NOT NULL"
+        ).fetchone()[0]
+        assert stored == 1, "sanity: v17 inline FTS must store content"
+        conn.close()
+
+    def test_v17_to_v18_migration_empties_content_shadow_tables(self, tmp_path):
+        db_path = tmp_path / "legacy_v17.db"
+        self._build_v17_db(db_path)
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            # Search still works, including tool_name tokens and snippets.
+            hits = session_db.search_messages("INLINEMODEMSG")
+            assert len(hits) == 1
+            assert len(session_db.search_messages("INLINETOOL")) == 1
+
+            # The FTS tables are now external-content: SQLite does not even
+            # create the *_content shadow tables that inline mode used to
+            # fill with a private copy of every message.
+            for shadow in ("messages_fts_content", "messages_fts_trigram_content"):
+                remaining = session_db._conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?",
+                    (shadow,),
+                ).fetchone()[0]
+                assert remaining == 0, f"{shadow} must not exist after v18"
+
+            # The virtual tables reference the source view.
+            fts_sql = session_db._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"
+            ).fetchone()[0]
+            assert "messages_fts_source" in fts_sql
+
+            from hermes_state import SCHEMA_VERSION
+            row = session_db._conn.execute(
+                "SELECT version FROM schema_version LIMIT 1"
+            ).fetchone()
+            version = row["version"] if hasattr(row, "keys") else row[0]
+            assert version == SCHEMA_VERSION
+        finally:
+            session_db.close()
+
+    def test_external_content_delete_and_update_keep_index_consistent(
+        self, tmp_path
+    ):
+        """The 'delete' command triggers must remove index entries using the
+        exact expression the insert trigger indexed (regression guard for the
+        #16751 class of value-mismatch corruption)."""
+        db_path = tmp_path / "fresh_v18.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            session_db.create_session("s1", source="cli")
+            mid = session_db.append_message(
+                "s1", role="user", content="EPHEMERALTOKEN in flight"
+            )
+            assert len(session_db.search_messages("EPHEMERALTOKEN")) == 1
+
+            # UPDATE path: old tokens leave the index, new ones enter it.
+            session_db._conn.execute(
+                "UPDATE messages SET content = 'REPLACEDTOKEN landed' WHERE id = ?",
+                (mid,),
+            )
+            session_db._conn.commit()
+            assert session_db.search_messages("EPHEMERALTOKEN") == []
+            assert len(session_db.search_messages("REPLACEDTOKEN")) == 1
+
+            # DELETE path: the row vanishes from the index without error.
+            session_db._conn.execute("DELETE FROM messages WHERE id = ?", (mid,))
+            session_db._conn.commit()
+            assert session_db.search_messages("REPLACEDTOKEN") == []
+
+            # Index integrity: FTS5 self-check passes after delete+update.
+            session_db._conn.execute(
+                "INSERT INTO messages_fts(messages_fts, rank) "
+                "VALUES('integrity-check', 1)"
+            )
+        finally:
+            session_db.close()
+
+
 # ---------------------------------------------------------------------------
 # apply_wal_with_fallback — read-only probe tests
 # ---------------------------------------------------------------------------

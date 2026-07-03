@@ -8,12 +8,16 @@ spawning Node or binding ports.
 """
 from __future__ import annotations
 
+import json
+import stat
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
 
 from gateway.config import PlatformConfig
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 
@@ -57,6 +61,61 @@ def _capture_kills(monkeypatch: pytest.MonkeyPatch) -> List[Tuple[int, int]]:
 
     monkeypatch.setattr(photon_adapter.os, "kill", _fake_kill)
     return kills
+
+
+@pytest.fixture()
+def isolated_hermes_home(tmp_path: Path):
+    token = set_hermes_home_override(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        reset_hermes_home_override(token)
+
+
+class TestSidecarTokenFile:
+    def test_write_then_read_round_trip(self, isolated_hermes_home: Path) -> None:
+        photon_adapter._write_sidecar_token_file(9001, "secret-token", 12345)
+
+        path = isolated_hermes_home / "runtime" / "photon-sidecar-9001.json"
+        assert path.exists()
+        assert photon_adapter._read_sidecar_token_file(9001) == "secret-token"
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "port": 9001,
+            "token": "secret-token",
+            "pid": 12345,
+        }
+        if hasattr(stat, "S_IMODE"):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_read_ignores_wrong_port(self, isolated_hermes_home: Path) -> None:
+        path = isolated_hermes_home / "runtime" / "photon-sidecar-9002.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({"port": 9003, "token": "wrong-port", "pid": 1}),
+            encoding="utf-8",
+        )
+
+        assert photon_adapter._read_sidecar_token_file(9002) is None
+
+    def test_read_missing_or_corrupt_file_returns_none(self, isolated_hermes_home: Path) -> None:
+        assert photon_adapter._read_sidecar_token_file(9004) is None
+
+        path = isolated_hermes_home / "runtime" / "photon-sidecar-9004.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("not json", encoding="utf-8")
+
+        assert photon_adapter._read_sidecar_token_file(9004) is None
+
+    def test_remove_only_deletes_matching_token(self, isolated_hermes_home: Path) -> None:
+        photon_adapter._write_sidecar_token_file(9005, "newer-token", 222)
+        path = isolated_hermes_home / "runtime" / "photon-sidecar-9005.json"
+
+        photon_adapter._remove_sidecar_token_file(9005, "older-token")
+        assert path.exists()
+        assert photon_adapter._read_sidecar_token_file(9005) == "newer-token"
+
+        photon_adapter._remove_sidecar_token_file(9005, "newer-token")
+        assert not path.exists()
 
 
 @pytest.mark.asyncio
@@ -125,7 +184,7 @@ async def test_reap_raises_for_foreign_listener(
 
 @pytest.mark.asyncio
 async def test_start_sidecar_spawns_with_stdin_pipe(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, isolated_hermes_home: Path
 ) -> None:
     """The spawn must hold a stdin pipe and enable the sidecar's EOF watch."""
     adapter = _make_adapter(monkeypatch)
@@ -169,3 +228,4 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert photon_adapter._read_sidecar_token_file(adapter._sidecar_port) == adapter._sidecar_token

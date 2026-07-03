@@ -1937,13 +1937,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         return b"".join(parts), ct, fname
                 raise ValueError("too many redirects")
         except ImportError:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_async_client
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
             _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
-            async with httpx.AsyncClient(**_httpx_kw) as http:
+            async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
                     url,

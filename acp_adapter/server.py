@@ -173,16 +173,27 @@ def _path_from_file_uri(uri: str) -> Path | None:
     else:
         path_text = unquote(raw)
 
-    # file:///C:/Users/... or C:\Users\...
-    if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
-        rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
-    if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
-        rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+    # Only rewrite Windows drive paths to /mnt/<drive>/... when Hermes itself is
+    # running inside WSL. On native Windows the original drive path is valid and
+    # must be preserved (mirrors acp_adapter/session.py:_translate_acp_cwd).
+    from hermes_constants import is_wsl
 
+    if is_wsl():
+        # file:///C:/Users/... or C:\Users\...
+        if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+            drive = path_text[1].lower()
+            rest = path_text[3:].lstrip("/\\").replace("\\", "/")
+            return Path("/mnt") / drive / rest
+        if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+            drive = path_text[0].lower()
+            rest = path_text[2:].lstrip("/\\").replace("\\", "/")
+            return Path("/mnt") / drive / rest
+        return Path(path_text)
+
+    # Native Windows / Linux / macOS: strip a leading slash from /C:/... forms
+    # but otherwise keep the path as-is.
+    if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+        path_text = path_text[1:]
     return Path(path_text)
 
 

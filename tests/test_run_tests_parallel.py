@@ -32,10 +32,15 @@ import pytest
 
 
 # Both tests share the same handoff file: the leaker writes here, the
-# verifier reads here. We park it in $TMPDIR with a unique-per-run name
-# so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
-_HANDOFF_DIR.mkdir(exist_ok=True)
+# verifier reads here. We park it under the platform temp dir with a
+# unique-per-run name so concurrent invocations don't clobber each other.
+# Use tempfile.gettempdir() rather than a hardcoded "/tmp" fallback so the
+# module imports cleanly on native Windows (where "/tmp" does not exist and
+# the mkdir would otherwise abort collection before the win32 skip applies).
+import tempfile
+
+_HANDOFF_DIR = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()) / "hermes-isolation-probe"
+_HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _handoff_path_for(nonce: str) -> Path:

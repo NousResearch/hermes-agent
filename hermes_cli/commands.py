@@ -104,7 +104,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("journey", "Open the learning journey timeline",
-               "Session", aliases=("learning", "memory-graph"), cli_only=True,
+               "Session", aliases=("learning", "memory-graph"),
                args_hint="[list|delete <id>|edit <id>]",
                subcommands=("list", "delete", "edit")),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
@@ -1164,7 +1164,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - journey: the learning timeline remains available as /hermes journey while
+#     preserving Slack's existing native commands at the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "journey"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

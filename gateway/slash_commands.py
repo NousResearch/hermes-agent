@@ -1051,6 +1051,51 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    async def _handle_journey_command(self, event: MessageEvent) -> str:
+        """Handle /journey in gateway chats as a read-only learning view."""
+        import argparse
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from hermes_cli.journey import register_cli
+
+        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+        register_cli(parser)
+        raw_args = event.get_command_args().strip()
+        try:
+            argv = shlex.split(raw_args) if raw_args else []
+        except ValueError as exc:
+            return f"Usage: /journey [list]\nCould not parse arguments: {exc}"
+
+        if argv not in ([], ["list"]):
+            return (
+                "The gateway /journey command is read-only and supports only "
+                "`/journey` or `/journey list`. Use the CLI for other journey actions."
+            )
+
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err):
+                args = parser.parse_args(argv)
+        except SystemExit:
+            msg = err.getvalue().strip()
+            return msg or "Usage: /journey [list]"
+
+        if hasattr(args, "no_color"):
+            args.no_color = True
+        if hasattr(args, "force_color"):
+            args.force_color = False
+
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                args.func(args)
+        except Exception as exc:
+            logger.debug("gateway /journey failed", exc_info=True)
+            return f"/journey failed: {exc}"
+
+        return buf.getvalue().strip() or "No journey output."
+
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 

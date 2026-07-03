@@ -39,7 +39,18 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
-        "add", help="Add an MCP server (discovery-first install)"
+        "add",
+        help="Add an MCP server (discovery-first install)",
+        # Disable argparse long-option abbreviation on this command path. The
+        # hosted Hermes Console policy guard (_enforce_hosted_line_policy) reads
+        # the raw token list and validates only the literal `--url`/`--url=`
+        # spelling, but argparse's default abbreviation would still bind
+        # `--ur`/`--u` to `url` (last-wins). That let
+        # `mcp add demo --url https://ok --ur ftp://evil` pass the HTTP/SSE-only
+        # scheme check while argparse executed the ftp:// URL. Rejecting
+        # abbreviated long options here guarantees the value argparse binds is
+        # exactly the one the guard inspected, closing the bypass class.
+        allow_abbrev=False,
     )
     mcp_add_p.add_argument("name", help="Server name (used as config key)")
     mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")

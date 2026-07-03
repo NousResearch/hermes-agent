@@ -1424,24 +1424,60 @@ def _flag_value(args: Sequence[str], flag: str) -> str | None:
     return None
 
 
-def _flag_values(args: Sequence[str], flag: str) -> list[str]:
-    """Return every occurrence of ``flag``'s value (both ``--flag X`` and
-    ``--flag=X`` forms).
+def _abbrev_flag_values(
+    args: Sequence[str], flag: str, *, siblings: Sequence[str]
+) -> list[str]:
+    """Return every value bound to ``flag`` — every ``--flag X`` / ``--flag=X``
+    occurrence *and* every argparse long-option abbreviation of it
+    (``--ur`` / ``--u`` for ``--url``).
 
     ``_flag_value`` returns only the first occurrence (first-wins), but
-    argparse's ``store`` action is last-wins, so a security guard that reads
-    only the first value validates a different argument than the one the
-    command actually executes. Callers enforcing a policy on a repeatable flag
-    must check them all — see :func:`_enforce_hosted_line_policy`.
+    argparse's ``store`` action is last-wins and it also binds any unambiguous
+    prefix of a long option. A first-/exact-match security guard therefore
+    validates a different token than the one argparse executes — e.g.
+    ``--url https://ok --url ftp://evil`` or ``--url https://ok --ur ftp://evil``
+    passes an exact ``--url`` scheme check while argparse stores ``ftp://evil``.
+    Callers enforcing a policy on a repeatable flag must check them all — see
+    :func:`_enforce_hosted_line_policy`.
+
+    This mirrors argparse's abbreviation rule: a ``--x`` token binds to ``flag``
+    when ``flag`` is the only long option in ``siblings`` that starts with it.
+    ``siblings`` must list every long option registered on the command so a
+    genuinely ambiguous prefix (which argparse itself rejects) is not
+    misattributed here.
     """
+
+    def _binds_to_flag(name: str) -> bool:
+        if not name.startswith("--") or not flag.startswith(name):
+            return False
+        # Unambiguous only when no other sibling shares this prefix.
+        return not any(other != flag and other.startswith(name) for other in siblings)
+
     values: list[str] = []
-    prefix = f"{flag}="
     for index, arg in enumerate(args):
-        if arg == flag:
+        name, sep, inline = arg.partition("=")
+        if sep:
+            if _binds_to_flag(name):
+                values.append(inline)
+        elif _binds_to_flag(arg):
             values.append(args[index + 1] if index + 1 < len(args) else "")
-        elif arg.startswith(prefix):
-            values.append(arg[len(prefix) :])
     return values
+
+
+# Long options registered on `hermes mcp add` (mirrors build_mcp_parser in
+# hermes_cli/subcommands/mcp.py). Used to resolve which argparse long-option
+# abbreviations the hosted policy guard must treat as `--url` occurrences. Keep
+# in sync with that parser; a missing sibling would only ever cause the guard to
+# treat an abbreviation as unambiguous when argparse would reject it as
+# ambiguous, i.e. it fails safe (rejects rather than admits).
+_MCP_ADD_LONG_OPTIONS: tuple[str, ...] = (
+    "--url",
+    "--command",
+    "--args",
+    "--auth",
+    "--preset",
+    "--env",
+)
 
 
 def _hosted_config_key_allowed(key: str) -> bool:
@@ -1476,14 +1512,18 @@ def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> N
                 "Hosted Hermes Console does not add MCP presets directly. "
                 "Use `mcp install <catalog-name>`."
             )
-        # Validate EVERY --url occurrence, not just the first. The command is
-        # executed via argparse (`parser.parse_args`), whose store action is
-        # last-wins, so a first-wins guard (`_flag_value`) would validate a
-        # different value than the one that actually runs — e.g.
-        # `--url https://ok --url ftp://evil` would pass the check on the
+        # Validate EVERY --url occurrence, not just the first, AND every
+        # argparse long-option abbreviation of it (`--ur` / `--u`). The command
+        # is executed via argparse (`parser.parse_args`), whose store action is
+        # last-wins and which binds any unambiguous prefix of `--url`, so an
+        # exact-spelling first-wins guard would validate a different value than
+        # the one that actually runs — e.g. `--url https://ok --ur ftp://evil`
+        # or `--url https://ok --url ftp://evil` would pass a naive check on the
         # https URL while argparse forwards the ftp one. Rejecting any
-        # non-http(s) scheme closes the bypass regardless of ordering.
-        urls = _flag_values(args, "--url")
+        # non-http(s) scheme across all spellings closes the bypass regardless
+        # of ordering or abbreviation. (`allow_abbrev=False` on the `mcp add`
+        # subparser is the belt; this is the suspenders at the policy layer.)
+        urls = _abbrev_flag_values(args, "--url", siblings=_MCP_ADD_LONG_OPTIONS)
         if not urls:
             raise ConsoleCommandError(
                 "Hosted Hermes Console requires `mcp add` to use --url with "

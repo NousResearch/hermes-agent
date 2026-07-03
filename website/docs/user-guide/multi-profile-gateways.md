@@ -158,11 +158,46 @@ its `/p/<profile>/` prefix.
 #### 3. Per-credential platforms still need their own token per profile
 
 Polling/connection platforms (Telegram, Discord, Slack, Matrix, Signal, …) work
-fine multiplexed, but each profile that enables one must supply its **own** bot
-token — the same token cannot be polled by two profiles at once. If two profiles
-configure the same `(platform, token)`, startup fails fast naming both profiles
-(see [Token-conflict safety](#token-conflict-safety) — the rule is unchanged,
-it's just enforced inside the one process now).
+fine multiplexed, but each profile that enables its own adapter must supply its
+**own** bot token — the same token cannot be polled by two adapters at once. If
+two profiles configure the same `(platform, token)` as separate adapters, startup
+fails fast naming both profiles (see [Token-conflict safety](#token-conflict-safety)
+— the rule is unchanged, it's just enforced inside the one process now).
+
+#### 3a. Shared-token chat routes
+
+Sometimes you want a different tradeoff: **one bot/account, many profile homes**.
+For example, a single Telegram bot may be invited to several groups, where each
+group should have isolated skills, memory, cron state, and sessions — but you do
+not want to create a BotFather bot for every profile.
+
+In multiplex mode, keep the polling platform enabled only on the default profile
+and route selected chats/topics into named profiles:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+
+telegram:
+  profile_routes:
+    "-1001111111111": research
+    "-1002222222222:42": support
+
+# Equivalent aliases are accepted:
+# telegram.chat_profiles: {...}
+# telegram.channel_profiles: {...}
+```
+
+The default gateway owns the inbound credential and authorization gate. After the
+message is accepted, Hermes stamps the message source with the routed profile, so
+the agent turn uses that profile's `config.yaml`, `.env`, SOUL, skills, memory,
+and namespaced session key. The routed profile does **not** start its own Telegram
+adapter, so there is no duplicate polling and no token-lock conflict.
+
+Use shared-token routes when identity continuity matters (one public bot name,
+existing group membership, one Slack app) and process-level isolation is less
+important than profile-scoped state. Use separate tokens/adapters when each
+profile should be independently reachable and restartable.
 
 #### 4. Session keys are namespaced by profile
 

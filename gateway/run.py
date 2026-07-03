@@ -2290,6 +2290,102 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _gateway_profile_route_candidate(routes: Any, *, chat_id: str, thread_id: str) -> Optional[str]:
+    """Return a routed profile name from a mapping/list route config.
+
+    Supported shapes are intentionally small and platform-neutral:
+    ``{"<chat_id>": "profile"}``, ``{"<chat_id>:<thread_id>":
+    "profile"}``, or ``[{chats: [...], threads: [...], profile: "profile"}]``.
+    """
+    if not chat_id:
+        return None
+
+    if isinstance(routes, dict):
+        candidates: list[Any] = []
+        if thread_id:
+            candidates.append(f"{chat_id}:{thread_id}")
+        candidates.append(chat_id)
+        if chat_id.lstrip("-").isdigit():
+            try:
+                candidates.append(int(chat_id))
+            except ValueError:
+                pass
+        for candidate in candidates:
+            routed = routes.get(candidate)
+            if routed:
+                return str(routed).strip() or None
+        return None
+
+    if isinstance(routes, list):
+        for item in routes:
+            if not isinstance(item, dict):
+                continue
+            chats = item.get("chats") or item.get("chat_ids") or item.get("channels") or []
+            if isinstance(chats, (str, int)):
+                chats = [chats]
+            if chat_id not in {str(chat) for chat in chats}:
+                continue
+            threads = item.get("threads") or item.get("thread_ids")
+            if threads is not None:
+                if isinstance(threads, (str, int)):
+                    threads = [threads]
+                if not thread_id or thread_id not in {str(thread) for thread in threads}:
+                    continue
+            routed = item.get("profile") or item.get("name")
+            if routed:
+                return str(routed).strip() or None
+    return None
+
+
+def _resolve_shared_credential_profile_route(config: dict, source: Any) -> Optional[str]:
+    """Resolve optional chat/topic → profile routing for a shared adapter.
+
+    This is the companion to ``gateway.multiplex_profiles`` for operators who
+    want one inbound bot token to serve multiple profile homes. The adapter
+    remains owned by the active/default gateway profile; only the agent turn is
+    routed by stamping ``SessionSource.profile`` before session-key generation.
+    """
+    if not isinstance(config, dict):
+        return None
+    platform = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
+    platform_cfg = config.get(platform) or {}
+    if not isinstance(platform_cfg, dict):
+        return None
+
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    thread_id = str(getattr(source, "thread_id", "") or "")
+    raw_profile = None
+    for key in ("profile_routes", "chat_profiles", "channel_profiles"):
+        raw_profile = _gateway_profile_route_candidate(
+            platform_cfg.get(key),
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
+        if raw_profile:
+            break
+    if not raw_profile:
+        return None
+
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        profile_name = normalize_profile_name(str(raw_profile))
+        if profile_name == "default":
+            return None
+        if not profile_exists(profile_name):
+            logger.warning(
+                "Gateway profile route for %s chat=%s thread=%s points to missing profile %r",
+                platform,
+                chat_id,
+                thread_id,
+                profile_name,
+            )
+            return None
+        return profile_name
+    except Exception as exc:
+        logger.warning("Gateway profile route resolution failed: %s", exc)
+        return None
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -8676,7 +8772,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        # Optional shared-credential profile routing. This lets one adapter/bot
+        # token receive many chats and route selected chats/topics into named
+        # profile homes. Authorization above intentionally used the owning
+        # adapter/default profile; from here on, session keys and agent runtime
+        # use the routed profile.
+        if (
+            not is_internal
+            and not getattr(source, "profile", None)
+            and getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        ):
+            _route_profile = _resolve_shared_credential_profile_route(
+                _load_gateway_runtime_config(),
+                source,
+            )
+            if _route_profile:
+                event = dataclasses.replace(
+                    event,
+                    source=dataclasses.replace(source, profile=_route_profile),
+                )
+                source = event.source
+                logger.info(
+                    "Gateway shared-credential profile route active: platform=%s chat=%s thread=%s profile=%s",
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id,
+                    source.thread_id,
+                    _route_profile,
+                )
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via

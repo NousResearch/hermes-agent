@@ -605,13 +605,13 @@ const SEED_MOA_BLOCK =
   '    apex-moa:\n' +
   '      reference_models:\n' +
   '      - model: deepseek-v4-pro\n' +
-  '        provider: custom\n' +
+  '        provider: custom:apex-nodes.com\n' +
   '      - model: kimi-k2.7-code\n' +
-  '        provider: custom\n' +
+  '        provider: custom:apex-nodes.com\n' +
   '      - model: glm-5.2\n' +
-  '        provider: custom\n' +
+  '        provider: custom:apex-nodes.com\n' +
   '      aggregator:\n' +
-  '        provider: custom\n' +
+  '        provider: custom:apex-nodes.com\n' +
   '        model: qwen3.7-max\n' +
   '      reference_temperature: 0.6\n' +
   '      aggregator_temperature: 0.4\n'

@@ -389,11 +389,27 @@ class BaseEnvironment(ABC):
         # writers would pick the SAME temp name, clobber each other's temp
         # mid-write, and mv would then publish a torn file (the corruption is
         # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # and is genuinely unique per writer — BUT ``$BASHPID`` only exists in
+        # bash >= 4.0.  macOS ``/bin/bash`` is 3.2.57 (GPLv3 freeze), where
+        # ``$BASHPID`` expands to the EMPTY string and every writer degrades to
+        # the same literal ``snap.tmp.`` — the tear comes back, worse than
+        # ``$$``.  So compute ``__hermes_pid`` with a portable fallback:
+        # ``sh -c 'echo $PPID'`` reports the calling (sub)shell's PID
+        # (``command -p`` so a clobbered PATH can't hide sh), and ``$$`` as a
+        # last resort if even that fails.  The static path is shell-quoted via
+        # ``_quote_shell_path`` (LocalEnvironment rewrites ``C:/...`` to
+        # ``/c/...`` for MSYS) with the PID variable left outside the quotes so
+        # it still expands.
+        _pid_assign = (
+            "__hermes_pid=${BASHPID:-$(command -p sh -c 'echo $PPID' 2>/dev/null)}; "
+            "__hermes_pid=${__hermes_pid:-$$}"
+        )
+        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$__hermes_pid"
         bootstrap = (
+            f"{_pid_assign}\n"
+            # umask 077 so the snapshot/cwd files land owner-only — they can
+            # carry env-borne secrets (upstream a1e6ea7d7).  Set after the PID
+            # assignment, before the first file write.
             f"umask 077\n"
             f"export -p > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
@@ -481,11 +497,19 @@ class BaseEnvironment(ABC):
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # truncated/half-written file.  The PID token must be the actual
+        # subshell PID (``$$`` stays the parent's PID in ``&``-launched
+        # writers) AND portable: ``$BASHPID`` needs bash >= 4.0, and on macOS
+        # ``/bin/bash`` 3.2.57 it expands EMPTY — all writers would share the
+        # literal ``snap.tmp.`` name and tear the snapshot again.  See
+        # init_session for the full rationale of the fallback chain.
+        # Static path shell-quoted via ``_quote_shell_path`` (Windows/spaces);
+        # PID var left to expand.
+        _pid_assign = (
+            "__hermes_pid=${BASHPID:-$(command -p sh -c 'echo $PPID' 2>/dev/null)}; "
+            "__hermes_pid=${__hermes_pid:-$$}"
+        )
+        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$__hermes_pid"
 
         parts = []
 
@@ -518,6 +542,7 @@ class BaseEnvironment(ABC):
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
+            parts.append(_pid_assign)
             parts.append(
                 f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"

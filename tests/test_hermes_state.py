@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import pytest
@@ -846,6 +847,33 @@ class TestMessageStorage:
         assert len(msgs) == 2
         assert msgs[0]["content"] == content
         assert msgs[1]["content"] == "I see a screenshot."
+
+    def test_get_messages_roundtrip_preserves_reasoning_columns(self, db):
+        """get_messages → replace_messages must not double-encode reasoning JSON (#57240)."""
+        reasoning = [{"type": "thinking", "thinking": "step one"}]
+        codex_items = [{"type": "reasoning", "encrypted_content": "enc_abc"}]
+        db.create_session(session_id="parent", source="api_server")
+        db.append_message(
+            "parent",
+            role="assistant",
+            content="answer",
+            reasoning_details=reasoning,
+            codex_reasoning_items=codex_items,
+        )
+
+        # get_messages leaves reasoning columns as stored TEXT — that is the
+        # fork/branch copy path (POST /api/sessions/{id}/fork).
+        loaded = db.get_messages("parent")
+        assert json.loads(loaded[0]["reasoning_details"]) == reasoning
+        assert json.loads(loaded[0]["codex_reasoning_items"]) == codex_items
+
+        fork_id = "parent-fork"
+        db.create_session(session_id=fork_id, source="api_server", parent_session_id="parent")
+        db.replace_messages(fork_id, db.get_messages("parent"))
+
+        fork_conv = db.get_messages_as_conversation(fork_id)
+        assert fork_conv[0]["reasoning_details"] == reasoning
+        assert fork_conv[0]["codex_reasoning_items"] == codex_items
 
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")

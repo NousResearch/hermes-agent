@@ -812,6 +812,58 @@ class TestNonBuiltinProviderAvailability:
             assert web_extract_entry is not None, \
                 "web_extract tool was filtered out despite custom provider being available"
 
+    @staticmethod
+    def _create_named_provider(name, *, search=True, extract=True):
+        """Create an available WebSearchProvider with a caller-chosen name.
+
+        Lets a test register more than one distinct custom provider (the
+        shared ``_create_fake_provider`` hardcodes a single name).
+        """
+        from agent.web_search_provider import WebSearchProvider
+
+        class NamedPluginProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return name
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return search
+
+            def supports_extract(self):
+                return extract
+
+        return NamedPluginProvider()
+
+    def test_check_web_api_key_true_for_multiple_custom_providers_none_configured(self):
+        """Two available custom providers, no built-in creds, no web.backend
+        config key: check_web_api_key() must still return True.
+
+        Regression for the a9cd0e07c refactor. The registry's single-active
+        ``_resolve()`` only returns a fallback provider when exactly one is
+        eligible (``len(eligible) == 1``) or the name is a built-in legacy
+        name, so with 2+ registered custom providers and no config key it
+        returns None for both capabilities — which previously made this gate
+        return False and hid ``web_search`` / ``web_extract`` even though
+        ``_get_backend()`` resolves one of them. The gate must mirror
+        ``_get_backend()``'s registered-provider walk so the two agree.
+        """
+        from agent.web_search_registry import _reset_for_tests, register_provider
+
+        _reset_for_tests()
+        register_provider(self._create_named_provider("custom-a"))
+        register_provider(self._create_named_provider("custom-b"))
+        # No web.backend / web.*_backend config key is set (fixture strips env).
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None), \
+             patch("tools.web_tools._load_web_config", return_value={}):
+            from tools.web_tools import check_web_api_key, _get_backend
+            assert check_web_api_key() is True
+            # Gate agrees with the router: _get_backend() resolves one of them.
+            assert _get_backend() in {"custom-a", "custom-b"}
+
 
 class TestFirecrawlEnvResolution:
     """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,

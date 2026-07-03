@@ -1066,23 +1066,24 @@ def check_web_api_key() -> bool:
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
-    # Any plugin-registered provider the registry considers active for either
-    # capability. Delegating to the registry's own availability-filtered
-    # resolvers keeps a single authority for "is a custom provider usable"
-    # rather than re-implementing the walk here.
-    try:
-        from agent.web_search_registry import (
-            get_active_search_provider,
-            get_active_extract_provider,
-        )
-
-        return (
-            get_active_search_provider() is not None
-            or get_active_extract_provider() is not None
-        )
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
-        logger.debug("web provider registry availability check failed: %s", exc)
-        return False
+    # Any plugin-registered provider (outside the built-in set) that reports
+    # itself available. Mirror _get_backend()'s final fallback walk so this
+    # gate agrees with the router: the registry's single-active _resolve()
+    # returns None when >1 custom provider is registered and none is
+    # configured (len(eligible) != 1 and custom names are absent from the
+    # legacy preference order), which would wrongly hide the web tools even
+    # though _get_backend() resolves one of them.
+    for provider in _list_registered_web_providers():
+        if provider.name in _LEGACY_WEB_BACKENDS:
+            continue
+        try:
+            if provider.is_available():
+                return True
+        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+            logger.debug(
+                "web provider %r.is_available() raised: %s", provider.name, exc
+            )
+    return False
 
 
 if __name__ == "__main__":

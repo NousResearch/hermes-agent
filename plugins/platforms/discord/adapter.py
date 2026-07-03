@@ -3720,6 +3720,23 @@ class DiscordAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
 
+    async def rename_dm_topic(
+        self, chat_id: str, thread_id: str, name: str
+    ) -> None:
+        """Rename a Discord thread to the auto-generated session title."""
+        if not chat_id or not thread_id or not name:
+            return
+        thread = self._client.get_channel(int(thread_id))
+        if thread is None:
+            thread = await self._client.fetch_channel(int(thread_id))
+        if thread is None:
+            return
+        await thread.edit(name=name[:100])
+        logger.info(
+            "[%s] Renamed Discord thread %s → '%s'",
+            self.name, thread_id, name[:100],
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""
         if not self._client:

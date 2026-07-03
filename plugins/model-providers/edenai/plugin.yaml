@@ -1,0 +1,22 @@
+# Eden AI is a multi-provider aggregator — the live /v3/models endpoint
+# returns hundreds of models in the form ``<upstream>/<model>`` (e.g.
+# ``openai/gpt-4o``, ``anthropic/claude-3-5-sonnet``). The model picker
+# (CLI, Telegram, Discord) groups them by upstream sub-provider as long
+# as ``edenai`` is in the user's ``model_picker.group_by_subprovider``
+# config list, e.g.:
+#
+#   model_picker:
+#     group_by_subprovider:
+#       - edenai
+#
+# When enabled, the user first picks an upstream (openai, anthropic,
+# google, mistral, ...), then picks a model within that upstream — no
+# more scrolling through 127 models on Telegram.
+#
+# Default behaviour (the upstream list not configured) stays unchanged:
+# the flat catalog is shown as before.
+name: edenai-provider
+kind: model-provider
+version: 1.0.0
+description: Eden AI multi-provider AI gateway (OpenAI-compatible /v3 endpoint)
+author: Hermes Agent

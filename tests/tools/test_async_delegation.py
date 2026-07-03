@@ -99,6 +99,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
         role="leaf", model="test-model", session_key="agent:main:cli:dm:local",
+        parent_session_id="20260703_parent_sid",
         runner=runner, max_async_children=3,
     )
     assert res["status"] == "dispatched"
@@ -108,6 +109,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["type"] == "async_delegation"
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
+    assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
 
 

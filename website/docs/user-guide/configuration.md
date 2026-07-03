@@ -1517,9 +1517,11 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 Matrix defaults to live tool activity, rendered as a single formatted
-`<details>` / `<summary>` message where the Matrix client supports it. Reasoning
-text, interim assistant commentary, and token-level response streaming remain
-off unless `display.platforms.matrix.*` explicitly opts in. Global
+`<details>` / `<summary>` message where the Matrix client supports it. Live
+thinking progress is disabled for Matrix because high-frequency thinking deltas
+can flood rooms and homeservers. Interim assistant commentary and token-level
+response streaming remain off unless `display.platforms.matrix.*` explicitly
+opts in. Global
 `display.tool_progress`, `display.interim_assistant_messages`, and
 `streaming.enabled` do not enable those Matrix behaviors unless the platform
 override opts in — this avoids client read-marker jumps from edited events.

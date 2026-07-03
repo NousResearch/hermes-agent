@@ -42,7 +42,7 @@ are disabled, opportunistic, or required.
 | reactions | yes |
 | approvals | yes |
 | model picker | yes |
-| thinking panes | yes |
+| live thinking progress | no |
 | images | yes |
 | multiple images | yes |
 | files | yes |
@@ -50,12 +50,6 @@ are disabled, opportunistic, or required.
 | video | yes |
 | E2EE | off / optional / required |
 | diagnostics | yes |
-
-:::note
-Matrix thinking panes are available, but disabled by default with Matrix live
-progress/streaming. Enable them only if your Matrix client handles edited
-messages without jumping read position.
-:::
 
 ### Session Model in Matrix
 
@@ -465,7 +459,8 @@ Matrix deployments remain compatible.
 Matrix defaults to live tool activity without response/thinking streaming. Tool
 activity is sent as one Matrix formatted message using a `<details>` / `<summary>`
 block where the client supports it, with a plain-text fallback in the event body.
-Reasoning/thinking text is hidden by default.
+Live thinking progress is disabled for Matrix because high-frequency thinking
+deltas can flood Matrix rooms and homeservers.
 
 To tune Matrix progress:
 
@@ -475,15 +470,15 @@ display:
     matrix:
       tool_progress: new      # off | new | all | verbose
       tool_preview_length: 320
-      show_reasoning: false   # true only if you want raw thinking panes
+      show_reasoning: false   # true prepends final captured reasoning when available
       streaming: false        # true enables progressive response edits
       interim_assistant_messages: false
 ```
 
 Global `display.tool_progress` applies to Matrix unless overridden here.
 Global `display.interim_assistant_messages` and `streaming.enabled` do not make
-Matrix emit thinking/interim text or partial responses unless the Matrix-specific
-override is set.
+Matrix emit interim text or partial responses unless the Matrix-specific
+override is set. `display.platforms.matrix.thinking_progress` is ignored.
 
 ### Media Limits
 

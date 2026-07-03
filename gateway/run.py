@@ -16862,8 +16862,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            thinking_msg_id = None   # Matrix-only reasoning/thinking pane
-            thinking_text = ""       # Latest accumulated Matrix thinking text
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -17059,23 +17057,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             async def _handle_matrix_progress_tuple(raw: tuple) -> bool:
                 """Handle Matrix-specific pane updates. Returns True if consumed."""
-                nonlocal progress_msg_id, progress_lines, thinking_msg_id, thinking_text
+                nonlocal progress_msg_id, progress_lines
                 tag = raw[0] if raw else ""
-                if tag == "__matrix_thinking__":
-                    addition = str(raw[1] if len(raw) > 1 else "").strip()
-                    if not addition:
-                        return True
-                    if thinking_text:
-                        thinking_text = f"{thinking_text}\n\n{addition}"
-                    else:
-                        thinking_text = addition
-                    if len(thinking_text) > 3500:
-                        thinking_text = "...\n" + thinking_text[-3496:]
-                    thinking_msg_id = await _send_or_edit_progress(
-                        thinking_msg_id,
-                        f"💭 Thinking\n\n{thinking_text}",
-                    )
-                    return True
                 if tag == "__matrix_tool_completed__":
                     tool = str(raw[1] if len(raw) > 1 else "tool")
                     duration = float(raw[2] if len(raw) > 2 else 0.0)

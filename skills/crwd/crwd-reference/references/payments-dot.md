@@ -7,16 +7,21 @@
   approval to payment landing is **1–2 business days**.
 - Frame this as *typical, not guaranteed* — you can't promise timing on CRWD's behalf.
 
-## Live payment status is NOT wired up yet
+## Live payment status — via the `dot` tool
 
-- The Dot live-status integration is **coming soon** — it is not available right now.
-- Do **not** claim to check real-time "has the money landed" status. Instead:
-  - Explain the normal process honestly ("once your proof is approved, Dot sends payment,
-    usually within 1–2 business days").
-  - Check what you *can* see with `crwd_db` (submission/approval state on the membership /
-    receipt records).
-  - If the member needs a definitive answer on money already sent, **hand off** (see the
-    `crwd-handoff` skill) — don't guess or paper over the gap.
+- Live Dot payout status **is** available through the `dot` tool (used by the
+  `crwd-payment-status` skill): `get_payment_status` (optionally for one gig) and
+  `get_payment_history` for a member.
+- Still frame timing honestly: "once your proof is approved, Dot sends payment, usually
+  within 1–2 business days" — *typical, not guaranteed*. Don't promise a date.
+- Read approval and payment as **separate** states: `crwd_db` shows whether the work is
+  approved (`hasPaid` / `isCompleted` / receipt status); `dot` shows whether Dot has
+  actually sent the payout. "Approved" ≠ "paid".
+- If the `dot` tool errors or isn't configured, fall back to the `crwd_db` approval state
+  plus the honest 1–2 business-day framing.
+- For a genuine money dispute — Dot reports **sent but the member never received it** — or
+  anything you can't answer confidently, **hand off** (`crwd-handoff`). Don't guess about
+  money already gone out.
 
 ## Payout ≠ reimbursement
 

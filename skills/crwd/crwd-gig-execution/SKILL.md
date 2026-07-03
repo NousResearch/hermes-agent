@@ -5,7 +5,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [crwd, gig, execution, buy, product, ugc, content, proof, receipt, submission]
-    related_skills: [crwd-store-locator, crwd-reference, crwd-handoff]
+    related_skills: [crwd-gig-discovery, crwd-payment-status, crwd-reference, crwd-handoff]
     requires_toolsets: [crwd]
 ---
 
@@ -23,13 +23,16 @@ skill (proof is just the tail of doing the gig).
 
 ## Procedure
 
-1. **Confirm the gig and its type** (live vs online) with `crwd_db` `get_gig_details`.
+1. **Confirm the gig and its type** (live `irl` vs online) with `crwd_db` `get_gig_details`.
+   If it's cleanly neither, go by the gig's real `type_of_work_proof`/requirements rather than
+   forcing it into one bucket — and hand off if what's required is unclear.
 2. **Surface the exact product + buy link.** Use `get_user_products` (the member's approved
    products for their gigs — product name + `product_url`). The current member's CRWD
    `user_id` is provided in context (a `[CRWD member]` line) — pass it straight through;
    `get_user_products` and `get_user_receipts` both take that `user_id`. Only use `get_user`
-   for a different person. Give them the real link, don't describe it vaguely.
-3. **Live gig steps:** go to the store (see `crwd-store-locator` if they need to find it),
+   for a different person. Give them the real link, don't describe it vaguely — include the
+   buy link by default whenever a product is involved, not only when they ask "where do I buy?"
+3. **Live gig steps:** go to the store (see `crwd-gig-discovery` if they need to find it),
    buy the product, and **call out any special requirement precisely** — e.g. *two purchases
    with two different payment methods* means two separate transactions and two receipts.
    Then create the content: a natural, non-scripted UGC video/photo showing the product

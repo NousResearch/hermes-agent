@@ -3562,6 +3562,22 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "DOT_API_KEY": {
+        "description": "Dot payments API key for the dot tool (member payout status + history)",
+        "prompt": "Dot API key",
+        "url": None,
+        "tools": ["dot"],
+        "password": True,
+        "category": "tool",
+    },
+    "DOT_API_BASE_URL": {
+        "description": "Dot payments API base URL for the dot tool (e.g. https://api.dot.example.com)",
+        "prompt": "Dot API base URL",
+        "url": None,
+        "tools": ["dot"],
+        "password": False,
+        "category": "tool",
+    },
     "CRWD_ENRICH_ENABLED": {
         "description": "Enable live Chatwoot contact + Honcho peer enrichment from CRWD MongoDB (default: true)",
         "prompt": "Enable CRWD enrichment? (true/false)",

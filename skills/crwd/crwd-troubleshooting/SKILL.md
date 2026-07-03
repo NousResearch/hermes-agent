@@ -6,6 +6,7 @@ metadata:
   hermes:
     tags: [crwd, troubleshooting, technical, broken, link, error, not-working, bug]
     related_skills: [crwd-handoff, crwd-application-expert]
+    requires_toolsets: [crwd]
 ---
 
 # CRWD Troubleshooting

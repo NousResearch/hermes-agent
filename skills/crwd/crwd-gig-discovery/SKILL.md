@@ -1,12 +1,12 @@
 ---
 name: crwd-gig-discovery
-description: "Help a CRWD member find and understand gigs — what's available now, gig details (payout, deadline, store), applying, and approval status. Use when a member asks what gigs are open, about a specific gig, how to apply, or whether they're approved."
-version: 1.0.0
+description: "Help a CRWD member find and understand gigs — what's available now, gig details (payout, deadline, product links, store), applying, approval status, and where to go for a live gig (nearest Walmart/Target, address, hours). Use when a member asks what gigs are open, about a specific gig, how to apply, whether they're approved, or where the store is."
+version: 2.0.0
 metadata:
   hermes:
-    tags: [crwd, gigs, campaigns, browse, apply, approval, payout, deadline]
-    related_skills: [crwd-gig-execution, crwd-application-expert, crwd-reference]
-    requires_toolsets: [crwd]
+    tags: [crwd, gigs, campaigns, browse, apply, approval, payout, deadline, store, walmart, target, location, nearest, hours, stock]
+    related_skills: [crwd-gig-execution, crwd-application-expert, crwd-reminders-followups, crwd-reference]
+    requires_toolsets: [crwd, web]
 ---
 
 # CRWD Gig Discovery
@@ -19,6 +19,8 @@ Find gigs and explain them against the member's **real** data — not in the abs
 - "Tell me about the [X] gig" — payout, deadline, store, what's involved
 - "How do I apply?" / "Am I approved yet?"
 - "What gigs do I have?"
+- "Where do I go for this gig?" / "Where's the nearest Walmart/Target?"
+- "What are the store hours?" / "Are they open now?"
 
 ## Procedure
 
@@ -38,10 +40,31 @@ Find gigs and explain them against the member's **real** data — not in the abs
    Only fall back to `get_user` (by email/phone) if that line isn't present or you're looking
    up a **different** person. This shows the campaigns they're an active member of and their
    membership status.
-4. Explain the flow against their **actual** state, not generically: browse → apply →
+4. **Include the product name + buy link by default.** `list_active_gigs` and
+   `get_gig_details` already return each store's `products[]` with `name` and `product_url`.
+   When you describe a gig, surface those links alongside payout/deadline/store — don't wait
+   for the member to ask "where do I buy it?" Links are helpful; give the real `product_url`,
+   don't just name the product. (Only skip them if the gig genuinely has no product, or the
+   member explicitly says they just want the list.)
+5. **For a live (in-store / `irl`) gig, help them get to the store.** The gig data names the
+   retailer (`stores[].store_name`) and, for `irl` gigs, an `address`/`city`/`state`/
+   `postal_code`. Surface that store info by default when you describe a live gig.
+   - **Never assume the member's location.** If you don't already know their city/ZIP (from
+     the conversation or profile), **ask first** — one short question:
+     *"What city or ZIP are you in? I'll find the closest one."* Don't guess or pick a random
+     store.
+   - Once you have their location, find the specific store with `web_search` (and
+     `web_extract` on the store page if needed), e.g. *"Walmart near 90210 hours phone
+     number"*. Give them, tightly: **store name + full address**, **phone / store number**,
+     and **hours** (and whether it's open now, if you can tell).
+   - Point them at the **retailer the gig actually uses**, not just any big-box store.
+   - Suggest they **call ahead to confirm stock** — you cannot see live inventory, so never
+     claim something is in stock.
+6. Explain the flow against their **actual** state, not generically: browse → apply →
    **get approved** → perform → submit proof → get paid. If they're waiting on approval, say
    that; if approved, point them at what to do next (`crwd-gig-execution`).
-5. Be precise on **payout, deadline, and estimated time** — quote the real numbers; never guess.
+7. Be precise on **payout, deadline, and estimated time** — quote the real numbers; never guess.
+8. Offer a deadline reminder if the gig is time-sensitive (see `crwd-reminders-followups`).
 
 For the deeper lifecycle detail, load
 `skill_view("crwd-reference", "references/gig-lifecycle.md")`.
@@ -60,10 +83,20 @@ For the deeper lifecycle detail, load
 - `get_gig_details` returns *candidates*; picking the wrong `_id` sends the member to the
   wrong gig. Confirm first.
 - Approval is gated by CRWD/the brand — you can report the state, but don't promise approval.
+- Product links are in the gig data already — quote the real `product_url`; never paraphrase
+  a link or omit it just because the member didn't explicitly ask for it.
+- **Store locating:** never invent a store, address, or phone number; if a bare ZIP matches
+  several stores, give the top match and note there are others. Hours online can be stale
+  (say "confirm by phone" for "open now?"), and you can't see live inventory (say "call to
+  confirm," never "it's in stock"). Keep store replies to name + address + phone + hours.
 
 ## Verification
 
 - Details you gave (payout, deadline, store) came from `crwd_db`, not assumption.
+- Product name + real buy link were included when the gig has a product — proactively, not
+  only when asked.
+- For a live gig, you gave the store info or asked for the member's location before searching,
+  and the store reply had a real name, address, phone/store number, and hours.
 - Available-gig answers excluded gigs the member is already in (`user_id` on
   `list_active_gigs`).
 - "Show me more" used `next_offset` from the prior page when more gigs existed.

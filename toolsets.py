@@ -258,8 +258,14 @@ TOOLSETS = {
     },
 
     "crwd": {
-        "description": "CRWD MongoDB lookups: gigs, users, membership (gated on CRWD_MONGO_URI); plus crwd_handoff to loop in a human (gated on Chatwoot creds)",
+        "description": "CRWD MongoDB lookups: gigs, users, membership (gated on CRWD_MONGO_URI); plus crwd_handoff to loop in a human (gated on Chatwoot creds) and dot payout status/history (gated on DOT_API_KEY)",
         "tools": ["crwd_db", "crwd_handoff"],
+        "includes": ["dot"],
+    },
+
+    "dot": {
+        "description": "Dot payment lookups: a member's payout status + history (gated on DOT_API_KEY / DOT_API_BASE_URL)",
+        "tools": ["dot"],
         "includes": [],
     },
 

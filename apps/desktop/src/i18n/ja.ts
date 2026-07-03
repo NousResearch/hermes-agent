@@ -25,6 +25,7 @@ export const ja = defineLocale({
     docs: 'ドキュメント',
     done: '完了',
     error: 'エラー',
+    expand: '展開',
     failed: '失敗',
     formatJson: 'JSON を整形',
     free: '無料',
@@ -39,6 +40,7 @@ export const ja = defineLocale({
     set: '設定',
     skip: 'スキップ',
     update: '更新',
+    tryHint: term => `「${term}」を試す`,
     on: 'オン',
     off: 'オフ'
   },
@@ -725,7 +727,22 @@ export const ja = defineLocale({
       name: '名前',
       serverJson: 'サーバー JSON',
       remove: '削除',
-      saveServer: 'サーバーを保存'
+      saveServer: 'サーバーを保存',
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`ツール ${tools} 個`, ...(prompts ? [`プロンプト ${prompts} 個`] : []), ...(resources ? [`リソース ${resources} 個`] : [])].join('、')} を有効化`,
+      statusConnecting: '接続中…',
+      statusNeedsAuth: '認証が必要です',
+      statusError: 'エラー',
+      statusOff: 'オフ',
+      allServers: 'すべてのサーバー',
+      authenticatedTitle: '認証済み',
+      authenticatedMessage: (server, count) => `${server}: ツール ${count} 個`,
+      waitingForBrowser: 'ブラウザを待機中…',
+      authenticate: '認証',
+      unsavedConnect: '未保存 — 接続するには mcp.json を保存してください。',
+      enableTool: tool => `${tool} を有効化`,
+      disableTool: tool => `${tool} を無効化`,
+      noOutput: 'まだ出力がありません。'
     },
     model: {
       loading: 'モデル設定を読み込み中...',
@@ -864,11 +881,28 @@ export const ja = defineLocale({
     failedToUpdate: name => `${name} の更新に失敗しました`,
     sortMostUsed: '使用頻度順',
     sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ 使用頻度順',
+    sortLeastUsedAsc: '↑ 使用頻度が低い順',
     enableAll: 'すべて有効化',
     disableAll: 'すべて無効化',
+    disableUnused: '未使用を無効化',
     bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
     bulkNoChange: '変更するものはありません。',
-    usageCount: count => `${count} 回使用`
+    usageCount: count => `${count} 回使用`,
+    provenance: {
+      agent: '学習済み',
+      bundled: '組み込み',
+      hub: 'ハブ'
+    },
+    emptyNoneFound: noun => `${noun} が見つかりません`,
+    emptyNothingMatches: query => `「${query}」に一致するものはありません。`,
+    emptyNoneAvailable: noun => `利用可能な ${noun} はまだありません。`,
+    changesApplyNewSessions: '変更は新しいセッションに適用されます。',
+    skillUpdated: 'スキルを更新しました',
+    edit: '編集',
+    archive: 'アーカイブ',
+    skillArchivedTitle: 'スキルをアーカイブしました',
+    skillArchivedMessage: 'hermes curator restore で復元できます。'
   },
 
   starmap: {

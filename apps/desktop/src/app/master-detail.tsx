@@ -6,6 +6,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { RowButton } from '@/components/ui/row-button'
 import { Switch } from '@/components/ui/switch'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $paneHeightOverride, $paneState, setPaneHeightOverride } from '@/store/panes'
 
@@ -142,6 +143,7 @@ export function DetailPane({
   onClose?: () => void
   title: ReactNode
 }) {
+  const { t } = useI18n()
   const override = useStore($paneHeightOverride(id))
 
   useEffect(() => {
@@ -196,8 +198,7 @@ export function DetailPane({
           {actions}
           <Button
             aria-expanded={!collapsed}
-            // TODO(i18n): literals until the UX settles.
-            aria-label={collapsed ? 'Expand' : 'Collapse'}
+            aria-label={collapsed ? t.common.expand : t.common.collapse}
             className={ICON_BUTTON}
             onClick={() => setPaneHeightOverride(id, collapsed ? undefined : 0)}
             size="icon"
@@ -206,8 +207,7 @@ export function DetailPane({
             <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.8125rem" />
           </Button>
           {onClose && (
-            // TODO(i18n): literal until the UX settles.
-            <Button aria-label="Close" className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
+            <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
               <Codicon name="close" size="0.8125rem" />
             </Button>
           )}

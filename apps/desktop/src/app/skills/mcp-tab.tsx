@@ -36,7 +36,7 @@ import {
   saveMcpServers,
   testMcpServer
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -168,8 +168,11 @@ const STATUS_DOT: Record<ServerStatus, string> = {
 // the capabilities the server actually has. When a `server` config is passed,
 // the tool count reflects the per-tool include/exclude filter (what's actually
 // registered), not the raw discovered count.
-// TODO(i18n): literals until the UX settles.
-function capabilitySummary(probe: McpTestResult, server?: Record<string, unknown>): string {
+function capabilitySummary(
+  m: Translations['settings']['mcp'],
+  probe: McpTestResult,
+  server?: Record<string, unknown>
+): string {
   const toolCount = server
     ? countEnabledTools(
         server,
@@ -177,32 +180,30 @@ function capabilitySummary(probe: McpTestResult, server?: Record<string, unknown
       )
     : probe.tools.length
 
-  const parts = [
-    `${toolCount} tools`,
-    ...(probe.prompts ? [`${probe.prompts} prompts`] : []),
-    ...(probe.resources ? [`${probe.resources} resources`] : [])
-  ]
-
-  return `${parts.join(', ')} enabled`
+  return m.capabilitySummary(toolCount, probe.prompts ?? 0, probe.resources ?? 0)
 }
 
-// TODO(i18n): literals until the UX settles.
-function statusLine(status: ServerStatus, probe: Probe | undefined, server?: Record<string, unknown>): string {
+function statusLine(
+  m: Translations['settings']['mcp'],
+  status: ServerStatus,
+  probe: Probe | undefined,
+  server?: Record<string, unknown>
+): string {
   switch (status) {
     case 'ok':
-      return capabilitySummary(probe as McpTestResult, server)
+      return capabilitySummary(m, probe as McpTestResult, server)
 
     case 'probing':
-      return 'Connecting…'
+      return m.statusConnecting
 
     case 'needs-auth':
-      return 'Needs authentication'
+      return m.statusNeedsAuth
 
     case 'error':
-      return 'Error'
+      return m.statusError
 
     case 'off':
-      return 'Off'
+      return m.statusOff
 
     default:
       return ''
@@ -579,8 +580,11 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
           resetDraft(nextServers)
         }
 
-        // TODO(i18n): literal until the UX settles.
-        notify({ kind: 'success', title: 'Authenticated', message: `${serverName}: ${result.tools.length} tools` })
+        notify({
+          kind: 'success',
+          title: m.authenticatedTitle,
+          message: m.authenticatedMessage(serverName, result.tools.length)
+        })
         void silentReload()
       } else if (result.error) {
         notifyError(new Error(result.error), serverName)
@@ -978,7 +982,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
                         onSelect={() => focusServer(serverName)}
                         onToggle={checked => void toggleServer(serverName, checked)}
                         status={status}
-                        statusText={statusLine(status, probes[serverName], server)}
+                        statusText={statusLine(m, status, probes[serverName], server)}
                       />
                     )
                   })}
@@ -1014,8 +1018,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
           remountKey={docVersion}
           trailing={
             <Button disabled={saving || !dirty} onClick={() => void saveDoc()} size="xs">
-              {/* TODO(i18n): literal until the UX settles. */}
-              {saving ? t.common.saving : 'Save'}
+              {saving ? t.common.saving : t.common.save}
             </Button>
           }
         />
@@ -1037,13 +1040,12 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
           defaultHeight={176}
           id="mcp-logs"
           title={
-            // TODO(i18n): literal until the UX settles.
             <span className="text-[0.68rem] font-normal text-muted-foreground/60">
-              {selected && savedEntry ? selected : 'All servers'}
+              {selected && savedEntry ? selected : m.allServers}
             </span>
           }
         >
-          <McpLogs server={selected && savedEntry ? selected : null} source={logSource} />
+          <McpLogs emptyLabel={m.noOutput} server={selected && savedEntry ? selected : null} source={logSource} />
         </DetailPane>
       </main>
     </div>
@@ -1100,7 +1102,7 @@ function ServerConfig({
     !hasHeaderAuth &&
     (entry.auth === 'oauth' ? status === 'needs-auth' || status === 'error' : !entry.auth && status === 'needs-auth')
 
-  const summary = probe && probe !== 'probing' && probe.ok ? capabilitySummary(probe, entry) : null
+  const summary = probe && probe !== 'probing' && probe.ok ? capabilitySummary(m, probe, entry) : null
 
   return (
     // p-2 matches the list view's container so flipping list ⇄ config keeps
@@ -1112,12 +1114,11 @@ function ServerConfig({
           mt-2.5, h-4 switch → mt-3.5) no matter how tall the text column gets. */}
       <div className="flex items-start gap-2 pr-1.5">
         <Button
-          // TODO(i18n): literal until the UX settles.
-          aria-label="All servers"
+          aria-label={m.allServers}
           className={cn('mt-3', ICON_BUTTON)}
           onClick={onBack}
           size="icon"
-          title="All servers"
+          title={m.allServers}
           variant="ghost"
         >
           <Codicon name="chevron-left" size="0.8125rem" />
@@ -1161,15 +1162,11 @@ function ServerConfig({
       {canAuth && saved && (
         <div className="mt-3 flex justify-end">
           <Button disabled={authing} onClick={onAuthenticate} size="xs">
-            {/* TODO(i18n): literals until the UX settles. */}
-            {authing ? 'Waiting for browser…' : 'Authenticate'}
+            {authing ? m.waitingForBrowser : m.authenticate}
           </Button>
         </div>
       )}
-      {!saved && (
-        // TODO(i18n): literal until the UX settles.
-        <p className="mt-3 text-[0.68rem] text-muted-foreground/60">Unsaved — save mcp.json to connect.</p>
-      )}
+      {!saved && <p className="mt-3 text-[0.68rem] text-muted-foreground/60">{m.unsavedConnect}</p>}
 
       {status === 'probing' && <PageLoader className="min-h-24" label={t.skills.loading} />}
 
@@ -1181,8 +1178,7 @@ function ServerConfig({
         <div className="mt-3 flex flex-wrap gap-1">
           {/* Chip = a discovered tool; click to include/exclude it (struck
               through when excluded, so it won't register). The probe always
-              lists every tool regardless of the filter.
-              TODO(i18n): titles are literal until the UX settles. */}
+              lists every tool regardless of the filter. */}
           {probe.tools.map(tool => {
             const on = isToolEnabled(entry, tool.name)
 
@@ -1197,7 +1193,7 @@ function ServerConfig({
                 disabled={!saved}
                 key={tool.name}
                 onClick={() => onToggleTool(tool.name)}
-                title={on ? `Disable ${tool.name}` : `Enable ${tool.name}`}
+                title={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}
                 type="button"
               >
                 {tool.name}
@@ -1483,7 +1479,15 @@ function filterStdioSections(lines: string[], server: string): string[] {
 // editor. Scope follows the cursor-selected server (all servers otherwise);
 // source controls live in the pane header. Body is the app's tool-output
 // surface: CodeCardBody typography + the floating hover-reveal copy button.
-function McpLogs({ server, source }: { server: null | string; source: 'stdio' | 'agent' }) {
+function McpLogs({
+  emptyLabel,
+  server,
+  source
+}: {
+  emptyLabel: string
+  server: null | string
+  source: 'stdio' | 'agent'
+}) {
   const [lines, setLines] = useState<null | string[]>(null)
   // A profile switch reroutes getLogs to the new backend; keying the effect on
   // the active profile tears down the old poll (its `cancelled` flag blocks a
@@ -1518,8 +1522,7 @@ function McpLogs({ server, source }: { server: null | string; source: 'stdio' | 
     }
   }, [server, source, activeProfile])
 
-  // TODO(i18n): literal until the UX settles.
-  return <LogTail emptyLabel="No output yet." lines={lines} />
+  return <LogTail emptyLabel={emptyLabel} lines={lines} />
 }
 
 // ---------------------------------------------------------------------------

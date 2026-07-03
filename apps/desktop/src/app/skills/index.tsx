@@ -102,13 +102,6 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
-// TODO(i18n): literals until the UX settles.
-const PROVENANCE_LABEL: Record<NonNullable<SkillInfo['provenance']>, string> = {
-  agent: 'Learned',
-  bundled: 'Built-in',
-  hub: 'Hub'
-}
-
 // Row subtitle: category, with non-default origins badged.
 function skillSubtitle(skill: SkillInfo): React.ReactNode {
   const category = prettyName(categoryFor(skill))
@@ -295,7 +288,6 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
   // Rotating placeholder nudges from the user's own data — teach that search
   // understands categories and tool names, not just titles.
-  // TODO(i18n): literals until the UX settles.
   const searchHints = useMemo(() => {
     if (mode === 'skills' && skills?.length) {
       const counts = new Map<string, number>()
@@ -308,18 +300,18 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       return [...counts.entries()]
         .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
-        .map(([category]) => `Try “${category.toLowerCase()}”`)
+        .map(([category]) => t.common.tryHint(category.toLowerCase()))
     }
 
     if (mode === 'toolsets' && toolsets?.length) {
       return toolsets
         .filter(ts => isDesktopToolsetVisible(ts.name) && toolNames(ts).length > 0)
         .slice(0, 5)
-        .map(ts => `Try “${toolNames(ts)[0]}”`)
+        .map(ts => t.common.tryHint(toolNames(ts)[0]))
     }
 
     return undefined
-  }, [mode, skills, toolsets])
+  }, [mode, skills, toolsets, t])
 
   // Keep a valid selection: fall back to the first visible row when the
   // current selection is filtered out (or nothing is selected yet).
@@ -422,35 +414,32 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     )
 
   // One switch line covering enable-all/disable-all.
-  // TODO(i18n): literals until the UX settles.
   const bulkSwitch = (allEnabled: boolean): ListStripMenuToggle => ({
     checked: allEnabled,
     disabled: bulkBusy,
-    label: 'All',
+    label: t.skills.all,
     onToggle: checked => void bulkToggle(checked)
   })
 
   const allSkillsEnabled = bulkSkills.length > 0 && bulkSkills.every(s => s.enabled)
   const allToolsetsEnabled = bulkToolsets.length > 0 && bulkToolsets.every(ts => ts.enabled)
 
-  // TODO(i18n): literals until the UX settles.
   const sortButton = (desc: boolean, flip: () => void) => (
-    <ListStripButton onClick={flip}>{desc ? '↓ Most used' : '↑ Least used'}</ListStripButton>
+    <ListStripButton onClick={flip}>{desc ? t.skills.sortMostUsedDesc : t.skills.sortLeastUsedAsc}</ListStripButton>
   )
 
   // Full-bleed empty state, matching the MCP tab (spans both columns, not a
   // cramped note in the left rail). Query-aware, and says "tools" not the
   // internal "toolsets".
-  // TODO(i18n): literals until the UX settles.
   const capabilityEmpty = (noun: string) => {
     const q = query.trim()
 
     return (
       <div className="flex h-full min-h-0 flex-1">
         <PanelEmpty
-          description={q ? `Nothing matches “${q}”.` : `No ${noun} available yet.`}
+          description={q ? t.skills.emptyNothingMatches(q) : t.skills.emptyNoneAvailable(noun)}
           icon="search"
-          title={`No ${noun} found`}
+          title={t.skills.emptyNoneFound(noun)}
         />
       </div>
     )
@@ -503,8 +492,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await editLearningNode(skillEditor.name, skillDraft)
-      // TODO(i18n): literal until the UX settles.
-      notify({ kind: 'success', title: 'Skill updated', message: t.skills.appliesToNewSessions(skillEditor.name) })
+      notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(skillEditor.name) })
       setSkillEditor(null)
       void refreshCapabilities()
     } catch (err) {
@@ -518,8 +506,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     <DetailPane
       actions={
         <Button disabled={skillSaving} onClick={() => void saveSkillEdit()} size="xs">
-          {/* TODO(i18n): literal until the UX settles. */}
-          {skillSaving ? t.common.saving : 'Save'}
+          {skillSaving ? t.common.saving : t.common.save}
         </Button>
       }
       id="skill-editor"
@@ -590,7 +577,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
                   right={
                     <ListStripMenu
-                      items={[{ disabled: bulkBusy, label: 'Disable unused', onSelect: () => void disableUnused() }]}
+                      items={[{ disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }]}
                       label={t.skills.tabSkills}
                       toggle={bulkSwitch(allSkillsEnabled)}
                     />
@@ -613,8 +600,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 />
               ))}
             </ListColumn>
-            {/* TODO(i18n): literal until the UX settles. */}
-            <DetailColumn footer="Changes apply to new sessions.">
+            <DetailColumn footer={t.skills.changesApplyNewSessions}>
               {activeSkill && (
                 <SkillDetail
                   onArchive={() => setArchiveTarget(activeSkill.name)}
@@ -665,8 +651,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               )
             })}
           </ListColumn>
-          {/* TODO(i18n): literal until the UX settles. */}
-          <DetailColumn footer="Changes apply to new sessions.">
+          <DetailColumn footer={t.skills.changesApplyNewSessions}>
             {activeToolset && (
               <ToolsetDetail onConfiguredChange={refreshToolsets} toolCalls={toolCalls ?? {}} toolset={activeToolset} />
             )}
@@ -737,7 +722,7 @@ function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEd
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
             {skill.provenance && skill.provenance !== 'bundled' && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
-                {PROVENANCE_LABEL[skill.provenance]}
+                {t.skills.provenance[skill.provenance]}
               </PanelPill>
             )}
           </>
@@ -746,12 +731,11 @@ function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEd
       />
       {editable && (
         <div className="flex items-center gap-2">
-          {/* TODO(i18n): literals until the UX settles. */}
           <Button onClick={onEdit} size="xs" variant="text">
-            Edit
+            {t.skills.edit}
           </Button>
           <Button className="text-destructive hover:text-destructive" onClick={onArchive} size="xs" variant="text">
-            Archive
+            {t.skills.archive}
           </Button>
         </div>
       )}

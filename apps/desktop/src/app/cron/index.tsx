@@ -431,12 +431,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           <PanelBody>
             <PanelList
               onSearchChange={setQuery}
-              // TODO(i18n): literal until the UX settles.
               searchHints={jobs
                 .map(jobTitle)
                 .filter(Boolean)
                 .slice(0, 5)
-                .map(title => `Try “${title}”`)}
+                .map(title => t.common.tryHint(title))}
               searchLabel={c.search}
               searchPlaceholder={c.search}
               searchValue={query}

@@ -269,8 +269,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
-      // TODO(i18n): literal until the UX settles.
-      searchHints={platforms?.slice(0, 5).map(platform => `Try “${platform.name.toLowerCase()}”`)}
+      searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
       searchValue={query}
     >

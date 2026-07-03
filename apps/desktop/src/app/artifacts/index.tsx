@@ -205,7 +205,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   // Rotating placeholder nudges from real data — search matches file paths and
   // session titles, not just labels; show it.
-  // TODO(i18n): literals until the UX settles.
   const searchHints = useMemo(() => {
     if (!artifacts?.length) {
       return undefined
@@ -217,10 +216,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     const titles = [...new Set(artifacts.map(artifact => artifact.sessionTitle).filter(Boolean))].slice(0, 2)
 
-    const hints = [...extensions.map(ext => `Try “.${ext}”`), ...titles.map(title => `Try “${title}”`)]
+    const hints = [...extensions.map(ext => t.common.tryHint(`.${ext}`)), ...titles.map(title => t.common.tryHint(title))]
 
     return hints.length > 0 ? hints : undefined
-  }, [artifacts])
+  }, [artifacts, t])
 
   const counts = useMemo(() => {
     const all = artifacts || []

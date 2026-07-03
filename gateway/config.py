@@ -1179,6 +1179,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "cron_continuable_surface" in platform_cfg:
                     bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
+                if plat == Platform.EMAIL:
+                    for _email_key in ("mode", "delivery_mode", "send_only"):
+                        if _email_key in platform_cfg:
+                            bridged[_email_key] = platform_cfg[_email_key]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
@@ -1701,15 +1705,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_pwd = getenv("EMAIL_PASSWORD")
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_has_full_inbound = all([email_addr, email_pwd, email_imap, email_smtp])
+    email_has_smtp = all([email_addr, email_pwd, email_smtp])
+    email_config = config.platforms.get(Platform.EMAIL)
+    email_enabled_was_explicit = bool(
+        getattr(email_config, "extra", {}).get("_enabled_explicit", False)
+    ) if email_config else False
+    email_send_only = False
+    if email_config:
+        email_extra = email_config.extra or {}
+        email_mode = str(
+            email_extra.get("mode") or email_extra.get("delivery_mode") or ""
+        ).strip().lower()
+        email_send_only = email_mode in {
+            "send_only", "send-only", "smtp_only", "smtp-only",
+            "outbound_only", "outbound-only",
+        } or bool(email_extra.get("send_only", False))
+
+    if email_has_full_inbound or (email_has_smtp and email_send_only):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
+        if not email_enabled_was_explicit or config.platforms[Platform.EMAIL].enabled:
+            config.platforms[Platform.EMAIL].enabled = True
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
-            "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        if email_imap:
+            config.platforms[Platform.EMAIL].extra["imap_host"] = email_imap
     email_home = getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

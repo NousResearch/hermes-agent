@@ -10,7 +10,7 @@ description: >
   recommendations (pre-answer / assume-default) using role-specialized local Ollama models. Reports
   only — it does not ask the user or answer the questions itself. Triggers: "what should I clarify",
   "what questions matter here", "is this spec complete", "what am I missing before I start".
-version: 1.3.0
+version: 1.3.1
 author: agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -163,12 +163,17 @@ a **contrarian** family (challenges the baseline approach itself: *"should we ev
 identity / credential / token; auto-enabled only for systems/access tasks), and a **pre-mortem** family
 (*assume the plan shipped and FAILED — what unknown would have prevented it?*: data loss, security
 compromise, irreversible/destructive actions, silent wrong output, runaway cost; auto-enabled only for
-failure-surface tasks — writes/deploys/payments/migrations). It then generates questions within each
-family (tagged with `family`/`lens`).
+failure-surface tasks — writes/deploys/payments/migrations), and a **reach** family (#29: *does a
+DIFFERENT, REACHABLE point of view exist — a container you can enter, a host you can SSH to, a service
+you can execute inside, possibly via CHAINED hops — that would turn an unknown into an observable?*;
+shares the vantage auto-gate; `--reach on|off|auto` / `INFOGAIN_REACH`; the ranker surfaces the hop,
+the investigator executes it). It then generates questions within each family (tagged with
+`family`/`lens`).
 
-The three non-scoped lenses map onto the value formula `√(U·EVSI)`, `EVSI = Σ P·Δplan·stakes`: scoped
+The non-scoped lenses map onto the value formula `√(U·EVSI)`, `EVSI = Σ P·Δplan·stakes`: scoped
 maximizes Δplan-*coverage*, contrarian targets the *premise* (highest Δplan), vantage targets a *source*
-of hidden Δplan, and pre-mortem hunts the **`stakes` tail** — the catastrophic/irreversible branch no
+of hidden Δplan, reach hunts **answerability** (what could become derivable from another vantage), and
+pre-mortem hunts the **`stakes` tail** — the catastrophic/irreversible branch no
 other lens systematically surfaces. (Pre-mortem is the generation-side, formula-frozen half of the
 deferred "risk-averse tilt": it only ensures the catastrophic-tail question *enters* the candidate set;
 scoring stays risk-neutral, so a lurid-but-improbable question still self-prunes on low P.)
@@ -183,7 +188,7 @@ report is **grouped by family** (non-scoped lenses labelled). Turn off with `--n
 (or `INFOGAIN_PREMORTEM`). The families layer runs on its **own model** (`families_model`, default `glm`
 — **not** covered by `--question-gen-model`); pin it with `--families-model <alias>` (or
 `INFOGAIN_FAMILIES_MODEL`) for offline/reproducible runs. Cost ≈
-`questions_per_family × (n_scoped + contrarian + vantage + premortem)`
+`questions_per_family × (n_scoped + contrarian + vantage + premortem + reach)`
 candidates (~12–18 at defaults), with a one-call fallback to the flat generator if family generation
 yields nothing.
 
@@ -212,12 +217,15 @@ flag/env still wins (e.g. `--gen-samples 5 --gen-temperature 1.0`).
 Defaults live as module constants in `scripts/infogain.py`, overridable by `INFOGAIN_*` env vars
 or CLI flags (e.g. `--min-bucket-size 5`, `--discard-threshold 0.5`, `--answer-model qwen`). Model
 names are `ask`-style aliases (`glm`, `deepseek`, `fast`, `qwen`, …) resolved via `model_utils`.
-`--value-judge-mode absolute|pairwise|solution` selects the Δplan/stakes elicitation (`pairwise` =
-forced-choice → Bradley-Terry, the #24 experiment — its powered A/B closed **keep `absolute`**, so
-the flag exists for re-testing, not for live use; `solution` = Δplan grounded as the fraction of
-`--solution-samples` sampled candidate solutions an answer invalidates — the #27 experiment; its
-powered A/B closed **keep `absolute`**, decisively: solution deltas collapse to near-binary and
-within-task ρ goes negative). `--answer-prob-mode stated|sampled` selects the P(a) estimate
+`--value-judge-mode absolute|pairwise|solution|behavior` selects the Δplan/stakes elicitation
+(`pairwise` = forced-choice → Bradley-Terry, the #24 experiment — its powered A/B closed **keep
+`absolute`**, so the flag exists for re-testing, not for live use; `solution` = Δplan grounded as
+the fraction of `--solution-samples` sampled candidate solutions an answer invalidates — the #27
+experiment; its powered A/B closed **keep `absolute`**, decisively: solution deltas collapse to
+near-binary and within-task ρ goes negative; `behavior` = Δplan as BEHAVIOR/outcome change of the
+delivered result, consequence not code size — the #28 experiment; its OBJECTIVE gate closed
+**keep `absolute`**: directionally better but 6W/5L vs the required broad win, and the naive
+baseline still out-asks it — the residual gap is generation altitude, not judging). `--answer-prob-mode stated|sampled` selects the P(a) estimate
 (`sampled` = Laplace-smoothed frequencies over `--answer-samples` forced-choice draws instead of the
 model's self-stated probabilities — the #26 experiment; its powered A/B closed **keep `stated`**
 (a real-contrast null: P moved on 79% of pairs, ranking didn't improve), so the flag exists for

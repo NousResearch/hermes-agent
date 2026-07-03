@@ -292,8 +292,12 @@ cost/risk (ASPI, arXiv:2605.17324: every hop widens the injection/trust surface)
   reach questions survive buckets exactly on access/systems tasks (debug-slow 0.63,
   security-audit 0.66, fix-test 0.61, setup-ci 0.52, gmail-find 0.47/0.58 — on-mission for
   retrieval-with-access) and prune to ZERO on whatsapp-send / research-* / query-db / deploy-app.
-  The gate proposes, the formula disposes. Tier-2 (realized per-lens attribution, n=6) in
-  `evsi_reach_t2.json` — bar is "adds signal, not noise" (exposure lens).
+  The gate proposes, the formula disposes.
+- **Tier-2 verdict (same day): PASS — auto-on stands.** Realized per-lens attribution (n=6
+  systems prompts, deepseek judge, `evsi_reach_t2.json`): reach realized_regret **0.351** vs
+  vantage 0.362 (n_q=18 each), realized_change 0.584 vs 0.566 — squarely in vantage's band, the
+  pre-registered "adds signal, not noise" bar for an exposure lens. Rollback unchanged: set
+  `FAMILIES["reach"]="off"` if read-only pollution or diversity harm ever shows.
 
 ## Pre-mortem lens (#25) — a fourth question family, auto-on by design
 

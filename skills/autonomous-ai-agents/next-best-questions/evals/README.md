@@ -53,15 +53,20 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
   granularity partially recovers (mass-at-0 53%) and the method is worse (Δρ −0.369, 1/10) — the
   collapse is inherent to the framing, not a fast-model floor.** See `evsi-validation-findings.md`
   §Solution-space Δplan (#27) and §Deepseek re-adjudication.
-- **Objective-outcome tier (P3-P6):** `outcome_bank.py` (20 ambiguous-but-executable tasks) +
-  `outcome_eval.py` (strict simulator, arms baseline/nbq/zeroshot/prompt-evsi/nbq-derive,
-  hidden-test pass rate). First ground-truth verdicts: clarification WORKS (zeroshot +0.317,
-  p=0.002); the plain skill is out-asked by the naive baseline here (Δplan = text-volume bias —
-  the value judge gates one-token/output-flipping questions and promotes boilerplate; the
-  realized proxy shares the blindness); **derive-or-ask triples the skill's end-to-end benefit**
-  (+0.067→+0.183, unanswerable 82%→44%); q_value→Δpass anchor ρ 0.432 (proxy keeps qualified
-  standing). See findings §Objective-outcome validation. Next: #28 outcome-semantic Δplan judge,
-  gated on THIS harness.
+- **Objective-outcome tier (P3-P6):** `outcome_bank.py` (20 micro tasks + 8 AGENTIC script tasks
+  with sandbox fixtures, `--bank micro|agentic|both`) + `outcome_eval.py` (strict simulator, arms
+  baseline/nbq/zeroshot/prompt-evsi/nbq-derive/nbq-behavior/nbq-derive-behavior, hidden-test pass
+  rate). First ground-truth verdicts: clarification WORKS (zeroshot +0.317, p=0.002); the plain
+  skill is out-asked by the naive baseline (Δplan = text-volume bias; the realized proxy shares
+  the blindness); **derive-or-ask triples the skill's end-to-end benefit** (+0.067→+0.183);
+  q_value→Δpass anchor ρ 0.432. See findings §Objective-outcome validation.
+- **#28 behavior-Δ judge: NO ADOPT** (the first objectively-gated experiment): paired vs absolute
+  +0.064 at 6W/5L (broad-win guard failed), unanswerable 65% vs the ~60% bar; directionally right
+  (agentic Δ tripled) but zeroshot still leads by +0.157 — the residual is GENERATION altitude,
+  not judging. `--value-judge-mode behavior` stays built for re-testing.
+- **#29 reach lens: ADOPTED (auto, like vantage).** Tier-1: survives buckets exactly on
+  access/systems tasks, prunes to zero on read-only. Tier-2 realized: regret 0.351 ≈ vantage's
+  0.362 — adds signal, not noise.
 - **The within-task ρ ceiling is the task, not the judge.** Same-response fast↔deepseek judge
   agreement ρ 0.814; q_value's realized-change link 0.353 (fast) → 0.398 (deepseek); within-task ρ
   under deepseek stays in the fast band (+0.24–0.35, never jumping past 0.5). Judge/elicit models

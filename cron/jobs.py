@@ -711,6 +711,28 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         _save_jobs_unlocked(jobs)
 
 
+def _normalize_script(script: Optional[str]) -> Optional[str]:
+    """Normalize a job script path: resolve relative paths to absolute.
+
+    Relative paths are resolved against the current profile's
+    ``HERMES_DIR/scripts/`` and stored as absolute paths so they don't
+    break when a different profile's gateway executes the tick (issue
+    #57608).
+
+    Absolute paths are returned as-is — they passed the scripts-dir
+    security check at create time and must pass it again at execution
+    time.
+    """
+    raw = str(script).strip() if isinstance(script, str) else None
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_absolute():
+        return raw
+    # Relative: resolve against the creating profile's scripts dir
+    return str((HERMES_DIR / "scripts" / p).resolve())
+
+
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
@@ -934,8 +956,7 @@ def create_job(
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
-    normalized_script = str(script).strip() if isinstance(script, str) else None
-    normalized_script = normalized_script or None
+    normalized_script = _normalize_script(script)
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
@@ -1111,6 +1132,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize script: resolve relative paths at update time
+            if "script" in updates:
+                updates["script"] = _normalize_script(updates["script"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

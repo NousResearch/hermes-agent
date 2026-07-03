@@ -65,7 +65,8 @@ def test_create_job_no_agent_stores_field(hermes_env):
         deliver="local",
     )
     assert job["no_agent"] is True
-    assert job["script"] == "watchdog.sh"
+    expected = str(hermes_env / "scripts" / "watchdog.sh")
+    assert job["script"] == expected
     # Prompt can be empty/None for no_agent jobs.
     assert job["prompt"] in {None, ""}
 
@@ -125,7 +126,8 @@ def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
     )
     assert result.get("success") is True
     assert result["job"]["no_agent"] is True
-    assert result["job"]["script"] == "alert.sh"
+    expected = str(hermes_env / "scripts" / "alert.sh")
+    assert result["job"]["script"] == expected
 
 
 def test_cronjob_tool_update_toggles_no_agent(hermes_env):

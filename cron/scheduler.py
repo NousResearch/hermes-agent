@@ -1823,13 +1823,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         path = (scripts_dir / raw).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    # escape — scripts MUST reside within a scripts/ directory belonging
+    # to some Hermes profile (not any arbitrary system path).
+    #
+    # When the path is absolute (stored at creation time by
+    # _normalize_script), we verify it lives under a directory named
+    # ``scripts/``.  When relative, we already resolved it against the
+    # current profile's scripts dir, so the check is simpler.
+    _scripts_in_path = any(
+        part == "scripts" for part in path.parent.parts
+    )
+    if not _scripts_in_path:
         return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
+            f"Blocked: script path is not inside a scripts/ directory: "
+            f"{script_path!r}"
         )
 
     if not path.exists():

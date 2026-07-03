@@ -102,6 +102,62 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    def test_context_from_injects_response_payload_without_source_prompt(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "# Cron Job: upstream\n\n"
+            "## Prompt\n"
+            "Do not leak this upstream prompt.\n\n"
+            "## Response\n"
+            "Validated actionable response only.\n",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Validate the prior output",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+
+        assert "Validated actionable response only." in prompt
+        assert "Do not leak this upstream prompt" not in prompt
+        assert "## Prompt" not in prompt
+
+    def test_context_from_injects_error_payload_without_source_prompt(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "# Cron Job: upstream (FAILED)\n\n"
+            "## Prompt\n"
+            "Internal source prompt text.\n\n"
+            "## Error\n"
+            "RuntimeError: upstream failed cleanly\n",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Handle prior failure",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+
+        assert "RuntimeError: upstream failed cleanly" in prompt
+        assert "Internal source prompt text" not in prompt
+        assert "## Prompt" not in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt

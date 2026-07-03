@@ -113,6 +113,26 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+_CRON_CONTEXT_PAYLOAD_HEADING_RE = re.compile(r"(?m)^## (Response|Error)\s*$")
+
+
+def _extract_cron_context_payload(output: str) -> str:
+    """Return the final response/error section from a saved cron artifact.
+
+    Saved cron markdown includes the original prompt before the model output.
+    Downstream ``context_from`` jobs should reason over the upstream result,
+    not inherit the upstream prompt or delivery instructions. Legacy files
+    without explicit sections are kept whole for backwards compatibility.
+    """
+    text = output.strip()
+    if not text:
+        return ""
+    matches = list(_CRON_CONTEXT_PAYLOAD_HEADING_RE.finditer(text))
+    if not matches:
+        return text
+    return text[matches[-1].start() :].strip()
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -2009,7 +2029,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_output = _extract_cron_context_payload(
+                    output_files[0].read_text(encoding="utf-8")
+                )
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:

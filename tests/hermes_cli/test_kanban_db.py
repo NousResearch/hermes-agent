@@ -48,6 +48,30 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_connect_honors_kanban_journal_mode_override(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL_MODE", "DELETE")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    with kb.connect() as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert mode == "delete"
+
+
+def test_connect_rejects_invalid_kanban_journal_mode(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL_MODE", "invalid")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    with pytest.raises(ValueError, match="HERMES_KANBAN_JOURNAL_MODE"):
+        kb.connect()
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

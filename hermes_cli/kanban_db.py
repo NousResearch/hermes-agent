@@ -99,6 +99,7 @@ VALID_INITIAL_STATUSES = {"ready", "running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+_KANBAN_JOURNAL_MODE_OVERRIDES = {"wal", "delete", "truncate", "persist", "memory", "off"}
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -1046,8 +1047,18 @@ def connect(
             # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
             # falls back to DELETE with one WARNING so kanban stays usable there.
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+            journal_override = os.environ.get("HERMES_KANBAN_JOURNAL_MODE", "").strip().lower()
+            if journal_override:
+                if journal_override not in _KANBAN_JOURNAL_MODE_OVERRIDES:
+                    raise ValueError(
+                        "invalid HERMES_KANBAN_JOURNAL_MODE "
+                        f"{journal_override!r}; expected one of "
+                        f"{', '.join(sorted(_KANBAN_JOURNAL_MODE_OVERRIDES))}"
+                    )
+                conn.execute(f"PRAGMA journal_mode={journal_override.upper()}")
+            else:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS

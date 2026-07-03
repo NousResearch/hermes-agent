@@ -1301,6 +1301,49 @@ def _iter_shell_command_word_spans(command: str):
             break
 
 
+_INTERPRETER_DASH_C_WORDS = {"bash", "sh", "zsh", "ksh"}
+
+
+def _iter_interpreter_c_payloads(command: str, _depth: int = 0):
+    """Yield the unquoted string argument of every interpreter ``-c``
+    invocation in ``command`` (``bash -c '...'``, ``sh -lc "..."``, etc.).
+
+    ``bash|sh|zsh|ksh -c <script>`` executes ``<script>`` at a genuine
+    command position, but it is *written* as an ordinary quoted argument
+    word — not a subshell/brace opener the quote-aware tokenizer already
+    treats as a command start (see ``_iter_shell_command_starts``). The
+    anchored hardline rules (rm/shutdown/systemctl, all keyed off
+    ``_CMDPOS``) therefore never see inside it, so e.g. ``sh -c "rm -rf /"``
+    slips the unconditional floor entirely while the identical
+    ``rm -rf /`` alone is caught. Recursion is depth-capped so a chain of
+    nested ``-c`` payloads cannot cause unbounded work.
+    """
+    if _depth >= 4:
+        return
+    for _word_start, word_end, word in _iter_shell_command_word_spans(command):
+        if (
+            _deobfuscate_shell_word_for_detection(word).lower()
+            not in _INTERPRETER_DASH_C_WORDS
+        ):
+            continue
+        pos = word_end
+        for _ in range(6):
+            flag_start, flag_end, flag_word = _read_shell_word(command, pos)
+            if flag_start == flag_end:
+                break
+            lower_flag = _deobfuscate_shell_word_for_detection(flag_word).lower()
+            if not lower_flag.startswith("-"):
+                break
+            if re.fullmatch(r"-[^\s]*c", lower_flag):
+                _, _, payload_word = _read_shell_word(command, flag_end)
+                payload = _strip_optional_shell_quotes(payload_word)
+                if payload:
+                    yield payload
+                    yield from _iter_interpreter_c_payloads(payload, _depth + 1)
+                break
+            pos = flag_end
+
+
 def _command_detection_variants(command: str):
     normalized = _normalize_command_for_detection(command)
     seen = {normalized}
@@ -1332,6 +1375,15 @@ def _command_detection_variants(command: str):
             continue
         seen.add(variant)
         yield variant
+    # `bash|sh|zsh|ksh -c <script>` runs `<script>` at a real command
+    # position, but it's written as an ordinary quoted argument — invisible
+    # to the `_CMDPOS`-anchored rm/shutdown/systemctl rules. See
+    # `_iter_interpreter_c_payloads` for why this needs its own pass.
+    for payload in _iter_interpreter_c_payloads(normalized):
+        if payload in seen:
+            continue
+        seen.add(payload)
+        yield payload
 
 
 def detect_dangerous_command(command: str) -> tuple:

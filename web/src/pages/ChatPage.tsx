@@ -1334,9 +1334,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // descendants below those layers (see Toast.tsx).
   const reconnectBanner =
     ptyState === "reconnecting"
-      ? `Chat connection interrupted${
-          lastCloseCode ? ` (code ${lastCloseCode})` : ""
-        }. Reconnecting...`
+      ? lastCloseCode
+        ? chatCopy.connectionInterruptedCode.replace(
+            "{code}",
+            String(lastCloseCode),
+          )
+        : chatCopy.connectionInterrupted
       : null;
   const visibleBanner = banner ?? reconnectBanner;
   const showReconnectOverlay =
@@ -1459,8 +1462,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
-                    ? "Chat is reconnecting."
-                    : "Chat disconnected."}
+                    ? chatCopy.chatReconnecting
+                    : chatCopy.chatDisconnected}
                 </div>
                 <Button
                   size="sm"

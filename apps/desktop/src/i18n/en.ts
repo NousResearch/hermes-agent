@@ -975,6 +975,7 @@ export const en: Translations = {
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
       searchFailed: 'Hub search failed'
+    },
     categoryLabels: {
       'apple': 'Apple',
       'autonomous-ai-agents': 'Autonomous AI Agents',

@@ -107,6 +107,8 @@ gateway:
     no_pending:            "لا يوجد أمر معلّق لرفضه."
     denied_singular:       "❌ رُفض الأمر."
     denied_plural:         "❌ رُفضت الأوامر ({count})."
+    denied_reason_singular: "❌ رُفض الأمر. السبب المُبلَّغ إلى الوكيل: \"{reason}\""
+    denied_reason_plural:  "❌ رُفضت الأوامر ({count}). السبب المُبلَّغ إلى الوكيل: \"{reason}\""
 
   fast:
     not_supported:         "⚡ الأمر `/fast` متاح فقط لنماذج OpenAI التي تدعم المعالجة ذات الأولوية."

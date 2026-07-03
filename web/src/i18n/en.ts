@@ -604,6 +604,7 @@ export const en: Translations = {
     operations: "Operations",
     doctor: "Doctor",
     runDoctor: "Run doctor",
+    openConsole: "Open console",
     securityAudit: "Security audit",
     backup: "Backup",
     createBackup: "Create backup",
@@ -868,6 +869,11 @@ export const en: Translations = {
     clientRefused:
       "Refused: your client isn't permitted (server bound to localhost only).",
     refusedReason: "Refused: {reason}.",
+    connectionInterrupted: "Chat connection interrupted. Reconnecting...",
+    connectionInterruptedCode:
+      "Chat connection interrupted (code {code}). Reconnecting...",
+    chatReconnecting: "Chat is reconnecting.",
+    chatDisconnected: "Chat disconnected.",
     sessionEnded: "[session ended (code {code})]",
     sessionEndedShort: "[session ended]",
     sessionEndedLabel: "Session ended.",

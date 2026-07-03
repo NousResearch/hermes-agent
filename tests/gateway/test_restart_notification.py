@@ -73,6 +73,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
+    assert data["user_id"] == "u1"
     assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
@@ -425,6 +426,71 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "direct_messages_topic_id": "777",
         "telegram_reply_to_message_id": "m2",
     }
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_prefers_private_notice(
+    tmp_path, monkeypatch
+):
+    """Restart lifecycle output from a shared chat is owner-private."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(
+        return_value=SendResult(success=True, message_id="private")
+    )
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    private_args = adapter.send_private_notice.await_args
+    assert private_args.args[:3] == (
+        "-100",
+        "owner-1",
+        "♻ Gateway restarted successfully. Your session continues.",
+    )
+    adapter.send.assert_not_awaited()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_without_private_notice_uses_neutral_fallback(
+    tmp_path, monkeypatch
+):
+    """A shared chat never receives the backend restart lifecycle text by default."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
     assert not notify_path.exists()
 
 

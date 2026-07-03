@@ -20,6 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.session import is_shared_audience
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_PRIVATE_REPLY_PUBLIC_FALLBACK = "Gateway acknowledged the request; operational details are private."
 
 
 def _platform_name(platform) -> str:
@@ -2123,6 +2125,22 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
             delattr(event, attr)
 
 
+class PrivateReply(EphemeralReply):
+    """System reply whose full text must not default to a shared origin chat."""
+
+    public_fallback: Optional[str]
+
+    def __new__(
+        cls,
+        text: str,
+        ttl_seconds: Optional[int] = None,
+        public_fallback: Optional[str] = None,
+    ):
+        instance = super().__new__(cls, text, ttl_seconds=ttl_seconds)
+        instance.public_fallback = public_fallback
+        return instance
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -3278,6 +3296,66 @@ class BasePlatformAdapter(ABC):
         return await self.send(
             chat_id=chat_id,
             content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    def _supports_private_notice_delivery(self) -> bool:
+        """Return True when ``send_private_notice`` is not the public fallback."""
+        method = getattr(type(self), "send_private_notice", None)
+        if method is not BasePlatformAdapter.send_private_notice:
+            return True
+        # Tests and plugin shims sometimes install an instance method after
+        # construction. Treat that as explicit support, but keep the class
+        # default from leaking confidential text through its public fallback.
+        return "send_private_notice" in getattr(self, "__dict__", {})
+
+    async def _send_private_reply_or_fallback(
+        self,
+        event: MessageEvent,
+        reply: PrivateReply,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver a private reply without falling back to shared full text."""
+        source = event.source
+        if source is None or not is_shared_audience(source):
+            return await self._send_with_retry(
+                chat_id=source.chat_id if source else "",
+                content=reply.text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
+        if self._supports_private_notice_delivery() and source.user_id:
+            try:
+                result = await self.send_private_notice(
+                    chat_id=source.chat_id,
+                    user_id=source.user_id,
+                    content=reply.text,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result is None or getattr(result, "success", True) is not False:
+                    return result
+                logger.warning(
+                    "[%s] send_private_notice failed for private reply; "
+                    "using public fallback: %s",
+                    self.name,
+                    getattr(result, "error", "send returned success=False"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] send_private_notice raised for private reply; "
+                    "using public fallback: %s",
+                    self.name,
+                    exc,
+                )
+
+        return await self._send_with_retry(
+            chat_id=source.chat_id,
+            content=reply.public_fallback or _PRIVATE_REPLY_PUBLIC_FALLBACK,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -4835,13 +4913,28 @@ class BasePlatformAdapter(ABC):
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
-                        _r = await self._send_with_retry(
-                            chat_id=event.source.chat_id,
-                            content=_text,
-                            reply_to=_reply_anchor_for_event(event),
-                            metadata=_mark_notify_metadata(_thread_meta),
-                        )
-                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                        _reply_anchor = _reply_anchor_for_event(event)
+                        _metadata = _mark_notify_metadata(_thread_meta)
+                        if isinstance(response, PrivateReply):
+                            _r = await self._send_private_reply_or_fallback(
+                                event,
+                                response,
+                                reply_to=_reply_anchor,
+                                metadata=_metadata,
+                            )
+                        else:
+                            _r = await self._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=_text,
+                                reply_to=_reply_anchor,
+                                metadata=_metadata,
+                            )
+                        if (
+                            _eph_ttl > 0
+                            and getattr(_r, "success", False)
+                            and getattr(_r, "message_id", None)
+                            and not isinstance(response, PrivateReply)
+                        ):
                             self._schedule_ephemeral_delete(
                                 chat_id=event.source.chat_id,
                                 message_id=_r.message_id,
@@ -4888,13 +4981,28 @@ class BasePlatformAdapter(ABC):
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
-                            _r = await self._send_with_retry(
-                                chat_id=event.source.chat_id,
-                                content=_text,
-                                reply_to=_reply_anchor_for_event(event),
-                                metadata=_mark_notify_metadata(_thread_meta),
-                            )
-                            if _eph_ttl > 0 and _r.success and _r.message_id:
+                            _reply_anchor = _reply_anchor_for_event(event)
+                            _metadata = _mark_notify_metadata(_thread_meta)
+                            if isinstance(response, PrivateReply):
+                                _r = await self._send_private_reply_or_fallback(
+                                    event,
+                                    response,
+                                    reply_to=_reply_anchor,
+                                    metadata=_metadata,
+                                )
+                            else:
+                                _r = await self._send_with_retry(
+                                    chat_id=event.source.chat_id,
+                                    content=_text,
+                                    reply_to=_reply_anchor,
+                                    metadata=_metadata,
+                                )
+                            if (
+                                _eph_ttl > 0
+                                and getattr(_r, "success", False)
+                                and getattr(_r, "message_id", None)
+                                and not isinstance(response, PrivateReply)
+                            ):
                                 self._schedule_ephemeral_delete(
                                     chat_id=event.source.chat_id,
                                     message_id=_r.message_id,
@@ -5036,6 +5144,7 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            private_response = response if isinstance(response, PrivateReply) else None
 
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
@@ -5066,7 +5175,23 @@ class BasePlatformAdapter(ABC):
                 )
                 response = None
             if not response:
+                private_response = None
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+
+            # Private replies are already classified by the handler as
+            # owner-private/backend-internal. Route them before normal text
+            # and media handling can default them back to the origin chat.
+            if response and private_response is not None:
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                result = await self._send_private_reply_or_fallback(
+                    event,
+                    private_response,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_final_thread_metadata,
+                )
+                _record_delivery(result)
+                response = None
+
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files

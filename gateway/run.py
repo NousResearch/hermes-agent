@@ -1917,6 +1917,7 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    is_shared_audience,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
@@ -16138,6 +16139,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
+            user_id = data.get("user_id")
+            user_name = data.get("user_name")
             thread_id = data.get("thread_id")
             message_id = data.get("message_id")
 
@@ -16169,11 +16172,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
+            source = SessionSource(
+                platform=platform,
+                chat_id=str(chat_id),
+                chat_type=chat_type or "dm",
+                user_id=str(user_id) if user_id else None,
+                user_name=str(user_name) if user_name else None,
+                thread_id=str(thread_id) if thread_id else None,
+                message_id=str(message_id) if message_id else None,
             )
+            private_text = "♻ Gateway restarted successfully. Your session continues."
+            metadata = _non_conversational_metadata(metadata, platform=platform)
+            result = None
+            if is_shared_audience(source):
+                if (
+                    source.user_id
+                    and getattr(adapter, "_supports_private_notice_delivery", lambda: False)()
+                ):
+                    result = await adapter.send_private_notice(
+                        str(chat_id),
+                        source.user_id,
+                        private_text,
+                        metadata=metadata,
+                    )
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.warning(
+                            "Private restart notification to %s:%s user %s was not delivered: %s",
+                            platform_str,
+                            chat_id,
+                            source.user_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        result = None
+                if result is None:
+                    result = await adapter.send(
+                        str(chat_id),
+                        "♻ Gateway restarted successfully. Operational details were kept private.",
+                        metadata=metadata,
+                    )
+            else:
+                result = await adapter.send(
+                    str(chat_id),
+                    private_text,
+                    metadata=metadata,
+                )
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise

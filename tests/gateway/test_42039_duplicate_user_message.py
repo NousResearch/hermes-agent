@@ -183,6 +183,43 @@ async def test_agent_failed_early_no_skip_db_when_no_session_db(
     )
 
 
+@pytest.mark.asyncio
+async def test_runtime_resolution_failure_persists_user_turn_not_assistant_error(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+
+    def fail_runtime_resolution(**_kwargs):
+        raise RuntimeError("missing provider credentials")
+
+    runner._resolve_session_agent_runtime = fail_runtime_resolution
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "Provider authentication failed" in response
+
+    calls = runner.session_store.append_to_transcript.call_args_list
+    rows = [
+        call.args[1]
+        for call in calls
+        if len(call.args) >= 2 and isinstance(call.args[1], dict)
+    ]
+    assert any(
+        row.get("role") == "user" and row.get("content") == "hello world"
+        for row in rows
+    )
+    assert all(row.get("role") != "assistant" for row in rows)
+
+    user_call = next(
+        call
+        for call in calls
+        if len(call.args) >= 2 and call.args[1].get("role") == "user"
+    )
+    assert user_call.kwargs.get("skip_db", False) is False
+
+
 # ── Test 3: not-new-messages path uses skip_db=True ───────────────────
 
 

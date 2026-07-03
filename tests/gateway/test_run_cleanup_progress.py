@@ -332,6 +332,16 @@ async def test_runtime_auth_resolution_failure_marks_run_failed(monkeypatch, tmp
 
     assert "Provider authentication failed" in result["final_response"]
     assert result.get("failed") is True
+    assert result.get("completed") is False
+    assert "missing provider credentials" in result.get("error", "")
+    assert result.get("agent_persisted") is False
+
+    cb = adapter.pop_post_delivery_callback(session_key)
+    if cb is not None:
+        await _fire_post_delivery_cb(cb)
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+    assert adapter.deleted == []
 
 
 @pytest.mark.asyncio

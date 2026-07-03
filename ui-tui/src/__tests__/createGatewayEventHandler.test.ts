@@ -290,23 +290,51 @@ describe('createGatewayEventHandler', () => {
         type: 'tool.start'
       } as any)
 
-      // Progress event for read_file — must update the most recent entry (tc-2),
-      // not the first one (tc-1).
+      // Progress event for read_file — ambiguous when two active tools share
+      // the same name and the event carries no tool_id.  The safe default is
+      // to drop the update rather than risk assigning it to the wrong tool.
       onEvent({
         payload: { name: 'read_file', preview: 'Reading .zshrc (progress)' },
         type: 'tool.progress'
       } as any)
 
-      // Flush the batched timer so the turn state reflects the progress update
+      // Flush the batched timer so the turn state reflects any progress update
       vi.advanceTimersByTime(100)
 
       const tools = getTurnState().tools
       expect(tools).toHaveLength(2)
 
-      // First tool's context must NOT be overwritten by the progress event
+      // Neither tool's context should be overwritten — the progress event
+      // was ambiguous and must be silently dropped.
       expect(tools[0].context).toBe('Reading .bash_profile')
-      // Second tool's context should be updated by the progress event
-      expect(tools[1].context).toBe('Reading .zshrc (progress)')
+      expect(tools[1].context).toBe('Reading .zshrc')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('updates context for single-name tool progress (unambiguous)', () => {
+    vi.useFakeTimers()
+    try {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({
+        payload: { context: 'Reading config', name: 'read_file', tool_id: 'tc-1' },
+        type: 'tool.start'
+      } as any)
+
+      // Only one active read_file — progress is unambiguous and should apply.
+      onEvent({
+        payload: { name: 'read_file', preview: 'Reading config (progress)' },
+        type: 'tool.progress'
+      } as any)
+
+      vi.advanceTimersByTime(100)
+
+      const tools = getTurnState().tools
+      expect(tools).toHaveLength(1)
+      expect(tools[0].context).toBe('Reading config (progress)')
     } finally {
       vi.useRealTimers()
     }

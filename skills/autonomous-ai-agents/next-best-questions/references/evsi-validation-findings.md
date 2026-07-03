@@ -580,6 +580,66 @@ exact rescue scenario), plus an 80-row same-response rejudge (`rejudge_probs_ds.
   judges, not subtly-random ones — a discrimination preflight is the natural extension (A7);
   additivity of question value (M2). Candidate falsifying tests are in the critique file.
 
+## Objective-outcome validation (P3-P6, 2026-07-03) — the first ground-truth eval, and it bit
+
+Everything above validates against an LLM-judged proxy. This section is the first **objective**
+tier: `evals/outcome_bank.py` (20 ambiguous-but-executable tasks, hidden specs + hidden tests,
+each verified against a reference implementation; the ClarifyGPT/AmbigSWE recipe) +
+`evals/outcome_eval.py` (STRICT user simulator per arXiv:2606.03135 — answers only what the
+hidden spec resolves; generic fishing gets "The spec doesn't say" — sandboxed per-test runner,
+paired arms, exact sign test). All-deepseek, K=3. Raw: `~/.hermes/outcome_full.json` (+ pilots).
+
+| arm | Δpass vs baseline | wins/losses (n=20) | sign p | unanswerable |
+|---|---|---|---|---|
+| zeroshot (one naive call for K questions) | **+0.317** | 10/0 | **0.002** | 32% |
+| nbq-derive (skill, `--auto-derive on`) | +0.183 | 5/0 | 0.0625 | 44% |
+| prompt-evsi (whole framework in one prompt) | +0.117 | 5/1 | 0.22 | 45% |
+| nbq (skill, plain) | +0.067 | 3/1 | 0.63 | **82%** |
+
+**Verdicts (pre-registered):**
+- **P3 CONFIRMED — clarification objectively improves artifacts** (zeroshot +0.317, p=0.002: the
+  project's first statistically significant objective result). The purpose is real.
+- **P4 FAILED, loudly — the machinery is out-asked by a naive baseline in this domain.** Not
+  "≈ zeroshot" (the pre-registered worry) but decisively behind it. Mechanism (found in the
+  pilot, confirmed in the full run's 82% unanswerable rate): **Δplan is judged as
+  plan/text-volume change, not outcome change** — "should sorting be case-insensitive?" (a
+  one-token fix that flips every output) scored 0.21 and was gated, while "what if the list has
+  non-strings?" (validation boilerplate that changes nothing the tests measure) ranked top-3.
+  The skill burns its K-question budget on robustness/scale/edge questions no spec answers.
+  **realized_change/regret shares this lens** (it also measures response diff), which is why six
+  proxy-validated datasets never caught it — the projection and the proxy are blind in the same
+  direction (the assertion-audit's A10, demonstrated mechanically).
+- **Derive-or-ask is the standout (Part A vindicated end-to-end):** +0.067 → **+0.183** (5W/0L,
+  p=0.0625) and unanswerable 82% → 44%, i.e. it nearly triples the plain skill's benefit by
+  converting derivable/knowledge questions to evidence — freeing bucket slots for real questions
+  and feeding the derived facts to the solver.
+- **prompt-evsi (the prompt-vs-script question): the pilot's perfect score was small-n flattery.**
+  At n=20 the framework-in-one-prompt slightly beats the script (+0.117 vs +0.067) and trails
+  plain zeroshot — the framework's stakes/derive emphasis steers questions to the same wrong
+  altitude as the script's judge. Neither prompt-carried nor script-carried EVSI beats naive
+  asking HERE; the script's structure is not the bottleneck — the VALUE MODEL is.
+- **P6 QUALIFIED PASS:** Spearman(mean asked q_value, objective Δpass) = **+0.432** (n=20) — above
+  the pre-registered 0.3 keep-line, so realized-regret retains standing as a gate target, with
+  the volume-bias caveat now permanently attached.
+
+- **P5 (over-asking): no penalty detected; benefit saturates at K≈1.** K-curve on the 8
+  discriminating tasks (zeroshot arm): K=1 pass 0.792 · K=3 0.833 · K=5 0.792 · K=7 0.833 —
+  while unanswerable noise climbs 25%→64%. The arXiv:2606.03135 context-pollution collapse does
+  NOT appear in this range/domain (a strong solver tolerates "spec doesn't say"); the binding
+  scarcity is asking the right FIRST question, which is exactly where the volume-biased judge
+  currently mis-spends the slot. Raw: `~/.hermes/outcome_k{1,5,7}.json`.
+
+**Domain caveat, stated honestly both ways:** micro-function tasks sit below the skill's
+calibrated altitude (agentic multi-step work), and ~half the bank ties at baseline (a strong
+solver guesses conventions). But the volume-bias mechanism is domain-general in kind — one-word
+answers that flip everything exist in agentic tasks too ("prod or staging?") — and its magnitude
+there is UNMEASURABLE by the realized proxy (shared blindness). Hence:
+
+**→ #28 (queued, off-default, objectively gateable): outcome-semantic Δplan judge** — elicit
+"how much would this answer change the BEHAVIOR/OUTPUT of the result" instead of "how much does
+the plan change". First experiment in the program whose gate can be an objective outcome
+(this harness) rather than the judged proxy.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

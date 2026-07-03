@@ -16,6 +16,8 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
 | `validate_evsi.py` | inject projected answer → re-derive → judge **realized change** (+ realized **stakes**). `--source bucket\|all_scored`. `--ab` A/Bs absolute-vs-pairwise elicitation on one shared realized set (`--elicit-model` to set a host-local judge). `--ab-probs` A/Bs sampled-vs-stated P(a) (#26; the run samples, the stated arm is a free re-score; realized shared over the union of each arm's top-N). `--ab-solution` A/Bs the solution-space Δplan judge (#27; `--answer-prob-mode sampled` pins the #26 winner). `--families [--premortem …]` runs the families layer; rows carry `lens`/`family`. | §P1a, §Agentic realized calibration, §Comparative elicitation |
 | `analyze_evsi.py` | post-hoc calibration + formula ablations. On any `--ab*` run, prints the **A/B gate** (#24/#26/#27 — same decisive rule): per-method within-task ρ + adopt/keep verdict vs the control (`absolute`/`stated`). On a `--families` run, prints **per-lens attribution** (#25). | §P1a / §P1c / §Comparative elicitation |
 | `analyze_validity.py` | de-confounded per-regime analysis (stakes-judge calibration, regret). | §realized-stakes instrument |
+| `outcome_bank.py` | 20 ambiguous-but-executable tasks (hidden spec + hidden asserts), each verified against a reference impl. | — |
+| `outcome_eval.py` | the OBJECTIVE tier: strict user simulator + arms (baseline/nbq/zeroshot/prompt-evsi/nbq-derive) + sandboxed hidden-test runner + paired sign-test analysis + q_value→Δpass anchor. | §Objective-outcome validation |
 
 *(End-to-end wrapper A/B — `validate_wrapper.py` — now lives in the `investigator` skill's `evals/`.)*
 
@@ -51,6 +53,15 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
   granularity partially recovers (mass-at-0 53%) and the method is worse (Δρ −0.369, 1/10) — the
   collapse is inherent to the framing, not a fast-model floor.** See `evsi-validation-findings.md`
   §Solution-space Δplan (#27) and §Deepseek re-adjudication.
+- **Objective-outcome tier (P3-P6):** `outcome_bank.py` (20 ambiguous-but-executable tasks) +
+  `outcome_eval.py` (strict simulator, arms baseline/nbq/zeroshot/prompt-evsi/nbq-derive,
+  hidden-test pass rate). First ground-truth verdicts: clarification WORKS (zeroshot +0.317,
+  p=0.002); the plain skill is out-asked by the naive baseline here (Δplan = text-volume bias —
+  the value judge gates one-token/output-flipping questions and promotes boilerplate; the
+  realized proxy shares the blindness); **derive-or-ask triples the skill's end-to-end benefit**
+  (+0.067→+0.183, unanswerable 82%→44%); q_value→Δpass anchor ρ 0.432 (proxy keeps qualified
+  standing). See findings §Objective-outcome validation. Next: #28 outcome-semantic Δplan judge,
+  gated on THIS harness.
 - **The within-task ρ ceiling is the task, not the judge.** Same-response fast↔deepseek judge
   agreement ρ 0.814; q_value's realized-change link 0.353 (fast) → 0.398 (deepseek); within-task ρ
   under deepseek stays in the fast band (+0.24–0.35, never jumping past 0.5). Judge/elicit models

@@ -51,6 +51,7 @@ FATIH_TEXT_MENTION_RE = re.compile(r"(?<![\w<@-])@(фатих|fatih)\b", re.IGNO
 RAW_QUOTE_RE = re.compile(r"[\"“”'„‚`].{0,80}(?:пламена|plamena).{0,80}[\"“”'„‚`]", re.IGNORECASE | re.DOTALL)
 
 EMIL_OWNER_MENTION = "<@1279454038731264061>"
+EMIL_OWNER_USER_ID = "1279454038731264061"
 KOZHUHAROV_MENTION = "<@1282729392883372174>"
 ALEX_MENTION = "<@1282940511962791959>"
 IVCHO_MENTION = "<@1283039346295050271>"
@@ -121,6 +122,8 @@ def lint_discord_target_for_content(
     *,
     chat_id: str,
     thread_id: str | None = None,
+    parent_chat_id: str | None = None,
+    source_user_id: str | None = None,
 ) -> DiscordTargetLintResult:
     """Validate already-chosen Discord target against explicit teammate mentions.
 
@@ -132,8 +135,22 @@ def lint_discord_target_for_content(
 
     text = str(content or "")
     target_chat_id = str(chat_id or "").strip()
+    target_parent_chat_id = str(parent_chat_id or "").strip()
+    target_ids = {target_chat_id}
+    if target_parent_chat_id:
+        target_ids.add(target_parent_chat_id)
 
-    if EMIL_OWNER_MENTION in text and target_chat_id != SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+    # Owner-authored replies inside the active Discord thread are not handoffs.
+    # The lane guard still protects non-owner requests and explicit tool sends.
+    owner_current_thread_reply = (
+        str(source_user_id or "").strip() == EMIL_OWNER_USER_ID
+        and bool(str(thread_id or "").strip())
+        and target_chat_id == str(thread_id or "").strip()
+    )
+
+    if EMIL_OWNER_MENTION in text and SKYVISION_CONTROL_TOWER_CHANNEL_ID not in target_ids:
+        if owner_current_thread_reply:
+            return DiscordTargetLintResult(ok=True)
         return DiscordTargetLintResult(
             ok=False,
             blocked_reason="blocked_owner_route_back_mention_wrong_discord_lane",
@@ -144,7 +161,9 @@ def lint_discord_target_for_content(
     if not has_backend_resolver:
         return DiscordTargetLintResult(ok=True)
 
-    if target_chat_id != SKYVISION_BACKEND_CHANNEL_ID:
+    if SKYVISION_BACKEND_CHANNEL_ID not in target_ids:
+        if owner_current_thread_reply:
+            return DiscordTargetLintResult(ok=True)
         return DiscordTargetLintResult(
             ok=False,
             blocked_reason="blocked_backend_resolver_mention_wrong_discord_lane",

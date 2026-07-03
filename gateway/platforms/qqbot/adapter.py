@@ -278,7 +278,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, **kwargs) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"

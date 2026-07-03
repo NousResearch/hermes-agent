@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -248,3 +251,81 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_ignores_inactive_manager_default_for_nonexistent_user_unit(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO("0::/system.slice/hermes-gateway.service\n")
+            return real_open(path, *args, **kwargs)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=(
+                        "TimeoutStopUSec=1min 30s\n"
+                        "FragmentPath=\n"
+                        "ActiveState=inactive\n"
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    "TimeoutStopUSec=3min 30s\n"
+                    "FragmentPath=/etc/systemd/system/hermes-gateway.service\n"
+                    "ActiveState=active\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+        assert calls[0][1] == "--user"
+        assert "--user" not in calls[1]
+
+    def test_accepts_active_user_unit_without_fragment_path(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO("0::/user.slice/hermes-gateway.service\n")
+            return real_open(path, *args, **kwargs)
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    "TimeoutStopUSec=3min 30s\n"
+                    "FragmentPath=\n"
+                    "ActiveState=active\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False

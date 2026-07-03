@@ -361,30 +361,47 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         return None
 
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # on which manager actually owns the unit.  ``systemctl --user show`` can
+    # return manager defaults for a nonexistent unit with rc=0, so do not trust
+    # a TimeoutStopUSec value unless the unit has a real FragmentPath or is
+    # active under that manager.
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                [
+                    "systemctl",
+                    *flag,
+                    "show",
+                    unit_name,
+                    "--property=TimeoutStopUSec",
+                    "--property=FragmentPath",
+                    "--property=ActiveState",
+                ],
                 capture_output=True, text=True, timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+
+        props: Dict[str, str] = {}
         for line in result.stdout.splitlines():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                # Try numeric microseconds first
-                if value.isdigit():
-                    timeout_us = int(value)
-                else:
-                    timeout_us = _parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
+            if "=" in line:
+                key, value = line.split("=", 1)
+                props[key] = value.strip()
+
+        fragment_path = props.get("FragmentPath", "")
+        active_state = props.get("ActiveState", "")
+        if not fragment_path and active_state not in {"active", "activating", "deactivating"}:
+            continue
+
+        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        value = props.get("TimeoutStopUSec", "")
+        if value.isdigit():
+            timeout_us = int(value)
+        else:
+            timeout_us = _parse_systemd_duration_to_us(value)
         if timeout_us is not None:
             break
 

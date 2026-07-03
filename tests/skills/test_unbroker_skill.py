@@ -36,6 +36,7 @@ import time as _time      # noqa: E402
 
 import badbool          # noqa: E402
 import brokers          # noqa: E402
+import cdp              # noqa: E402
 import config           # noqa: E402
 import crypto           # noqa: E402
 import dossier          # noqa: E402
@@ -478,6 +479,52 @@ def test_fanout_default_batch_size_is_five():
     assert all(len(b) <= 5 for b in g["batches"])
     assert g["batches"][0] == [f"b{i}" for i in range(5)]
     assert len(g["batches"]) == 3  # 5 + 5 + 2
+
+
+# --- cdp (operator browser over the DevTools protocol) --------------------------------------
+
+def test_cdp_launch_command_has_debug_flags():
+    cmd = cdp.launch_command("/usr/bin/chrome", port=9333, profile=Path("/tmp/prof"))
+    assert cmd[0] == "/usr/bin/chrome"
+    assert "--remote-debugging-port=9333" in cmd
+    assert "--user-data-dir=/tmp/prof" in cmd
+    assert "--no-first-run" in cmd
+
+
+def test_cdp_default_profile_uses_hermes_home():
+    prev = os.environ.get("HERMES_HOME")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["HERMES_HOME"] = d
+        try:
+            assert cdp.default_profile() == Path(d) / "chrome-debug"
+        finally:
+            if prev is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = prev
+
+
+def test_cdp_endpoint_status_parses_live_and_handles_down():
+    orig = cdp._http_get
+    cdp._http_get = lambda url, timeout: b'{"Browser":"Chrome/1.2","webSocketDebuggerUrl":"ws://x"}'
+    try:
+        st = cdp.endpoint_status(port=9222)
+        assert st and st["Browser"] == "Chrome/1.2" and st["webSocketDebuggerUrl"] == "ws://x"
+    finally:
+        cdp._http_get = orig
+
+    def _boom(url, timeout):
+        raise ConnectionError("connection refused")
+    cdp._http_get = _boom
+    try:
+        assert cdp.endpoint_status(port=9222) is None   # nothing listening -> None, never raises
+    finally:
+        cdp._http_get = orig
+
+
+def test_cdp_find_browser_override():
+    assert cdp.find_browser("/bin/sh") == "/bin/sh"                       # explicit path that exists
+    assert cdp.find_browser("definitely-not-a-real-browser-xyz") is None  # bogus -> None (no crash)
 
 
 def test_plan_surfaces_antibot():
@@ -1327,6 +1374,31 @@ def test_dotenv_env_fills_missing_creds_and_shell_wins():
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+def test_cdp_cli_check_reports_not_running():
+    orig = cdp.endpoint_status
+    cdp.endpoint_status = lambda *a, **k: None
+    try:
+        out = _run(["cdp", "--check", "--port", "59981"])
+        assert out["running"] is False and out["endpoint"].endswith(":59981")
+    finally:
+        cdp.endpoint_status = orig
+
+
+def test_cdp_cli_detects_already_running_and_does_not_launch():
+    # If a debug browser is already live, `cdp` must report it and NOT launch another.
+    orig_status, orig_launch = cdp.endpoint_status, cdp.launch
+    cdp.endpoint_status = lambda *a, **k: {"Browser": "Chrome/9", "webSocketDebuggerUrl": "ws://z"}
+
+    def _no_launch(*a, **k):
+        raise AssertionError("launch() must not be called when a browser is already live")
+    cdp.launch = _no_launch
+    try:
+        out = _run(["cdp", "--port", "59982"])
+        assert out["running"] is True and out["webSocketDebuggerUrl"] == "ws://z"
+    finally:
+        cdp.endpoint_status, cdp.launch = orig_status, orig_launch
 
 
 def test_registry_candidate_urls_newest_first_with_floor():

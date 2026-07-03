@@ -82,7 +82,9 @@ verifying re-scan.
       gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
       `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
       debug profile signed into the webmail once, not the Default profile) and connect the browser
-      tools to `127.0.0.1:9222`. See `references/methods.md` -> "Browser backends: scan vs execute".
+      tools to `127.0.0.1:9222`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
+      starts it detached on the dedicated profile, prints the CDP endpoint; `--check` to test, `--print`
+      for the command). See `references/methods.md` -> "Browser backends: scan vs execute".
       Falls back to drafts for an email if the inbox isn't reachable.
     - **SMTP/IMAP (stored creds): `EMAIL_ADDRESS` + `EMAIL_PASSWORD`** (+ `EMAIL_SMTP_HOST` /
       `EMAIL_IMAP_HOST` for non-mainstream providers; gmail/outlook/yahoo/icloud/fastmail inferred).
@@ -109,6 +111,7 @@ breaks reading the dossier).
 |---|---|
 | `$PDD setup --auto` | **Autonomous setup**: detect capabilities, pick the most autonomous valid config (no questions) |
 | `$PDD doctor` | Readiness check: config, broker count, and which upgrades are on/available |
+| `$PDD cdp [--check] [--print] [--port N]` | Launch/detect the operator's Chrome over CDP for Phase-2 browser + webmail (dedicated debug profile; the reliable way to send webmail and clear session-bound gates) |
 | `$PDD intake --full-name "..." [--alias ...] [--email ... --phone ...] [--city --state] [--prior-location "City,ST"] --consent` | Create a consenting subject; captures aliases + multiple emails/phones + prior locations; prints `subject_id` |
 | `$PDD next <subject>` | **The autonomous loop driver**: ordered agent actions right now + human digest + `next_wake_at` |
 | `$PDD brokers [--priority crucial]` | List the people-search broker database (curated + live) |

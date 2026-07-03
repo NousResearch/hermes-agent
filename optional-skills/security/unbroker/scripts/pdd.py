@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import autopilot                   # noqa: E402
 import badbool                      # noqa: E402
+import cdp                          # noqa: E402
 import brokers as brokers_mod      # noqa: E402
 import config as config_mod        # noqa: E402
 import crypto                       # noqa: E402
@@ -189,14 +190,15 @@ def cmd_doctor(args) -> None:
                  "links via the operator's logged-in webmail. This needs Hermes pointed at the "
                  "operator's OWN Chrome over CDP (launch with --remote-debugging-port=9222 "
                  "--user-data-dir=~/.hermes/chrome-debug, signed into the webmail once); else it falls "
-                 "back to drafts. See methods.md 'Browser backends'.")
+                 "back to drafts. Run `pdd.py cdp` to launch it (or `pdd.py cdp --print` for the command). "
+                 "See methods.md 'Browser backends'.")
         cloud_scan = cfg.get("browser_backend") == "browserbase" or (
             cfg.get("browser_backend") == "auto" and caps.get("browserbase"))
         if cloud_scan:
             L.append("  NOTE: your scan backend is a cloud browser (Browserbase). It is great for "
                      "Phase-1 scanning but CANNOT be the browser that sends webmail (no inbox session) "
                      "and is itself Cloudflare/DataDome-gated on session-bound gates (e.g. PeopleConnect). "
-                     "For Phase-2 email/verify, drive the operator's Chrome over CDP as above.")
+                     "For Phase-2 email/verify, launch the operator's Chrome over CDP: `pdd.py cdp`.")
     if not crypto.is_engaged():
         L.append("  Storage: dossiers are PLAINTEXT JSON (0600 under HERMES_HOME). "
                  "Run `setup --encryption age` for at-rest encryption.")
@@ -239,6 +241,63 @@ def cmd_doctor(args) -> None:
         L.append(f"  Freshness: {stale_curated} curated broker(s) last-verified >{STALE_VERIFY_DAYS}d ago; "
                  f"{documented} documented broker(s) awaiting first-use verification.")
     print("\n".join(L))
+
+
+def cmd_cdp(args) -> None:
+    """Launch (or detect) the operator's Chrome over CDP for Phase-2 browser + webmail work.
+
+    A cloud browser cannot send the operator's webmail or clear session-bound gates; this points
+    Hermes at the operator's real Chrome on a dedicated debug profile (see methods.md).
+    """
+    import shlex
+    import time
+
+    port = args.port
+    profile = Path(args.profile).expanduser() if args.profile else cdp.default_profile()
+
+    live = cdp.endpoint_status(port)
+    if live:
+        _out({"running": True, "endpoint": f"127.0.0.1:{port}",
+              "browser": live.get("Browser"),
+              "webSocketDebuggerUrl": live.get("webSocketDebuggerUrl"),
+              "note": "a debuggable browser is already listening; point Hermes's browser tools at "
+                      f"127.0.0.1:{port} and make sure the operator's webmail is signed in in THAT browser."})
+        return
+
+    if getattr(args, "check", False):
+        _out({"running": False, "endpoint": f"127.0.0.1:{port}",
+              "note": f"no debuggable browser here yet; run `pdd.py cdp --port {port}` (no --check) to launch one."})
+        return
+
+    browser = cdp.find_browser(args.browser)
+    if not browser:
+        _out({"running": False, "error": "no Chrome/Chromium-family browser found",
+              "fix": "install Google Chrome, or pass --browser /path/to/chrome (or a command on PATH)"})
+        return
+
+    cmd = cdp.launch_command(browser, port, profile)
+    if getattr(args, "print_only", False):
+        _out({"running": False, "browser": browser, "profile": str(profile), "command": cmd,
+              "shell": " ".join(shlex.quote(c) for c in cmd),
+              "note": "run this yourself to launch the debug browser, then sign into your webmail once."})
+        return
+
+    pid = cdp.launch(browser, port, profile)
+    live = None
+    for _ in range(20):  # give Chrome a few seconds to open the debug port
+        live = cdp.endpoint_status(port)
+        if live:
+            break
+        time.sleep(0.5)
+    _out({"running": bool(live), "launched_pid": pid, "browser": browser,
+          "profile": str(profile), "endpoint": f"127.0.0.1:{port}",
+          "webSocketDebuggerUrl": (live or {}).get("webSocketDebuggerUrl"),
+          "next": ([f"point Hermes's browser tools at 127.0.0.1:{port} (CDP)",
+                    "in the launched browser, sign into the operator's webmail ONCE (dedicated debug profile)",
+                    "then run email/verify flows in browser mode -- they use this logged-in session"]
+                   if live else
+                   ["browser launched but the debug port has not answered yet; give it a few seconds, then "
+                    f"re-run `pdd.py cdp --check --port {port}`"])})
 
 
 def cmd_intake(args) -> None:
@@ -688,6 +747,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("doctor", help="readiness check: config, brokers, available upgrades")
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("cdp",
+                       help="launch/detect the operator's Chrome over CDP (Phase-2 browser + webmail)")
+    s.add_argument("--port", type=int, default=cdp.DEFAULT_PORT, help="remote debugging port (default 9222)")
+    s.add_argument("--profile",
+                   help="user-data-dir (default: $HERMES_HOME/chrome-debug, a dedicated debug profile)")
+    s.add_argument("--browser", help="path to (or PATH name of) a Chrome/Chromium/Brave/Edge binary")
+    s.add_argument("--check", action="store_true",
+                   help="only report whether a debug browser is live; do not launch")
+    s.add_argument("--print", dest="print_only", action="store_true",
+                   help="print the launch command instead of launching it (run it yourself)")
+    s.set_defaults(func=cmd_cdp)
 
     s = sub.add_parser("intake", help="create a subject dossier (records consent)")
     s.add_argument("--json", help="path to a dossier JSON file (overrides flags)")

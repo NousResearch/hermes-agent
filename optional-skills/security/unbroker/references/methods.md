@@ -232,7 +232,11 @@ run stalling in Phase 2.
   broker accounts) in that profile once. That single browser then carries residential IP + real
   fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
   browser setup, not a `pdd` config value; `browser_backend` above only selects the Phase-1 scan
-  browser.)
+  browser.) **The skill launches this for you: `pdd.py cdp`** finds a Chrome/Chromium/Brave/Edge
+  binary, starts it detached on the dedicated profile, waits for the debug port, and prints the CDP
+  endpoint (`webSocketDebuggerUrl`). `pdd.py cdp --check` reports whether a debug browser is already
+  live (and never launches a second one); `pdd.py cdp --print` just emits the exact command for the
+  operator to run themselves. Point the browser tools at the `endpoint` it returns.
 - **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
   (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
   before submit. It never fails; it just needs a human present.

@@ -63,6 +63,7 @@ The solution is an **after-start prompt**:
 - **Works with ANY model** — `clarify` is a built-in tool
 - **Strict exclusivity** — only one engine active at a time
 - **Dynamic mmproj** via `EnvironmentFile` + `$MMPROJ_ARGS`
+- **Auto-stop on app close** — detects Hermes.exe exit, stops all engines
 - **Multi-session safe** — checks state.db before unloading
 - **Idle timeout (15 min)** — safety-net fallback
 
@@ -102,22 +103,27 @@ wsl journalctl --user -u llama-watchdog.service -n 20 --no-pager
 
 ## Future / Ideal Implementation
 
-The current after-start restart is a workaround. **The ideal solution is a Hermes core-side pre-model-load hook** that fires BEFORE the engine starts, giving the agent a chance to ask and configure the mmproj flag. This would:
+This watchdog exists because Hermes has no `on_provider_switch` plugin hook. Every feature here — the strict exclusivity arbiter, the app-close cleanup, the fast auto-start on model selection, and the after-start mmproj prompt — is a workaround for capabilities that should live in the Hermes core.
 
-- Eliminate the cold restart (~36s delay when switching to mmproj)
-- Allow seamless vision/no-vision switching without downtime
-- Prevent accidental OOM freezes on consumer GPUs (RTX 4090 = 24 GB — mmproj can push you over)
+**The ideal solution is a Hermes core-side `on_provider_switch` hook** that fires BEFORE the engine loads. This would enable:
 
-**No platform handles this well today.** LM Studio, Ollama, llama.cpp — none of them ask or configure multimodal projection at load time. They either always load the mmproj (wasting VRAM) or require manual config changes. Consumer hardware (24 GB and under) lives at the edge of OOM constantly — a single mmproj file can mean the difference between a working session and a hard freeze.
+- **Strict exclusivity by default** — core enforces one engine at a time, no need for an external arbiter
+- **Clean shutdown on app close** — core terminates engines when Hermes exits, no tasklist.exe polling needed
+- **Faster load on selection** — core can prepare the engine in parallel with the model download/load, no 5s log-tail delay
+- **Pre-load agent prompt** — agent asks about mmproj (and any other config) BEFORE the engine starts, eliminating the cold restart
 
-**If the Hermes team implements a `on_provider_switch` plugin hook** (or similar pre-model-loading event), this watchdog can be simplified to:
+Without this hook, every local-engine workflow requires this kind of external watchdog — agent.log tailing, state.db polling, tasklist.exe process checks, and after-start restarts. It works, but it's inherently reactive and slower than a core integration would be.
 
-1. Hook fires before engine start
-2. Agent asks user about mmproj
-3. Flag is set before the engine ever loads
-4. No restart needed — first load is correct
+**No platform handles local inference engines properly on consumer hardware.** LM Studio, Ollama, text-generation-webui — none of them:
 
-This would put Hermes **lightyears ahead** of every other local inference frontend. No other platform — not LM Studio, not Ollama, not text-generation-webui — intelligently manages vision projection at provider-switch time on consumer GPUs.
+1. **Enforce one-engine-at-a-time exclusivity.** You can accidentally load two models, OOM your GPU, and hard-freeze your system.
+2. **Clean up engines on app close.** Switch to a different app? The engine stays in VRAM, consuming power and blocking other GPU workloads.
+3. **Auto-start on model selection.** You manually start/stop engines or rely on lazy-loading that causes multi-minute delays mid-conversation.
+4. **Ask about optional components (mmproj) at load time.** They either always load mmproj (wasting ~2GB VRAM you might need for context) or require manual config file edits.
+
+**On 24 GB consumer GPUs (RTX 4090), every megabyte counts.** A single orphaned engine, a second model loading while one is already loaded, or an unnecessary mmproj can mean the difference between a working session and a hard OOM freeze. Hermes has the architecture to handle this intelligently — the agent is already in the loop, the skill system can prompt at the right time, and the gateway can manage lifecycle. It just needs the plugin hook to tie it all together.
+
+**A single `on_provider_switch` hook in the Hermes core would put this platform lightyears ahead** of every other local inference frontend for consumer hardware.
 
 ## Pitfalls
 

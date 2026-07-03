@@ -308,4 +308,217 @@ TASKS = [
     },
 ]
 
-BY_ID = {t["id"]: t for t in TASKS}
+# ── AGENTIC tier (#31): script-shaped tasks with environment/policy/failure ambiguity ─────────
+# The home game: micro-functions above have no failure surface or environment, so the lens layer
+# (premortem/vantage/reach) never fires and conventions are guessable. These are executed in a
+# tempdir sandbox: `fixture` files are materialized (optional age_days -> os.utime), the solution
+# runs as `python -I solution.py` from the sandbox root, then `checks` (assert-expressions) are
+# evaluated with `stdout`, `exit_code`, `stderr`, `run_solution(env=..., args=...)` and anything
+# defined by the task's optional `setup` source in scope. Ambiguity lists include at least one
+# reading a LENS should surface (e.g. json-migrate's backup-before-overwrite is premortem's
+# archetype — the hidden tests fail without the .bak).
+
+AGENTIC = [
+    {
+        "id": "csv-report",
+        "kind": "script",
+        "category": "env-policy",
+        "ambiguous_prompt": "Write a script that summarizes the data files in ./data into a report.",
+        "hidden_spec": "Only *.csv files count (ignore other extensions). Each CSV has a header "
+                       "row; count DATA rows only, and skip malformed rows (wrong field count) "
+                       "without crashing. Write ./out/report.csv (create ./out) with header "
+                       "'file,rows' and one line per csv, sorted by filename.",
+        "fixture": {
+            "data/a.csv": "x,y\n1,2\n3,4\n",
+            "data/b.csv": "x,y\n1,2\nbadrow\n5,6\n",
+            "data/notes.txt": "not a csv\n",
+        },
+        "checks": [
+            "exit_code == 0",
+            "open('out/report.csv').read().strip().splitlines()[0] == 'file,rows'",
+            "'a.csv,2' in open('out/report.csv').read()",
+            "'b.csv,2' in open('out/report.csv').read()",
+            "'notes' not in open('out/report.csv').read()",
+        ],
+        "ambiguity": ["all files in ./data count", "malformed rows crash or count",
+                      "report to stdout vs ./out/report.csv"],
+    },
+    {
+        "id": "log-clean",
+        "kind": "script",
+        "category": "destructive",
+        "ambiguous_prompt": "Write a script that cleans up old log files in ./logs.",
+        "hidden_spec": "Delete *.log files older than 7 days by modification time, BUT always "
+                       "keep the newest log file even if it is older than 7 days. Print only the "
+                       "number of files deleted. Never touch non-.log files.",
+        "fixture": {
+            "logs/old1.log": {"content": "a", "age_days": 30},
+            "logs/old2.log": {"content": "b", "age_days": 10},
+            "logs/newest.log": {"content": "c", "age_days": 9},
+            "logs/keep.txt": {"content": "d", "age_days": 30},
+        },
+        "checks": [
+            "exit_code == 0",
+            "not os.path.exists('logs/old1.log')",
+            "not os.path.exists('logs/old2.log')",
+            "os.path.exists('logs/newest.log')",       # newest survives though >7d old
+            "os.path.exists('logs/keep.txt')",
+            "stdout.strip() == '2'",
+        ],
+        "ambiguity": ["delete ALL logs >7d incl. the newest", "archive instead of delete",
+                      "age by filename vs mtime"],
+    },
+    {
+        "id": "db-config",
+        "kind": "script",
+        "category": "environment",
+        "ambiguous_prompt": "Write a script that prints the app's database connection string.",
+        "hidden_spec": "Read ./config.ini section [db], key url (configparser format). If the "
+                       "file or key is missing, fall back to the DB_URL environment variable. If "
+                       "neither exists, print an error to stderr and exit with code 2. On "
+                       "success print ONLY the url to stdout.",
+        "fixture": {"config.ini": "[db]\nurl = postgres://cfg\n"},
+        "checks": [
+            "exit_code == 0 and stdout.strip() == 'postgres://cfg'",
+            "(lambda r: r.returncode == 0 and r.stdout.strip() == 'postgres://cfg')"
+            "(run_solution(env={'DB_URL': 'postgres://env'}))",   # file wins over env
+            "(lambda r: r.returncode == 0 and r.stdout.strip() == 'postgres://env')"
+            "(run_solution(env={'DB_URL': 'postgres://env'}, drop=['config.ini']))",
+            "(lambda r: r.returncode == 2 and r.stdout.strip() == '')"
+            "(run_solution(drop=['config.ini']))",
+        ],
+        "ambiguity": ["env wins over file", "hardcode a default url", "crash when missing"],
+    },
+    {
+        "id": "dupe-finder",
+        "kind": "script",
+        "category": "report-vs-act",
+        "ambiguous_prompt": "Write a script that finds duplicate files under ./data.",
+        "hidden_spec": "Duplicates are files with IDENTICAL CONTENT (names differ; compare "
+                       "content or content hash). Print each duplicate group as its filenames "
+                       "sorted, joined by a single space, one group per line; groups ordered by "
+                       "their first filename. Do NOT delete or modify anything.",
+        "fixture": {
+            "data/one.txt": "same-content\n",
+            "data/two.txt": "same-content\n",
+            "data/three.txt": "unique\n",
+        },
+        "checks": [
+            "exit_code == 0",
+            "'one.txt two.txt' in ' '.join(stdout.replace('data/', '').split())",
+            "'three' not in stdout",
+            "os.path.exists('data/one.txt') and os.path.exists('data/two.txt')",  # report, not act
+        ],
+        "ambiguity": ["duplicate by NAME", "delete the duplicates", "recursive vs flat"],
+    },
+    {
+        "id": "json-migrate",
+        "kind": "script",
+        "category": "irreversible",
+        "ambiguous_prompt": "Write a script that migrates records.json to the new schema.",
+        "hidden_spec": "In every record rename field 'user' to 'username' and add \"version\": 2 "
+                       "at the record level. BEFORE overwriting records.json, save the ORIGINAL "
+                       "unmodified content to records.json.bak. Keep all other fields.",
+        "fixture": {"records.json": '[{"user": "amy", "id": 1}, {"user": "bo", "id": 2}]'},
+        "checks": [
+            "exit_code == 0",
+            "all(r.get('username') and 'user' not in r and r.get('version') == 2 "
+            "for r in json.load(open('records.json')))",
+            "os.path.exists('records.json.bak')",
+            "json.load(open('records.json.bak')) == "
+            "[{'user': 'amy', 'id': 1}, {'user': 'bo', 'id': 2}]",   # backup is the ORIGINAL
+        ],
+        "ambiguity": ["migrate in place with NO backup", "write to a new file, keep original",
+                      "version at top level vs per record"],
+    },
+    {
+        "id": "photo-rename",
+        "kind": "script",
+        "category": "irreversible",
+        "ambiguous_prompt": "Write a script that renames the photos in ./photos to a "
+                            "consistent scheme.",
+        "hidden_spec": "Rename only *.jpg files to img_001.jpg, img_002.jpg, ... numbered by "
+                       "modification time ASCENDING (oldest = img_001.jpg). Leave other "
+                       "extensions untouched.",
+        "fixture": {
+            "photos/beach.jpg": {"content": "b", "age_days": 3},
+            "photos/alps.jpg": {"content": "a", "age_days": 10},
+            "photos/readme.md": {"content": "r", "age_days": 1},
+        },
+        "checks": [
+            "exit_code == 0",
+            "open('photos/img_001.jpg').read() == 'a'",    # oldest (alps) is 001
+            "open('photos/img_002.jpg').read() == 'b'",
+            "os.path.exists('photos/readme.md')",
+            "not os.path.exists('photos/beach.jpg')",
+        ],
+        "ambiguity": ["alphabetical numbering", "newest first", "rename every file type"],
+    },
+    {
+        "id": "todo-report",
+        "kind": "script",
+        "category": "policy-ci",
+        "ambiguous_prompt": "Write a script that reports the TODOs in the codebase.",
+        "hidden_spec": "Scan *.py files recursively from the current directory, EXCLUDING the "
+                       "./vendor directory. For each line containing 'TODO' print "
+                       "'path:lineno: text' (1-based line numbers, text = the stripped line). "
+                       "Exit 1 if any TODO was found, else exit 0 (CI convention).",
+        "fixture": {
+            "app.py": "x = 1\n# TODO fix this\n",
+            "lib/util.py": "# TODO refactor\n",
+            "vendor/dep.py": "# TODO vendored, ignore\n",
+        },
+        "checks": [
+            "exit_code == 1",                              # found -> nonzero (CI convention)
+            "'app.py:2' in stdout",
+            "'util.py:1' in stdout",
+            "'vendor' not in stdout",
+        ],
+        "ambiguity": ["exit 0 regardless", "include vendor", "all file types"],
+    },
+    {
+        "id": "retry-wrapper",
+        "kind": "script",
+        "category": "failure-policy",
+        "ambiguous_prompt": "Write fetch_with_retry(fn) that makes an unreliable operation "
+                            "reliable.",
+        "hidden_spec": "Define fetch_with_retry(fn) in the script (module must be importable "
+                       "without side effects). Call fn up to 3 times total, retrying ONLY on "
+                       "ConnectionError with a small backoff (base 0.01s). Any other exception "
+                       "propagates immediately; after 3 ConnectionErrors, re-raise.",
+        "fixture": {},
+        "setup": (
+            "import solution\n"
+            "calls = {'n': 0}\n"
+            "def flaky():\n"
+            "    calls['n'] += 1\n"
+            "    if calls['n'] < 3:\n"
+            "        raise ConnectionError('net')\n"
+            "    return 'ok'\n"
+            "other = {'n': 0}\n"
+            "def bad():\n"
+            "    other['n'] += 1\n"
+            "    raise ValueError('logic bug')\n"
+            "def raises(fn, exc):\n"
+            "    try:\n"
+            "        fn()\n"
+            "        return False\n"
+            "    except exc:\n"
+            "        return True\n"
+            "    except Exception:\n"
+            "        return False\n"
+            "always = {'n': 0}\n"
+            "def down():\n"
+            "    always['n'] += 1\n"
+            "    raise ConnectionError('still down')\n"
+        ),
+        "checks": [
+            "solution.fetch_with_retry(flaky) == 'ok' and calls['n'] == 3",
+            "raises(lambda: solution.fetch_with_retry(bad), ValueError) and other['n'] == 1",
+            "raises(lambda: solution.fetch_with_retry(down), ConnectionError) and always['n'] == 3",
+        ],
+        "ambiguity": ["retry every exception", "infinite retries", "return None after failures"],
+    },
+]
+
+BY_ID = {t["id"]: t for t in TASKS + AGENTIC}

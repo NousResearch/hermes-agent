@@ -392,6 +392,57 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertNotIn("PRE-MORTEM", off)         # absent when off
         self.assertNotIn('"premortem"', off)        # enum stays the original 3 lenses
 
+    def test_reach_lens_directive_gate_and_prompt_block(self):
+        # #29: directive registered + injected; families_prompt block + enum gated; the auto
+        # gate is the vantage gate (shared systems/access surface, raw problem text included).
+        self.assertIn("reach", pipeline._LENS_DIRECTIVE)
+        qp = pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3,
+                                       family={"name": "F", "scope": "s", "lens": "reach"})
+        self.assertIn("CHAINED hops", qp)
+        on = pipeline.families_prompt("p", {"goal": "g"}, 3, True, True, reach=True)
+        off = pipeline.families_prompt("p", {"goal": "g"}, 3, True, True, reach=False)
+        self.assertIn("REACH", on)
+        self.assertIn('"reach"', on)
+        self.assertNotIn('"reach"', off)
+        self.assertIs(pipeline._reach_relevant, pipeline._vantage_relevant)
+        self.assertTrue(pipeline._reach_relevant(
+            {"goal": "improve the workflow", "decision": ""}, "debug the service in the k8s cluster"))
+        self.assertFalse(pipeline._reach_relevant(
+            {"goal": "explain the findings", "decision": ""}, "summarize a paper"))
+
+    def test_generate_families_reach_knob(self):
+        captured = {}
+
+        def fake_call_json(model, prompt, timeout, num_predict=600, sink=None):
+            captured["prompt"] = prompt
+            return {"families": [{"name": "F", "scope": "s", "lens": "reach"}]}, None
+
+        framing = {"goal": "fix the login flow", "decision": "a plan"}
+        with mock.patch.object(pipeline, "_call_json", side_effect=fake_call_json):
+            pipeline.generate_families("fix the login on the staging server", framing, "fast",
+                                       reach="auto")
+        self.assertIn("REACH", captured["prompt"])          # auto fires on systems surface
+        with mock.patch.object(pipeline, "_call_json", side_effect=fake_call_json):
+            pipeline.generate_families("fix the login on the staging server", framing, "fast",
+                                       reach="off")
+        self.assertNotIn("REACH", captured["prompt"])       # explicit off wins
+
+    def test_reach_cli_env_resolution(self):
+        cfg = infogain.resolve_config(infogain.build_parser().parse_args(["--reach", "on", "p"]))
+        self.assertEqual(cfg["families"]["reach"], "on")
+        self.assertEqual(infogain.resolve_config(
+            infogain.build_parser().parse_args(["p"]))["families"]["reach"], "auto")
+        old = os.environ.get("INFOGAIN_REACH")
+        try:
+            os.environ["INFOGAIN_REACH"] = "off"
+            self.assertEqual(infogain.resolve_config(
+                infogain.build_parser().parse_args(["p"]))["families"]["reach"], "off")
+        finally:
+            os.environ.pop("INFOGAIN_REACH", None) if old is None else os.environ.update(
+                {"INFOGAIN_REACH": old})
+        self.assertEqual(infogain.families_cfg(reach="on")["reach"], "on")
+        self.assertEqual(infogain.families_cfg()["reach"], "auto")
+
     def test_generate_families_premortem_auto_gate(self):
         obj = {"families": [{"name": "Hazards", "scope": "s", "lens": "premortem"}]}
         with mock.patch.object(pipeline, "_call_json", return_value=(obj, None)) as m:
@@ -1064,6 +1115,67 @@ class TestModeConfig(unittest.TestCase):
         md = infogain._ranked_list(bucket)
         self.assertNotIn("###", md)
         self.assertIn("[weight 0.60]", md)
+
+
+@unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
+class TestBehaviorJudge(unittest.TestCase):
+    """#28: Δplan elicited as BEHAVIOR change of the result (consequence, not code size)."""
+
+    def test_prompt_pins_consequence_not_code_size(self):
+        p = pipeline.judge_behavior_prompt("prob", {"goal": "g"}, "base", "Q?",
+                                           [{"answer": "A"}, {"answer": "B"}])
+        self.assertIn("consequence, not code size", p)
+        self.assertIn("0.2 or less", p)          # the boilerplate anchor
+        self.assertIn("one-token change", p)     # the flip anchor
+        self.assertIn('{"answers": [{"delta_plan": float, "stakes": float}', p)  # same contract
+
+    def test_behavior_judge_same_contract_as_absolute(self):
+        rec = {"question": "Q?", "answers": [{"answer": "A"}, {"answer": "B"}]}
+        judged = {"answers": [{"delta_plan": 0.9, "stakes": 0.8},
+                              {"delta_plan": 0.1, "stakes": 0.2}]}
+        with mock.patch.object(pipeline, "_call_json", return_value=(judged, None)):
+            out = pipeline.judge_plan_change_behavior("p", {"goal": "g"}, "base", rec, "m")
+        self.assertEqual(out["answers"][0]["delta_plan"], 0.9)
+        self.assertEqual(out["answers"][1]["stakes"], 0.2)
+        # malformed reply -> safe zeros, same as absolute
+        with mock.patch.object(pipeline, "_call_json", return_value=(None, "boom")):
+            out = pipeline.judge_plan_change_behavior("p", {"goal": "g"}, "base",
+                                                      {"question": "Q?",
+                                                       "answers": [{"answer": "A"}]}, "m")
+        self.assertEqual(out["answers"][0]["delta_plan"], 0.0)
+
+    def test_run_routes_behavior_mode_and_default_stays_absolute(self):
+        def _go(cfg):
+            seen = {"fn": None}
+            with mock.patch.object(pipeline, "frame_and_plan",
+                                   return_value=({"goal": "g", "decision": "d",
+                                                  "success_criteria": [], "baseline_plan": "p"},
+                                                 None)), \
+                 mock.patch.object(pipeline, "generate_questions",
+                                   side_effect=lambda *a, **k: ([{"question": "Q", "target": "t",
+                                                                 "answers": [],
+                                                                 "derivable_prob": 0.1}], None)), \
+                 mock.patch.object(pipeline, "project_answers_batch",
+                                   side_effect=lambda p, f, recs, *a, **k: recs), \
+                 mock.patch.object(pipeline, "judge_plan_change_batch",
+                                   side_effect=lambda *a, **k: (seen.__setitem__("fn", "absolute"),
+                                                                a[3])[1]), \
+                 mock.patch.object(pipeline, "judge_plan_change_behavior_batch",
+                                   side_effect=lambda *a, **k: (seen.__setitem__("fn", "behavior"),
+                                                                a[3])[1]):
+                infogain.run("vague task", cfg)
+            return seen["fn"]
+
+        cfg = {k: v for k, v in infogain.DEFAULTS.items()}
+        cfg["families"] = {"enabled": False}
+        cfg["max_rounds"] = 1
+        self.assertEqual(_go(dict(cfg)), "absolute")                       # byte-identical pin
+        self.assertEqual(_go(dict(cfg, value_judge_mode="behavior")), "behavior")
+
+    def test_cli_accepts_behavior(self):
+        cfg = infogain.resolve_config(infogain.build_parser().parse_args(
+            ["--value-judge-mode", "behavior", "p"]))
+        self.assertEqual(cfg["value_judge_mode"], "behavior")
 
 
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")

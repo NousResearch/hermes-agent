@@ -111,6 +111,7 @@ FAMILIES = {
     "contrarian": True,
     "vantage": "auto",          # "auto" (gate on systems/access prompts) | "on" | "off"
     "premortem": "auto",        # "auto" (gate on failure-surface prompts) | "on" | "off"
+    "reach": "auto",            # #29: reachable-other-vantage lens; shares the vantage gate
     "questions_per_family": 3,
     "family_sim": 0.5,          # MMR cross-family diversity penalty (vs 1.0 same-target collapse)
     "families_model": "glm",    # generation model for families + per-family questions
@@ -137,19 +138,23 @@ def _resolve_families(args):
     pm = getattr(args, "premortem", None) or os.environ.get("INFOGAIN_PREMORTEM")
     if pm not in (None, ""):
         fam["premortem"] = str(pm).strip().lower()
+    rc = getattr(args, "reach", None) or os.environ.get("INFOGAIN_REACH")
+    if rc not in (None, ""):
+        fam["reach"] = str(rc).strip().lower()
     fm = getattr(args, "families_model", None) or os.environ.get("INFOGAIN_FAMILIES_MODEL")
     if fm not in (None, ""):
         fam["families_model"] = str(fm).strip()
     return fam
 
 
-def families_cfg(premortem="auto", families_model=None):
+def families_cfg(premortem="auto", families_model=None, reach="auto"):
     """Families block for a harness-built cfg. The eval harnesses call run() directly with
     cfg = dict(DEFAULTS), which has NO 'families' key — so they silently ran the flat generator
     and never exercised the families/lens layer. Harnesses opt in via this helper (and can pin
     families_model to their --gen-model for cost parity with the other stages)."""
     fam = dict(FAMILIES)
     fam["premortem"] = str(premortem).strip().lower()
+    fam["reach"] = str(reach).strip().lower()
     if families_model:
         fam["families_model"] = families_model
     return fam
@@ -201,6 +206,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     # from DEFAULTS is byte-identical.
     judge_mode = str(cfg.get("value_judge_mode") or "absolute").strip().lower()
     judge_batch = (pipeline.judge_plan_change_pairwise_batch if judge_mode == "pairwise"
+                   else pipeline.judge_plan_change_behavior_batch if judge_mode == "behavior"
                    else pipeline.judge_plan_change_batch)
 
     # P(a) seam (#26): default "stated" (the projection call's self-reported probabilities).
@@ -275,6 +281,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
                 problem, framing, fam_model, n_scoped=fam_cfg.get("n_scoped", 3),
                 contrarian=fam_cfg.get("contrarian", True), vantage=fam_cfg.get("vantage", "auto"),
                 premortem=fam_cfg.get("premortem", "auto"),
+                reach=fam_cfg.get("reach", "auto"),
                 timeout=cfg["gen_timeout"], sink=gen_sink)
             fams_q = pipeline.generate_family_questions(
                 problem, framing, fams, fam_model, n_per=fam_cfg.get("questions_per_family", 3),
@@ -761,7 +768,7 @@ def _dry_run(problem, cfg, evidence=None):
     if fam.get("enabled"):
         stages.append("STAGE 1a — generate_families:\n\n" + pipeline.families_prompt(
             problem, framing_stub, fam.get("n_scoped", 3), fam.get("contrarian", True), True,
-            premortem=True))
+            premortem=True, reach=True))
         stages.append("STAGE 1b — per-family questions (example: premortem lens):\n\n"
                       + pipeline.questions_prompt(
                           problem, framing_stub, fam.get("questions_per_family", 3), evidence=evidence,
@@ -807,13 +814,16 @@ def build_parser():
                    help="Preset over the breadth knobs: 'focus' (default — prioritized top few) "
                         "or 'breadth' (wider coverage: more questions/rounds, bigger bucket). "
                         "Individual flags and INFOGAIN_* env vars override the preset.")
-    p.add_argument("--value-judge-mode", choices=["absolute", "pairwise", "solution"], default=None,
+    p.add_argument("--value-judge-mode", choices=["absolute", "pairwise", "solution", "behavior"],
+                   default=None,
                    help="How to elicit per-answer response-change/stakes: 'absolute' (default — "
                         "score each answer 0-1), 'pairwise' (forced-choice comparisons → "
-                        "Bradley-Terry; off-by-default experiment, #24), or 'solution' (Δplan = "
+                        "Bradley-Terry; off-by-default experiment, #24), 'solution' (Δplan = "
                         "fraction of --solution-samples sampled candidate solutions the answer "
-                        "invalidates; off-by-default experiment, #27). (Special-cased outside "
-                        "the auto-flags, like --mode.)")
+                        "invalidates; off-by-default experiment, #27), or 'behavior' (Δplan = "
+                        "BEHAVIOR/OUTCOME change of the delivered result, consequence not code "
+                        "size; off-by-default experiment, #28 — gated on the objective outcome "
+                        "harness). (Special-cased outside the auto-flags, like --mode.)")
     p.add_argument("--answer-prob-mode", choices=["stated", "sampled"], default=None,
                    help="How to estimate per-answer probabilities P(a): 'stated' (default — the "
                         "projection call's self-reported probs) or 'sampled' (forced-choice "
@@ -835,6 +845,13 @@ def build_parser():
                         "failed — what unknown would have prevented it?). 'auto' (default — gate on "
                         "failure-surface tasks) | 'on' | 'off'. Only applies when families are on. "
                         "(Special-cased outside the auto-flags.)")
+    p.add_argument("--reach", choices=["auto", "on", "off"], default=None,
+                   help="REACH lens (#29): a reachability question family — does a DIFFERENT, "
+                        "reachable point of view exist (container / SSH host / in-service "
+                        "execution / other identity, possibly CHAINED hops) that would turn an "
+                        "unknown into an observable? 'auto' (default — shares the vantage gate) "
+                        "| 'on' | 'off'. Only applies when families are on. (Special-cased "
+                        "outside the auto-flags.)")
     p.add_argument("--families-model", default=None,
                    help="Model alias for the families layer (family + per-family question "
                         "generation). Defaults to the FAMILIES constant ('glm'); NOT covered by "

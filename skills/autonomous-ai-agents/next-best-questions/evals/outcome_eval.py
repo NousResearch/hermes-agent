@@ -79,6 +79,13 @@ def solve_prompt(task, qa):
     if qa:
         block = ("\nYou asked the user clarifying questions; their answers:\n"
                  + "\n".join(f"- Q: {x['question']}\n  A: {x['answer']}" for x in qa) + "\n")
+    if task.get("kind") == "script":
+        return (
+            f"Write a standalone Python SCRIPT for the task below. It will be saved as "
+            f"solution.py and run as `python solution.py` from the project root (stdlib only).\n\n"
+            f"TASK: {task['ambiguous_prompt']}\n{block}\n"
+            "Reply with ONLY a Python code block."
+        )
     return (
         f"Write the Python function described below.\n\nTASK: {task['ambiguous_prompt']}\n"
         f"{block}\n"
@@ -113,17 +120,92 @@ def run_tests(code, tests, timeout=10):
     return (sum(results) / len(tests) if tests else 0.0), results
 
 
+_CHECK_RUNNER = """\
+import json, os, shutil, subprocess, sys
+
+
+def run_solution(env=None, args=(), drop=()):
+    moved = []
+    for p in drop:
+        if os.path.exists(p):
+            shutil.move(p, p + '.dropped')
+            moved.append(p)
+    try:
+        e = {'PATH': os.environ.get('PATH', '')}
+        e.update(env or {})
+        return subprocess.run([sys.executable, '-I', 'solution.py', *args],
+                              capture_output=True, text=True, timeout=10, env=e)
+    finally:
+        for p in moved:
+            shutil.move(p + '.dropped', p)
+
+
+_r0 = run_solution()
+stdout, exit_code, stderr = _r0.stdout, _r0.returncode, _r0.stderr
+SETUP = json.loads(r'''__SETUP__''')
+CHECKS = json.loads(r'''__CHECKS__''')
+try:
+    exec(SETUP, globals())
+except Exception as e:
+    print('SETUP-ERROR', e)
+else:
+    for _i, _c in enumerate(CHECKS):
+        try:
+            assert eval(_c), _c
+            print('PASS', _i)
+        except Exception:
+            print('FAIL', _i)
+"""
+
+
+def run_script_task(task, code, timeout=60):
+    """#31 agentic tier: materialize fixture files (with age_days -> mtime), run the solution
+    script in a tempdir sandbox, then evaluate `checks` (each scored independently, with
+    stdout/exit_code/stderr, run_solution(), and the task's `setup` in scope)."""
+    import tempfile
+    checks = task["checks"]
+    with tempfile.TemporaryDirectory() as td:
+        for rel, spec in (task.get("fixture") or {}).items():
+            content = spec["content"] if isinstance(spec, dict) else spec
+            path = os.path.join(td, rel)
+            os.makedirs(os.path.dirname(path) or td, exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+            age = (spec or {}).get("age_days") if isinstance(spec, dict) else None
+            if age:
+                old = time.time() - age * 86400
+                os.utime(path, (old, old))
+        with open(os.path.join(td, "solution.py"), "w") as f:
+            f.write(code)
+        runner = (_CHECK_RUNNER
+                  .replace("__SETUP__", json.dumps(task.get("setup") or ""))
+                  .replace("__CHECKS__", json.dumps(checks)))
+        with open(os.path.join(td, "check_runner.py"), "w") as f:
+            f.write(runner)
+        try:
+            r = subprocess.run([sys.executable, "check_runner.py"], cwd=td,
+                               capture_output=True, text=True, timeout=timeout)
+            out = r.stdout
+        except subprocess.TimeoutExpired:
+            out = ""
+    results = [f"PASS {i}" in out for i in range(len(checks))]
+    return (sum(results) / len(checks) if checks else 0.0), results
+
+
 def solve_and_score(task, qa, solver_model, timeout=240):
     out = pipeline.raw_chat(solver_model, solve_prompt(task, qa),
-                            timeout=timeout, num_predict=900)
+                            timeout=timeout, num_predict=1200)
     code = extract_code(out.get("content"))
-    frac, per = run_tests(code, task["tests"])
+    if task.get("kind") == "script":
+        frac, per = run_script_task(task, code)
+    else:
+        frac, per = run_tests(code, task["tests"])
     return {"code": code, "frac": frac, "per_test": per}
 
 
 # ── question sources (the arms' only difference) ─────────────────────────────
 
-def questions_nbq(task, k, skill_model, auto_derive=False, max_rounds=None):
+def questions_nbq(task, k, skill_model, auto_derive=False, max_rounds=None, judge_mode=None):
     cfg = dict(infogain.DEFAULTS)
     for key in infogain._MODEL_KEYS:
         cfg[key] = skill_model
@@ -133,6 +215,8 @@ def questions_nbq(task, k, skill_model, auto_derive=False, max_rounds=None):
         cfg["max_rounds"] = max_rounds
     if auto_derive:
         cfg["auto_derive"] = "on"
+    if judge_mode:
+        cfg["value_judge_mode"] = judge_mode   # #28: "behavior"
     result = infogain.run(task["ambiguous_prompt"], cfg)
     qs = [r["question"] for r in result["bucket"][:k]]
     meta = {"q_values": [round(r.get("value", 0.0), 3) for r in result["bucket"][:k]],
@@ -192,6 +276,12 @@ def run_cell(task, arm, k, models, max_rounds=None):
     elif arm == "nbq-derive":
         qs, meta = questions_nbq(task, k, models["skill"], auto_derive=True,
                                  max_rounds=max_rounds)
+    elif arm == "nbq-behavior":
+        qs, meta = questions_nbq(task, k, models["skill"], max_rounds=max_rounds,
+                                 judge_mode="behavior")
+    elif arm == "nbq-derive-behavior":
+        qs, meta = questions_nbq(task, k, models["skill"], auto_derive=True,
+                                 max_rounds=max_rounds, judge_mode="behavior")
     elif arm == "zeroshot":
         qs, meta = questions_zeroshot(task, k, models["skill"])
     elif arm == "prompt-evsi":
@@ -279,6 +369,8 @@ def analyze(rows):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--task-ids", nargs="*", default=None)
+    ap.add_argument("--bank", choices=["micro", "agentic", "both"], default="micro",
+                    help="task tier: micro-functions, the #31 agentic script tier, or both")
     ap.add_argument("--arms", nargs="*", default=["baseline", "nbq", "zeroshot", "prompt-evsi"])
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--skill-model", default="deepseek",
@@ -290,7 +382,10 @@ def main(argv=None):
     ap.add_argument("--out")
     args = ap.parse_args(argv)
 
-    tasks = [t for t in outcome_bank.TASKS if not args.task_ids or t["id"] in args.task_ids]
+    pool = (outcome_bank.TASKS if args.bank == "micro"
+            else outcome_bank.AGENTIC if args.bank == "agentic"
+            else outcome_bank.TASKS + outcome_bank.AGENTIC)
+    tasks = [t for t in pool if not args.task_ids or t["id"] in args.task_ids]
     if args.dry_run:
         t = tasks[0]
         print("DRY RUN — prompts only.\n\n=== solve (baseline) ===\n" + solve_prompt(t, []))

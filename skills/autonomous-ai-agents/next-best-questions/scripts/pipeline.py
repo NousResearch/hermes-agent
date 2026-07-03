@@ -234,6 +234,13 @@ _LENS_DIRECTIVE = {
                   "latent hazard whose answer, known now, would have prevented it — data loss / "
                   "corruption, security compromise, irreversible or destructive actions, silent wrong "
                   "output, runaway cost. Name the failure each question targets."),
+    "reach": ("These MUST ask whether a DIFFERENT, REACHABLE point of view would turn an unknown "
+              "into an observable — entering a container (docker exec), SSHing to a host, "
+              "executing inside a service (Apps Script, CI, cron), assuming another "
+              "identity/credential — including CHAINED hops (machine → machine → service). Name "
+              "the hop chain, the access each hop requires, and what the final vantage would "
+              "reveal or unlock. Note what the hop costs or risks (each hop widens the trust "
+              "surface)."),
 }
 
 
@@ -488,7 +495,14 @@ def _premortem_relevant(framing, problem=""):
     return bool(_PREMORTEM_RE.search(blob))
 
 
-def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=False):
+# Reach (#29) shares the vantage gate: the systems/access surface where "does a reachable other
+# point of view exist?" matters is the same surface where "does the answer differ by vantage?"
+# matters — one unified hint list, no new false-positive surface.
+_reach_relevant = _vantage_relevant
+
+
+def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=False,
+                    reach=False):
     lenses = [f"- {n_scoped} SCOPED families: each a DISTINCT region/dimension of the unknowns "
               "(lens \"scoped\")."]
     if contrarian:
@@ -500,7 +514,12 @@ def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=F
     if premortem:
         lenses.append("- 1 PRE-MORTEM family (lens \"premortem\"): unknowns that, if wrong, cause a "
                       "costly or irreversible FAILURE of the baseline plan in production.")
-    allowed = '"scoped"|"contrarian"|"vantage"' + ('|"premortem"' if premortem else '')
+    if reach:
+        lenses.append("- 1 REACH family (lens \"reach\"): unknowns that a DIFFERENT, REACHABLE point of "
+                      "view could turn into observables — a container/host/service/identity you could "
+                      "hop to (possibly via chained hops) to see what this vantage cannot.")
+    allowed = ('"scoped"|"contrarian"|"vantage"' + ('|"premortem"' if premortem else '')
+               + ('|"reach"' if reach else ''))
     return (
         "You are organizing the key unknowns about a prompt into FAMILIES before drilling into "
         "individual questions.\n\n"
@@ -516,15 +535,16 @@ def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=F
 
 
 def generate_families(problem, framing, model, n_scoped=3, contrarian=True, vantage="auto",
-                      premortem="auto", timeout=180, sink=None):
-    """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage` and
-    `premortem`: "on" | "off" | "auto" (include only when the task involves systems/access, resp.
-    a failure surface)."""
+                      premortem="auto", reach="auto", timeout=180, sink=None):
+    """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage`,
+    `premortem`, and `reach`: "on" | "off" | "auto" (include only when the task involves
+    systems/access, resp. a failure surface; reach shares the vantage gate)."""
     want_vantage = (vantage == "on") or (vantage == "auto" and _vantage_relevant(framing, problem))
     want_premortem = (premortem == "on") or (premortem == "auto"
                                              and _premortem_relevant(framing, problem))
+    want_reach = (reach == "on") or (reach == "auto" and _reach_relevant(framing, problem))
     obj, err = _call_json(model, families_prompt(problem, framing, n_scoped, contrarian, want_vantage,
-                                                 want_premortem),
+                                                 want_premortem, reach=want_reach),
                           timeout, num_predict=600, sink=sink)
     fams = []
     items = obj.get("families") if isinstance(obj, dict) else None
@@ -708,6 +728,78 @@ def judge_plan_change(problem, framing, baseline_plan, rec, model, timeout=150, 
     if capture and sink:
         rec.setdefault("_trace", {})["judge"] = sink[0]
     return rec
+
+
+# ── stage 3, behavior variant (off by default; #28) ──────────────────────────
+# The absolute judge above elicits delta_plan as "how much would your RESPONSE change" — which
+# the objective-outcome eval showed models read as TEXT-VOLUME change: a one-token fix that flips
+# every output ("case-sensitive or not?") scored 0.21 and was gated, while robustness boilerplate
+# that changes no behavior on expected inputs top-ranked (findings §Objective-outcome validation,
+# the audit's A10 demonstrated mechanically; the realized proxy shares the lens). This variant
+# elicits delta_plan as BEHAVIOR/OUTCOME change of the delivered result instead — consequence,
+# not code size. Same JSON contract and parser, so voi.score_record is untouched; selected via
+# value_judge_mode="behavior"; gated on the OBJECTIVE harness (evals/outcome_eval.py), a first.
+
+
+def judge_behavior_prompt(problem, framing, baseline_plan, question, answers):
+    enumerated = "\n".join(
+        f"{i + 1}. {a.get('answer', '')}" for i, a in enumerate(answers)
+    )
+    return (
+        "Estimate how much each possible answer would change the BEHAVIOR of what you deliver, "
+        "and the cost of answering wrong.\n\n"
+        f"PROMPT:\n{problem}\n\n"
+        f"GOAL: {framing.get('goal', '')}\n\n"
+        "BASELINE RESPONSE (your best answer to the prompt right now):\n"
+        f"{baseline_plan}\n\n"
+        f"QUESTION: {question}\n\n"
+        f"POSSIBLE ANSWERS:\n{enumerated}\n\n"
+        "For EACH answer, in the SAME ORDER, judge two 0-1 scores:\n"
+        "- delta_plan: if this answer is true, how much would the BEHAVIOR of the delivered "
+        "result differ from what the baseline would produce — its outputs, decisions, or "
+        "effects on real inputs? Judge consequence, not code size: a one-token change that "
+        "flips the output on most inputs is ~1.0; added defensive/robustness code that leaves "
+        "behavior on expected inputs unchanged is 0.2 or less.\n"
+        "- stakes: the cost/harm of having shipped the BASELINE behavior if this answer is "
+        "actually true (0 = harmless, 1 = severely wrong or damaging).\n\n"
+        "Return ONLY a JSON object:\n"
+        '{"answers": [{"delta_plan": float, "stakes": float}, ...]}\n'
+        "with exactly one entry per answer, in the given order.\n"
+        "Respond ONLY with the JSON object."
+    )
+
+
+def judge_plan_change_behavior(problem, framing, baseline_plan, rec, model, timeout=150,
+                               capture=False):
+    """Stage 3, behavior-Δ variant (#28). Same contract as judge_plan_change."""
+    answers = rec.get("answers") or []
+    if not answers:
+        return rec
+    sink = [] if capture else None
+    obj, err = _call_json(
+        model, judge_behavior_prompt(problem, framing, baseline_plan, rec["question"], answers),
+        timeout, num_predict=500, sink=sink,
+    )
+    judged = obj.get("answers") if isinstance(obj, dict) else (
+        obj if isinstance(obj, list) else [])
+    judged = judged or []
+    for i, a in enumerate(answers):
+        j = judged[i] if i < len(judged) and isinstance(judged[i], dict) else {}
+        a["delta_plan"] = j.get("delta_plan", 0.0)
+        a["stakes"] = j.get("stakes", 0.0)
+    if err:
+        rec["error"] = err
+    if capture and sink:
+        rec.setdefault("_trace", {})["judge"] = sink[0]
+    return rec
+
+
+def judge_plan_change_behavior_batch(problem, framing, baseline_plan, recs, model, timeout=150,
+                                     capture=False):
+    return _parallel(
+        lambda r: judge_plan_change_behavior(problem, framing, baseline_plan, r, model, timeout,
+                                             capture),
+        recs)
 
 
 # ── stage 3, comparative variant (off by default; #24) ────────────────────────

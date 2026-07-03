@@ -9361,7 +9361,7 @@ def run_workspace_github_pr_status(
     assert_default_tools_are_no_model()
     workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "status", context_token=context_token, registry=registry)
     selected = _normalize_github_pr_selector(selector, required=False)
-    args = ["pr", "view", selected, "--json", "number,title,state,url,isDraft,headRefName,baseRefName"] if selected else ["pr", "status", "--json", "currentBranch,createdBy"]
+    args = ["pr", "view", selected, "--json", "number,title,state,url,isDraft,headRefName,baseRefName"] if selected else ["pr", "status"]
     result = _run_workspace_gh(workspace, [item for item in args if item is not None])
     _require_git_success(workspace, result, "pr status")
     return {

@@ -194,13 +194,49 @@ class DelayedProgressAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.tool_progress_callback("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
-        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        self.tool_progress_callback("tool.started", "browser_navigate", "second command", {})
         time.sleep(0.1)
         return {
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
         }
+
+
+class CompletedToolStatusAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "skills_list", "", {})
+        time.sleep(0.35)
+        cb("tool.completed", "skills_list", None, None, duration=0.34, is_error=False)
+        time.sleep(0.1)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FailedToolStatusAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "cat /secret", {"command": "cat /secret"})
+        time.sleep(0.35)
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=1.25,
+            is_error=True,
+            result="Permission denied\nfull trace omitted",
+        )
+        time.sleep(0.1)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 class ManyProgressLinesAgent:
@@ -305,16 +341,57 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     )
 
     assert result["final_response"] == "done"
-    assert adapter.sent == [
-        {
-            "chat_id": "-1001",
-            "content": '💻 Running pwd',
-            "reply_to": None,
-            "metadata": {"thread_id": "17585"},
-        }
-    ]
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "-1001"
+    assert "Tool execution" in adapter.sent[0]["content"]
+    assert "Run terminal" in adapter.sent[0]["content"]
+    assert "Running" in adapter.sent[0]["content"]
+    assert adapter.sent[0]["reply_to"] is None
+    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_tool_status_card_updates_to_completed_in_place(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CompletedToolStatusAgent,
+        session_id="sess-tool-card-complete",
+        config_data={"display": {"tool_progress": "all"}},
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.edits
+    first_card = adapter.sent[0]["content"]
+    final_card = adapter.edits[-1]["content"]
+    assert "Run skills_list" in first_card
+    assert "Running" in first_card
+    assert "Run skills_list" in final_card
+    assert "Completed in 0.3s" in final_card
+    assert "Running" not in final_card
+
+
+@pytest.mark.asyncio
+async def test_tool_status_card_updates_to_failed_in_place(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FailedToolStatusAgent,
+        session_id="sess-tool-card-failed",
+        config_data={"display": {"tool_progress": "all"}},
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.edits
+    final_card = adapter.edits[-1]["content"]
+    assert "Run terminal" in final_card
+    assert "Failed in 1.2s" in final_card
+    assert "Permission denied" in final_card
+    assert "full trace omitted" not in final_card
 
 
 @pytest.mark.asyncio
@@ -567,43 +644,40 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     return adapter, result
 
 
-def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
+def test_all_mode_preserves_truncated_preview_inside_status_card(monkeypatch, tmp_path):
+    """Default all/new mode keeps the existing preview inside the status card."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — the preview portion <= 40 chars.
-    assert "..." in content
-    preview_text = _extract_progress_preview(content)
-    assert preview_text is not None, f"No preview found in: {content}"
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert "Tool execution" in content
+    assert "Run terminal" in content
+    assert LongPreviewAgent.LONG_CMD[:37] in content
+    assert LongPreviewAgent.LONG_CMD not in content
 
 
-def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
-    """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
+def test_all_mode_custom_preview_length_applies_inside_status_card(monkeypatch, tmp_path):
+    """tool_preview_length still controls the detail stored inside the card."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer.
-    preview_text = _extract_progress_preview(content)
-    assert preview_text is not None, f"No preview found in: {content}"
-    # Should be longer than the 40-char default
-    assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
-    # But still capped at 120
-    assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert "Tool execution" in content
+    assert "Run terminal" in content
+    assert LongPreviewAgent.LONG_CMD[:117] in content
+    assert LongPreviewAgent.LONG_CMD not in content
 
 
-def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
-    """Short previews (under the cap) are not truncated."""
+def test_all_mode_compact_card_honors_large_preview_cap(monkeypatch, tmp_path):
+    """A generous cap keeps the full preview in the card detail."""
     # Set a generous cap — the LongPreviewAgent's command is ~165 chars
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=200)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With a 200-char cap, the 165-char command should NOT be truncated
-    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+    assert "Tool execution" in content
+    assert "Run terminal" in content
+    assert LongPreviewAgent.LONG_CMD in content
 
 
 class CommentaryAgent:
@@ -796,14 +870,8 @@ async def _run_with_agent(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch, tmp_path):
-    """Tool progress should start a second editable bubble before Telegram's limit.
-
-    Regression: once the first progress bubble grew past the platform limit,
-    the gateway kept trying to edit that same oversized full transcript.  The
-    Telegram adapter then split-and-sent a fresh continuation on every update,
-    causing a noisy trail of one-line messages instead of a new editable bubble.
-    """
+async def test_compact_progress_card_rolls_before_small_platform_limit(monkeypatch, tmp_path):
+    """Compact tool cards still use the existing under-limit rollover path."""
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -821,7 +889,7 @@ async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch
 
     assert result["final_response"] == "done"
     assert isinstance(adapter, SmallLimitProgressAdapter)
-    assert len(adapter.sent) >= 2, "expected a fresh progress bubble after the first filled"
+    assert len(adapter.sent) >= 2
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
     all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
@@ -1244,7 +1312,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
 
     async def send_and_invalidate(chat_id, content, reply_to=None, metadata=None):
         result = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if "first command" in content and not invalidated["done"]:
+        if "Run terminal" in content and not invalidated["done"]:
             invalidated["done"] = True
             runner._invalidate_session_run_generation(session_key, reason="test_stop")
         return result
@@ -1264,8 +1332,8 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     all_progress_text = " ".join(call["content"] for call in adapter.sent)
     all_progress_text += " ".join(call["content"] for call in adapter.edits)
     assert result["final_response"] == "done"
-    assert 'first command' in all_progress_text
-    assert 'second command' not in all_progress_text
+    assert "Run terminal" in all_progress_text
+    assert "Run browser_navigate" not in all_progress_text
 
 
 @pytest.mark.asyncio
@@ -1425,12 +1493,9 @@ class TerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
-    """Terminal progress on a markdown-capable (supports_code_blocks) gateway
-    renders a bare fenced code block — no language tag (Slack mrkdwn would print
-    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
-    command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+async def test_terminal_progress_renders_compact_status_card_by_default(monkeypatch, tmp_path):
+    """Default terminal progress renders one status card with the old command
+    preview preserved inside the card detail."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1467,15 +1532,14 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
-    # Bare fenced block, no language tag (no '```bash').
+    assert "Tool execution" in all_content
+    assert "Run terminal" in all_content
+    assert "Running" in all_content
     assert "```" in all_content
     assert "```bash" not in all_content
-    # Non-verbose collapses to the first line + truncation marker — the later
-    # command lines must NOT appear (this was the "huge block" regression).
     assert "set -euo pipefail" in all_content
+    assert "set -euo pipefail ..." in all_content
     assert "npm install -g hyperframes@latest" not in all_content
-    assert "node --version" not in all_content
-    # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
 
 
@@ -1590,10 +1654,8 @@ class MultiTerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_path):
-    """Back-to-back terminal calls render ONE "terminal" header followed by
-    adjacent code blocks; a different tool in between resets the header so the
-    next terminal call gets a fresh one."""
+async def test_multiple_tool_progress_rows_share_one_status_card(monkeypatch, tmp_path):
+    """Back-to-back tool calls render as ordered rows in one editable card."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1632,12 +1694,12 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
         call["content"] for call in adapter.edits
     ]
     final = max(contents, key=len) if contents else ""
-    # All four commands present as code blocks.
-    for cmd in ("echo one", "echo two", "echo three", "echo four"):
-        assert cmd in final
-    # Exactly TWO terminal headers: one for the first run of three calls,
-    # one for the terminal call after web_search broke the streak.
-    assert final.count("terminal\n```") == 2
+    assert "Tool execution" in final
+    assert final.count("Run terminal") == 4
+    assert "Run web_search" in final
+    assert final.index("Run terminal") < final.index("Run web_search")
+    for raw_preview in ("echo one", "echo two", "echo three", "echo four", "query stuff"):
+        assert raw_preview in final
 
 
 @pytest.mark.asyncio

@@ -17104,6 +17104,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        tool_status_counter = [0]  # Stable fallback ids for status-card rows
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
@@ -17187,6 +17188,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not progress_queue or not _run_still_current():
                 return
 
+            def _status_payload(
+                kind: str,
+                *,
+                error: str | None = None,
+                summary: str | None = None,
+            ):
+                from gateway.tool_status_cards import ToolStatusCards
+
+                _tool_name = tool_name or str(kwargs.get("tool_name") or "tool")
+                _call_id = (
+                    kwargs.get("id")
+                    or kwargs.get("tool_call_id")
+                    or kwargs.get("call_id")
+                )
+                if kind == "tool_call_started" and not _call_id:
+                    tool_status_counter[0] += 1
+                    _call_id = f"{_tool_name}:{tool_status_counter[0]}"
+                duration = kwargs.get("duration")
+                try:
+                    duration = float(duration) if duration is not None else None
+                except (TypeError, ValueError):
+                    duration = None
+                return (
+                    "__tool_status__",
+                    ToolStatusCards.event_payload(
+                        kind,
+                        tool_name=_tool_name,
+                        display_name=kwargs.get("display_name") or f"Run {_tool_name}",
+                        call_id=str(_call_id) if _call_id else None,
+                        started_at=kwargs.get("started_at"),
+                        duration=duration,
+                        summary=summary if summary is not None else kwargs.get("summary"),
+                        error=error,
+                    ),
+                )
+
+            if tool_progress_enabled and progress_mode != "verbose":
+                if event_type in {"tool.completed", "tool_call_completed"} and tool_name:
+                    _result = kwargs.get("result")
+                    _is_error = bool(kwargs.get("is_error"))
+                    if _is_error:
+                        progress_queue.put(
+                            _status_payload(
+                                "tool_call_failed",
+                                error=kwargs.get("error")
+                                or kwargs.get("error_summary")
+                                or (str(_result) if _result is not None else None),
+                            )
+                        )
+                    else:
+                        progress_queue.put(_status_payload("tool_call_completed"))
+                    # Let the long-tool hint below run for completed events.
+                elif event_type == "tool_call_failed" and tool_name:
+                    progress_queue.put(
+                        _status_payload(
+                            "tool_call_failed",
+                            error=kwargs.get("error") or kwargs.get("error_summary"),
+                        )
+                    )
+                    return
+                if event_type == "tool_call_started" and tool_name:
+                    progress_queue.put(
+                        _status_payload(
+                            "tool_call_started",
+                            summary=kwargs.get("summary") or preview,
+                        )
+                    )
+                    return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting
@@ -17214,6 +17284,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+                return
+
+            if progress_mode != "verbose" and event_type in {
+                "tool.completed",
+                "tool_call_completed",
+            }:
                 return
 
             # "_thinking" is assistant scratch text between tool calls.  It
@@ -17371,6 +17447,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
+
+            if tool_progress_enabled and progress_mode != "verbose":
+                progress_queue.put(_status_payload("tool_call_started", summary=msg))
+                return
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -17473,6 +17553,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self._adapter_for_source(source)
             if not adapter:
                 return
+            from gateway.tool_status_cards import ToolStatusCards
+
+            tool_status_cards = ToolStatusCards(
+                app_name=os.getenv("HERMES_AGENT_NAME", "").strip() or "Hermes"
+            )
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
@@ -17635,8 +17720,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                    # Handle status-card updates: replace the editable progress
+                    # card in-place instead of appending another noisy line.
+                    if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__tool_status__":
+                        tool_status_cards.apply_event(raw[1])
+                        progress_lines = tool_status_cards.render_lines()
+                        last_progress_msg[0] = tool_status_cards.render()
+                        repeat_count[0] = 0
+                        msg = last_progress_msg[0]
                     # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -17778,6 +17871,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 progress_lines = []
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
+                            elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__tool_status__":
+                                tool_status_cards.apply_event(raw[1])
+                                progress_lines = tool_status_cards.render_lines()
                             else:
                                 progress_lines.append(raw)
                                 await _roll_progress_overflow_if_needed()

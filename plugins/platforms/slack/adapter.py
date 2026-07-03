@@ -84,6 +84,15 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _ToolProgressCardCache:
+    """Last rendered tool-progress card text for an editable Slack message."""
+
+    content: str
+    expanded: bool = False
+    updated_at: float = field(default_factory=time.monotonic)
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -421,6 +430,10 @@ class SlackAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    _TOOL_PROGRESS_TOGGLE_ACTION_ID = "hermes_tool_progress_toggle"
+    _TOOL_PROGRESS_CACHE_MAX = 1000
+    _TOOL_PROGRESS_DETAIL_BLOCK_LIMIT = 8
+    _TOOL_PROGRESS_SECTION_LIMIT = 2900
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is
@@ -474,6 +487,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Tool-progress cards are editable Slack messages with a local
+        # expand/collapse state, keyed by channel+message ts.
+        self._tool_progress_cards: Dict[str, _ToolProgressCardCache] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1185,6 +1201,10 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            self._app.action(self._TOOL_PROGRESS_TOGGLE_ACTION_ID)(
+                self._handle_tool_progress_toggle
+            )
+
             # Register plugin-provided Block Kit action handlers.
             #
             # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
@@ -1386,12 +1406,13 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            # Block Kit (opt-in): render the primary message as structured
-            # blocks. Only applied to a single-chunk message — a >39k response
-            # that had to be split is pathological for Block Kit's 50-block /
-            # 3000-char limits, so those fall back to plain text. The ``text``
-            # field is always kept as the notification/accessibility fallback.
-            blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+            # Tool-progress cards are runtime UI and always use Block Kit when
+            # they fit in one Slack message. General rich blocks remain opt-in.
+            blocks = None
+            tool_progress_blocks = None
+            if len(chunks) == 1:
+                tool_progress_blocks = self._maybe_tool_progress_blocks(content)
+                blocks = tool_progress_blocks or self._maybe_blocks(content)
 
             for i, chunk in enumerate(chunks):
                 kwargs = {
@@ -1418,6 +1439,13 @@ class SlackAdapter(BasePlatformAdapter):
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
                 self._bot_message_ts.add(sent_ts)
+                if tool_progress_blocks:
+                    self._remember_tool_progress_card(
+                        chat_id,
+                        sent_ts,
+                        content,
+                        expanded=False,
+                    )
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
                     self._bot_message_ts.add(thread_ts)
@@ -1490,14 +1518,26 @@ class SlackAdapter(BasePlatformAdapter):
                 "ts": message_id,
                 "text": formatted,
             }
-            # Only render Block Kit on the FINAL edit. Intermediate streaming
-            # edits stay plain mrkdwn — re-deriving a full block layout on every
-            # progressive flush would be wasteful and jittery. ``text`` is kept
-            # as the fallback either way.
-            if finalize:
+            expanded = self._tool_progress_expanded(chat_id, message_id)
+            blocks = self._maybe_tool_progress_blocks(content, expanded=expanded)
+            if blocks:
+                update_kwargs["blocks"] = blocks
+                self._remember_tool_progress_card(
+                    chat_id,
+                    message_id,
+                    content,
+                    expanded=expanded,
+                )
+            # Only render general Block Kit on the FINAL edit. Intermediate
+            # assistant streaming edits stay plain mrkdwn, but tool-progress
+            # edits above keep their card UI live.
+            elif finalize:
                 blocks = self._maybe_blocks(content)
                 if blocks:
                     update_kwargs["blocks"] = blocks
+                self._forget_tool_progress_card(chat_id, message_id)
+            else:
+                self._forget_tool_progress_card(chat_id, message_id)
             await self._get_client(chat_id).chat_update(**update_kwargs)
             if finalize:
                 await self.stop_typing(chat_id)
@@ -1900,6 +1940,225 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
+
+    def _maybe_tool_progress_blocks(
+        self,
+        content: str,
+        *,
+        expanded: bool = False,
+    ) -> Optional[list]:
+        parsed = self._parse_tool_progress_card(content)
+        if not parsed:
+            return None
+
+        rows = parsed["rows"]
+        total = len(rows)
+        completed = sum(1 for row in rows if row["status"] == "completed")
+        failed = sum(1 for row in rows if row["status"] == "failed")
+        running = sum(1 for row in rows if row["status"] == "running")
+        status_bits = [f"{total} step{'s' if total != 1 else ''}"]
+        if completed:
+            status_bits.append(f"{completed} completed")
+        if failed:
+            status_bits.append(f"{failed} failed")
+        if running:
+            status_bits.append(f"{running} running")
+
+        app_name, title = self._tool_progress_title_parts(parsed["title"])
+        header_text = (
+            f"*{self.format_message(app_name)}* · {self.format_message(title)}\n"
+            + self.format_message(" · ".join(status_bits))
+        )
+
+        button_text = "Hide details" if expanded else "Show details"
+        button_value = "expanded" if expanded else "collapsed"
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": self._truncate_block_text(header_text),
+                },
+                "accessory": {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": button_text,
+                        "emoji": True,
+                    },
+                    "action_id": self._TOOL_PROGRESS_TOGGLE_ACTION_ID,
+                    "value": button_value,
+                },
+            }
+        ]
+
+        if expanded:
+            detail_text = self._tool_progress_detail_text(rows)
+            if detail_text:
+                blocks.append({"type": "divider"})
+                for chunk in self._split_tool_progress_detail(detail_text):
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": chunk},
+                            "expand": False,
+                        }
+                    )
+
+        return blocks[:50]
+
+    def _parse_tool_progress_card(self, content: str) -> Optional[Dict[str, Any]]:
+        lines = (content or "").splitlines()
+        if not lines or "Tool execution" not in lines[0]:
+            return None
+
+        rows: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+        for line in lines[1:]:
+            stripped = line.strip()
+            row = self._parse_tool_progress_row(stripped)
+            if row:
+                current = row
+                rows.append(current)
+                continue
+            if current is None or not stripped:
+                continue
+            detail = line[4:] if line.startswith("    ") else stripped
+            current["details"].append(detail)
+
+        if not rows:
+            return None
+        return {"title": lines[0].strip(), "rows": rows}
+
+    @staticmethod
+    def _parse_tool_progress_row(line: str) -> Optional[Dict[str, Any]]:
+        match = re.match(
+            r"^(?P<icon>[✓✕⏳])\s+(?P<display>.+?)\s+·\s+(?P<tail>.+)$",
+            line,
+        )
+        if not match:
+            return None
+
+        icon = match.group("icon")
+        tail = match.group("tail")
+        status = {
+            "✓": "completed",
+            "✕": "failed",
+            "⏳": "running",
+        }.get(icon, "running")
+        status_text, _, error = tail.partition(" · ")
+        return {
+            "line": line,
+            "display_name": match.group("display"),
+            "status": status,
+            "status_text": status_text,
+            "error": error or None,
+            "details": [],
+        }
+
+    @staticmethod
+    def _tool_progress_title_parts(title: str) -> Tuple[str, str]:
+        match = re.match(r"^\*(?P<app>.+?)\*\s*·\s*(?P<title>.+)$", title)
+        if match:
+            return match.group("app"), match.group("title")
+        if "·" in title:
+            app, card_title = title.split("·", 1)
+            return app.strip(" *"), card_title.strip()
+        return "Hermes", "Tool execution"
+
+    def _tool_progress_detail_text(self, rows: List[Dict[str, Any]]) -> str:
+        sections = []
+        for row in rows:
+            title, body = self._tool_progress_detail_parts(row)
+            if not title and not body:
+                continue
+            title_text = self.format_message(title)
+            if row["status"] == "failed":
+                title_text = f"{title_text} · {self.format_message(row['status_text'])}"
+            lines = [f"*{title_text}*"]
+            if row["status"] == "failed" and row.get("error"):
+                lines.append(f"✕ {self.format_message(row['error'])}")
+            if body:
+                lines.append(self.format_message(body))
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _tool_progress_detail_parts(row: Dict[str, Any]) -> Tuple[str, str]:
+        detail_lines = [
+            str(line).strip()
+            for line in row.get("details", [])
+            if str(line).strip() and str(line).strip() != "```"
+        ]
+        if detail_lines:
+            return detail_lines[0], "\n".join(detail_lines[1:]).rstrip()
+
+        display_name = str(row.get("display_name") or "").strip()
+        if display_name.lower().startswith("run "):
+            display_name = display_name[4:].strip()
+        return display_name, ""
+
+    def _split_tool_progress_detail(self, text: str) -> List[str]:
+        limit = self._TOOL_PROGRESS_SECTION_LIMIT
+        max_chunks = self._TOOL_PROGRESS_DETAIL_BLOCK_LIMIT
+        chunks: List[str] = []
+        remaining = text
+        while remaining and len(chunks) < max_chunks:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                remaining = ""
+                break
+            piece = remaining[:limit]
+            cut = piece.rfind("\n")
+            if cut > limit // 2:
+                piece = piece[:cut]
+                remaining = remaining[cut + 1 :]
+            else:
+                remaining = remaining[limit:]
+            chunks.append(piece)
+
+        if remaining and chunks:
+            marker = "\n... details truncated"
+            chunks[-1] = chunks[-1][: max(0, limit - len(marker))] + marker
+        return chunks
+
+    def _truncate_block_text(self, text: str) -> str:
+        if len(text) <= self._TOOL_PROGRESS_SECTION_LIMIT:
+            return text
+        marker = "\n... truncated"
+        return text[: self._TOOL_PROGRESS_SECTION_LIMIT - len(marker)] + marker
+
+    def _tool_progress_cache_key(self, chat_id: str, message_id: str) -> str:
+        return f"{chat_id}:{message_id}"
+
+    def _tool_progress_expanded(self, chat_id: str, message_id: str) -> bool:
+        cache = self._tool_progress_cards.get(
+            self._tool_progress_cache_key(chat_id, message_id)
+        )
+        return bool(cache and cache.expanded)
+
+    def _remember_tool_progress_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        expanded: bool,
+    ) -> None:
+        key = self._tool_progress_cache_key(chat_id, message_id)
+        self._tool_progress_cards.pop(key, None)
+        self._tool_progress_cards[key] = _ToolProgressCardCache(
+            content=content,
+            expanded=expanded,
+        )
+        while len(self._tool_progress_cards) > self._TOOL_PROGRESS_CACHE_MAX:
+            self._tool_progress_cards.pop(next(iter(self._tool_progress_cards)))
+
+    def _forget_tool_progress_card(self, chat_id: str, message_id: str) -> None:
+        self._tool_progress_cards.pop(
+            self._tool_progress_cache_key(chat_id, message_id),
+            None,
+        )
 
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.
@@ -3451,6 +3710,46 @@ class SlackAdapter(BasePlatformAdapter):
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
         return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
+    async def _handle_tool_progress_toggle(self, ack, body, action) -> None:
+        """Expand/collapse a Slack tool-progress card in-place."""
+        await ack()
+
+        message = body.get("message", {}) or {}
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        if not channel_id or not msg_ts:
+            return
+
+        key = self._tool_progress_cache_key(channel_id, msg_ts)
+        cache = self._tool_progress_cards.get(key)
+        content = cache.content if cache else (message.get("text") or "")
+        if not content:
+            return
+
+        current_expanded = (
+            cache.expanded if cache else action.get("value") == "expanded"
+        )
+        expanded = not current_expanded
+        blocks = self._maybe_tool_progress_blocks(content, expanded=expanded)
+        if not blocks:
+            return
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=self.format_message(content),
+                blocks=blocks,
+            )
+            self._remember_tool_progress_card(
+                channel_id,
+                msg_ts,
+                content,
+                expanded=expanded,
+            )
+        except Exception as exc:
+            logger.warning("[Slack] Failed to toggle tool progress card: %s", exc)
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""

@@ -54,6 +54,8 @@ def run(args):
             print(f"No case with id '{args.case}'", file=sys.stderr)
             return 1
     cfg = build_cfg(args)
+    import validate_evsi  # noqa: E402  (same-dir import; only needed for the preflight)
+    validate_evsi.preflight_model(pipeline.resolve_alias(args.judge_model), "judge")
 
     results = []
     for case in cases:

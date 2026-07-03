@@ -435,6 +435,17 @@ both verdicts, plus two pieces the primary study didn't cover:
   single-rep judge noise; reverse-string degenerate (empty bucket both arms). Acceptability
   identical across arms (2/4; both failures arm-independent — usaw known-bad, and reverse-string
   now fails `framing_accuracy`=0.2 in BOTH arms: pre-existing, not premortem, worth a look).
+  **RESOLVED (2026-07-03):** two compounding causes, both fixed. (1) Instrument: with an empty
+  bucket, `question_relevance` (REQUIRED_FOR_ACCEPT) is *vacuous* and how a judge encodes N/A is
+  model luck — `fast` scored it 0.0 while its own reason said the empty bucket was correct; other
+  judges dump the noise elsewhere (the 0.2 `framing_accuracy` sighting). `adjudicator.adjudicate`
+  now drops `question_relevance` from the required set when zero questions are kept (`calibration`
+  alone carries the empty-bucket verdict; pinned in tests). (2) Genuine framing blemish: `fast`'s
+  `decision`/`baseline_plan` leaked the framing stage's own JSON-schema instructions ("output the
+  requested JSON structure") — `frame_prompt` now states that `decision`/`baseline_plan` describe
+  the response to the PROMPT, never this JSON. Post-fix: reverse-string acceptable=True (bucket 0,
+  clean framing "a Python function"); underspecified control internal-doc-search unregressed
+  (bucket 5, framing_accuracy 1.0).
 
 Same-day convergence from two differently-confounded instruments (all-fast vs fast-gen/deepseek-judge;
 all_scored vs bucket; 14-cell vs 34-prompt scan) is the strongest form of this evidence: **auto-on

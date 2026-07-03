@@ -165,7 +165,13 @@ def adjudicate(case, result, judge_model="deepseek", timeout=180):
         return {"criteria": {}, "acceptable": False, "summary": "",
                 "error": err or "judge returned no JSON"}
     criteria = _coerce_criteria(parsed)
-    acceptable = all(criteria[c]["score"] >= ACCEPT_FLOOR for c in REQUIRED_FOR_ACCEPT)
+    required = REQUIRED_FOR_ACCEPT
+    if not (result.get("bucket") or []):
+        # Zero kept questions: the per-question criterion is VACUOUS, and how a judge encodes
+        # "N/A" is model luck (fast returns 0.0 with a reason saying the behavior was correct).
+        # calibration alone carries the verdict on whether an empty bucket was right.
+        required = tuple(c for c in required if c != "question_relevance")
+    acceptable = all(criteria[c]["score"] >= ACCEPT_FLOOR for c in required)
     return {"criteria": criteria, "acceptable": acceptable,
             "summary": (parsed.get("summary") or "")[:300], "error": None}
 

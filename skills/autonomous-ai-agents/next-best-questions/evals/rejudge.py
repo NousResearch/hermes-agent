@@ -103,7 +103,9 @@ def main(argv=None):
         rows = [rows[int(i * step)] for i in range(args.max_rows)]
 
     t0 = time.time()
-    pairs = rejudge_rows(rows, pipeline.resolve_alias(args.judge_model), args.timeout)
+    judge_model = pipeline.resolve_alias(args.judge_model)
+    validate_evsi.preflight_model(judge_model, "judge")
+    pairs = rejudge_rows(rows, judge_model, args.timeout)
     stats = compare(pairs)
     out = {"pairs": pairs, "stats": stats, "judge_model": args.judge_model,
            "source": args.path, "elapsed_s": round(time.time() - t0, 1)}

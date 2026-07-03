@@ -212,11 +212,14 @@ def frame_prompt(problem, evidence=None):
         "\nReturn ONLY a JSON object:\n"
         '{"goal": str, "decision": str, "success_criteria": [str], "baseline_plan": str}\n'
         "- goal: the underlying objective of the prompt in one sentence.\n"
-        "- decision: the kind of response/answer the prompt calls for.\n"
+        "- decision: the kind of response/answer the prompt calls for (e.g. 'a Python function', "
+        "'a migration plan', 'a recommendation') — NOT this JSON object or its fields.\n"
         "- success_criteria: 2-4 short bullet strings for a good response.\n"
         "- baseline_plan: the best response/answer you would give to the prompt RIGHT NOW, "
         "given it and any established facts above (assume the most likely interpretation of "
-        "remaining ambiguity; 2-5 sentences). This baseline is what we measure value against.\n"
+        "remaining ambiguity; 2-5 sentences). This baseline is what we measure value against. "
+        "It must address the PROMPT itself — never describe this JSON structure or these "
+        "instructions.\n"
         "Respond ONLY with the JSON object."
     )
 
@@ -456,9 +459,11 @@ def _hint_pattern(hints):
 _VANTAGE_RE = _hint_pattern(_VANTAGE_HINT)
 
 
-def _vantage_relevant(framing):
-    """Cheap gate: does the task involve systems/access/environments (so vantage matters)?"""
-    blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
+def _vantage_relevant(framing, problem=""):
+    """Cheap gate: does the task involve systems/access/environments (so vantage matters)?
+    Matches the raw problem text as well as the framing — framing is model-paraphrased, so hint
+    words present in the prompt can otherwise vanish before the gate sees them."""
+    blob = f"{problem} {framing.get('goal', '')} {framing.get('decision', '')}".lower()
     return bool(_VANTAGE_RE.search(blob))
 
 
@@ -476,9 +481,10 @@ _PREMORTEM_HINT = ("write", "send", "delete", "remove", "deploy", "release", "mi
 _PREMORTEM_RE = _hint_pattern(_PREMORTEM_HINT)
 
 
-def _premortem_relevant(framing):
-    """Cheap gate: could acting on the baseline plan cause a costly/irreversible failure?"""
-    blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
+def _premortem_relevant(framing, problem=""):
+    """Cheap gate: could acting on the baseline plan cause a costly/irreversible failure?
+    Matches the raw problem text as well as the framing (same rationale as _vantage_relevant)."""
+    blob = f"{problem} {framing.get('goal', '')} {framing.get('decision', '')}".lower()
     return bool(_PREMORTEM_RE.search(blob))
 
 
@@ -514,8 +520,9 @@ def generate_families(problem, framing, model, n_scoped=3, contrarian=True, vant
     """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage` and
     `premortem`: "on" | "off" | "auto" (include only when the task involves systems/access, resp.
     a failure surface)."""
-    want_vantage = (vantage == "on") or (vantage == "auto" and _vantage_relevant(framing))
-    want_premortem = (premortem == "on") or (premortem == "auto" and _premortem_relevant(framing))
+    want_vantage = (vantage == "on") or (vantage == "auto" and _vantage_relevant(framing, problem))
+    want_premortem = (premortem == "on") or (premortem == "auto"
+                                             and _premortem_relevant(framing, problem))
     obj, err = _call_json(model, families_prompt(problem, framing, n_scoped, contrarian, want_vantage,
                                                  want_premortem),
                           timeout, num_predict=600, sink=sink)

@@ -103,6 +103,23 @@ class TestAdjudicatorMocked(unittest.TestCase):
                                        _good_result(), "deepseek")
         self.assertFalse(v["acceptable"])
 
+    def test_empty_bucket_relevance_is_vacuous(self):
+        # bucket=0 on a well-specified control: question_relevance is N/A and how a judge
+        # encodes that is model luck (fast scored it 0.0 while its reason said the behavior
+        # was correct — the reverse-string CI flake). It must not decide acceptance.
+        na_low = self._judge({"framing_accuracy": 0.9, "question_relevance": 0.0,
+                              "value_justified": 1.0, "diversity": 1.0, "calibration": 1.0})
+        empty = _good_result(); empty["bucket"] = []
+        with mock.patch.object(pipeline, "_call_json", return_value=(na_low, None)):
+            v = adjudicator.adjudicate({"problem": "p", "expectation": "well-specified"},
+                                       empty, "deepseek")
+        self.assertTrue(v["acceptable"])
+        # ...but with kept questions the same scores still reject (relevance is real again)
+        with mock.patch.object(pipeline, "_call_json", return_value=(na_low, None)):
+            v2 = adjudicator.adjudicate({"problem": "p", "expectation": "underspecified"},
+                                        _good_result(), "deepseek")
+        self.assertFalse(v2["acceptable"])
+
     def test_judge_error_not_acceptable(self):
         with mock.patch.object(pipeline, "_call_json", return_value=(None, "boom")):
             v = adjudicator.adjudicate({"problem": "p", "expectation": "underspecified"},
@@ -269,6 +286,24 @@ class TestValidateEvsiRows(unittest.TestCase):
                                                source="all_scored")
         self.assertEqual(rows[0]["lens"], "")
         self.assertEqual(rows[0]["family"], "")
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestPreflight(unittest.TestCase):
+    """Judge preflight: reasoning-channel models return empty content via raw_chat and would
+    silently null every judged value (the #26 gpt-oss:20b burned smoke) — abort before any rows."""
+
+    def test_empty_content_exits_2_naming_the_model(self):
+        with mock.patch.object(validate_evsi.pipeline, "raw_chat",
+                               return_value={"content": "", "elapsed": 0.1, "error": None}):
+            with self.assertRaises(SystemExit) as ctx:
+                validate_evsi.preflight_model("gpt-oss:20b", "judge")
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_normal_content_proceeds(self):
+        with mock.patch.object(validate_evsi.pipeline, "raw_chat",
+                               return_value={"content": "OK", "elapsed": 0.1, "error": None}):
+            validate_evsi.preflight_model("fast", "judge")  # must not raise
 
 
 @unittest.skipUnless(_OK, "skill scripts not importable")

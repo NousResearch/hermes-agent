@@ -354,6 +354,36 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertTrue(pipeline._premortem_relevant(
             {"goal": "migrate the orders table", "decision": "how to run the migration"}))
 
+    def test_gates_match_raw_problem_text(self):
+        # framing is model-paraphrased, so a hint verb in the PROMPT can vanish before the gate
+        # sees it (post-rename smoke: "migrate prod DB" framed by fast -> no premortem family).
+        # The gates now match the raw problem text too.
+        paraphrased = {"goal": "move customer data to the new schema", "decision": "a plan"}
+        self.assertFalse(pipeline._premortem_relevant(paraphrased))  # framing alone: no hint
+        self.assertTrue(pipeline._premortem_relevant(paraphrased, "migrate the prod DB and deploy"))
+        self.assertTrue(pipeline._vantage_relevant(
+            {"goal": "improve the workflow", "decision": ""}, "fix the login on the staging server"))
+        # read-only prompts stay quiet even with the problem text in the blob
+        self.assertFalse(pipeline._premortem_relevant(
+            {"goal": "explain the findings", "decision": ""}, "summarize this research paper"))
+        # word boundaries hold on the problem text too
+        self.assertFalse(pipeline._premortem_relevant(
+            {"goal": "", "decision": ""}, "improve the product page dropdown"))
+
+    def test_generate_families_gates_on_problem(self):
+        # call-site threading: a hint verb only in the raw problem must reach families_prompt
+        captured = {}
+
+        def fake_call_json(model, prompt, timeout, num_predict=600, sink=None):
+            captured["prompt"] = prompt
+            return {"families": [{"name": "F", "scope": "s", "lens": "scoped"}]}, None
+
+        framing = {"goal": "move customer data to the new schema", "decision": "a plan"}
+        with mock.patch.object(pipeline, "_call_json", side_effect=fake_call_json):
+            pipeline.generate_families("migrate the prod DB", framing, "fast",
+                                       vantage="auto", premortem="auto")
+        self.assertIn("PRE-MORTEM", captured["prompt"])
+
     def test_families_prompt_premortem_block_is_gated(self):
         on = pipeline.families_prompt("p", {"goal": "g", "decision": "d"}, 3, True, True, premortem=True)
         off = pipeline.families_prompt("p", {"goal": "g", "decision": "d"}, 3, True, True, premortem=False)

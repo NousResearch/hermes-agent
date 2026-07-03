@@ -43,6 +43,20 @@ import testbank  # noqa: E402
 PROMPTS = testbank.ALL
 
 
+def preflight_model(model, role, timeout=60):
+    """Fail fast if a model can't serve eval duty. Reasoning-channel models (e.g. gpt-oss:20b)
+    return an empty message.content via raw_chat, which silently nulls every judged value — the
+    #26 smoke burned a full run before this was diagnosed. One trivial call before any rows are
+    produced; exits 2 with the model named instead of finishing hours later with all-null output."""
+    out = pipeline.raw_chat(model, "Reply with the single word OK.", timeout=timeout, num_predict=16)
+    if not (out.get("content") or "").strip():
+        print(f"preflight: {role} model {model!r} returned empty content "
+              f"(error={out.get('error')!r}). Reasoning-channel models are unusable via "
+              "raw_chat — every judged value would be null. Pin a plain-content model "
+              "(e.g. --judge-model fast).", file=sys.stderr)
+        sys.exit(2)
+
+
 def change_judge(prompt, baseline, new, model, timeout):
     """0..1: how much RESPONSE B differs in substance/recommendation from baseline A."""
     p = ("Rate how much RESPONSE B differs from RESPONSE A — in substance, recommendation, and "
@@ -291,6 +305,8 @@ def main(argv=None):
     if args.families:
         cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
     judge_model = pipeline.resolve_alias(args.judge_model)  # alias -> real model name
+    preflight_model(judge_model, "judge")
+    preflight_model(pipeline.resolve_alias(cfg["value_judge_model"]), "elicit")
 
     prompts = [x for x in PROMPTS if not args.prompt_ids or x["id"] in args.prompt_ids]
     rows, t0 = [], time.time()

@@ -58,7 +58,9 @@ class TestHarnessWiring(unittest.TestCase):
             seen["cfg"] = cfg
             return _stub_result()
 
-        with mock.patch(target, side_effect=fake_run):
+        # preflight is a real model call (burned-run guard) — keep the basic tier offline
+        with mock.patch(target, side_effect=fake_run), \
+             mock.patch.object(validate_evsi, "preflight_model", return_value=None):
             module_main(argv)
         return seen.get("cfg")
 

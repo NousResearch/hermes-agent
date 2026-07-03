@@ -229,6 +229,14 @@ output, runaway cost).
 - **Auto-on by design** (like vantage was), gated by `pipeline._premortem_relevant` — a *conservative*
   failure-surface keyword gate (writes/deploys/payments/migrations/secrets), so read-only
   summarize/research tasks are untouched. Force with `--premortem on|off|auto` / `INFOGAIN_PREMORTEM`.
+  Since 1.2.1 both auto-gates match the **raw problem text as well as the framing** — framing is
+  model-paraphrased, so a hint verb in the prompt could vanish before the gate saw it (the
+  post-rename "migrate prod DB" miss). Hint lists unchanged (verb-only; nouns re-open the
+  gmail-triage false positive). Precision re-verified post-change: scored families scan over all
+  13 bank+LIFE prompts whose raw text trips a gate — premortem questions survive into buckets
+  ONLY on the genuine failure-surface tasks (deploy-app 0.51/0.65, setup-ci 0.60); the doc-writing
+  misfire class ("write a brief/plan": write-brief 0.52/0.28/0.0, gtm-plan all 0.0) generated
+  candidates but zero survived scoring. No worse than the #25 17/18-pruned baseline.
 - **Mechanically:** one `_LENS_DIRECTIVE["premortem"]` entry + one `families_prompt` branch + the gate.
   Nothing downstream branches on lens (scoring/MMR/dedup are lens-agnostic) — every question still scores
   on its own merit; the lens is pure domain *exposure*. Chosen over success-criteria (overlaps the

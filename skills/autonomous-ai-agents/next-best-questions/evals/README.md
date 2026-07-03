@@ -64,6 +64,11 @@ Direct runs (`python3 tests/test_infogain.py` etc.) are basic-by-default too —
 (`TestLive`, `TestEvalLive`) skip unless `INFOGAIN_TEST_LIVE=1` is set (run.py sets it for
 `live`/`all`).
 
+Judge/elicit models are **preflighted** (one trivial call, `validate_evsi.preflight_model`) before
+any rows are produced: reasoning-channel models (e.g. `gpt-oss:20b`) return empty
+`message.content` via `raw_chat` and would silently null every judged value — the run aborts with
+exit 2 naming the model instead of finishing hours later all-null.
+
 ## Run examples
 
 ```bash

@@ -240,12 +240,49 @@ def _effective_terminal_backend(config: dict) -> str:
     return config_backend
 
 
+def _stored_credential_labels() -> dict[str, str]:
+    """Report persisted credential presence, not validity or a refreshed login.
+
+    ``access_token`` also stores API keys: only an explicit OAuth auth_type earns
+    that label. Do not call load_pool here; display must not seed or lease tokens.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY, read_credential_pool
+
+    try:
+        pool_data = read_credential_pool()
+    except Exception:
+        return {}
+    labels = {}
+    for provider, entries in pool_data.items():
+        if provider not in PROVIDER_REGISTRY or not isinstance(entries, list):
+            continue
+        kinds = {
+            "oauth" if str(entry.get("auth_type", "")).startswith("oauth") else "auth pool"
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("access_token"), str)
+            and entry["access_token"].strip()
+        }
+        if kinds:
+            labels[provider] = "set (" + ", ".join(sorted(kinds)) + ")"
+    return labels
+
+
 def _api_key_lines(show_keys: bool) -> list[str]:
     dotenv_keys = _dotenv_key_names()
+    stored = _stored_credential_labels()
+    # These env rows represent the same provider as the persisted pool. OAuth-only
+    # routes get their own rows, never a GitHub/OpenAI API-key alias.
+    pool_rows = {"nous": "nous", "anthropic": "anthropic"}
+    represented = set()
     lines = []
     for env_var, label in _API_KEYS:
+        provider = pool_rows.get(label)
+        represented.add(provider)
         val = os.getenv(env_var, "")
         display = _redact(val) if show_keys and val else ("set" if val else "not set")
+        if not val and provider in stored:
+            display = stored[provider]
         # Set in this shell but absent from ~/.hermes/.env: a managed backend loads .env, not the login
         # shell, so it likely can't see this key — flag it so support doesn't chase a phantom "configured".
         if val and env_var not in dotenv_keys:
@@ -262,6 +299,8 @@ def _api_key_lines(show_keys: bool) -> list[str]:
             except Exception:
                 pass
         lines.append(f"  {label:<20} {display}")
+    for provider in sorted(stored.keys() - represented - {"openrouter"}):
+        lines.append(f"  {'pool:' + provider:<20} {stored[provider]}")
     return lines
 
 

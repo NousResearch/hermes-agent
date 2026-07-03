@@ -14,6 +14,10 @@ Pure module-level utilities extracted from ``run_agent.py``:
 * ``_extract_file_mutation_targets`` / ``_extract_landed_file_mutation_paths`` /
   ``_extract_error_preview`` —
   per-turn file-mutation verifier inputs.
+* ``_extract_fetch_roots`` / ``_path_under_any_root`` /
+  ``_command_touches_untrusted_root`` — filesystem provenance tracking so
+  ``read_file``/``terminal`` results from an externally-fetched path (clone,
+  curl, wget) get the same untrusted-content wrapper as ``web_extract``.
 * ``_trajectory_normalize_msg`` — strip image blobs from a message for
   trajectory saving.
 
@@ -335,6 +339,100 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
+# =========================================================================
+# Filesystem provenance tracking
+# =========================================================================
+#
+# ``read_file``/``terminal`` are not in ``_UNTRUSTED_TOOL_NAMES`` because the
+# overwhelming common case — reading the user's own project files — is
+# trusted. But a file that landed on disk via ``git clone``/``gh repo
+# clone``/``curl``/``wget`` is exactly as attacker-controllable as a
+# ``web_extract`` result (a malicious README/AGENTS.md can carry the same
+# injected instructions). These helpers are a best-effort heuristic — same
+# spirit as ``_is_destructive_command`` above — to recognize when a
+# terminal/read_file result should get the same untrusted-content wrapper
+# because of where its content came from, not what tool read it back.
+# Exotic invocations (piping through ``sh -c``, archive extraction, ``gh pr
+# checkout``) are intentionally out of scope.
+
+_GIT_CLONE_RE = re.compile(
+    r'\bgit\s+clone\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*(\S+)(?:\s+([^\s&|;]+))?'
+)
+_GH_REPO_CLONE_RE = re.compile(
+    r'\bgh\s+repo\s+clone\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*(\S+)(?:\s+([^\s&|;]+))?'
+)
+_FETCH_DEST_FLAG_RE = re.compile(r'(?:^|\s)-[oO]\s*(\S+)')
+_FETCH_URL_RE = re.compile(r'https?://\S+')
+_SHELL_TOKEN_SPLIT_RE = re.compile(r'[\s|&;]+')
+
+
+def _resolve_relative(raw: str, cwd: str) -> str:
+    """Resolve ``raw`` against ``cwd`` without requiring the path to exist."""
+    expanded = Path(raw.strip('\'"')).expanduser()
+    base = cwd or os.getcwd()
+    if expanded.is_absolute():
+        return os.path.normpath(str(expanded))
+    return os.path.normpath(str(Path(base) / expanded))
+
+
+def _basename_from_url(url: str) -> str:
+    name = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    return name or "fetched"
+
+
+def _extract_fetch_roots(command: str, cwd: str) -> List[str]:
+    """Return directories/files a terminal command populates from an
+    external, attacker-influenceable source (clone or download).
+    """
+    if not command:
+        return []
+    roots: List[str] = []
+    for pattern in (_GIT_CLONE_RE, _GH_REPO_CLONE_RE):
+        m = pattern.search(command)
+        if m:
+            dest = m.group(2) or _basename_from_url(m.group(1))
+            roots.append(_resolve_relative(dest, cwd))
+    if re.search(r'(?:^|\s)(curl|wget)\s', command):
+        dest_m = _FETCH_DEST_FLAG_RE.search(command)
+        if dest_m:
+            roots.append(_resolve_relative(dest_m.group(1), cwd))
+        else:
+            url_m = _FETCH_URL_RE.search(command)
+            if url_m:
+                roots.append(_resolve_relative(_basename_from_url(url_m.group(0)), cwd))
+    return roots
+
+
+def _path_under_any_root(path: str, roots) -> bool:
+    """True if ``path`` is inside (or equal to) one of ``roots``."""
+    if not path or not roots:
+        return False
+    norm = os.path.normpath(os.path.abspath(path))
+    for root in roots:
+        root_norm = os.path.normpath(os.path.abspath(root))
+        if norm == root_norm or norm.startswith(root_norm + os.sep):
+            return True
+    return False
+
+
+def _command_touches_untrusted_root(command: str, cwd: str, roots) -> bool:
+    """True if any path-like token in ``command`` resolves under a known
+    untrusted root — catches ``cat repo/README``, ``cd repo && less notes``,
+    etc., not just the clone/download command itself.
+    """
+    if not command or not roots:
+        return False
+    for tok in _SHELL_TOKEN_SPLIT_RE.split(command):
+        tok = tok.strip('\'"')
+        if not tok or tok.startswith('-'):
+            continue
+        if _path_under_any_root(_resolve_relative(tok, cwd), roots):
+            return True
+    return False
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -358,7 +456,13 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
-def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+def make_tool_result_message(
+    name: str,
+    content: Any,
+    tool_call_id: str,
+    *,
+    path_untrusted: bool = False,
+) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
@@ -370,6 +474,13 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     and MCP responses — it changes how the model interprets the content rather
     than relying on regex pattern matching catching every payload.
 
+    ``path_untrusted`` extends the same wrapping to ``read_file``/``terminal``
+    results that target a filesystem path populated by an earlier external
+    fetch (``git clone``, ``curl``, ``wget``, …) in this session — see
+    ``_extract_fetch_roots`` / ``_path_under_any_root``. File provenance, not
+    tool identity, is what makes content attacker-controllable: a cloned
+    repo's README is exactly as untrusted as a ``web_extract`` result.
+
     Wrapping applies to plain string content and to multimodal content
     lists (``[{"type": "text", "text": "..."}, {"type": "image_url", ...}]``):
     each text-type part is wrapped individually using the same rules as plain
@@ -378,7 +489,7 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     The outer list itself is rebuilt rather than returned by identity, so
     callers should compare by value, not by ``is``.
     """
-    wrapped = _maybe_wrap_untrusted(name, content)
+    wrapped = _maybe_wrap_untrusted(name, content, force_untrusted=path_untrusted)
     return {
         "role": "tool",
         "name": name,
@@ -432,7 +543,7 @@ def _neutralize_delimiters(content: str) -> str:
     return _DELIMITER_TOKEN_RE.sub("untrusted-tool-result", content)
 
 
-def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
+def _maybe_wrap_untrusted(name: str, content: Any, force_untrusted: bool = False) -> Any:
     """Wrap content from high-risk tools in untrusted-data delimiters.
 
     Handles plain string content and multimodal content lists
@@ -455,7 +566,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
     that merely starts with the opening tag would be returned with no data
     framing at all — so re-wrapping (harmlessly) is the safe choice.
     """
-    if not _is_untrusted_tool(name):
+    if not (force_untrusted or _is_untrusted_tool(name)):
         return content
     if isinstance(content, str):
         if len(content) < _UNTRUSTED_WRAP_MIN_CHARS:
@@ -472,7 +583,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
         )
     if isinstance(content, list):
         return [
-            {**item, "text": _maybe_wrap_untrusted(name, item["text"])}
+            {**item, "text": _maybe_wrap_untrusted(name, item["text"], force_untrusted=force_untrusted)}
             if isinstance(item, dict)
             and item.get("type") == "text"
             and isinstance(item.get("text"), str)

@@ -209,6 +209,10 @@ from agent.tool_dispatch_helpers import (
     _extract_landed_file_mutation_paths,
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
+    _extract_fetch_roots,
+    _path_under_any_root,
+    _command_touches_untrusted_root,
+    _resolve_relative,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
@@ -2810,6 +2814,33 @@ class AIAgent:
         else:
             for path in targets:
                 state.pop(path, None)
+
+    def _is_fs_tool_result_untrusted(self, tool_name: str, args: Dict[str, Any], cwd: str) -> bool:
+        """True if this ``read_file``/``terminal`` result should get the
+        untrusted-content wrapper because it targets a filesystem path that
+        was populated by an earlier ``git clone``/``curl``/``wget`` etc. in
+        this session (see ``_extract_fetch_roots``).
+
+        Persists ``_untrusted_fs_roots`` across the whole session (unlike the
+        per-turn mutation-verifier state above) — a repo cloned in an earlier
+        turn is still untrusted when read back many turns later.
+        """
+        if tool_name not in ("read_file", "terminal"):
+            return False
+        roots = getattr(self, "_untrusted_fs_roots", None)
+        if roots is None:
+            roots = set()
+            self._untrusted_fs_roots = roots
+
+        if tool_name == "terminal":
+            command = args.get("command") or ""
+            roots.update(_extract_fetch_roots(command, cwd))
+            return _command_touches_untrusted_root(command, cwd, roots)
+
+        path = args.get("path")
+        if not path:
+            return False
+        return _path_under_any_root(_resolve_relative(str(path), cwd), roots)
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.

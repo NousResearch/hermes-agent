@@ -2864,11 +2864,16 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
+    # force=True mirrors the CLI's _manual_compress (cli.py): a user-initiated
+    # /compress clears any summary-failure cooldown left by a prior auto-compact
+    # abort and retries immediately, instead of silently no-opping for the
+    # cooldown window. Auto-compaction is a separate path and stays force=False.
     compressed, _ = agent._compress_context(
         history,
         None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
+        force=True,
     )
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:

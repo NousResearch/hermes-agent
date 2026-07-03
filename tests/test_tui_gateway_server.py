@@ -3951,6 +3951,38 @@ def test_command_dispatch_compress_runs_live_compression(monkeypatch):
     assert "Compressed: 4 → 2 messages" in out
 
 
+def test_compress_session_history_forces_manual_compress(monkeypatch):
+    """A user-initiated /compress must call _compress_context with force=True,
+    matching the CLI's _manual_compress (cli.py). Without it, a manual compress
+    silently no-ops for the summary-failure cooldown window left by a prior
+    auto-compaction abort. Auto-compaction is a separate path and stays
+    force=False.
+    """
+    captured = {}
+
+    class _Agent:
+        def _compress_context(
+            self, history, system_message, approx_tokens=None, focus_topic=None, force=False
+        ):
+            captured["force"] = force
+            return history[-2:], None
+
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    session = _session(
+        agent=_Agent(),
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+
+    server._compress_session_history(session, None, approx_tokens=1000)
+
+    assert captured["force"] is True
+
+
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     """When AIAgent._compress_context rotates session_id (compression split),
     the gateway session_key must follow so subsequent approval routing,

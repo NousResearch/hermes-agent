@@ -409,13 +409,31 @@ def interruptible_api_call(agent, api_kwargs: dict):
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _poll_count = 0
+    # The 0.3s poll window is the worst-case stall length on the main
+    # thread.  When ``interruptible_api_call`` runs on the asyncio event
+    # loop thread (the common case — ``run_conversation`` is sync but
+    # is invoked from the loop thread), each 0.3s ``t.join`` blocks the
+    # event loop from advancing, so the 2s heartbeat callback in
+    # ``hermes_cli/web_server.py`` and the desktop WebSocket heartbeats
+    # don't fire on time, tripping the 5s-stall watchdog.  Halving the
+    # window to 0.05s keeps the worst-case stall well under the 5s
+    # threshold and matches the cadence other tools in the agent use.
+    # See issue #57903.
+    _POLL_INTERVAL = _env_float("HERMES_INTERRUPTIBLE_API_POLL_SECONDS", 0.05)
+    if _POLL_INTERVAL <= 0:
+        _POLL_INTERVAL = 0.05
     while t.is_alive():
-        t.join(timeout=0.3)
+        t.join(timeout=_POLL_INTERVAL)
+        # Explicit GIL yield so other Python threads (web_server event
+        # loop in this process, future pool workers) get scheduled even
+        # if the join returned early because the thread finished.
+        time.sleep(0)
         _poll_count += 1
 
         # Touch activity every ~30s so the gateway's inactivity
         # monitor knows we're alive while waiting for the response.
-        if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
+        # Cadence preserved: 600 × 0.05s = 30s (was 100 × 0.3s).
+        if _poll_count % 600 == 0:
             _elapsed = time.time() - _call_start
             agent._touch_activity(
                 f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"

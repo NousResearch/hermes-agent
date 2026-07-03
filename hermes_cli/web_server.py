@@ -1202,6 +1202,65 @@ def _is_sensitive_filename(name: str) -> bool:
     """
     lowered = name.lower()
     return lowered == ".env" or lowered.startswith(".env.")
+
+
+_FS_SENSITIVE_DIRNAMES = frozenset({"mcp-tokens", "pairing"})
+
+
+def _fs_hermes_credential_dirs() -> tuple[Path, ...]:
+    dirs: list[Path] = []
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        for base in (get_hermes_home(), get_default_hermes_root()):
+            try:
+                resolved = Path(base).expanduser().resolve()
+            except Exception:
+                continue
+            for name in _FS_SENSITIVE_DIRNAMES:
+                credential_dir = resolved / name
+                if credential_dir not in dirs:
+                    dirs.append(credential_dir)
+    except Exception:
+        return ()
+    return tuple(dirs)
+
+
+def _fs_is_under_hermes_credential_dir(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+    except Exception:
+        return False
+    for credential_dir in _fs_hermes_credential_dirs():
+        try:
+            resolved.relative_to(credential_dir)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _fs_sensitive_read_error(path: Path) -> str | None:
+    """Return a credential-read error for dashboard fs preview paths."""
+    try:
+        from agent.file_safety import get_read_block_error
+
+        return get_read_block_error(str(path))
+    except Exception:
+        return None
+
+
+def _fs_path_is_sensitive(path: Path) -> bool:
+    if _fs_is_under_hermes_credential_dir(path):
+        return True
+    return _fs_sensitive_read_error(path) is not None
+
+
+def _fs_raise_if_sensitive(path: Path) -> None:
+    if _fs_path_is_sensitive(path):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+
+
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -1878,11 +1937,12 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                child = target / entry.name
+                if entry.name in _FS_READDIR_HIDDEN or _fs_path_is_sensitive(child):
                     continue
                 entries.append({
                     "name": entry.name,
-                    "path": str(target / entry.name),
+                    "path": str(child),
                     "isDirectory": entry.is_dir(follow_symlinks=False),
                 })
         entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower(), item["name"]))
@@ -1900,6 +1960,7 @@ async def fs_list(path: str):
 @app.get("/api/fs/read-text")
 async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
+    _fs_raise_if_sensitive(target)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
@@ -1976,6 +2037,7 @@ async def fs_write_text(payload: FsWriteText):
 @app.get("/api/fs/read-data-url")
 async def fs_read_data_url(path: str):
     target, st = _fs_regular_file(_fs_path(path))
+    _fs_raise_if_sensitive(target)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:

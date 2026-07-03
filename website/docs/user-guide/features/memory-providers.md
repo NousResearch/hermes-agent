@@ -587,6 +587,46 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### Brain Memory
+
+Local-first, human-readable Markdown memory in `~/.brain/` — the same store shared by Claude Code, Codex, OpenCode, and OpenClaw, so Hermes remembers what your other agents learned (and vice versa). Memories decay over time, strengthen with use (spaced reinforcement), and connect through an associative network with spreading activation. The model decides *what* to remember via explicit tools; the `brain` CLI scores recall deterministically.
+
+| | |
+|---|---|
+| **Best for** | One memory shared across all your AI agents; plain Markdown you can read, grep, and edit |
+| **Requires** | `pip install hermes-brain-memory` + `hermes-brain-memory install` + the [`brain` CLI](https://brainmemory.ai) (`npm install -g brain-memory`) — no pip runtime dependencies (stdlib only) |
+| **Data storage** | Local (`~/.brain/`), optional Brain Cloud / Git-remote sync |
+| **Cost** | Free (local) |
+
+**Tools (3):** `brain_recall` (deterministic recall — TF-IDF relevance, decayed strength, spreading activation, context match, salience — with full memory bodies and auto-reinforcement), `brain_memorize` (validated store: title, type, life-domain path, markdown content), `brain_reinforce` (spaced reinforcement + Hebbian co-retrieval strengthening by ID)
+
+**Setup:**
+```bash
+npm install -g brain-memory        # the brain CLI (once)
+pip install hermes-brain-memory
+hermes-brain-memory install
+hermes config set memory.provider brain
+hermes memory setup
+```
+
+**Config:** `$HERMES_HOME/brain.json`; environment variables override.
+
+| Key | Default | Env var | Description |
+|-----|---------|---------|-------------|
+| `project` | `hermes` | `BRAIN_PROJECT` | Project label for context-dependent recall |
+| `top_recall` | `6` | `BRAIN_TOP_RECALL` | Max memories per recall (1–25) |
+| `auto_reinforce` | `true` | `BRAIN_AUTO_REINFORCE` | Reinforce memories surfaced by `brain_recall` |
+| `brain_bin` | `brain` | `BRAIN_BIN` | Path to the brain CLI |
+| `sync_on_memorize` | `false` | `BRAIN_SYNC_ON_MEMORIZE` | Push each store to Brain Cloud / Git remote |
+
+**Key features:**
+- **Cross-agent store** — the same `~/.brain/` is read and written by Claude Code, Codex, OpenCode, and OpenClaw
+- Budget-bounded session-start context: status line, pinned facts, procedural-skills index, relevant memory titles
+- Pre-compression reminder so notable un-memorized content is stored before context is discarded
+- Mirrors built-in MEMORY.md writes into `~/.brain` as content-hash-deduplicated observations
+- No transcript dumping — `sync_turn` does lightweight in-memory topic tracking only; nothing leaves the machine unless Brain's own sync is enabled
+- `~/.brain` is declared via `backup_paths()` so `hermes backup` captures it
+
 ---
 
 ## Provider Comparison
@@ -602,6 +642,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Brain** | Local (+ optional sync) | Free | 3 | `hermes-brain-memory` + `brain` CLI | Cross-agent shared store + decay/reinforcement |
 
 ## Profile Isolation
 
@@ -611,6 +652,7 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **Cross-agent providers** (Brain) keep config per profile in `$HERMES_HOME/brain.json`, but the store itself (`~/.brain/`) is deliberately shared across profiles *and* other AI agents — use the `project` config key to scope recall per profile
 
 ## Building a Memory Provider
 

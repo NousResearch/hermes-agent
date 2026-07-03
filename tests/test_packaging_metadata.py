@@ -156,6 +156,27 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     )
 
 
+def test_bundled_tui_dist_ships_in_both_wheel_and_sdist():
+    """Packaged installs run hermes_cli/tui_dist, not a source ui-tui tree.
+
+    PyPI release builds generate ``hermes_cli/tui_dist/entry.js`` before
+    packaging. Wheels need package-data coverage; Homebrew and other source
+    packagers also need MANIFEST.in coverage so building from the sdist does
+    not drop the generated bundle and fall back to a missing ``ui-tui/``.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    hermes_cli_pkg_data = data["tool"]["setuptools"]["package-data"].get("hermes_cli", [])
+    assert any("tui_dist" in glob for glob in hermes_cli_pkg_data), (
+        "pyproject package-data 'hermes_cli' must ship tui_dist (wheel)"
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include hermes_cli/tui_dist" in manifest, (
+        "MANIFEST.in must recursive-include hermes_cli/tui_dist so the sdist "
+        "ships the bundled TUI"
+    )
+
+
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
 # 1.0.1. Anything below that lets a malformed Host header desync
 # ``request.url.path`` from the dispatched ASGI path, bypassing path-based

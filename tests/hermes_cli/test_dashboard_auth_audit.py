@@ -79,3 +79,21 @@ def test_audit_creates_logs_dir_if_missing(tmp_path, monkeypatch):
     audit_log(AuditEvent.LOGIN_START, provider="nous")
     assert (home / "logs").is_dir()
     assert (home / "logs" / "dashboard-auth.log").exists()
+
+
+def test_audit_rotates_when_over_max_bytes(profile_home, monkeypatch):
+    import hermes_cli.dashboard_auth.audit as audit_module
+
+    monkeypatch.setattr(audit_module, "_MAX_BYTES", 2000)
+    monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)
+
+    for i in range(500):
+        audit_log(AuditEvent.LOGIN_START, provider="x" * 50, i=i)
+
+    logs = profile_home / "logs"
+    assert (logs / "dashboard-auth.log").exists()
+    assert (logs / "dashboard-auth.log.1").exists()
+    assert (logs / "dashboard-auth.log.2").exists()
+    assert (logs / "dashboard-auth.log.3").exists()
+    assert not (logs / "dashboard-auth.log.4").exists()
+    assert (logs / "dashboard-auth.log").stat().st_size < 2000

@@ -23,6 +23,13 @@ from typing import Any
 _log = logging.getLogger(__name__)
 _write_lock = threading.Lock()
 
+# Matches the maxBytes=5MB / backupCount=3 convention used for agent.log /
+# tool_calls.log in hermes_logging.py. Rotation is implemented locally
+# (rather than importing RotatingFileHandler machinery from hermes_logging)
+# to preserve this module's minimal-dependency-surface guarantee above.
+_MAX_BYTES = 5 * 1024 * 1024
+_BACKUP_COUNT = 3
+
 # Field names that must never appear in the log raw. Any kwarg matching
 # these is silently dropped.
 _REDACTED_FIELDS: frozenset = frozenset({
@@ -62,12 +69,32 @@ def _resolve_log_path() -> Path:
     return Path(home) / "logs" / "dashboard-auth.log"
 
 
+def _rotate_if_needed(path: Path) -> None:
+    """Rotate ``path`` to ``.1``/``.2``/``.3`` once it hits ``_MAX_BYTES``.
+
+    Mirrors stdlib ``RotatingFileHandler``'s naming scheme. Must be called
+    with ``_write_lock`` held.
+    """
+    try:
+        if path.stat().st_size < _MAX_BYTES:
+            return
+    except FileNotFoundError:
+        return
+    for i in range(_BACKUP_COUNT - 1, 0, -1):
+        src = path.with_name(f"{path.name}.{i}")
+        dst = path.with_name(f"{path.name}.{i + 1}")
+        if src.exists():
+            os.replace(src, dst)
+    os.replace(path, path.with_name(f"{path.name}.1"))
+
+
 def audit_log(event: AuditEvent, **fields: Any) -> None:
     """Append one event to the audit log.
 
     Token-like fields are dropped. Missing log directory is created.
-    Write failures are logged at WARNING but never raise — auth must not
-    fail because the audit logger broke.
+    Rotates at ``_MAX_BYTES`` (keeping ``_BACKUP_COUNT`` backups). Write
+    failures are logged at WARNING but never raise — auth must not fail
+    because the audit logger broke.
     """
     safe_fields = {
         k: v for k, v in fields.items()
@@ -83,6 +110,7 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _write_lock:
+            _rotate_if_needed(path)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)
     except Exception as e:

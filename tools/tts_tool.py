@@ -2229,6 +2229,16 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        from agent.file_safety import is_write_denied
+
+        if is_write_denied(str(file_path)):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path targets a protected credential or system path: "
+                    f"{file_path}. Choose a normal audio output location."
+                ),
+            }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)

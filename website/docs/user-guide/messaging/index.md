@@ -38,6 +38,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
+| Linear (Agent Sessions) | — | — | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
 | Raft | — | — | — | — | — | — | — |
@@ -71,6 +72,7 @@ flowchart TB
     qq[QQ]
     yb[Yuanbao]
     ms[Microsoft Teams]
+    la[Linear Agent]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
         end
@@ -100,6 +102,7 @@ flowchart TB
     qq --> store
     yb --> store
     ms --> store
+    la --> store
     api --> store
     wh --> store
     store --> agent
@@ -534,6 +537,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
+| Linear Agent | `hermes-linear_agent` | Full tools + the attribution-safe `linear_agent_*` Linear read/write toolset (writes gated by `mutation_policy`) |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 | Raft | `hermes-raft` | Wake-only channel; agent uses Raft CLI for message I/O |
@@ -679,6 +683,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Yuanbao Setup](yuanbao.md)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
+- [Linear Agent Setup (Agent Sessions)](linear-agent.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Raft Setup](raft.md)
 - [IRC Setup](irc.md)

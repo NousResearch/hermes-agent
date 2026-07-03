@@ -645,6 +645,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Other',
           items: [
+            'user-guide/messaging/linear-agent',
             'user-guide/messaging/homeassistant',
             'user-guide/messaging/mattermost',
             'user-guide/messaging/matrix',

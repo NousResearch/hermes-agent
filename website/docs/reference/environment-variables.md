@@ -602,6 +602,34 @@ Connect Hermes to an IRC server. No external dependencies. See [the IRC messagin
 | `IRC_ALLOW_ALL_USERS` | Allow anyone in the channel to talk to the bot (dev only). |
 | `IRC_HOME_CHANNEL` | Channel for cron / notification delivery (defaults to `IRC_CHANNEL`). |
 
+### Linear Agent (Agent Sessions)
+
+Appear in Linear as a first-class agent: @-mention or delegate issues to it, and all writes attribute to the agent's app identity. See [the Linear Agent messaging guide](/user-guide/messaging/linear-agent).
+
+| Variable | Description |
+|----------|-------------|
+| `LINEAR_AGENT_CLIENT_ID` | Linear OAuth application client ID (client-credentials app-actor tokens). |
+| `LINEAR_AGENT_CLIENT_SECRET` | Linear OAuth application client secret. |
+| `LINEAR_AGENT_ACCESS_TOKEN` | Static app access token — alternative to client credentials. |
+| `LINEAR_AGENT_WEBHOOK_SECRET` | Webhook signing secret. Unsigned webhooks are rejected unless explicitly allowed. |
+| `LINEAR_AGENT_ALLOW_UNSIGNED_WEBHOOKS` | Accept unsigned webhooks (`true`; local development only). |
+| `LINEAR_AGENT_APP_USER_ID` | The agent's Linear app-user ID — filters webhook echoes of the agent's own writes. Auto-discovered at connect when unset; set it explicitly so a Linear outage at startup can't leave the filter unarmed. |
+| `LINEAR_AGENT_WORKSPACE_ID` | Restrict webhook processing to one workspace — events from any other workspace are ignored before authorization and side effects (one Linear app can be installed in several workspaces sharing a webhook secret). |
+| `LINEAR_AGENT_DISPATCH_ISSUE_UPDATES` | Opt-in (`true`): dispatch full agent turns for issue-update webhooks, replying as issue comments. Default off — delegation already arrives as a real agent session; update webhooks only feed auto-start. |
+| `LINEAR_AGENT_ALLOWED_USERS` | Comma-separated Linear user IDs allowed to drive the agent. Enforced fail-closed at both the gateway and adapter layers — unset (without `LINEAR_AGENT_ALLOW_ALL_USERS`) means every webhook is rejected. |
+| `LINEAR_AGENT_ALLOWED_TEAMS` | Comma-separated Linear team IDs the adapter accepts sessions from (narrowing layer; empty = no team restriction). |
+| `LINEAR_AGENT_ALLOW_ALL_USERS` | Allow any workspace member (`true`). |
+| `LINEAR_AGENT_HOME_TARGET` | Issue ID/identifier (e.g. `ENG-123`) that receives cron deliveries as comments. |
+| `LINEAR_AGENT_AUTO_START_ON_DELEGATION` | Move issues delegated to the agent to the first `started` state (default `true`; set `false` to opt out). Requires `mutation_policy.update_issues`. |
+| `LINEAR_AGENT_AUTO_SELF_DELEGATE` | Opt-in: also claim auto-started issues that have no delegate (`true`; default `false`). |
+| `LINEAR_AGENT_PROXY` | Outbound proxy for Linear API traffic (falls back to `HTTPS_PROXY` etc.). |
+| `LINEAR_AGENT_OAUTH_SCOPES` | OAuth scopes (default `read,write`). |
+| `LINEAR_AGENT_OAUTH_ACTOR` | OAuth actor mode (default `app`). |
+| `LINEAR_AGENT_REFRESH_TOKEN` | Legacy browser-flow refresh token (client credentials preferred). |
+| `LINEAR_AGENT_PERSIST_TOKENS` | Set `false` to disable caching access tokens in profile `auth.json`. |
+
+Webhook host/port/path and `mutation_policy` (per-operation write gating) are configured in `config.yaml` — see the messaging guide.
+
 ### SimpleX
 
 Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `simplex-chat` daemon. See [the SimpleX messaging guide](/user-guide/messaging/simplex).

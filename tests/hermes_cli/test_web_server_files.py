@@ -488,3 +488,48 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
     # ... and no .upload temp file was left behind.
     leftovers = [p.name for p in target.parent.iterdir() if ".upload" in p.name]
     assert leftovers == [], f"temp upload files leaked on cancellation: {leftovers}"
+
+
+def test_sensitive_env_files_hidden_from_listing(forced_files_client):
+    """Regression test for #57505: .env files must not appear in directory listings."""
+    client, root = forced_files_client
+
+    # Create a regular file and a .env file.
+    root.mkdir(parents=True, exist_ok=True)
+    regular = root / "config.txt"
+    regular.write_text("safe content")
+    env_file = root / ".env"
+    env_file.write_text("SECRET_KEY=abc123")
+    env_local = root / ".env.local"
+    env_local.write_text("LOCAL_SECRET=def456")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    names = [e["name"] for e in listing.json()["entries"]]
+    assert "config.txt" in names
+    assert ".env" not in names
+    assert ".env.local" not in names
+
+
+def test_sensitive_env_files_blocked_read(forced_files_client):
+    """Regression test for #57505: .env files must not be readable."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET_KEY=abc123")
+
+    resp = client.get("/api/files/read", params={"path": str(env_file)})
+    assert resp.status_code == 403
+
+
+def test_sensitive_env_files_blocked_download(forced_files_client):
+    """Regression test for #57505: .env files must not be downloadable."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET_KEY=abc123")
+
+    resp = client.get("/api/files/download", params={"path": str(env_file)})
+    assert resp.status_code == 403

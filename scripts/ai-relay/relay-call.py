@@ -22,7 +22,7 @@ except ImportError:
 # ---- ค่าปริยาย (ใช้เมื่อไม่มีไฟล์ตั้งค่า) ----
 DEFAULT_ADAPTERS = {
     "grok":   {"cmd": ["grok","-p","{prompt}","--cwd","{cwd}","--output-format","json","--always-approve"]},
-    "gemini": {"cmd": ["gemini","-p","{prompt}","-m","{model}","--approval-mode","yolo"], "run_in_cwd": True},
+    "gemini": {"cmd": ["gemini","-p","{prompt}","-m","gemini-2.5-flash","--skip-trust","--approval-mode","yolo","--output-format","text"], "run_in_cwd": True},
     "ollama": {"cmd": ["ollama","run","{model}","{prompt}"], "run_in_cwd": True},
     "codex":  {"cmd": ["codex","exec","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
 }
@@ -40,12 +40,33 @@ def load_yaml(p: Path):
 
 def cfg_dir(cwd: Path): return cwd/".hermes"/"ai-relay"
 
+def load_env_file(path: Path):
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+        if os.environ.get(key):
+            continue
+        value = value.strip().strip("\"'")
+        os.environ[key] = value
+
+def load_relay_env(cwd: Path):
+    # ให้ CLI ที่ relay-call เรียกตรง ๆ เห็น key เดียวกับ Hermes โดยไม่พิมพ์ secret ออก stdout
+    load_env_file(Path.home()/".hermes"/".env")
+    load_env_file(cwd/".hermes"/".env")
+
 # ---- จัดประเภท error จาก exit code + stderr (เป็นที่เดียวที่ตีความ) ----
 def classify(exit_code, stderr):
     s = (stderr or "").lower()
     if exit_code == 127 or "command not found" in s or "no such file" in s:
         return "not_found"
-    if re.search(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key", s):
+    if re.search(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables", s):
         return "auth"
     if re.search(r"\b429\b|rate.?limit|quota|too many request|usage limit|insufficient", s):
         return "quota"
@@ -125,10 +146,15 @@ def main():
     ap.add_argument("--tool", required=True)
     ap.add_argument("--task-id", required=True)
     ap.add_argument("--prompt-file", required=True)
-    ap.add_argument("--cwd", required=True)
+    ap.add_argument(
+        "--cwd",
+        default=os.environ.get("AI_RELAY_ROOT") or str(Path.home()),
+        help="โฟลเดอร์ทำงานและที่เก็บ .hermes/ai-relay; ค่าเริ่มต้นคือ $AI_RELAY_ROOT หรือ home ของผู้ใช้",
+    )
     a = ap.parse_args()
 
     cwd = Path(a.cwd).expanduser().resolve()
+    load_relay_env(cwd)
     prompt = Path(a.prompt_file).read_text(encoding="utf-8") if Path(a.prompt_file).exists() else a.prompt_file
     adapters = {**DEFAULT_ADAPTERS, **(load_yaml(cfg_dir(cwd)/"adapters.yaml").get("tools") or {})}
     # ทำให้ codex พกพาข้ามเครื่อง: ถ้า adapter เรียกชื่อ "codex" ลอย ๆ แปลงเป็น path จริงที่หาเจอ
@@ -157,7 +183,7 @@ def main():
         model = models.get("code") if tool == "ollama" else ""
         relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
         code, out, err = run_once(adapters[tool], prompt, cwd, model)
-        st = classify(code, err)
+        st = classify(code, f"{out}\n{err}")
         tried.append(f"{tool}:{st}")
 
         if st == "ok":

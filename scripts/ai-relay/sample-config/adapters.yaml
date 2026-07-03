@@ -32,9 +32,12 @@ tools:
       - -p
       - "{prompt}"
       - -m
-      - "{model}"
+      - gemini-2.5-flash
+      - --skip-trust
       - --approval-mode
       - yolo
+      - --output-format
+      - text
     run_in_cwd: true
     note: "ใช้ Gemini เป็นตัวสำรองสำหรับงานไฟล์เยอะ"
 

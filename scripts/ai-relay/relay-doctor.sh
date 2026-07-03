@@ -7,6 +7,13 @@ set -u
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RELAY_DIR="${ROOT}/.hermes/ai-relay"
 
+if [ ! -f "${RELAY_DIR}/adapters.yaml" ] || [ ! -f "${RELAY_DIR}/accounts.yaml" ]; then
+  relay_add_grok_bin="$(command -v relay-add-grok 2>/dev/null || true)"
+  if [ -n "${relay_add_grok_bin}" ]; then
+    "${relay_add_grok_bin}" --cwd "${ROOT}" >/dev/null 2>&1 || true
+  fi
+fi
+
 echo "═══ AI Relay · ตรวจความพร้อมเครื่องนี้ ═══"
 echo "เครื่อง: $(hostname -s 2>/dev/null || hostname)  ·  ระบบ: $(uname -s) $(uname -m)"
 echo "โปรเจกต์: ${ROOT}"
@@ -100,7 +107,7 @@ echo "[3/4 ไฟล์ตั้งค่า local-only]"
 if [ -f "${RELAY_DIR}/adapters.yaml" ]; then
   mark_ok "มี ${RELAY_DIR}/adapters.yaml"
 else
-  mark_fail "ยังไม่มี ${RELAY_DIR}/adapters.yaml ให้รัน bash scripts/ai-relay/install-local.sh"
+    mark_fail "ยังไม่มี ${RELAY_DIR}/adapters.yaml ให้รัน relay-add-grok --cwd ${ROOT}"
 fi
 
 if [ -f "${RELAY_DIR}/accounts.yaml" ]; then
@@ -110,7 +117,7 @@ if [ -f "${RELAY_DIR}/accounts.yaml" ]; then
     mark_ok "มี ${RELAY_DIR}/accounts.yaml และไม่พบรูปแบบรหัสลับพื้นฐาน"
   fi
 else
-  mark_fail "ยังไม่มี ${RELAY_DIR}/accounts.yaml ให้รัน bash scripts/ai-relay/install-local.sh"
+    mark_fail "ยังไม่มี ${RELAY_DIR}/accounts.yaml ให้รัน relay-add-grok --cwd ${ROOT}"
 fi
 echo
 

@@ -1641,33 +1641,54 @@ class SessionDB:
         self,
         session_id: str,
         *,
-        source: str,
+        source: str = None,
         user_id: str = None,
         session_key: str = None,
         chat_id: str = None,
         chat_type: str = None,
         thread_id: str = None,
     ) -> None:
-        """Persist the gateway routing peer for an existing session row."""
+        """Persist the gateway routing peer for an existing session row.
+
+        When *source* is ``None`` the ``sessions.source`` column is left
+        untouched so that ``/resume`` does not overwrite the original
+        platform provenance.
+        """
         if not session_id or not session_key:
             return
 
         def _do(conn):
-            conn.execute(
-                """UPDATE sessions
-                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?
-                   WHERE id = ?""",
-                (
-                    session_key,
-                    source,
-                    user_id,
-                    chat_id,
-                    chat_type,
-                    thread_id,
-                    session_id,
-                ),
-            )
+            if source is not None:
+                conn.execute(
+                    """UPDATE sessions
+                       SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
+                           chat_type = ?, thread_id = ?
+                       WHERE id = ?""",
+                    (
+                        session_key,
+                        source,
+                        user_id,
+                        chat_id,
+                        chat_type,
+                        thread_id,
+                        session_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """UPDATE sessions
+                       SET session_key = ?, user_id = ?, chat_id = ?,
+                           chat_type = ?, thread_id = ?
+                       WHERE id = ?""",
+                    (
+                        session_key,
+                        user_id,
+                        chat_id,
+                        chat_type,
+                        thread_id,
+                        session_id,
+                    ),
+                )
 
         self._execute_write(_do)
 

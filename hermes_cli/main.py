@@ -4806,6 +4806,14 @@ def _model_flow_named_custom(config, provider_info):
         discover = discover.lower() not in {"false", "no", "0"}
     configured_models: list[str] = []
     cfg_models = provider_info.get("models", {})
+    if isinstance(cfg_models, str) and cfg_models.strip():
+        import json as _json
+        try:
+            decoded = _json.loads(cfg_models)
+            if isinstance(decoded, (list, dict)):
+                cfg_models = decoded
+        except (ValueError, TypeError):
+            pass
     if isinstance(cfg_models, dict):
         configured_models = [str(m) for m in cfg_models if str(m).strip()]
     elif isinstance(cfg_models, list):

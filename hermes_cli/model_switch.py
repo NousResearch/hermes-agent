@@ -1007,6 +1007,15 @@ def switch_model(
             for slug, cfg in user_providers.items():
                 if slug == target_provider:
                     cfg_models = cfg.get("models", {})
+                    # Parse JSON string (hermes config set may store as string)
+                    if isinstance(cfg_models, str) and cfg_models.strip():
+                        import json as _json
+                        try:
+                            decoded = _json.loads(cfg_models)
+                            if isinstance(decoded, (list, dict)):
+                                cfg_models = decoded
+                        except (ValueError, TypeError):
+                            pass
                     # Direct membership works for dict (keys) and list (strings)
                     if new_model in cfg_models:
                         override = True
@@ -1685,7 +1694,17 @@ def list_authenticated_providers(
             # Hermes writes ``models:`` as a dict keyed by model id
             # (see hermes_cli/main.py::_save_custom_provider); older
             # configs or hand-edited files may still use a list.
+            # ``hermes config set`` may store the value as a JSON string;
+            # parse it so the models aren't silently dropped.
             cfg_models = ep_cfg.get("models", [])
+            if isinstance(cfg_models, str) and cfg_models.strip():
+                import json as _json
+                try:
+                    decoded = _json.loads(cfg_models)
+                    if isinstance(decoded, (list, dict)):
+                        cfg_models = decoded
+                except (ValueError, TypeError):
+                    pass
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
                     if m and m not in models_list:
@@ -1837,6 +1856,14 @@ def list_authenticated_providers(
                 groups[group_key]["models"].append(default_model)
 
             cfg_models = entry.get("models", {})
+            if isinstance(cfg_models, str) and cfg_models.strip():
+                import json as _json
+                try:
+                    decoded = _json.loads(cfg_models)
+                    if isinstance(decoded, (list, dict)):
+                        cfg_models = decoded
+                except (ValueError, TypeError):
+                    pass
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
                     if m and m not in groups[group_key]["models"]:

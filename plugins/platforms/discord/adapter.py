@@ -1092,7 +1092,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild=_msg_guild,
                         is_dm=_is_dm,
                         channel_ids=_msg_channel_ids,
-                    ):
+                    ) and not self._is_pairing_approved(str(message.author.id)):
                         return
                     _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
                 
@@ -3217,6 +3217,29 @@ class DiscordAdapter(BasePlatformAdapter):
         m_roles = getattr(m, "roles", None) or []
         return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
 
+    def _is_pairing_approved(self, user_id: str) -> bool:
+        """Check if user is approved via the pairing store.
+
+        Mirrors the gateway authz_mixin pairing-store check so that users
+        approved through ``hermes pairing approve`` can send guild messages
+        even when ``DISCORD_ALLOWED_USERS`` is not configured.  Without
+        this, pairing-approved users are silently dropped at the
+        ``on_message`` intake gate before the pairing-aware gateway auth
+        path can evaluate them.
+
+        Returns ``True`` only when the pairing store explicitly lists the
+        user as approved for Discord.  Import errors or store failures
+        are treated as not-approved (fail-closed).
+        """
+        if not user_id:
+            return False
+        try:
+            from gateway.pairing import PairingStore
+            store = PairingStore()
+            return store.is_approved("discord", user_id)
+        except Exception:
+            return False
+
     # ── Slash command authorization ─────────────────────────────────────
     # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
     # are a separate Discord interaction surface from regular messages and
@@ -3332,7 +3355,7 @@ class DiscordAdapter(BasePlatformAdapter):
             guild=interaction_guild,
             is_dm=in_dm,
             channel_ids=channel_keys if not in_dm else None,
-        ):
+        ) and not self._is_pairing_approved(user_id):
             return (
                 False,
                 "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",

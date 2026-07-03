@@ -37,7 +37,7 @@ import re
 import subprocess
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, Optional
 
 try:
     from aiohttp import web

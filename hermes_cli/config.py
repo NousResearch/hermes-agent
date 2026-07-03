@@ -296,7 +296,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
 })
-import yaml
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
@@ -8048,7 +8047,6 @@ def _inject_platform_plugin_env_vars() -> None:
         return
     _platform_plugin_env_vars_injected = True
     try:
-        import yaml  # type: ignore
 
         # Resolve the bundled plugins dir from this file's location so the
         # injector works regardless of CWD.

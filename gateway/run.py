@@ -39,7 +39,6 @@ import signal
 import tempfile
 import threading
 import time
-import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -52,7 +51,6 @@ from typing import Callable, Dict, Optional, Any, List, Union
 # `gateway.run.fetch_account_usage` as a module-level attribute. The
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -968,7 +966,6 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 # implementation.  Re-exported under the historical private names so existing
 # call sites and tests keep working.
 from agent.replay_cleanup import (  # noqa: E402
-    is_interrupted_tool_result as _is_interrupted_tool_result,
     strip_interrupted_tool_tails as _strip_interrupted_tool_tails,
     strip_dangling_tool_call_tail as _strip_dangling_tool_call_tail,
 )
@@ -1261,7 +1258,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+from utils import atomic_json_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -1664,8 +1661,6 @@ from gateway.config import (
     Platform,
     _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
-    HomeChannel,
-    PlatformConfig,
     load_gateway_config,
 )
 from gateway.session import (
@@ -1699,9 +1694,7 @@ from gateway.restart import (
 
 from gateway.whatsapp_identity import (
     canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
-    expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
-    normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
-)
+    )
 
 
 logger = logging.getLogger(__name__)

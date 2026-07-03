@@ -1254,14 +1254,14 @@ class HonchoMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror built-in user profile writes as Honcho conclusions.
+        """Mirror built-in memory writes as Honcho conclusions.
 
         ``metadata`` is accepted for compatibility with the write-origin
         work landed in main (commit 6a957a74); it's not yet threaded into
         the Honcho conclusion payload.  Left as a follow-up so this PR
         stays focused on the 7-PR consolidation and its review follow-ups.
         """
-        if action != "add" or target != "user" or not content:
+        if action != "add" or target not in {"user", "memory"} or not content:
             return
         if self._cron_skipped:
             return
@@ -1271,9 +1271,18 @@ class HonchoMemoryProvider(MemoryProvider):
             self._start_session_init_background()
             return
 
+        manager = self._manager
+        if manager is None:
+            return
+
         def _write():
             try:
-                self._manager.create_conclusion(self._session_key, content)
+                # Built-in USER.md facts describe the human peer; MEMORY.md
+                # facts are operational assistant/system notes. Keep the peer
+                # explicit so Honcho/mem0 can carry semantic recall without
+                # smearing ops notes onto the user's profile.
+                peer = "user" if target == "user" else "ai"
+                manager.create_conclusion(self._session_key, content, peer=peer)
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 

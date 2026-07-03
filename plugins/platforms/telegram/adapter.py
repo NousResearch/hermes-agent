@@ -3832,7 +3832,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
                 except Exception as fmt_err:
-                    if "not modified" not in str(fmt_err).lower():
+                    fmt_err_str = str(fmt_err).lower()
+                    if "not modified" not in fmt_err_str:
+                        if "flood control" in fmt_err_str or "retry after" in fmt_err_str:
+                            # Bot API rate limiting is not a Markdown rendering
+                            # failure.  Do not immediately try the plain-text
+                            # edit as that doubles the edit pressure and can
+                            # make Telegram extend the flood window.  Let the
+                            # outer handler return a retryable result so the
+                            # stream consumer can back off or fall back cleanly.
+                            raise
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
@@ -3856,11 +3865,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 # send continuations.
                 pass
             else:
-                logger.error(
-                    "[%s] Overflow split: first-chunk edit failed: %s",
-                    self.name, e, exc_info=True,
-                )
-                return SendResult(success=False, error=str(e))
+                is_flood_control = "flood control" in err_str or "retry after" in err_str
+                if is_flood_control:
+                    logger.warning(
+                        "[%s] Overflow split: first-chunk edit hit flood control: %s",
+                        self.name, e,
+                    )
+                else:
+                    logger.error(
+                        "[%s] Overflow split: first-chunk edit failed: %s",
+                        self.name, e, exc_info=True,
+                    )
+                return SendResult(success=False, error=str(e), retryable=is_flood_control)
 
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a

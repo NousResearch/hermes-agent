@@ -106,6 +106,47 @@ class TestResolveActiveProfileName:
         assert fs._resolve_active_profile_name() == "default"
 
 
+class TestDirectBuiltinMemoryTarget:
+    def test_active_profile_memory_file_is_guarded(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        from agent.file_safety import get_direct_builtin_memory_warning
+
+        warning = get_direct_builtin_memory_warning(
+            str(fake_hermes["default_home"] / "memories" / "MEMORY.md")
+        )
+
+        assert warning is not None
+        assert "memory`` tool" in warning
+        assert "drift repair" in warning
+
+    def test_active_profile_user_file_is_guarded(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        from agent.file_safety import classify_direct_builtin_memory_target
+
+        result = classify_direct_builtin_memory_target(
+            str(fake_hermes["default_home"] / "memories" / "USER.md")
+        )
+
+        assert result is not None
+        assert result["filename"] == "USER.md"
+
+    def test_memory_sidecar_files_are_not_guarded(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        from agent.file_safety import classify_direct_builtin_memory_target
+
+        assert classify_direct_builtin_memory_target(
+            str(fake_hermes["default_home"] / "memories" / "MEMORY.md.lock")
+        ) is None
+
+    def test_non_memory_files_are_not_guarded(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        from agent.file_safety import classify_direct_builtin_memory_target
+
+        assert classify_direct_builtin_memory_target(
+            str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
+        ) is None
+
+
 # ---------------------------------------------------------------------------
 # classify_cross_profile_target
 # ---------------------------------------------------------------------------

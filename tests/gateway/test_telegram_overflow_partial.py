@@ -71,6 +71,44 @@ async def test_edit_overflow_split_reports_later_partial_failure_after_some_cont
 
 
 @pytest.mark.asyncio
+async def test_edit_overflow_split_reports_retryable_when_first_edit_hits_flood_control(telegram_adapter):
+    """First-chunk flood control is retryable and must not be logged as adapter failure."""
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(
+        side_effect=RuntimeError("Flood control exceeded. Retry in 90 seconds")
+    )
+    telegram_adapter._bot.send_message = AsyncMock()
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=False, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert "Flood control" in result.error
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_split_does_not_plain_retry_markdown_flood_control(telegram_adapter):
+    """MarkdownV2 flood control is not a formatting failure; avoid a second edit."""
+    content = "**word** " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(
+        side_effect=RuntimeError("Flood control exceeded. Retry in 90 seconds")
+    )
+    telegram_adapter._bot.send_message = AsyncMock()
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert telegram_adapter._bot.edit_message_text.await_count == 1
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_edit_overflow_split_reports_partial_failure_when_continuation_fails(telegram_adapter):
     """A failed continuation must not be reported as final delivery."""
     content = "word " * 120

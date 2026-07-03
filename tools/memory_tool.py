@@ -80,6 +80,37 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+_MEMORY_SEMANTIC_USER_FACT_MARKERS = (
+    "user prefers",
+    "user likes",
+    "user hates",
+    "user expects",
+    "user wants",
+    "user is ",
+    "ronny prefers",
+    "ronny likes",
+    "ronny hates",
+    "ronny expects",
+    "ronny wants",
+    "ronny is ",
+)
+
+
+def _memory_ops_policy_error(target: str, content: Optional[str]) -> Optional[str]:
+    """Keep MEMORY.md as compact operational notes, not a semantic user store."""
+    if target != "memory" or not content:
+        return None
+    text = content.strip()
+    lowered = text.lower()
+    if any(marker in lowered for marker in _MEMORY_SEMANTIC_USER_FACT_MARKERS):
+        return (
+            "MEMORY.md is reserved for operational assistant/environment notes, "
+            "not semantic user-profile facts. Store user facts in USER.md or, "
+            "when available, through Honcho/mem0 conclusions."
+        )
+    return None
+
+
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     """Build the error dict returned when external drift is detected.
 
@@ -353,6 +384,10 @@ class MemoryStore:
             # would discard un-roundtrippable content (issue #26045).
             self._reload_target(target, skip_drift=True)
 
+            policy_error = _memory_ops_policy_error(target, content)
+            if policy_error:
+                return {"success": False, "error": policy_error}
+
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
@@ -403,6 +438,10 @@ class MemoryStore:
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
+
+            policy_error = _memory_ops_policy_error(target, new_content)
+            if policy_error:
+                return {"success": False, "error": policy_error}
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -519,6 +558,9 @@ class MemoryStore:
                 scan_error = _scan_memory_content(new_content)
                 if scan_error:
                     return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
+                policy_error = _memory_ops_policy_error(target, new_content)
+                if policy_error:
+                    return {"success": False, "error": f"Operation {i + 1}: {policy_error}"}
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -1074,7 +1116,9 @@ MEMORY_SCHEMA = {
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "compact hard-operational notes (environment invariants, tool quirks, access rules). "
+        "Do not use 'memory' for semantic user-profile facts; use 'user' or an active external "
+        "memory provider such as Honcho/mem0 when available.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."

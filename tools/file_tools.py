@@ -575,8 +575,11 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
     state, or the Docker container's sandbox mirror of Hermes state.
 
-    Three detectors run in order:
+    Four detectors run in order:
 
+    * direct built-in memory file — writes to this profile's
+      ``memories/MEMORY.md`` / ``USER.md`` should go through the ``memory``
+      tool so the parser/serializer round-trip invariant is preserved.
     * cross-profile — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
@@ -601,6 +604,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         from agent.file_safety import (
             get_container_mirror_warning,
             get_cross_profile_warning,
+            get_direct_builtin_memory_warning,
             get_sandbox_mirror_warning,
         )
     except Exception:
@@ -615,6 +619,10 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
+
+    warning = get_direct_builtin_memory_warning(resolved)
+    if warning is not None:
+        return warning
 
     warning = get_cross_profile_warning(resolved)
     if warning is not None:

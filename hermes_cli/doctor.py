@@ -8,7 +8,15 @@ import os
 import sys
 import subprocess
 import shutil
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+    module=r"lark_oapi\..*",
+)
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -132,12 +140,41 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _normalize_doctor_setting(value: object) -> str:
+    """Normalize doctor suppression identifiers from config and runtime labels."""
+    return str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _read_doctor_disabled(kind: str) -> set[str]:
+    """Read doctor.* suppression lists directly from profile config.yaml."""
+    cfg_path = HERMES_HOME / "config.yaml"
+    try:
+        import yaml
+
+        raw_cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    doctor_cfg = raw_cfg.get("doctor") if isinstance(raw_cfg, dict) else {}
+    values = doctor_cfg.get(kind, []) if isinstance(doctor_cfg, dict) else []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return set()
+    return {_normalize_doctor_setting(value) for value in values if str(value or "").strip()}
+
+
+def _doctor_is_disabled(kind: str, name: object) -> bool:
+    return _normalize_doctor_setting(name) in _read_doctor_disabled(kind)
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
-    """Adjust runtime-gated tool availability for doctor diagnostics."""
+    """Adjust runtime-gated and user-suppressed tool availability for doctor diagnostics."""
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
         name = item.get("name")
+        if _doctor_is_disabled("disabled_tool_availability", name):
+            continue
         if _is_kanban_worker_env_gate(item):
             if "kanban" not in updated_available:
                 updated_available.append("kanban")
@@ -1101,36 +1138,39 @@ def run_doctor(args):
             get_minimax_oauth_auth_status,
         )
 
-        nous_status = get_nous_auth_status()
-        if nous_status.get("logged_in"):
-            check_ok("Nous Portal auth", "(logged in)")
-        else:
-            check_warn("Nous Portal auth", "(not logged in)")
+        if not _doctor_is_disabled("disabled_auth_providers", "nous"):
+            nous_status = get_nous_auth_status()
+            if nous_status.get("logged_in"):
+                check_ok("Nous Portal auth", "(logged in)")
+            else:
+                check_warn("Nous Portal auth", "(not logged in)")
 
-        codex_status = get_codex_auth_status()
-        if codex_status.get("logged_in"):
-            check_ok("OpenAI Codex auth", "(logged in)")
-        else:
-            check_warn("OpenAI Codex auth", "(not logged in)")
-            if codex_status.get("error"):
-                check_info(codex_status["error"])
-            # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
-            # only needed to import existing tokens from ~/.codex/auth.json.
-            # Attach the hint to the Codex auth row so it doesn't read as
-            # remediation for whichever provider happens to print next (#27975).
-            if not _safe_which("codex"):
-                check_info(
-                    "codex CLI not installed "
-                    "(optional — only required to import tokens "
-                    "from an existing Codex CLI login)"
-                )
+        if not _doctor_is_disabled("disabled_auth_providers", "openai-codex"):
+            codex_status = get_codex_auth_status()
+            if codex_status.get("logged_in"):
+                check_ok("OpenAI Codex auth", "(logged in)")
+            else:
+                check_warn("OpenAI Codex auth", "(not logged in)")
+                if codex_status.get("error"):
+                    check_info(codex_status["error"])
+                # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
+                # only needed to import existing tokens from ~/.codex/auth.json.
+                # Attach the hint to the Codex auth row so it doesn't read as
+                # remediation for whichever provider happens to print next (#27975).
+                if not _safe_which("codex"):
+                    check_info(
+                        "codex CLI not installed "
+                        "(optional — only required to import tokens "
+                        "from an existing Codex CLI login)"
+                    )
 
-        minimax_status = get_minimax_oauth_auth_status()
-        if minimax_status.get("logged_in"):
-            region = minimax_status.get("region", "global")
-            check_ok("MiniMax OAuth", f"(logged in, region={region})")
-        else:
-            check_warn("MiniMax OAuth", "(not logged in)")
+        if not _doctor_is_disabled("disabled_auth_providers", "minimax-oauth"):
+            minimax_status = get_minimax_oauth_auth_status()
+            if minimax_status.get("logged_in"):
+                region = minimax_status.get("region", "global")
+                check_ok("MiniMax OAuth", f"(logged in, region={region})")
+            else:
+                check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
@@ -1138,10 +1178,13 @@ def run_doctor(args):
     # disrupt the already-printed Nous/Codex/Gemini/MiniMax rows above.
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
-        xai_oauth_status = get_xai_oauth_auth_status() or {}
+        if _doctor_is_disabled("disabled_auth_providers", "xai-oauth"):
+            xai_oauth_status = {}
+        else:
+            xai_oauth_status = get_xai_oauth_auth_status() or {}
         if xai_oauth_status.get("logged_in"):
             check_ok("xAI OAuth", "(logged in)")
-        else:
+        elif xai_oauth_status:
             check_warn("xAI OAuth", "(not logged in)")
             if xai_oauth_status.get("error"):
                 check_info(xai_oauth_status["error"])
@@ -2104,14 +2147,18 @@ def run_doctor(args):
         )
 
     # Build the probe submission list in display order
-    _probes.append(("OpenRouter API", _probe_openrouter))
-    _probes.append(("Anthropic API", _probe_anthropic))
+    if not _doctor_is_disabled("disabled_api_connectivity", "openrouter"):
+        _probes.append(("OpenRouter API", _probe_openrouter))
+    if not _doctor_is_disabled("disabled_api_connectivity", "anthropic"):
+        _probes.append(("Anthropic API", _probe_anthropic))
 
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:
         _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
     for _entry in _APIKEY_PROVIDERS_CACHE:
         _pname, _env_vars, _default_url, _base_env, _supports = _entry
+        if _doctor_is_disabled("disabled_api_connectivity", _pname):
+            continue
         # Capture loop vars by binding default args — without this, all closures
         # would share the final iteration's values and every probe would hit
         # the last provider's URL.
@@ -2119,8 +2166,10 @@ def run_doctor(args):
                                        b=_base_env, s=_supports:
                                 _probe_apikey_provider(p, e, u, b, s)))
 
-    _probes.append(("AWS Bedrock", _probe_bedrock))
-    _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
+    if not _doctor_is_disabled("disabled_api_connectivity", "aws-bedrock"):
+        _probes.append(("AWS Bedrock", _probe_bedrock))
+    if not _doctor_is_disabled("disabled_api_connectivity", "azure-foundry-entra-id"):
+        _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
 
     # Print a single status line so users see something happening, then
     # fan out. ``\r`` clears it once the first real result line lands.

@@ -16958,6 +16958,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            # The Codex gpt-5.5 auto-compaction notice is useful once on a
+            # fresh gateway session, but AIAgent instances can be rebuilt on
+            # later turns (config/cache churn, native platform transitions),
+            # which would otherwise re-send the same lifecycle line on every
+            # message. Keep the 85% threshold behaviour; suppress only the
+            # repeated chat noise after the session has history.
+            try:
+                if (
+                    event_type == "lifecycle"
+                    and history
+                    and str(message or "").startswith("ℹ Codex gpt-5.5 caps context at 272K")
+                ):
+                    logger.debug(
+                        "Suppressing repeated Codex gpt-5.5 auto-compaction notice for session %s",
+                        session_key or session_id,
+                    )
+                    return
+            except Exception:
+                pass
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
                 event_type,

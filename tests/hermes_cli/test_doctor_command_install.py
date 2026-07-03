@@ -272,3 +272,41 @@ class TestDoctorCommandInstallation:
 
         out = _run_doctor(fix=False)
         assert "Command Installation" not in out
+
+
+class TestDoctorSuppressions:
+    def test_normalizes_underscore_and_dash_ids(self, monkeypatch, tmp_path):
+        home, _, _ = _setup_doctor_env(monkeypatch, tmp_path)
+        (home / "config.yaml").write_text(
+            "doctor:\n"
+            "  disabled_tool_availability:\n"
+            "  - x_search\n"
+            "  - browser-cdp\n",
+            encoding="utf-8",
+        )
+
+        assert doctor_mod._doctor_is_disabled("disabled_tool_availability", "x-search")
+        assert doctor_mod._doctor_is_disabled("disabled_tool_availability", "x_search")
+        assert doctor_mod._doctor_is_disabled("disabled_tool_availability", "browser-cdp")
+
+    def test_tool_availability_suppression_filters_unavailable_items(self, monkeypatch, tmp_path):
+        home, _, _ = _setup_doctor_env(monkeypatch, tmp_path)
+        (home / "config.yaml").write_text(
+            "doctor:\n"
+            "  disabled_tool_availability:\n"
+            "  - discord\n"
+            "  - hermes-yuanbao\n",
+            encoding="utf-8",
+        )
+
+        available, unavailable = doctor_mod._apply_doctor_tool_availability_overrides(
+            ["browser"],
+            [
+                {"name": "discord", "missing_vars": ["DISCORD_BOT_TOKEN"]},
+                {"name": "hermes-yuanbao"},
+                {"name": "spotify"},
+            ],
+        )
+
+        assert available == ["browser"]
+        assert unavailable == [{"name": "spotify"}]

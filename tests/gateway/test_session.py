@@ -973,6 +973,43 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(second) == "agent:main:discord:group:guild-123:bob"
         assert build_session_key(first) != build_session_key(second)
 
+    def test_group_user_id_with_path_separator_is_percent_encoded(self):
+        """Plugin user ids such as Nextcloud Talk's ``users/ronny`` must not
+        produce session keys that the traversal guard rejects on restart."""
+        source = SessionSource(
+            platform=Platform("nextcloud_talk"),
+            chat_id="f7rt6574",
+            chat_type="group",
+            user_id="users/ronny",
+        )
+
+        key = build_session_key(source)
+        assert key == "agent:main:nextcloud_talk:group:f7rt6574:users%2Fronny"
+        assert "/" not in key
+
+    def test_dm_thread_component_with_separator_is_percent_encoded(self):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:example.org",
+            chat_type="dm",
+            thread_id="threads/root",
+        )
+
+        key = build_session_key(source)
+        assert key == "agent:main:matrix:dm:!room:example.org:threads%2Froot"
+        assert "/" not in key
+
+    def test_dotdot_component_is_percent_encoded(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="a.b..c/d",
+            chat_type="dm",
+        )
+
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:a.b%2E%2Ec%2Fd"
+        assert ".." not in key
+
     def test_group_sessions_can_be_shared_when_isolation_disabled(self):
         first = SessionSource(
             platform=Platform.DISCORD,
@@ -1225,6 +1262,133 @@ class TestEnsureLoadedSkipsInvalidEntries:
         assert "bad:key" not in store._entries
         assert "agent:main:local:dm" in store._entries
         assert store._entries["agent:main:local:dm"].session_id == "good123"
+
+    def test_encoded_session_key_loads(self, tmp_path):
+        import json
+        from gateway.session import SessionStore
+        from gateway.config import GatewayConfig
+
+        key = "agent:main:nextcloud_talk:group:f7rt6574:users%2Fronny"
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            key: {
+                "session_key": key,
+                "session_id": "good123",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+        }), encoding="utf-8")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+
+        assert key in store._entries
+        assert store._entries[key].session_id == "good123"
+
+    def test_legacy_unsafe_session_key_with_origin_is_migrated(self, tmp_path):
+        import json
+        from gateway.session import SessionStore
+        from gateway.config import GatewayConfig
+
+        old_key = "agent:main:nextcloud_talk:group:f7rt6574:users/ronny"
+        new_key = "agent:main:nextcloud_talk:group:f7rt6574:users%2Fronny"
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            old_key: {
+                "session_key": old_key,
+                "session_id": "keep-history-123",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "origin": {
+                    "platform": "nextcloud_talk",
+                    "chat_id": "f7rt6574",
+                    "chat_type": "group",
+                    "user_id": "users/ronny",
+                    "user_name": "ronny",
+                },
+            },
+        }), encoding="utf-8")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+
+        assert old_key not in store._entries
+        assert new_key in store._entries
+        assert store._entries[new_key].session_id == "keep-history-123"
+        persisted = json.loads(sessions_file.read_text(encoding="utf-8"))
+        assert old_key not in persisted
+        assert persisted[new_key]["session_id"] == "keep-history-123"
+
+    def test_migration_collision_keeps_existing_safe_entry(self, tmp_path):
+        import json
+        from gateway.session import SessionStore
+        from gateway.config import GatewayConfig
+
+        old_key = "agent:main:nextcloud_talk:group:f7rt6574:users/ronny"
+        new_key = "agent:main:nextcloud_talk:group:f7rt6574:users%2Fronny"
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            new_key: {
+                "session_key": new_key,
+                "session_id": "existing-safe",
+                "created_at": "2026-01-02T00:00:00",
+                "updated_at": "2026-01-02T00:00:00",
+            },
+            old_key: {
+                "session_key": old_key,
+                "session_id": "legacy-unsafe",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "origin": {
+                    "platform": "nextcloud_talk",
+                    "chat_id": "f7rt6574",
+                    "chat_type": "group",
+                    "user_id": "users/ronny",
+                },
+            },
+        }), encoding="utf-8")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+
+        assert list(store._entries) == [new_key]
+        assert store._entries[new_key].session_id == "existing-safe"
+        persisted = json.loads(sessions_file.read_text(encoding="utf-8"))
+        persisted_keys = [k for k in persisted if not k.startswith("_")]
+        assert persisted_keys == [new_key]
+        assert persisted[new_key]["session_id"] == "existing-safe"
+
+    def test_legacy_unsafe_session_key_migration_preserves_key_namespace(self, tmp_path):
+        import json
+        from gateway.session import SessionStore
+        from gateway.config import GatewayConfig
+
+        old_key = "agent:coder:nextcloud_talk:group:f7rt6574:users/ronny"
+        new_key = "agent:coder:nextcloud_talk:group:f7rt6574:users%2Fronny"
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            old_key: {
+                "session_key": old_key,
+                "session_id": "coder-session",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "origin": {
+                    "platform": "nextcloud_talk",
+                    "chat_id": "f7rt6574",
+                    "chat_type": "group",
+                    "user_id": "users/ronny",
+                },
+            },
+        }), encoding="utf-8")
+
+        store = SessionStore(
+            sessions_dir=tmp_path,
+            config=GatewayConfig(multiplex_profiles=True),
+        )
+        store._ensure_loaded()
+
+        assert new_key in store._entries
+        assert "agent:main:nextcloud_talk:group:f7rt6574:users%2Fronny" not in store._entries
 
 
 class TestSessionStoreEntriesAttribute:

@@ -450,6 +450,59 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Direct built-in memory-file write guard
+#
+# MEMORY.md / USER.md are authoritative prompt-injected state owned by the
+# memory tool. Direct file writes can leave content that the memory parser
+# cannot round-trip, at which point later memory-tool writes fail closed with
+# a drift backup. Keep the escape hatch shared with the profile guards:
+# callers may bypass via ``cross_profile=True`` only after explicit user
+# direction (for example, drift repair).
+# ---------------------------------------------------------------------------
+
+_BUILTIN_MEMORY_FILENAMES = {"MEMORY.md", "USER.md"}
+
+
+def classify_direct_builtin_memory_target(path: str) -> Optional[dict]:
+    """Classify direct writes to the active profile's built-in memory files."""
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+        home_real = _hermes_home_path().resolve()
+        rel = target.relative_to(home_real)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    parts = rel.parts
+    if len(parts) != 2 or parts[0] != "memories":
+        return None
+    if parts[1] not in _BUILTIN_MEMORY_FILENAMES:
+        return None
+
+    return {
+        "target_path": str(target),
+        "filename": parts[1],
+        "active_profile": _resolve_active_profile_name(),
+    }
+
+
+def get_direct_builtin_memory_warning(path: str) -> Optional[str]:
+    """Return a warning for direct writes to MEMORY.md / USER.md."""
+    info = classify_direct_builtin_memory_target(path)
+    if info is None:
+        return None
+    return (
+        f"Direct built-in memory-file write blocked by soft guard: "
+        f"{info['target_path']} is managed by the ``memory`` tool and is "
+        f"injected into future system prompts. Direct edits can cause "
+        f"round-trip drift and make later memory writes fail closed. Use "
+        f"the ``memory`` tool for normal updates. For explicit drift repair "
+        f"after user direction, retry with ``cross_profile=True``. "
+        f"(Defense-in-depth — not a security boundary; terminal can still "
+        f"bypass.)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sandbox-mirror write guard (#32049)
 #
 # Non-local terminal backends (Docker, Daytona, etc.) bind a sandbox-local

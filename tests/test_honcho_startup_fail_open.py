@@ -351,7 +351,39 @@ def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", fake_session_init)
 
     result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
-
     assert result == {"result": ["ready"]}
     assert init_calls == ["session-1"]
     assert not background_started.is_set()
+
+
+def test_honcho_memory_write_routes_user_and_memory_targets(monkeypatch):
+    """Built-in user facts target the user peer; operational notes target AI."""
+    provider = HonchoMemoryProvider()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    calls = []
+
+    class Manager:
+        def create_conclusion(self, session_key, content, peer="user"):
+            calls.append((session_key, content, peer))
+            return True
+
+    provider._manager = Manager()  # type: ignore[assignment]
+
+    class ImmediateThread:
+        def __init__(self, target, *args, **kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(threading, "Thread", ImmediateThread)
+
+    provider.on_memory_write("add", "user", "User prefers concise answers")
+    provider.on_memory_write("add", "memory", "UDM uses key authentication")
+
+    assert calls == [
+        ("test-session", "User prefers concise answers", "user"),
+        ("test-session", "UDM uses key authentication", "ai"),
+    ]

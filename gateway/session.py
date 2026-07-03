@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -777,7 +778,31 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     """
     if not profile or profile == "default":
         return "agent:main"
-    return f"agent:{profile}"
+    return f"agent:{_session_key_component(profile)}"
+
+
+def _session_key_component(value: object) -> str:
+    """Return a path-safe session-key component.
+
+    Session keys are stored in ``sessions.json`` and later validated by
+    :meth:`SessionEntry.from_dict`; raw platform identifiers may legitimately
+    contain path separators (for example Nextcloud Talk user IDs like
+    ``users/ronny``).  Preserve byte-identical keys for already-safe legacy
+    identifiers, and percent-encode only components that would otherwise break
+    the filesystem traversal guard.
+    """
+    text = str(value)
+    if not text:
+        return text
+    if not _is_path_unsafe(text):
+        return text
+    encoded = quote(text, safe="")
+    # RFC 3986 treats "." as unreserved, so quote() leaves a literal ".."
+    # untouched.  SessionEntry.from_dict still rejects raw dot-dot segments;
+    # encode them explicitly when we are repairing a path-unsafe component.
+    if ".." in encoded:
+        encoded = encoded.replace("..", "%2E%2E")
+    return encoded
 
 
 def build_session_key(
@@ -822,9 +847,10 @@ def build_session_key(
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
 
         if dm_chat_id:
+            dm_chat_key = _session_key_component(dm_chat_id)
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_key}:{_session_key_component(source.thread_id)}"
+            return f"{ns}:{platform}:dm:{dm_chat_key}"
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -838,11 +864,12 @@ def build_session_key(
                 or dm_participant_id
             )
         if dm_participant_id:
+            dm_participant_key = _session_key_component(dm_participant_id)
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_participant_id}"
+                return f"{ns}:{platform}:dm:{dm_participant_key}:{_session_key_component(source.thread_id)}"
+            return f"{ns}:{platform}:dm:{dm_participant_key}"
         if source.thread_id:
-            return f"{ns}:{platform}:dm:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{_session_key_component(source.thread_id)}"
         return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
@@ -854,9 +881,9 @@ def build_session_key(
     key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
-        key_parts.append(source.chat_id)
+        key_parts.append(_session_key_component(source.chat_id))
     if source.thread_id:
-        key_parts.append(source.thread_id)
+        key_parts.append(_session_key_component(source.thread_id))
 
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
@@ -866,7 +893,7 @@ def build_session_key(
         isolate_user = False
 
     if isolate_user and participant_id:
-        key_parts.append(str(participant_id))
+        key_parts.append(_session_key_component(participant_id))
 
     return ":".join(key_parts)
 
@@ -910,6 +937,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
 
         if sessions_file.exists():
+            migrated_entries = False
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -934,7 +962,23 @@ class SessionStore:
                     try:
                         self._entries[key] = SessionEntry.from_dict(entry_data)
                     except (ValueError, KeyError, TypeError) as e:
+                        repaired = self._repair_invalid_session_entry(key, entry_data, e)
+                        if repaired is not None:
+                            if repaired.session_key in self._entries:
+                                migrated_entries = True
+                                logger.warning(
+                                    "Skipping migrated session entry %r because repaired key %r already exists",
+                                    key,
+                                    repaired.session_key,
+                                )
+                                continue
+                            self._entries[repaired.session_key] = repaired
+                            migrated_entries = True
+                            logger.info("Migrated unsafe session entry key %r to %r", key, repaired.session_key)
+                            continue
                         logger.warning("Skipping invalid session entry %r: %s", key, e)
+                if migrated_entries:
+                    self._save()
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
@@ -1029,6 +1073,46 @@ class SessionStore:
         if stale_keys or recovered_keys:
             self._save()
 
+    def _repair_invalid_session_entry(
+        self,
+        key: str,
+        entry_data: Any,
+        error: Exception,
+    ) -> Optional[SessionEntry]:
+        """Repair legacy entries whose generated session key contained raw separators.
+
+        The traversal guard is correct to reject raw ``/`` or ``..`` in loaded
+        keys, but older adapters could generate such keys from legitimate
+        platform identifiers (for example Nextcloud Talk's ``users/ronny``).
+        If the persisted origin is available, regenerate the key with the
+        current path-safe builder and keep the existing session id/history.
+        Never repair invalid ``session_id`` values.
+        """
+        if "session_key" not in str(error):
+            return None
+        if not isinstance(entry_data, dict) or not entry_data.get("origin"):
+            return None
+        try:
+            origin = SessionSource.from_dict(entry_data["origin"])
+            profile = origin.profile
+            parts = str(key).split(":", 2)
+            if len(parts) >= 2 and parts[0] == "agent":
+                profile = None if parts[1] == "main" else parts[1]
+            new_key = build_session_key(
+                origin,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+                profile=profile,
+            )
+            if not new_key or new_key == key or _is_path_unsafe(new_key):
+                return None
+            repaired_data = dict(entry_data)
+            repaired_data["session_key"] = new_key
+            return SessionEntry.from_dict(repaired_data)
+        except Exception as exc:
+            logger.debug("Could not repair invalid session entry %r: %s", key, exc)
+            return None
+    
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile

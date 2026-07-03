@@ -1394,7 +1394,7 @@ class HermesACPAgent(acp.Agent):
 
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
-        read_snapshots_cache: dict[str, str | None] = {}
+        read_snapshots_cache: dict[str, str | None] = state.read_snapshots_cache
         previous_approval_cb = None
         edit_approval_requester = None
 

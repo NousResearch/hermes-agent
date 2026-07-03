@@ -170,6 +170,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    read_snapshots_cache: dict = field(default_factory=dict)
 
 
 class SessionManager:

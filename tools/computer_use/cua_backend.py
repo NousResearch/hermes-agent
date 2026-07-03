@@ -1144,6 +1144,40 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return windows
 
 
+def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return list_windows payloads across cua-driver result shapes."""
+    structured = out.get("structuredContent")
+    if isinstance(structured, dict):
+        windows = structured.get("windows")
+        if isinstance(windows, list):
+            return windows
+
+    data = out.get("data")
+    if isinstance(data, dict):
+        windows = data.get("windows")
+        if isinstance(windows, list):
+            return windows
+        legacy_windows = data.get("_legacy_windows")
+        if isinstance(legacy_windows, list):
+            return legacy_windows
+    return []
+
+
+def _apps_from_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    apps: List[Dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for summary in _ingest_windows(windows):
+        name = summary["app_name"]
+        if not name:
+            continue
+        key = (name, summary["pid"])
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({"name": name, "pid": summary["pid"]})
+    return apps
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1264,8 +1298,7 @@ class CuaDriverBackend(ComputerUseBackend):
         )
 
         def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
-            raw_ = (out.get("structuredContent") or {}).get("windows") or []
-            wins_ = _ingest_windows(raw_)
+            wins_ = _ingest_windows(_windows_from_tool_result(out))
             # Sort by z_index descending (lowest z_index = frontmost on macOS).
             wins_.sort(key=lambda w: w["z_index"])
             return wins_
@@ -1721,10 +1754,23 @@ class CuaDriverBackend(ComputerUseBackend):
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
         data = out["data"]
+        structured = out.get("structuredContent")
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            return data.get("apps", [])
+            apps = data.get("apps")
+            if isinstance(apps, list):
+                return apps
+            if isinstance(structured, dict):
+                structured_apps = structured.get("apps")
+                if isinstance(structured_apps, list):
+                    return structured_apps
+            return _apps_from_windows(_windows_from_tool_result(out))
+        if isinstance(structured, dict):
+            apps = structured.get("apps")
+            if isinstance(apps, list):
+                return apps
+            return _apps_from_windows(_windows_from_tool_result(out))
         # list_apps returns plain text — parse app lines.
         if isinstance(data, str):
             apps = []
@@ -1752,8 +1798,7 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = _ingest_windows(raw_windows)
+        windows = _ingest_windows(_windows_from_tool_result(lw_out))
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

@@ -1421,6 +1421,114 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+def _make_cua_backend_with_tool_result(result: Dict[str, Any]):
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._session = MagicMock()
+    backend._session.call_tool.return_value = result
+    return backend
+
+
+class TestCuaDriverWindowResultShapes:
+    def test_extracts_windows_from_structured_content(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({
+            "structuredContent": {"windows": windows},
+            "data": {},
+        }) == windows
+
+    def test_extracts_windows_from_data_windows(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({
+            "structuredContent": None,
+            "data": {"windows": windows},
+        }) == windows
+
+    def test_extracts_windows_from_legacy_data_windows(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({
+            "structuredContent": None,
+            "data": {"_legacy_windows": windows},
+        }) == windows
+
+    def test_extract_windows_missing_fields_returns_empty(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        assert _windows_from_tool_result({
+            "structuredContent": None,
+            "data": {},
+        }) == []
+
+    def test_capture_uses_data_windows_shape(self):
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "shell", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_tool_result({
+            "data": {"windows": windows},
+            "images": [],
+            "isError": False,
+            "structuredContent": None,
+        })
+        backend._session.call_tool.side_effect = [
+            {"data": {"windows": windows}, "images": [], "isError": False,
+             "structuredContent": None},
+            {"data": "ok", "images": [], "isError": False, "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app="Terminal")
+
+        assert cap.app == "Terminal"
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 7
+
+    def test_focus_app_uses_legacy_data_windows_shape(self):
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "shell", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_tool_result({
+            "data": {"_legacy_windows": windows},
+            "images": [],
+            "isError": False,
+            "structuredContent": None,
+        })
+
+        res = backend.focus_app("Terminal")
+
+        assert res.ok is True
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 7
+
+    def test_list_apps_derives_apps_from_data_windows_shape(self):
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 7},
+            {"app_name": "Terminal", "pid": 100, "window_id": 8},
+            {"app_name": "Notes", "pid": 200, "window_id": 9},
+        ]
+        backend = _make_cua_backend_with_tool_result({
+            "data": {"windows": windows},
+            "images": [],
+            "isError": False,
+            "structuredContent": None,
+        })
+
+        assert backend.list_apps() == [
+            {"name": "Terminal", "pid": 100},
+            {"name": "Notes", "pid": 200},
+        ]
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes

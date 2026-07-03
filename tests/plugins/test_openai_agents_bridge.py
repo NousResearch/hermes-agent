@@ -315,6 +315,50 @@ def test_failure_receipt_fingerprints_inputs_without_prompt_leakage(monkeypatch,
     assert receipt_sha == oat._sha256_file(receipt_path)
 
 
+def test_governed_lane_retries_structured_output_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(oat, "_resolve_openai_api_key", lambda: "test-key")
+    calls = []
+
+    class FakeResult:
+        final_output = oat.GovernedAgentOutput(
+            status="verified",
+            summary="retry recovered",
+            actions_taken=["analysis only"],
+            proof=["second attempt returned valid structured output"],
+            risks=[],
+            next_required_action=None,
+            requires_human_approval=False,
+        )
+        raw_responses = []
+
+    def fake_run_sync(agent, input_value, max_turns=None, run_config=None):
+        calls.append(input_value)
+        if len(calls) == 1:
+            raise RuntimeError("ModelBehaviorError: Invalid JSON when parsing structured output")
+        return FakeResult()
+
+    import agents
+
+    monkeypatch.setattr(agents.Runner, "run_sync", fake_run_sync)
+
+    raw = oat._handle_openai_agents_review({
+        "task": "Review a tiny proof object",
+        "constraints": ["analysis only; no mutation"],
+        "max_turns": 2,
+        "max_tokens": 700,
+    })
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["result"]["status"] == "verified"
+    assert payload["retry"]["attempted"] is True
+    assert payload["retry"]["first_failure_receipt_sha256"] == oat._sha256_file(
+        payload["retry"]["first_failure_receipt_path"]
+    )
+    assert "structured-output retry" in calls[1]
+
+
 def test_governed_lane_error_response_includes_failure_receipt(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(oat, "_resolve_openai_api_key", lambda: "test-key")

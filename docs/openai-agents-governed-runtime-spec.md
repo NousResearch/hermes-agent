@@ -67,6 +67,7 @@ Postconditions:
 4. High-risk tasks without explicit scope/approval are rejected before model spend.
 5. Architecture workflow stage failures return a structured `blocked` aggregate with stage receipts/errors, preserving auditability instead of collapsing into an unstructured tool error.
 6. Architecture workflow stages enforce a 1400-token minimum and concise-output constraint to reduce structured JSON truncation failures while keeping the run bounded.
+7. Review/execute/verify lanes retry once after SDK structured-output/JSON/schema failures, writing a first-failure receipt before retrying with compact-output constraints.
 
 ## 6. Governance controls
 

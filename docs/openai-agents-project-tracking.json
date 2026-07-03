@@ -93,6 +93,22 @@
         "External git/GitHub actions remain blocked until explicitly authorized."
       ],
       "approval_boundary": "local repo docs/scripts/tests only; no fetch/rebase/push/GitHub issue/PR creation without explicit scope"
+    },
+    {
+      "id": "OASDK-HARDEN-006",
+      "title": "Generic SDK structured-output retry and recovery",
+      "status": "in_progress",
+      "linked_commit_refs": [],
+      "linked_receipt_groups": [
+        "OASDK-RCPT-FAILURE",
+        "OASDK-RCPT-GATE"
+      ],
+      "acceptance": [
+        "Review, execute, and verify lanes retry once after retryable structured-output failures.",
+        "First failure writes a sanitized blocked-status receipt before retry.",
+        "Successful retry responses include retry metadata and first-failure receipt hash."
+      ],
+      "approval_boundary": "local repo code/docs/tests only; no push, no migration"
     }
   ],
   "receipt_groups": [
@@ -192,6 +208,19 @@
       "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-005"
+      ],
+      "required_approval_level": "normal_local_repo_change",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": false,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-005",
+      "title": "Implement generic structured-output retry for SDK lanes",
+      "status": "in_progress",
+      "linked_roadmap_items": [
+        "OASDK-HARDEN-006"
       ],
       "required_approval_level": "normal_local_repo_change",
       "destructive": false,

@@ -30,6 +30,7 @@ _DEFAULT_MAX_TURNS = 4
 _DEFAULT_MAX_TOKENS = 1600
 _DEFAULT_OUTPUT_CHARS = 12000
 _ARCHITECTURE_MIN_TOKENS = 1400
+_STRUCTURED_RETRY_MIN_TOKENS = 1600
 
 # Scott's trust policy: never route SDK workers through Chinese-origin models or
 # provider/model aliases, even if a caller passes one explicitly.
@@ -422,6 +423,21 @@ def _write_failure_receipt(**kwargs: Any) -> tuple[str, str]:
     return path, _sha256_file(path)
 
 
+def _is_structured_output_retryable(error: BaseException) -> bool:
+    text = f"{type(error).__name__}: {error}".lower()
+    retry_markers = (
+        "modelbehaviorerror",
+        "invalid json",
+        "json_invalid",
+        "structured output",
+        "output did not satisfy",
+        "validation error",
+        "typeadapter",
+        "eof while parsing",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
 def _usage_to_dict(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
@@ -663,32 +679,70 @@ def _run_governed_lane(lane: Literal["review", "execute", "verify"], args: dict)
 
         lane_cfg = _LANE_CONFIG[lane]
         guardrail_kwargs = _build_agent_guardrail_kwargs(lane)
-        sdk_agent = Agent(
-            name=lane_cfg["name"],
-            instructions=lane_cfg["instructions"],
-            model=model,
-            model_settings=ModelSettings(max_tokens=max_tokens),
-            output_type=GovernedAgentOutput,
-            **guardrail_kwargs,
-        )
-        run_config = RunConfig(
-            model_provider=OpenAIProvider(**provider_kwargs),
-            tracing_disabled=True,
-            trace_include_sensitive_data=False,
-            workflow_name=f"Hermes OpenAI Agents SDK {lane} lane",
-        )
-        result = Runner.run_sync(
-            sdk_agent,
-            _format_worker_input(
+        retry_receipt_path = None
+        retry_receipt_sha256 = None
+        retry_attempted = False
+
+        def _run_once(*, attempt_constraints: list[str], attempt_max_tokens: int):
+            sdk_agent = Agent(
+                name=lane_cfg["name"],
+                instructions=lane_cfg["instructions"],
+                model=model,
+                model_settings=ModelSettings(max_tokens=attempt_max_tokens),
+                output_type=GovernedAgentOutput,
+                **guardrail_kwargs,
+            )
+            run_config = RunConfig(
+                model_provider=OpenAIProvider(**provider_kwargs),
+                tracing_disabled=True,
+                trace_include_sensitive_data=False,
+                workflow_name=f"Hermes OpenAI Agents SDK {lane} lane",
+            )
+            return Runner.run_sync(
+                sdk_agent,
+                _format_worker_input(
+                    lane=lane,
+                    task=task,
+                    context=context,
+                    acceptance_criteria=acceptance_criteria,
+                    constraints=attempt_constraints,
+                ),
+                max_turns=max_turns,
+                run_config=run_config,
+            )
+
+        try:
+            result = _run_once(attempt_constraints=constraints, attempt_max_tokens=max_tokens)
+        except Exception as first_exc:
+            retry_attempted = _is_structured_output_retryable(first_exc)
+            if not retry_attempted:
+                raise
+            retry_receipt_path, retry_receipt_sha256 = _write_failure_receipt(
                 lane=lane,
+                error=first_exc,
                 task=task,
                 context=context,
                 acceptance_criteria=acceptance_criteria,
                 constraints=constraints,
-            ),
-            max_turns=max_turns,
-            run_config=run_config,
-        )
+                worker=lane_cfg["name"],
+                model=model,
+                max_turns=max_turns,
+                max_tokens=max_tokens,
+                preflight_enforced=True,
+                sdk_guardrails_attached=bool(
+                    guardrail_kwargs.get("input_guardrails") or guardrail_kwargs.get("output_guardrails")
+                ),
+            )
+            retry_constraints = constraints + [
+                "structured-output retry after SDK JSON/schema failure",
+                "return compact valid JSON only; keep every string under 240 characters",
+                "do not quote full prompt/context; summarize evidence briefly",
+            ]
+            result = _run_once(
+                attempt_constraints=retry_constraints,
+                attempt_max_tokens=max(max_tokens, _STRUCTURED_RETRY_MIN_TOKENS),
+            )
+
         output = _enforce_postconditions(_coerce_structured_output(result), lane=lane)
         output_payload = output.model_dump()
         output_json = json.dumps(output_payload, ensure_ascii=False)
@@ -717,6 +771,12 @@ def _run_governed_lane(lane: Literal["review", "execute", "verify"], args: dict)
             "receipt": receipt,
             "result": output_payload,
             "truncated": truncated,
+            "retry": {
+                "attempted": retry_attempted,
+                "reason": "structured_output_failure" if retry_attempted else None,
+                "first_failure_receipt_path": retry_receipt_path,
+                "first_failure_receipt_sha256": retry_receipt_sha256,
+            },
         }
         receipt_path = _write_receipt(response_payload)
         response_payload["receipt_path"] = receipt_path

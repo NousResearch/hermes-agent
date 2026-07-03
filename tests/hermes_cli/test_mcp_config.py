@@ -757,6 +757,79 @@ class TestMcpLogin:
 
 
 # ---------------------------------------------------------------------------
+# Tests: cmd_mcp_refresh
+# ---------------------------------------------------------------------------
+
+
+class TestMcpRefresh:
+    def test_refresh_single_server(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "remote_oauth": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        visited = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._refresh_oauth_server",
+            lambda name, cfg, *, min_ttl_seconds, force:
+                visited.append((name, cfg["url"], min_ttl_seconds, force)) or True,
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_refresh
+
+        cmd_mcp_refresh(_make_args(
+            name="remote_oauth",
+            all=False,
+            min_ttl_seconds=2700,
+            force=True,
+        ))
+
+        assert visited == [("remote_oauth", "https://mcp.example.com/mcp", 2700, True)]
+
+    def test_refresh_all_visits_only_oauth_http_servers(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "remote_oauth": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+            "localstdio": {"command": "npx", "args": ["demo"]},
+            "apikey": {"url": "https://example.com/mcp", "auth": "header"},
+        })
+        visited = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._refresh_oauth_server",
+            lambda name, cfg, *, min_ttl_seconds, force:
+                visited.append(name) or True,
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_refresh
+
+        cmd_mcp_refresh(_make_args(
+            name=None,
+            all=True,
+            min_ttl_seconds=900,
+            force=False,
+        ))
+        out = capsys.readouterr().out
+
+        assert visited == ["remote_oauth"]
+        assert "Refreshed/skipped 1/1" in out
+
+    def test_refresh_unknown_server_exits_nonzero(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "remote_oauth": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_refresh
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_refresh(_make_args(
+                name="ghost",
+                all=False,
+                min_ttl_seconds=900,
+                force=False,
+            ))
+
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "not found" in out
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)
 # ---------------------------------------------------------------------------
 

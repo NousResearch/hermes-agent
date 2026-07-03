@@ -310,6 +310,20 @@ class TestRedirectHandlerSshHint:
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
 
+    def test_suppressed_redirect_does_not_open_browser(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+
+        opened = []
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: opened.append(url) or True)
+
+        with mco.suppress_interactive_oauth():
+            with pytest.raises(OAuthNonInteractiveError, match="interactive browser"):
+                self._run(_redirect_handler("https://example.com/auth"))
+
+        assert opened == []
+        assert "Browser opened automatically" not in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # Path traversal protection

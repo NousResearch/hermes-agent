@@ -5,8 +5,8 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [crwd, reminder, deadline, follow-up, followup, check-in, schedule, cron]
-    related_skills: [crwd-gig-execution, crwd-gig-discovery]
-    requires_toolsets: [cronjob]
+    related_skills: [crwd-gig-execution, crwd-gig-discovery, crwd-payment-status]
+    requires_toolsets: [crwd, cronjob]
 ---
 
 # CRWD Reminders & Follow-ups

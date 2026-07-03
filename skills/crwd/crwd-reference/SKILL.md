@@ -5,7 +5,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [crwd, reference, internal, facts, lifecycle, payments, proof]
-    related_skills: [crwd-gig-discovery, crwd-gig-execution, crwd-application-expert]
+    related_skills: [crwd-gig-discovery, crwd-gig-execution, crwd-application-expert, crwd-payment-status]
 ---
 
 # CRWD Reference

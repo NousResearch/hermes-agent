@@ -38,8 +38,10 @@ screen fast.
    - Looking for gigs to do → **Explore**, then tap a gig to open its details.
    - Checking their own gigs → **Home**, then the Active / Completed / Expired grouping.
 2. Make it concrete for **their** account when they ask "what do I have?" — use `crwd_db`
-   `get_user_gigs` (via `get_user` to resolve their `users._id`) and reflect their real
-   active / completed gigs, so it matches what they see on Home.
+   `get_user_gigs` with the member's `user_id` from the `[CRWD member]` context line (pass it
+   straight through), and reflect their real active / completed gigs so it matches what they
+   see on Home. Only fall back to `get_user` (by email/phone) if that line isn't present or
+   you're looking up a **different** person.
 3. If they're stuck opening a gig or the screen looks wrong, walk them to it step by step. If
    something appears **broken** (won't load, button does nothing), switch to
    `crwd-troubleshooting`.

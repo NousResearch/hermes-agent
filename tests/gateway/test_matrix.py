@@ -2580,7 +2580,7 @@ class TestMatrixDiagnostics:
             "reactions": "yes",
             "approvals": "yes",
             "model picker": "yes",
-            "thinking panes": "yes",
+            "live thinking progress": "no",
             "images": "yes",
             "multiple images": "yes",
             "files": "yes",
@@ -2600,7 +2600,6 @@ class TestMatrixDiagnostics:
             "reactions": "_send_reaction",
             "approvals": "send_exec_approval",
             "model picker": "send_model_picker",
-            "thinking panes": "edit_message",
             "images": "send_image",
             "multiple images": "send_multiple_images",
             "files": "send_document",
@@ -2612,6 +2611,7 @@ class TestMatrixDiagnostics:
         for capability, method in required_methods.items():
             assert capabilities[capability] == "yes"
             assert hasattr(MatrixAdapter, method), f"{capability} needs {method}"
+        assert capabilities["live thinking progress"] == "no"
         assert capabilities["E2EE"] == "off / optional / required"
 
     def test_matrix_docs_capability_table_matches_declaration(self):

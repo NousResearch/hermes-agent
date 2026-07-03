@@ -398,7 +398,7 @@ _MATRIX_CAPABILITIES: Dict[str, str] = {
     "reactions": "yes",
     "approvals": "yes",
     "model picker": "yes",
-    "thinking panes": "yes",
+    "live thinking progress": "no",
     "images": "yes",
     "multiple images": "yes",
     "files": "yes",

@@ -51,11 +51,29 @@ The repo ships a launcher that lines up with Hermes' built-in defaults:
 That brings the server up at `http://127.0.0.1:8088/v1` — exactly where
 Hermes' `llama-cpp` provider looks by default.
 
+**GPU offload is auto-detected** — if you don't set `N_GPU_LAYERS`, the
+launcher checks whether this machine has a GPU (`nvidia-smi`, macOS/Metal,
+`rocm-smi`, or `lspci`) *and* whether your `llama-server` binary actually has
+a GPU backend compiled in (looks for `libggml-cuda`/`vulkan`/`metal`/`hip`/
+`sycl` next to the binary). Only offloads all layers if both are true.
+
+This second check matters more than it sounds like it should. The official
+llama.cpp Linux releases ship several separate builds — cpu, vulkan, rocm,
+sycl — and **there is no prebuilt CUDA build for Linux**, only for Windows.
+It's entirely possible to have an NVIDIA GPU, `llama-server` on PATH, and
+`-ngl 999` set, and still be running 100% on CPU with no error, because that
+particular binary happens to be the CPU-only one. If the launcher detects
+exactly that mismatch, it prints a warning instead of failing silently. On
+Linux with an NVIDIA/AMD/Intel GPU, grab the `*-vulkan-*` release asset —
+it works with your normal display driver, no CUDA toolkit needed.
+
 Override with environment variables:
 
 ```bash
 PORT=9000 CTX=32768 N_GPU_LAYERS=-1 ./scripts/start-llama-server.sh ~/models/foo.gguf
 ```
+
+Set `N_GPU_LAYERS=0` explicitly to force CPU-only and skip auto-detection.
 
 If you change the port or host, also tell Hermes:
 

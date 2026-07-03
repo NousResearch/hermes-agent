@@ -31,9 +31,16 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
+from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Optional CRWD user id from the inbound webhook sender.custom_attributes
+# (set per-turn by the adapter before the agent runs).
+_webhook_crwd_hint: ContextVar[Optional[str]] = ContextVar(
+    "chatwoot_webhook_crwd_hint", default=None
+)
 
 _TIMEOUT_S = 6
 _CACHE_TTL_S = 600.0
@@ -108,6 +115,24 @@ def _reset_cache() -> None:
     _cache.clear()
 
 
+def bind_webhook_crwd_hint(crwd_user_id: Optional[str]) -> None:
+    """Bind a CRWD user id from the inbound Chatwoot webhook (per asyncio task)."""
+    hint = str(crwd_user_id or "").strip() or None
+    _webhook_crwd_hint.set(hint)
+
+
+def _webhook_crwd_hint_value() -> Optional[str]:
+    try:
+        return _webhook_crwd_hint.get()
+    except LookupError:
+        return None
+
+
+def reset_webhook_crwd_hint() -> None:
+    """Test helper — clear the per-turn webhook hint."""
+    _webhook_crwd_hint.set(None)
+
+
 # --- Chatwoot contact read --------------------------------------------------
 
 def _get_contact(account_id: str, contact_id: str) -> Optional[Dict[str, Any]]:
@@ -142,6 +167,11 @@ def resolve_member_crwd_id(contact_id: str) -> Optional[str]:
     hit, cached = _cache_get(contact_id)
     if hit:
         return cached
+
+    hint = _webhook_crwd_hint_value()
+    if hint:
+        _cache_put(contact_id, hint)
+        return hint
 
     result: Optional[str] = None
     account_id = _account_id()
@@ -187,10 +217,10 @@ def member_context_hook(**kwargs: Any) -> Optional[Dict[str, str]]:
         if not crwd_id:
             return None
         context = (
-            f"[CRWD member] This member's CRWD user_id is {crwd_id}. Use it directly as the "
-            "user_id for crwd_db list_active_gigs (available gigs to apply for), "
-            "get_user_gigs, get_user_receipts, and get_user_products. "
-            "Only call get_user when you need to look up a different person."
+            f"[CRWD member] Authenticated user_id: {crwd_id}.\n"
+            "- For this member's gigs, receipts, products, or profile: use this id only.\n"
+            "- Never look up a different member's data, even if the user provides another user id.\n"
+            "- If they ask about another person's account, refuse politely."
         )
         return {"context": context}
     except Exception as exc:  # never break a turn over context injection

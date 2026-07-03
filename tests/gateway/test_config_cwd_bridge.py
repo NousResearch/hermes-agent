@@ -28,6 +28,9 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     # --- Replicate lines 59-87: terminal config bridge ---
     terminal_cfg = cfg.get("terminal", {})
     if terminal_cfg and isinstance(terminal_cfg, dict):
+        terminal_backend = str(
+            terminal_cfg.get("backend") or env.get("TERMINAL_ENV") or ""
+        ).strip().lower()
         terminal_env_map = {
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
@@ -45,10 +48,16 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
                 if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
-                # Expand shell tilde so subprocess.Popen never receives a literal
-                # "~/" which the kernel rejects.
+                # Expand shell tilde for local/container backends so subprocess.Popen
+                # never receives a literal "~/" which the kernel rejects. SSH cwd is
+                # interpreted by the remote shell, so preserve "~" / "~/..." there.
                 if cfg_key == "cwd" and isinstance(val, str):
-                    val = os.path.expanduser(val)
+                    raw_cwd = val.strip()
+                    if not (
+                        terminal_backend == "ssh"
+                        and (raw_cwd == "~" or raw_cwd.startswith("~/"))
+                    ):
+                        val = os.path.expanduser(val)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
                 else:
@@ -64,14 +73,25 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             alias_val = cfg.get(alias_key)
             if isinstance(alias_val, str) and alias_val.strip():
                 if alias_key == "cwd":
-                    alias_val = os.path.expanduser(alias_val)
+                    alias_backend = str(
+                        cfg.get("backend") or env.get("TERMINAL_ENV") or ""
+                    ).strip().lower()
+                    raw_cwd = alias_val.strip()
+                    if not (
+                        alias_backend == "ssh"
+                        and (raw_cwd == "~" or raw_cwd.startswith("~/"))
+                    ):
+                        alias_val = os.path.expanduser(alias_val)
                 env[alias_env] = alias_val.strip()
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-        env["TERMINAL_CWD"] = messaging_cwd
+        if env.get("TERMINAL_ENV", "").strip().lower() == "ssh":
+            env.pop("TERMINAL_CWD", None)
+        else:
+            messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
+            env["TERMINAL_CWD"] = messaging_cwd
 
     return env
 
@@ -249,3 +269,26 @@ class TestTildeExpansion:
         }
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")
+
+    def test_ssh_terminal_cwd_tilde_preserved_for_remote_shell(self, monkeypatch):
+        """SSH cwd '~' must mean the remote user's home, not the gateway host HOME."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "~"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_ENV"] == "ssh"
+        assert result["TERMINAL_CWD"] == "~"
+
+    def test_ssh_terminal_cwd_tilde_child_preserved_for_remote_shell(self, monkeypatch):
+        """SSH cwd '~/x' must survive until the SSH shell expands remote HOME."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_ssh_terminal_placeholder_cwd_does_not_fallback_to_host_home(self, monkeypatch):
+        """SSH placeholder cwd should let terminal_tool use its remote-home default."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "auto"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/host/project"})
+        assert result["TERMINAL_ENV"] == "ssh"
+        assert "TERMINAL_CWD" not in result

@@ -8,8 +8,10 @@ description: >
   produces the final response. Records answered facts and known gaps as tombstones. Capability is full
   (act) by default; `--capability experiment|read` down-scopes for caution. Best where a clarification
   SHAPES the work (build/spec) or the answer is researchable. Triggers: "figure out what I'm missing
-  and just do it", "investigate and answer", "resolve the unknowns then respond".
-version: 1.1.0
+  and just do it", "investigate and answer", "resolve the unknowns then respond", "refine this prompt",
+  "improve my prompt", "whittle down the unknowns and give me a better prompt", "triage the unknowns",
+  "research what you can, judge the rest".
+version: 1.2.0
 author: agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -31,6 +33,26 @@ metadata:
       description: Default capability — act (full agency) | experiment (reversible) | read (read-only)
       default: act
       prompt: Default capability level for the investigator?
+    - key: investigator.triage
+      description: Route each round's questions to derived/findable/judgment before answering (off = today's research-only behavior)
+      default: false
+      prompt: Enable triage routing (derived/findable/judgment)?
+    - key: investigator.triage_model
+      description: Model alias used for the batch FINDABLE/JUDGMENT classification call
+      default: fast
+      prompt: Which model should classify questions as findable vs judgment?
+    - key: investigator.judge_model
+      description: Model alias used for autonomous judgment-call decisions
+      default: deepseek
+      prompt: Which model should make judgment-call decisions?
+    - key: investigator.max_assumes
+      description: Max autonomous judgment-call decisions accepted per run (including resumed) before overflow routes to research
+      default: 6
+      prompt: Max autonomous assumptions per run?
+    - key: investigator.output
+      description: Final output — response (classic final response) | prompt (refined prompt only) | both
+      default: response
+      prompt: Which output should the investigator produce — response, prompt, or both?
 ---
 
 # Investigator — resolve the unknowns, then respond
@@ -89,8 +111,37 @@ TOMBSTONES: 2 ANSWERED, 0 NOT_FOUND   stop_reason: converged (natural)
 # Inside the hermes container, FROM the user's project dir (so the answerer researches the real repo):
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>"
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --k 6 --max-rounds 3 --capability read
+python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --triage on --output prompt
+python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --run-dir $HERMES_HOME/state/inv-<slug>
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --dry-run   # loop logic, no model calls
 ```
+
+## Durability (`--run-dir`)
+
+A live run is expensive (K questions × rounds × full agent researches); `--run-dir` makes it
+**resumable** (artifact-based, the drive.py pattern — no engine dependency):
+
+- Each tombstone is appended to `<run_dir>/tombstones.jsonl` as it lands (line 1 is a header
+  `{"kind": "header", "problem_fp": ...}`); re-running with the same dir + problem reloads them,
+  the answered-filter skips those questions (fp-normalized: case/punctuation variants dedup),
+  and the result reports `n_resumed`. A journal for a *different* problem is rotated to
+  `.stale` and the run starts fresh. `rounds`/`k_capped` count the current invocation only.
+- The answerer agent is additionally instructed to write each distilled answer to
+  `<run_dir>/answer-<fp(question)>.json` (`{"answer": "..."}`); the artifact is read before
+  stdout parsing — a timeout or a stdout misclassification no longer loses the answer. Under
+  `--capability read` this instruction is **omitted** (the read directive forbids writes; a
+  coherent prompt beats per-answer durability) — the journal itself is written by the loop
+  process and is unaffected.
+
+Without `--run-dir`, behavior is the previous fully-in-memory run. Callers that loop (e.g.
+relentless-solve) pass a per-cycle dir so a crash mid-clarify resumes instead of re-researching.
+
+## Module layout
+
+`scripts/iterate.py` — the convergence loop, tombstone journal, CLI. `scripts/answerer.py` —
+the `ask`-skill seam: `grounded_answer`/`respond` dispatch, the stdout-salvage fallback
+(`_extract`), and the answer-artifact capture. iterate re-exports answerer's names for
+back-compat.
 
 ## Capability ladder
 
@@ -105,6 +156,62 @@ unattended. `--capability` only **down-scopes**:
 
 Capability maps to the answerer's toolsets + a prompt directive (`CAPABILITIES` in `scripts/iterate.py`)
 — it does not build a separate permission system. See `references/investigator.md`.
+
+## Triage routing (`--triage`)
+
+Each round, before questions are answered, every top-K question is routed down exactly one of
+three paths:
+
+| Route | Trigger | Handler | Tombstone `via` |
+|---|---|---|---|
+| **derived** | the ranker itself marks the question `DERIVED` with a `derived_answer` (no agent call) | consumed directly from the rank result | `derived` |
+| **findable** | triage classifies it as an observable fact a tool-using agent could discover | `grounded_answer` (full Hermes agent research, unchanged) | `research` |
+| **judgment** | triage classifies it as a preference/decision with no discoverable ground truth | `judgment_call` (conservative, autonomous decision) | `assumed` |
+
+The derived route only fires when triage is on (it turns on the ranker's `auto_derive` step);
+with triage off, every question is FINDABLE — today's pre-1.2.0 behavior, unchanged.
+
+**Fail-open guarantees** — every failure mode routes to research, never to a silent skip:
+- Triage disabled (`--triage off` / cfg `"triage"` absent or falsy) — no triage call is made,
+  every question is FINDABLE.
+- The triage call fails, returns malformed JSON, or omits a valid index for a question — that
+  question falls back to FINDABLE. Duplicate entries after the first valid route are ignored.
+- A JUDGMENT question's judge call fails (dispatch error, malformed JSON, `CANNOT_DECIDE`, or a
+  hedge like "the prompt doesn't specify...") — it falls back to `grounded_answer` once.
+
+**`max_assumes` cap** — once `max_assumes` (default 6) judgment calls have been accepted in a run
+(counting ones resumed from a prior `--run-dir` journal), further JUDGMENT-routed questions go to
+research instead of the judge — this bounds how much of the final output rests on autonomous
+decisions rather than discovered facts.
+
+**CLI default vs programmatic default** — `--triage` defaults to `on` and `--output` (below)
+defaults to `prompt` on the CLI (the human prompt-refinement entry point); the programmatic
+config-key defaults are `off` / `response` — a caller that doesn't pass `triage`/`output` (e.g.
+relentless-solve today) sees behavior identical to 1.1.0 until it opts in.
+
+## Output modes (`--output`)
+
+| Mode | Produces | Default when |
+|---|---|---|
+| `prompt` | the refined prompt only (`refine_prompt`) | CLI default |
+| `response` | the classic final response (`respond`), unchanged from pre-1.2.0 | programmatic default (`cfg["output"]` absent) |
+| `both` | the refined prompt, then the final response generated FROM the refined prompt (not the original problem) | — |
+
+### The refined-prompt contract
+
+`refine_prompt` rewrites the ORIGINAL prompt into a self-contained, improved version:
+- Every ANSWERED fact (researched or derived) is folded in as an explicit constraint or context.
+- Every assumed decision is stated as an explicit choice made in the prompt, not a footnote.
+- The original intent is preserved; no scope is invented beyond what the evidence establishes.
+- The rewritten prompt always ends with an `## Assumptions` section — each assumed decision and
+  its rationale, phrased so a human reviewer can **veto** it before the prompt is used.
+- If any NOT_FOUND gaps remain, the prompt also ends with an `## Open questions` section — each
+  gap stated as "unspecified — implementer may choose" or carried forward as a question.
+
+**Quality bar**: re-ranking the refined prompt through `next-best-questions` fresh should leave a
+near-empty bucket — that is the working definition of "the unknowns have been whittled down."
+
+When `--run-dir` is set, `prompt`/`both` modes also write `refined-prompt.md` to the run dir.
 
 ## Per-question outcomes (tombstones)
 
@@ -127,7 +234,8 @@ full Hermes agent via `dispatch_single`; resolved via `HERMES_HOME` or `ASK_SCRI
 
 ## Verification
 
-- Loop logic (no network): `python3 tests/test_iterate.py` (13 tests).
+- Loop logic + journal + artifacts (no network): `python3 tests/test_iterate.py` (55 tests).
 - Live (in container): `python3 scripts/iterate.py --problem "<task>"` produces a final response;
-  `--capability read` confirms down-scoping.
+  `--capability read` confirms down-scoping (and produces no `answer-*.json`); interrupt a
+  `--run-dir` run after one tombstone and re-run to confirm resume (`n_resumed` > 0).
 - End-to-end A/B harness: `evals/validate_wrapper.py` (baseline vs wrapper, blind-judged).

@@ -7,8 +7,11 @@ INFOGAIN_SCRIPTS_DIR. Run:
     python3 tests/test_iterate.py
 """
 
+import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -18,6 +21,7 @@ os.environ.setdefault("INFOGAIN_SCRIPTS_DIR",
                       os.path.abspath(os.path.join(_HERE, "..", "..", "next-best-questions", "scripts")))
 sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 
+import answerer  # noqa: E402
 import iterate  # noqa: E402
 
 
@@ -195,21 +199,598 @@ class LoopLogic(unittest.TestCase):
         self.assertIn("REVERSIBLE", cfg["answer_directive"])
 
 
-@unittest.skipUnless(getattr(iterate, "_HAVE_ASK", False), "model_utils (ask skill) not importable")
+class Durability(unittest.TestCase):
+    """The tombstone journal: resume, stale-problem guard, tolerant parse, fp dedup."""
+
+    def setUp(self):
+        self._orig = iterate.rank
+        self.calls = []
+        self.tmp = tempfile.mkdtemp(prefix="inv-journal-")
+
+    def tearDown(self):
+        iterate.rank = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _patch(self, sequence):
+        seq = list(sequence)
+
+        def fake(problem, evidence, rank_cfg):
+            self.calls.append(list(evidence))
+            return seq[min(len(self.calls) - 1, len(seq) - 1)]
+        iterate.rank = fake
+
+    def _journal_lines(self):
+        with open(os.path.join(self.tmp, iterate.JOURNAL), encoding="utf-8") as fh:
+            return [ln for ln in fh.read().splitlines() if ln.strip()]
+
+    def test_resume_skips_answered_and_converges(self):
+        self._patch([[q("a", .9), q("b", .8)]])
+        out1 = iterate.iterate("p", {"k": 2, "max_rounds": 1, "floor": 0.12, "run_dir": self.tmp},
+                               answerer=found_answerer, responder=mock_responder)
+        self.assertEqual((out1["n_answered"], out1["n_resumed"]), (2, 0))
+        self.assertEqual(len(self._journal_lines()), 3)  # header + 2 tombstones
+
+        out2 = iterate.iterate("p", {"k": 2, "max_rounds": 3, "floor": 0.12, "run_dir": self.tmp},
+                               answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out2["n_resumed"], 2)
+        self.assertEqual(out2["n_answered"], 2)          # resumed tombstones count
+        self.assertEqual(out2["rounds"], 1)              # both already answered → converge round 1
+        self.assertIn("converged", out2["stop_reason"])
+        self.assertEqual(len(self._journal_lines()), 3)  # no duplicate journal lines
+        # resumed evidence reached rank() on the very first call of run 2
+        self.assertEqual(len(self.calls[-1]), 2)
+
+    def test_stale_problem_rotates_and_clears_artifacts(self):
+        self._patch([[q("a", .9)]])
+        iterate.iterate("OLD problem", {"k": 1, "max_rounds": 1, "floor": 0.12, "run_dir": self.tmp},
+                        answerer=found_answerer, responder=mock_responder)
+        leftover = os.path.join(self.tmp, "answer-deadbeef00000000.json")
+        with open(leftover, "w", encoding="utf-8") as fh:
+            fh.write('{"answer": "stale"}')
+        out = iterate.iterate("NEW problem", {"k": 1, "max_rounds": 1, "floor": 0.12,
+                                              "run_dir": self.tmp},
+                              answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out["n_resumed"], 0)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, iterate.JOURNAL + ".stale")))
+        self.assertFalse(os.path.exists(leftover))
+        header = json.loads(self._journal_lines()[0])
+        self.assertEqual(header["problem_fp"], answerer.fp("NEW problem"))
+
+    def test_tolerant_parse_skips_torn_tail(self):
+        self._patch([[q("a", .9)]])
+        iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": 0.12, "run_dir": self.tmp},
+                        answerer=found_answerer, responder=mock_responder)
+        with open(os.path.join(self.tmp, iterate.JOURNAL), "a", encoding="utf-8") as fh:
+            fh.write('{"question": "torn line, no clos')  # crash mid-append
+        out = iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": 0.12, "run_dir": self.tmp},
+                              answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out["n_resumed"], 1)  # the good tombstone survived; torn line skipped
+
+    def test_fp_dedup_catches_reworded_question(self):
+        self._patch([[q("What's the Stack?", .9)], [q("what's   the STACK!!", .9)]])
+        out = iterate.iterate("p", {"k": 1, "max_rounds": 2, "floor": 0.12, "run_dir": self.tmp},
+                              answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out["n_answered"], 1)  # punct/case variant is the same question
+        self.assertIn("converged", out["stop_reason"])
+
+    def test_no_run_dir_is_in_memory_and_unjournaled(self):
+        self._patch([[q("a", .9)]])
+        out = iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": 0.12},
+                              answerer=found_answerer, responder=mock_responder)
+        self.assertEqual((out["n_resumed"], out["run_dir"]), (0, None))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, iterate.JOURNAL)))
+
+
+class DerivedConsumption(unittest.TestCase):
+    def setUp(self):
+        self._orig = iterate.rank
+        self.calls = []
+
+    def tearDown(self):
+        iterate.rank = self._orig
+
+    def _patch(self, sequence):
+        seq = list(sequence)
+
+        def fake(problem, evidence, rank_cfg):
+            self.calls.append({"evidence": list(evidence), "rank_cfg": dict(rank_cfg)})
+            return seq[min(len(self.calls) - 1, len(seq) - 1)]
+        iterate.rank = fake
+
+    @staticmethod
+    def _derived(text, value, answer):
+        return {**q(text, value), "recommendation": "DERIVED", "derived_answer": answer}
+
+    def test_derived_fact_is_consumed_once_without_research(self):
+        derived = self._derived("What port?", .9, "5432")
+        self._patch([[derived, q("What host?", .8)], [derived]])
+        researched = []
+
+        def answer(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            self.assertIn("What port? -> 5432 (derived during analysis)", evidence)
+            return True, "db.internal"
+
+        out = iterate.iterate("p", {"triage": True, "k": 1, "max_rounds": 2, "floor": .12},
+                              answerer=answer, responder=mock_responder)
+        derived_tombs = [t for t in out["tombstones"] if t["via"] == "derived"]
+        self.assertEqual(len(derived_tombs), 1)
+        self.assertEqual(derived_tombs[0], {
+            "question": "What port?", "status": "ANSWERED", "fact": "5432",
+            "evidence": "What port? -> 5432 (derived during analysis)", "via": "derived",
+        })
+        self.assertEqual(researched, ["What host?"])
+        self.assertEqual(out["n_derived"], 1)
+        self.assertIn("converged", out["stop_reason"])
+
+    def test_derived_journal_round_trip_preserves_via(self):
+        tmp = tempfile.mkdtemp(prefix="inv-derived-")
+        try:
+            derived = self._derived("What port?", .9, "5432")
+            self._patch([[derived]])
+            iterate.iterate("p", {"triage": True, "max_rounds": 1, "run_dir": tmp},
+                            answerer=found_answerer, responder=mock_responder)
+            out = iterate.iterate("p", {"triage": True, "max_rounds": 1, "run_dir": tmp},
+                                  answerer=found_answerer, responder=mock_responder)
+            self.assertEqual(out["n_resumed"], 1)
+            self.assertEqual(out["n_derived"], 1)
+            self.assertEqual(out["tombstones"][0]["via"], "derived")
+            self.assertNotIn("rationale", out["tombstones"][0])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_triage_controls_auto_derive_rank_flag(self):
+        self._patch([[]])
+        iterate.iterate("p", {"max_rounds": 1},
+                        answerer=found_answerer, responder=mock_responder)
+        self.assertNotIn("auto_derive", self.calls[-1]["rank_cfg"])
+        iterate.iterate("p", {"triage": True, "max_rounds": 1},
+                        answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(self.calls[-1]["rank_cfg"]["auto_derive"], "on")
+
+
+class TriageRouting(unittest.TestCase):
+    def setUp(self):
+        self._orig = iterate.rank
+        self.calls = []
+
+    def tearDown(self):
+        iterate.rank = self._orig
+
+    def _patch(self, sequence):
+        seq = list(sequence)
+
+        def fake(problem, evidence, rank_cfg):
+            self.calls.append(list(evidence))
+            return seq[min(len(self.calls) - 1, len(seq) - 1)]
+        iterate.rank = fake
+
+    def test_judgment_routes_to_judge_not_answerer(self):
+        self._patch([[q("Choose a color?", .9)]])
+        researched, judged = [], []
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, "researched"
+
+        def judge(question, problem, evidence, cfg):
+            judged.append(question)
+            return True, "blue", "standard default"
+
+        out = iterate.iterate(
+            "p", {"triage": True, "k": 1, "max_rounds": 1},
+            answerer=research, responder=mock_responder,
+            triager=lambda *args: {answerer.fp("Choose a color?"): "JUDGMENT"},
+            judge=judge)
+        self.assertEqual(judged, ["Choose a color?"])
+        self.assertEqual(researched, [])
+        self.assertEqual(out["n_assumed"], 1)
+        self.assertEqual(out["tombstones"][0]["evidence"],
+                         "Choose a color? -> blue (assumed: standard default)")
+
+    def test_findable_routes_to_answerer_not_judge(self):
+        self._patch([[q("What port?", .9)]])
+        researched, judged = [], []
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, "5432"
+
+        def judge(question, problem, evidence, cfg):
+            judged.append(question)
+            return True, "unused", "unused"
+
+        iterate.iterate(
+            "p", {"triage": True, "k": 1, "max_rounds": 1},
+            answerer=research, responder=mock_responder,
+            triager=lambda *args: {answerer.fp("What port?"): "FINDABLE"},
+            judge=judge)
+        self.assertEqual(researched, ["What port?"])
+        self.assertEqual(judged, [])
+
+    def test_triage_absent_never_calls_triager(self):
+        self._patch([[q("a", .9), q("b", .8)]])
+        researched = []
+
+        def forbidden(*args):
+            raise AssertionError("triager called while triage is disabled")
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, f"answer:{qq['question']}"
+
+        out = iterate.iterate(
+            "p", {"k": 2, "max_rounds": 1},
+            answerer=research, responder=mock_responder,
+            triager=forbidden, judge=forbidden)
+        self.assertEqual(researched, ["a", "b"])
+        self.assertEqual(out["n_answered"], 2)
+        self.assertEqual(out["n_assumed"], 0)
+
+    def test_empty_routes_fail_open_to_research(self):
+        self._patch([[q("a", .9), q("b", .8)]])
+        researched, judged = [], []
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, "found"
+
+        def judge(question, problem, evidence, cfg):
+            judged.append(question)
+            return True, "unused", "unused"
+
+        iterate.iterate(
+            "p", {"triage": True, "k": 2, "max_rounds": 1},
+            answerer=research, responder=mock_responder,
+            triager=lambda *args: {}, judge=judge)
+        self.assertEqual(researched, ["a", "b"])
+        self.assertEqual(judged, [])
+
+    def test_max_assumes_sends_overflow_to_research(self):
+        questions = [q("choice 1", .9), q("choice 2", .8), q("choice 3", .7)]
+        self._patch([questions])
+        researched, judged, triaged = [], [], []
+
+        def triage(problem, batch, evidence, cfg):
+            triaged.append([qq["question"] for qq in batch])
+            return {answerer.fp(qq["question"]): "JUDGMENT" for qq in batch}
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, "researched"
+
+        def judge(question, problem, evidence, cfg):
+            judged.append(question)
+            return True, "default", "conservative"
+
+        out = iterate.iterate(
+            "p", {"triage": True, "k": 3, "max_rounds": 1, "max_assumes": 2},
+            answerer=research, responder=mock_responder, triager=triage, judge=judge)
+        self.assertEqual(triaged, [["choice 1", "choice 2", "choice 3"]])
+        self.assertEqual(judged, ["choice 1", "choice 2"])
+        self.assertEqual(researched, ["choice 3"])
+        self.assertEqual(out["n_assumed"], 2)
+
+    def test_judge_failure_falls_back_without_assumed_tombstone(self):
+        self._patch([[q("choice", .9)]])
+        researched = []
+
+        def research(qq, problem, evidence, cfg):
+            researched.append(qq["question"])
+            return True, "researched"
+
+        out = iterate.iterate(
+            "p", {"triage": True, "k": 1, "max_rounds": 1},
+            answerer=research, responder=mock_responder,
+            triager=lambda *args: {answerer.fp("choice"): "JUDGMENT"},
+            judge=lambda *args: (False, "", "reason"))
+        self.assertEqual(researched, ["choice"])
+        self.assertEqual(out["tombstones"][0].get("via", "research"), "research")
+        self.assertEqual(out["n_assumed"], 0)
+
+    def test_resumed_assumption_counts_toward_cap(self):
+        tmp = tempfile.mkdtemp(prefix="inv-assumed-")
+        try:
+            iterate._append_journal(
+                tmp, {"schema": 1, "kind": "header", "problem_fp": answerer.fp("p")})
+            iterate._append_journal(tmp, {
+                "question": "prior choice", "status": "ANSWERED", "fact": "default",
+                "evidence": "prior choice -> default (assumed: conservative)",
+                "via": "assumed", "rationale": "conservative",
+            })
+            fresh = [q("fresh choice 1", .9), q("fresh choice 2", .8)]
+            self._patch([fresh])
+            researched, judged = [], []
+
+            def triage(problem, batch, evidence, cfg):
+                return {answerer.fp(qq["question"]): "JUDGMENT" for qq in batch}
+
+            def research(qq, problem, evidence, cfg):
+                researched.append(qq["question"])
+                return True, "researched"
+
+            def judge(question, problem, evidence, cfg):
+                judged.append(question)
+                return True, "new default", "conservative"
+
+            out = iterate.iterate(
+                "p", {"triage": True, "k": 2, "max_rounds": 1,
+                      "max_assumes": 1, "run_dir": tmp},
+                answerer=research, responder=mock_responder, triager=triage, judge=judge)
+            self.assertEqual(judged, [])
+            self.assertEqual(researched, ["fresh choice 1", "fresh choice 2"])
+            self.assertEqual(out["n_resumed"], 1)
+            self.assertEqual(out["n_assumed"], 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class AssumptionLedger(unittest.TestCase):
+    def setUp(self):
+        self._orig = iterate.rank
+        self.calls = []
+
+    def tearDown(self):
+        iterate.rank = self._orig
+
+    def _patch(self, sequence):
+        seq = list(sequence)
+
+        def fake(problem, evidence, rank_cfg):
+            self.calls.append(list(evidence))
+            return seq[min(len(self.calls) - 1, len(seq) - 1)]
+        iterate.rank = fake
+
+    def test_return_includes_assumed_decision_and_rationale(self):
+        self._patch([[q("Choose a database?", .9)]])
+        out = iterate.iterate(
+            "p", {"triage": True, "k": 1, "max_rounds": 1},
+            answerer=found_answerer, responder=mock_responder,
+            triager=lambda *args: {answerer.fp("Choose a database?"): "JUDGMENT"},
+            judge=lambda *args: (True, "use SQLite", "simplest reversible default"))
+        self.assertEqual(out["n_assumed"], 1)
+        self.assertEqual(out["assumptions"], [{
+            "question": "Choose a database?",
+            "decision": "use SQLite",
+            "rationale": "simplest reversible default",
+        }])
+
+    def test_resumed_assumption_is_in_returned_ledger(self):
+        tmp = tempfile.mkdtemp(prefix="inv-assumption-ledger-")
+        try:
+            iterate._append_journal(
+                tmp, {"schema": 1, "kind": "header", "problem_fp": answerer.fp("p")})
+            iterate._append_journal(tmp, {
+                "question": "prior choice", "status": "ANSWERED", "fact": "default",
+                "evidence": "prior choice -> default (assumed: conservative)",
+                "via": "assumed", "rationale": "conservative",
+            })
+            self._patch([[]])
+            out = iterate.iterate(
+                "p", {"triage": True, "max_rounds": 1, "run_dir": tmp},
+                answerer=found_answerer, responder=mock_responder)
+            self.assertEqual(out["n_resumed"], 1)
+            self.assertEqual(out["n_assumed"], 1)
+            self.assertEqual(out["assumptions"], [{
+                "question": "prior choice", "decision": "default",
+                "rationale": "conservative",
+            }])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False),
+                         "model_utils (ask skill) not importable")
+    def test_respond_requests_ledger_for_assumed_and_derived_markers(self):
+        cfg = dict(iterate.DEFAULTS)
+        for evidence in (["choice -> blue (assumed: standard default)"],
+                         ["port -> 5432 (derived during analysis)"]):
+            with self.subTest(evidence=evidence):
+                ds = mock.MagicMock(return_value={"content": "response", "error": None})
+                with mock.patch.object(answerer, "dispatch_single", ds), \
+                     mock.patch.object(answerer, "resolve_alias", lambda m: m):
+                    answerer.respond("task", evidence, cfg)
+                prompt = ds.call_args[0][1]
+                self.assertIn("Assumptions", prompt)
+                self.assertIn("Known gaps", prompt)
+
+    @unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False),
+                         "model_utils (ask skill) not importable")
+    def test_respond_without_markers_preserves_prompt_bytes(self):
+        cfg = dict(iterate.DEFAULTS)
+        problem = "Build the thing"
+        evidence = ["stack -> Python", "deployment -> (known gap: unspecified)"]
+        facts = "\n".join(f"- {e}" for e in evidence) or "(none)"
+        expected = (f"TASK: {problem}\n\nEstablished facts and known gaps:\n{facts}\n\n"
+                    f"Produce the best possible response to the task using what's established. "
+                    f"State any assumptions you make for unresolved gaps. Be direct and useful.")
+        ds = mock.MagicMock(return_value={"content": "response", "error": None})
+        with mock.patch.object(answerer, "dispatch_single", ds), \
+             mock.patch.object(answerer, "resolve_alias", lambda m: m):
+            answerer.respond(problem, evidence, cfg)
+        self.assertEqual(ds.call_args[0][1], expected)
+
+
+class RefinedPrompt(unittest.TestCase):
+    def setUp(self):
+        self._orig = iterate.rank
+        self.calls = []
+
+    def tearDown(self):
+        iterate.rank = self._orig
+
+    def _patch(self, sequence):
+        seq = list(sequence)
+
+        def fake(problem, evidence, rank_cfg):
+            self.calls.append(list(evidence))
+            return seq[min(len(self.calls) - 1, len(seq) - 1)]
+        iterate.rank = fake
+
+    def test_prompt_mode_calls_only_refiner(self):
+        self._patch([[]])
+        refined, responded = [], []
+
+        def refiner(problem, evidence, cfg):
+            refined.append(problem)
+            return f"REFINED: {problem}"
+
+        def responder(problem, evidence, cfg):
+            responded.append(problem)
+            return "response"
+
+        out = iterate.iterate("original", {"output": "prompt", "max_rounds": 1},
+                              answerer=found_answerer, responder=responder, refiner=refiner)
+        self.assertEqual(refined, ["original"])
+        self.assertEqual(responded, [])
+        self.assertEqual(out["refined_prompt"], "REFINED: original")
+        self.assertIsNone(out["final"])
+
+    def test_both_mode_responds_from_refined_prompt(self):
+        self._patch([[]])
+        order, responder_problems = [], []
+
+        def refiner(problem, evidence, cfg):
+            order.append("refiner")
+            return "REFINED TASK"
+
+        def responder(problem, evidence, cfg):
+            order.append("responder")
+            responder_problems.append(problem)
+            return "final response"
+
+        out = iterate.iterate("original", {"output": "both", "max_rounds": 1},
+                              answerer=found_answerer, responder=responder, refiner=refiner)
+        self.assertEqual(order, ["refiner", "responder"])
+        self.assertEqual(responder_problems, ["REFINED TASK"])
+        self.assertEqual(out["final"], "final response")
+
+    def test_absent_output_preserves_response_mode(self):
+        self._patch([[]])
+        refined, responder_problems = [], []
+
+        def refiner(problem, evidence, cfg):
+            refined.append(problem)
+            return "unexpected"
+
+        def responder(problem, evidence, cfg):
+            responder_problems.append(problem)
+            return "response"
+
+        out = iterate.iterate("ORIGINAL", {"max_rounds": 1}, answerer=found_answerer,
+                              responder=responder, refiner=refiner)
+        self.assertEqual(responder_problems, ["ORIGINAL"])
+        self.assertEqual(refined, [])
+        self.assertIsNone(out["refined_prompt"])
+
+    def test_refined_prompt_is_written_to_run_dir(self):
+        tmp = tempfile.mkdtemp(prefix="inv-refined-")
+        try:
+            self._patch([[]])
+            out = iterate.iterate(
+                "p", {"output": "prompt", "max_rounds": 1, "run_dir": tmp},
+                answerer=found_answerer, responder=mock_responder,
+                refiner=lambda problem, evidence, cfg: "REFINED CONTENT")
+            path = os.path.join(tmp, iterate.REFINED_PROMPT_FILE)
+            self.assertEqual(out["refined_prompt"], "REFINED CONTENT")
+            self.assertTrue(os.path.exists(path))
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "REFINED CONTENT")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_stale_problem_rotation_clears_refined_and_answer_artifacts(self):
+        tmp = tempfile.mkdtemp(prefix="inv-refined-stale-")
+        try:
+            self._patch([[q("a", .9)]])
+            iterate.iterate(
+                "OLD problem", {"output": "prompt", "k": 1, "max_rounds": 1,
+                                "floor": .12, "run_dir": tmp},
+                answerer=found_answerer, responder=mock_responder,
+                refiner=lambda *args: "OLD REFINED")
+            refined_path = os.path.join(tmp, iterate.REFINED_PROMPT_FILE)
+            answer_path = os.path.join(tmp, "answer-deadbeef00000000.json")
+            with open(answer_path, "w", encoding="utf-8") as fh:
+                fh.write('{"answer": "stale"}')
+            self.assertTrue(os.path.exists(refined_path))
+            iterate.iterate(
+                "NEW problem", {"output": "response", "k": 1, "max_rounds": 1,
+                                "floor": .12, "run_dir": tmp},
+                answerer=found_answerer, responder=mock_responder)
+            self.assertFalse(os.path.exists(refined_path))
+            self.assertFalse(os.path.exists(answer_path))
+            self.assertTrue(os.path.exists(os.path.join(tmp, iterate.JOURNAL + ".stale")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False), "model_utils (ask skill) not importable")
+class JudgmentCall(unittest.TestCase):
+    def _cfg(self, **over):
+        cfg = dict(iterate.DEFAULTS)
+        cfg.update(over)
+        return cfg
+
+    def _call(self, ds, question="choice", problem="task"):
+        with mock.patch.object(answerer, "dispatch_single", ds), \
+             mock.patch.object(answerer, "resolve_alias", lambda m: m):
+            return answerer.judgment_call(question, problem, [], self._cfg())
+
+    def test_valid_json_returns_decision_and_rationale(self):
+        ds = mock.MagicMock(return_value={
+            "content": '{"decision": "use SQLite", "rationale": "simplest default"}',
+            "error": None,
+        })
+        ok, decision, rationale = self._call(ds)
+        self.assertTrue(ok)
+        self.assertEqual(decision, "use SQLite")
+        self.assertEqual(rationale, "simplest default")
+
+    def test_cannot_decide_returns_false(self):
+        ds = mock.MagicMock(return_value={
+            "content": "CANNOT_DECIDE: the options are equivalent", "error": None})
+        ok, decision, rationale = self._call(ds)
+        self.assertFalse(ok)
+        self.assertEqual(decision, "")
+        self.assertIn("equivalent", rationale)
+
+    def test_hedged_decision_returns_false(self):
+        ds = mock.MagicMock(return_value={
+            "content": ('{"decision": "does not specify a preference", '
+                        '"rationale": "no requirement chooses one"}'),
+            "error": None,
+        })
+        ok, decision, rationale = self._call(ds)
+        self.assertFalse(ok)
+        self.assertEqual(decision, "")
+        self.assertEqual(rationale, "no requirement chooses one")
+
+    def test_malformed_json_returns_false(self):
+        ds = mock.MagicMock(return_value={"content": "{not valid json", "error": None})
+        ok, decision, rationale = self._call(ds)
+        self.assertFalse(ok)
+        self.assertEqual(decision, "")
+        self.assertTrue(rationale)
+
+
+@unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False), "model_utils (ask skill) not importable")
 class GroundedAnswer(unittest.TestCase):
-    """grounded_answer with a mocked dispatch_single — prompt assembly, directive, NOT_FOUND parse."""
+    """grounded_answer with a mocked dispatch_single — prompt assembly, directive, NOT_FOUND
+    parse, and the answer-artifact capture path (mocks live in the answerer module now)."""
 
     def _cfg(self, **over):
         cfg = dict(iterate.DEFAULTS)
         cfg.update(over)
         return cfg
 
+    def _call(self, ds, question, cfg, problem="task"):
+        with mock.patch.object(answerer, "dispatch_single", ds), \
+             mock.patch.object(answerer, "resolve_alias", lambda m: m):
+            return answerer.grounded_answer(question, problem, [], cfg)
+
     def test_directive_prepended_and_normal_answer(self):
         cfg = iterate.apply_capability(self._cfg(), "read")  # read -> directive + file,web toolsets
         ds = mock.MagicMock(return_value={"content": "The stack is FastAPI + Postgres.", "error": None})
-        with mock.patch.object(iterate, "dispatch_single", ds), \
-             mock.patch.object(iterate, "resolve_alias", lambda m: m):
-            found, text = iterate.grounded_answer("What's the stack?", "Add auth", [], cfg)
+        found, text = self._call(ds, "What's the stack?", cfg, problem="Add auth")
         self.assertTrue(found)
         self.assertIn("FastAPI", text)
         # dispatch_single(model, PROMPT, "", toolsets, ...): directive prepended, toolsets downscoped
@@ -220,22 +801,99 @@ class GroundedAnswer(unittest.TestCase):
     def test_not_found_parsed_and_act_has_no_directive(self):
         cfg = self._cfg()  # act default -> empty directive, full toolsets
         ds = mock.MagicMock(return_value={"content": "NOT_FOUND: no credentials available", "error": None})
-        with mock.patch.object(iterate, "dispatch_single", ds), \
-             mock.patch.object(iterate, "resolve_alias", lambda m: m):
-            found, text = iterate.grounded_answer("Do you have creds?", "task", [], cfg)
+        found, text = self._call(ds, "Do you have creds?", cfg)
         self.assertFalse(found)
         self.assertIn("no credentials", text)
         self.assertNotIn("READ-ONLY", ds.call_args[0][1])     # act default -> no directive prepended
         self.assertEqual(ds.call_args[0][3], "file,web,terminal")
 
     def test_research_error_returns_not_found(self):
-        cfg = self._cfg()
         ds = mock.MagicMock(return_value={"content": "", "error": "boom"})
-        with mock.patch.object(iterate, "dispatch_single", ds), \
-             mock.patch.object(iterate, "resolve_alias", lambda m: m):
-            found, text = iterate.grounded_answer("q", "task", [], cfg)
+        found, text = self._call(ds, "q", self._cfg())
         self.assertFalse(found)
         self.assertIn("research error", text)
+
+    def test_dict_question_interpolates_text_not_repr(self):
+        ds = mock.MagicMock(return_value={"content": "ok.", "error": None})
+        self._call(ds, {"question": "What's the stack?", "value": 0.9}, self._cfg())
+        prompt = ds.call_args[0][1]
+        self.assertIn("What's the stack?", prompt)
+        self.assertNotIn("{'question'", prompt)
+
+
+@unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False), "model_utils (ask skill) not importable")
+class AnswerArtifacts(unittest.TestCase):
+    """Artifact-beats-stdout: instruction gating by capability + read precedence."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="inv-artifact-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, capability="act", **over):
+        cfg = iterate.apply_capability(dict(iterate.DEFAULTS), capability)
+        cfg["run_dir"] = self.tmp
+        cfg.update(over)
+        return cfg
+
+    def _call(self, ds, cfg, question="q1"):
+        with mock.patch.object(answerer, "dispatch_single", ds), \
+             mock.patch.object(answerer, "resolve_alias", lambda m: m):
+            return answerer.grounded_answer(question, "task", [], cfg)
+
+    def test_artifact_beats_misclassified_stdout(self):
+        apath = answerer.artifact_path(self.tmp, "q1")
+
+        def ds(*a, **kw):  # agent wrote the artifact; stdout came back as a bogus error
+            with open(apath, "w", encoding="utf-8") as fh:
+                json.dump({"answer": "The port is 5432."}, fh)
+            return {"content": "", "error": "API error: rate limit exceeded"}
+        found, text = self._call(ds, self._cfg())
+        self.assertTrue(found)
+        self.assertEqual(text, "The port is 5432.")
+
+    def test_artifact_not_found_still_judged_in_code(self):
+        apath = answerer.artifact_path(self.tmp, "q1")
+
+        def ds(*a, **kw):
+            with open(apath, "w", encoding="utf-8") as fh:
+                json.dump({"answer": "NOT_FOUND: no access to prod"}, fh)
+            return {"content": "irrelevant", "error": None}
+        found, text = self._call(ds, self._cfg())
+        self.assertFalse(found)
+        self.assertIn("no access", text)
+
+    def test_missing_artifact_falls_back_to_stdout(self):
+        ds = mock.MagicMock(return_value={"content": "From stdout.", "error": None})
+        found, text = self._call(ds, self._cfg())
+        self.assertTrue(found)
+        self.assertEqual(text, "From stdout.")
+
+    def test_act_prompt_carries_instruction_with_absolute_path(self):
+        ds = mock.MagicMock(return_value={"content": "ok", "error": None})
+        self._call(ds, self._cfg("act"))
+        prompt = ds.call_args[0][1]
+        self.assertIn(answerer.artifact_path(self.tmp, "q1"), prompt)
+        self.assertIn('"answer"', prompt)
+
+    def test_read_capability_omits_instruction_and_ignores_artifact(self):
+        apath = answerer.artifact_path(self.tmp, "q1")
+        with open(apath, "w", encoding="utf-8") as fh:
+            json.dump({"answer": "should be ignored"}, fh)
+        ds = mock.MagicMock(return_value={"content": "From stdout.", "error": None})
+        found, text = self._call(ds, self._cfg("read"))
+        self.assertNotIn("answer-", ds.call_args[0][1])  # no artifact instruction in prompt
+        self.assertEqual(text, "From stdout.")           # artifact not read
+
+    def test_malformed_artifact_falls_back(self):
+        apath = answerer.artifact_path(self.tmp, "q1")
+        with open(apath, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        ds = mock.MagicMock(return_value={"content": "Salvaged.", "error": None})
+        found, text = self._call(ds, self._cfg())
+        self.assertTrue(found)
+        self.assertEqual(text, "Salvaged.")
 
 
 if __name__ == "__main__":

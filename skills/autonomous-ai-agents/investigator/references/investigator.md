@@ -28,6 +28,69 @@ v1 caveat: down-scoping below `act` is **instruction-level** (the directive), si
 read-only granularity is not yet verified. `act` (the default) is unaffected. A future hard sandbox for
 `experiment` would pin `answer_cwd` to an auto-created git worktree.
 
+The ladder also gates **answer-artifact capture** (`artifact_write` in `CAPABILITIES`): under
+`read`, the answerer prompt omits the "write your answer to <run_dir>/answer-<fp>.json"
+instruction — the read directive says "do NOT modify files", and a self-contradictory prompt is
+worse than losing per-answer durability. The tombstone journal is written by the loop process
+itself and applies at every capability level.
+
+## Routing (v1.2 — triage, judgment, derived)
+
+Prior to 1.2.0 every above-floor question went down one path: research (`grounded_answer`). 1.2.0
+adds two more and a batch classifier that chooses between them, all gated behind `cfg["triage"]`
+(default off — programmatic callers see byte-identical behavior until they opt in):
+
+- **derived** — the ranker's own derive-or-ask step (`infogain.py`, `auto_derive`) sometimes
+  answers a question from the accumulated evidence without any agent call at all
+  (`recommendation == "DERIVED"` plus a `derived_answer` string). The loop consumes these
+  directly, before the floor/top-K filter, tombstoning them `via="derived"`. `auto_derive` is
+  only turned on in `_rank_cfg` when triage is on — triage off means the rank_cfg passed to
+  `infogain.run` is byte-identical to 1.1.0.
+- **findable vs judgment** — one batch `triage_batch` call classifies the round's top-K
+  questions: FINDABLE ("an observable fact a tool-using agent could discover") stays on the
+  research path; JUDGMENT ("a preference/decision with no discoverable ground truth") goes to
+  `judgment_call`, which makes one conservative, autonomous decision (prefer
+  reversible/standard/least-surprising) and tombstones it `via="assumed"` with a `rationale`.
+- **fail-open by construction** — an unrouted question (triage off, triage call failed, or no
+  valid in-range index) defaults to FINDABLE; duplicate entries after the first valid route are
+  ignored. A JUDGMENT question whose judge call fails (dispatch error, bad JSON, `CANNOT_DECIDE`,
+  or a hedge matching `_JUDGE_HEDGE_RE` — copied from `pipeline._HEDGE_RE`, not imported, same
+  precedent as `fp()`) falls back to research once. Nothing is ever silently skipped.
+- **`max_assumes`** bounds how many JUDGMENT routes may be *accepted* per run (counting
+  tombstones resumed from a prior journal) — past the cap, JUDGMENT questions go to research
+  instead of the judge.
+
+## Evidence-phrasing contract
+
+Every tombstone's `evidence` string follows one of four fixed shapes, so downstream readers (the
+responder, `refine_prompt`, a human reading `tombstones.jsonl`) can tell provenance apart by
+string alone without needing the `via` field:
+
+| Shape | `via` | Meaning |
+|---|---|---|
+| `q -> a` | `research` | a fact the grounded answerer discovered |
+| `q -> a (derived during analysis)` | `derived` | the ranker itself answered it from existing evidence, no agent call |
+| `q -> decision (assumed: rationale)` | `assumed` | an autonomous judgment call — a decision, not a discovered fact |
+| `q -> (known gap: ...)` | whichever route produced the NOT_FOUND | unresolved; carried forward as a known gap |
+
+`respond()` is content-gated on the inferred-evidence markers: any evidence string containing
+`"(assumed:"` or `"(derived"` triggers the "treat as inferred, not observed" framing and its
+assumptions/known-gaps ledger; absent those markers its prompt is byte-identical to pre-1.2.0 (a
+pure-research run produces the same responder prompt it always did). `refine_prompt()` always asks
+for an `## Assumptions` section, and adds the `## Open questions` instruction only when an evidence
+string contains `"(known gap:"`.
+
+## Durability (v1.2)
+
+An investigation is resumable via `cfg["run_dir"]` / `--run-dir` — artifact-based (the
+resilient-planner drive.py pattern), deliberately NOT a resumable-script engine flow: the journal
+is the domain artifact itself (tombstones), so replay+memoize machinery would be a second journal
+with nothing extra to say. Mechanics: `tombstones.jsonl` (header record carries `problem_fp`;
+stale-problem journals rotate to `.stale`), fp-normalized answered-set, per-question
+`answer-<fp>.json` artifacts read before stdout (see `scripts/answerer.py`). Callers that loop
+(relentless-solve) pass a per-cycle run dir; their own step memoization sits ABOVE this journal
+and never re-enters a completed clarify phase.
+
 ## Vantage handling (the cross-cutting thread with the ranker's vantage family)
 
 The ranker's **vantage** family (when enabled) emits questions whose answer is *access-relative* —

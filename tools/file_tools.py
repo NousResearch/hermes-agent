@@ -307,9 +307,19 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
+
+    On non-local terminal backends (Docker, SSH, Modal, etc.) symlinks are
+    NOT resolved because the path refers to the remote filesystem, not the
+    host.  This prevents macOS host symlinks (e.g. /home →
+    /System/Volumes/Data/home) from corrupting paths destined for a Linux
+    container.
     """
     p = Path(_expand_tilde(filepath))
     if p.is_absolute():
+        # Non-local backends — skip host-side symlink resolution (issue #52823)
+        terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower()
+        if terminal_env and terminal_env != "local":
+            return p
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
 

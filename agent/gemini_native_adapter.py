@@ -337,6 +337,22 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
+    # Gemini's generateContent requires strict user/model alternation;
+    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
+    # that multiturn requests alternate between user and model". The loop above
+    # emits one content per source message, so parallel tool calls (N tool
+    # results become N user functionResponse contents), back-to-back user turns,
+    # or merged assistant turns would each violate that. Merge adjacent
+    # same-role contents by concatenating their parts. For parallel calls this
+    # also produces the grouped multi-functionResponse turn Gemini expects.
+    merged_contents: List[Dict[str, Any]] = []
+    for content in contents:
+        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+            merged_contents[-1]["parts"].extend(content["parts"])
+        else:
+            merged_contents.append(content)
+    contents = merged_contents
+
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:

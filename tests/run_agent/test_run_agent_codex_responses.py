@@ -268,6 +268,38 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     assert agent.api_mode == "chat_completions"
 
 
+def test_custom_provider_gpt5_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://relay.example.com/v1",
+        provider="custom",
+        api_key="relay-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_custom_provider_direct_openai_url_still_uses_responses(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://api.openai.com/v1",
+        provider="custom",
+        api_key="openai-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "codex_responses"
+
+
 def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -926,7 +958,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
 def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):
     """An xai-oauth agent constructed with a non-singleton credential
     (e.g. a manual pool entry whose tokens belong to a different account
-    than the loopback_pkce singleton, or an explicit ``api_key=`` arg)
+    than the device_code singleton, or an explicit ``api_key=`` arg)
     MUST NOT silently adopt the singleton's tokens on a 401 reactive
     refresh.  Otherwise a 401 mid-conversation would re-route the rest
     of the conversation onto a different account, with no user feedback.

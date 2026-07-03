@@ -501,6 +501,56 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     ) == "171.000"
 
 
+def test_config_bridges_slack_cron_continuable_surface_toplevel(monkeypatch, tmp_path):
+    """The cron_continuable_surface key bridges from a top-level ``slack:`` block
+    into slack.extra, mirroring reply_in_thread (specs D1/D6)."""
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  cron_continuable_surface: in_channel\n"
+        "  reply_in_thread: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("cron_continuable_surface") == "in_channel"
+    # The adapter resolver reads the bridged key.
+    adapter = SlackAdapter(slack_config)
+    assert adapter._cron_continuable_surface() == "in_channel"
+
+
+def test_config_bridges_slack_cron_continuable_surface_nested(monkeypatch, tmp_path):
+    """The key also bridges from the nested ``platforms.slack.extra`` path."""
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  slack:\n"
+        "    enabled: false\n"
+        "    extra:\n"
+        "      cron_continuable_surface: in_channel\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("cron_continuable_surface") == "in_channel"
+
+
 def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     from gateway.config import load_gateway_config
 

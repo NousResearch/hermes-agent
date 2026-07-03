@@ -41,13 +41,35 @@ import type {
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
 } from '@/types/hermes'
 
+// Desktop startup fires a burst of read-only data calls (config, profiles,
+// model info/options, cron) the moment the backend passes readiness. On a
+// profile-heavy or remote install these can each take tens of seconds — e.g.
+// /api/profiles runs list_profiles(), which does a recursive skill-tree walk
+// per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.cjs)
+// times out a backend that is alive-but-busy, surfacing as a spurious
+// "Timed out connecting to Hermes backend" that hangs the UI (#48504).
+//
+// Give the boot burst a generous per-call timeout instead of raising the
+// global default: interactive/runtime calls and the liveness poll (/api/status)
+// keep the short default so a genuinely-dead backend is still detected fast.
+export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// prompt.submit is effectively fire-and-forget: turn completion is signaled by
+// stream / message.complete events, NOT by the RPC return. A long turn (MoA
+// presets running references + aggregator in series, deep reasoning, large tool
+// chains) can legitimately take minutes to ACK, so bounding the ack by the
+// generic 30s default surfaces a false "request timed out" toast while the turn
+// is still running and will succeed (issue #55024). Match the backend's
+// agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
+// ever fires when the turn itself would have been abandoned server-side.
+export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export type {
   ActionResponse,
@@ -113,6 +135,7 @@ export type {
   SessionSearchResult,
   SkillInfo,
   StaleAuxAssignment,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -276,7 +299,8 @@ export function renameSession(
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),
-    path: '/api/model/info'
+    path: '/api/model/info',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -322,7 +346,8 @@ export function getLogs(params: {
 export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
     ...profileScoped(),
-    path: '/api/config'
+    path: '/api/config',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -336,7 +361,8 @@ export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
 export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...profileScoped(),
-    path: '/api/config/defaults'
+    path: '/api/config/defaults',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -489,6 +515,47 @@ export function getSkills(): Promise<SkillInfo[]> {
   })
 }
 
+export function getStarmapGraph(): Promise<StarmapGraph> {
+  return window.hermesDesktop.api<StarmapGraph>({
+    ...profileScoped(),
+    // Backend REST contract — stays /api/learning even though the UI feature is
+    // now "star map". Renaming this would break against an un-upgraded backend.
+    path: '/api/learning/graph'
+  })
+}
+
+export interface LearningNodeDetail {
+  content: string
+  kind: 'memory' | 'skill'
+  label: string
+  ok: boolean
+}
+
+export function getLearningNode(id: string): Promise<LearningNodeDetail> {
+  return window.hermesDesktop.api<LearningNodeDetail>({
+    ...profileScoped(),
+    path: `/api/learning/node?id=${encodeURIComponent(id)}`
+  })
+}
+
+export function deleteLearningNode(id: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'DELETE',
+    body: { id }
+  })
+}
+
+export function editLearningNode(id: string, content: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'PUT',
+    body: { content, id }
+  })
+}
+
 export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
@@ -586,7 +653,8 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
 
 export function getCronJobs(): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
-    path: '/api/cron/jobs'
+    path: '/api/cron/jobs',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -650,7 +718,8 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
-    path: '/api/profiles'
+    path: '/api/profiles',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -707,7 +776,8 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
 export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options'
+    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

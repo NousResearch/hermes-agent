@@ -310,13 +310,36 @@ def test_atomic_replace_other_oserror_propagates(
     tmp = _write_tmp(tmp_path, "new\n")
 
     def fail_replace(src: str, dst: str) -> None:
-        raise OSError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), src, None, dst)
 
     monkeypatch.setattr("utils.os.replace", fail_replace)
 
     with pytest.raises(OSError) as excinfo:
         atomic_replace(tmp, target)
-    assert excinfo.value.errno == errno.EACCES
+    assert excinfo.value.errno == errno.ENOSPC
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert tmp.exists()
+
+
+def test_atomic_replace_eacces_propagates_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On POSIX, EACCES means directory permissions — the copy fallback
+    would fail the same way, so the error must propagate unchanged.  Only
+    Windows treats EACCES as a (retryable) sharing violation.
+    """
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+    monkeypatch.setattr("utils._IS_WINDOWS", False)
+
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
     assert target.read_text(encoding="utf-8") == "old\n"
     assert tmp.exists()
 
@@ -347,3 +370,124 @@ def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
         assert not tmp.exists()
     finally:
         _shutil.rmtree(other_fs_dir, ignore_errors=True)
+
+
+# ─── Windows sharing violations (ERROR_SHARING_VIOLATION → EACCES) ─────────
+#
+# CPython opens files without FILE_SHARE_DELETE on Windows, so any process
+# holding a plain read handle on the target blocks os.replace with a
+# PermissionError.  gateway_state.json is rewritten at every turn boundary
+# (gateway/run.py _persist_active_agents) while gateway/status.py readers
+# poll it — before the fix, every collision silently dropped the status
+# update and orphaned a .tmp file.
+
+
+@pytest.fixture()
+def fast_sharing_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("utils._SHARING_RETRY_DELAY_S", 0.005)
+
+
+def test_atomic_replace_windows_held_read_handle_falls_back_to_copy(
+    tmp_path: Path, fast_sharing_retries: None
+) -> None:
+    """A read handle held for the whole call: retries exhaust, copy fallback
+    lands the new content anyway and cleans up the temp file."""
+    if os.name != "nt":
+        pytest.skip("Windows-only: exercises a real ERROR_SHARING_VIOLATION")
+
+    target = tmp_path / "gateway_state.json"
+    target.write_text('{"active_agents": 1}', encoding="utf-8")
+    tmp = _write_tmp(tmp_path, '{"active_agents": 2}')
+
+    with open(target, "r", encoding="utf-8") as reader:
+        assert Path(atomic_replace(tmp, target)) == target
+        # The reader's handle is still valid and the file was rewritten.
+        assert reader is not None
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"active_agents": 2}
+    assert not tmp.exists()
+
+
+def test_atomic_replace_windows_transient_reader_succeeds_via_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_sharing_retries: None
+) -> None:
+    """A reader that closes during the retry window: the atomic rename wins
+    and the copy fallback is never reached.  The reader is released from the
+    retry loop's own sleep hook, so the test is deterministic rather than
+    racing wall-clock timers against Windows' coarse timer resolution."""
+    if os.name != "nt":
+        pytest.skip("Windows-only: exercises a real ERROR_SHARING_VIOLATION")
+
+    def forbid_copy(src: str, dst: str) -> None:
+        raise AssertionError("copy fallback must not run when a retry succeeds")
+
+    monkeypatch.setattr("utils.shutil.copyfile", forbid_copy)
+
+    target = tmp_path / "gateway_state.json"
+    target.write_text('{"active_agents": 1}', encoding="utf-8")
+    tmp = _write_tmp(tmp_path, '{"active_agents": 2}')
+
+    reader = open(target, "r", encoding="utf-8")
+    sleeps = []
+
+    def release_reader_on_second_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2 and not reader.closed:
+            reader.close()
+
+    monkeypatch.setattr("utils.time.sleep", release_reader_on_second_sleep)
+    try:
+        assert Path(atomic_replace(tmp, target)) == target
+    finally:
+        if not reader.closed:
+            reader.close()
+
+    # First retry still hit the sharing violation; the second succeeded.
+    assert len(sleeps) == 2
+    assert json.loads(target.read_text(encoding="utf-8")) == {"active_agents": 2}
+    assert not tmp.exists()
+
+
+def test_atomic_json_write_windows_concurrent_reader(
+    tmp_path: Path, fast_sharing_retries: None
+) -> None:
+    """End-to-end gateway_state.json scenario: atomic_json_write must not
+    raise (or silently orphan its .tmp) while a reader holds the target."""
+    if os.name != "nt":
+        pytest.skip("Windows-only: exercises a real ERROR_SHARING_VIOLATION")
+
+    target = tmp_path / "gateway_state.json"
+    atomic_json_write(target, {"active_agents": 1})
+
+    with open(target, "r", encoding="utf-8"):
+        atomic_json_write(target, {"active_agents": 2})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"active_agents": 2}
+    leftovers = list(tmp_path.glob("*.tmp")) + list(tmp_path.glob(".*.tmp"))
+    assert leftovers == [], f"orphaned temp files: {leftovers}"
+
+
+def test_atomic_replace_sharing_violation_simulated_retry_then_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_sharing_retries: None
+) -> None:
+    """Cross-platform pin of the retry-then-fallback sequence: the rename is
+    attempted 1 + _SHARING_RETRY_ATTEMPTS times before the copy runs."""
+    import utils as utils_mod
+
+    target = tmp_path / "gateway_state.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    attempts = []
+
+    def always_sharing_violation(src: str, dst: str) -> None:
+        attempts.append(src)
+        raise PermissionError(errno.EACCES, "sharing violation", src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", always_sharing_violation)
+    monkeypatch.setattr("utils._IS_WINDOWS", True)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert len(attempts) == 1 + utils_mod._SHARING_RETRY_ATTEMPTS
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not tmp.exists()

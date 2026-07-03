@@ -18,7 +18,7 @@ const SYSTEM_SANS =
 const SYSTEM_MONO =
   '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' + EMOJI_FALLBACK
 
-export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
+export const DEFAULT_TYPOGRAPHY = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO } satisfies DesktopThemeTypography
 
 const NOUS_BLUE = '#0053FD'
 const PSYCHE_BLUE = '#1540B1'
@@ -171,6 +171,95 @@ export const emberTheme: DesktopTheme = {
   }
 }
 
+/** Soft classical glass - pale marble, airy translucency, serif brand voice. */
+export const atlasTheme: DesktopTheme = {
+  name: 'atlas',
+  label: 'Atlas',
+  description: 'Soft classical glass - marble, haze, and winged serifs',
+  colors: {
+    background: '#eef6ff',
+    foreground: '#1f3152',
+    card: 'rgba(255, 255, 255, 0.7)',
+    cardForeground: '#24314a',
+    muted: 'rgba(224, 238, 255, 0.76)',
+    mutedForeground: '#5f7397',
+    popover: 'rgba(255, 255, 255, 0.78)',
+    popoverForeground: '#24314a',
+    primary: '#1f5ff2',
+    primaryForeground: '#ffffff',
+    secondary: 'rgba(207, 228, 255, 0.78)',
+    secondaryForeground: '#24314a',
+    accent: 'rgba(158, 199, 255, 0.7)',
+    accentForeground: '#1555d8',
+    border: 'rgba(116, 151, 216, 0.54)',
+    input: 'rgba(176, 210, 255, 0.82)',
+    ring: '#1f5ff2',
+    midground: '#2465f4',
+    composerRing: '#4f86ff',
+    destructive: '#ef4444',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: 'rgba(238, 247, 255, 0.72)',
+    sidebarBorder: 'rgba(113, 149, 214, 0.52)',
+    userBubble: 'rgba(220, 236, 255, 0.66)',
+    userBubbleBorder: 'rgba(101, 158, 255, 0.58)'
+  },
+  darkColors: {
+    background: '#07101f',
+    foreground: '#eef6ff',
+    card: 'rgba(15, 23, 42, 0.78)',
+    cardForeground: '#eef6ff',
+    muted: 'rgba(30, 41, 59, 0.82)',
+    mutedForeground: '#b7c7df',
+    popover: 'rgba(15, 23, 42, 0.86)',
+    popoverForeground: '#eef6ff',
+    primary: '#93c5fd',
+    primaryForeground: '#07101f',
+    secondary: 'rgba(30, 58, 138, 0.58)',
+    secondaryForeground: '#e0f2fe',
+    accent: 'rgba(37, 99, 235, 0.48)',
+    accentForeground: '#dbeafe',
+    border: 'rgba(96, 165, 250, 0.32)',
+    input: 'rgba(30, 41, 59, 0.88)',
+    ring: '#93c5fd',
+    midground: '#93c5fd',
+    composerRing: '#bfdbfe',
+    destructive: '#f87171',
+    destructiveForeground: '#0b1220',
+    sidebarBackground: 'rgba(8, 15, 30, 0.82)',
+    sidebarBorder: 'rgba(96, 165, 250, 0.28)',
+    userBubble: 'rgba(30, 58, 138, 0.46)',
+    userBubbleBorder: 'rgba(96, 165, 250, 0.34)'
+  },
+  typography: {
+    fontSans: `"Inter", "Segoe WPC", "Segoe UI", system-ui, sans-serif, ${EMOJI_FALLBACK}`,
+    fontMono: SYSTEM_MONO,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap',
+    baseSize: '0.9375rem',
+    lineHeight: 1.55,
+    letterSpacing: '0',
+    radiusScalar: 0.78,
+    spacingMul: 1.04
+  },
+  layout: {
+    sidebarWidth: '16.35rem',
+    composerWidth: '56.5rem'
+  },
+  mixes: {
+    chrome: '98%',
+    sidebar: '100%',
+    card: '28%',
+    elevated: '32%',
+    bubble: '16%'
+  },
+  darkMixes: {
+    chrome: '78%',
+    sidebar: '100%',
+    card: '48%',
+    elevated: '54%',
+    bubble: '36%'
+  }
+}
+
 /** Clean grayscale. Matches the CLI mono skin and dashboard mono theme. */
 export const monoTheme: DesktopTheme = {
   name: 'mono',
@@ -283,10 +372,11 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  atlas: atlasTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'atlas'

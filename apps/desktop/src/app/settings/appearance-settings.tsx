@@ -12,7 +12,6 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -234,8 +233,6 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const installs = useStore($marketplaceInstalls)
-  const profiles = useStore($profiles)
-  const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
 
   const [query, setQuery] = useState('')
@@ -255,13 +252,6 @@ export function AppearanceSettings() {
     )
     // Active theme first; stable sort keeps the rest in their original order.
     .sort((a, b) => Number(b.name === themeName) - Number(a.name === themeName))
-
-  // Themes save per profile. Surface that only when the user actually has more
-  // than one profile (single-profile installs never see the distinction).
-  const showProfileNote = profiles.length > 1
-
-  const activeProfileName =
-    profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
 
@@ -367,11 +357,6 @@ export function AppearanceSettings() {
                   )}
                   <MarketplaceThemeResults installs={installs} onInstalled={name => setTheme(name)} query={query} />
                 </div>
-                {showProfileNote && (
-                  <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {a.themeProfileNote(activeProfileName)}
-                  </p>
-                )}
               </>
             }
             description={a.themeDesc}

@@ -44,14 +44,36 @@ export interface DesktopThemeColors {
   sidebarBackground?: string
   sidebarBorder?: string
   userBubble?: string
+  userBubbleBackground?: string
   userBubbleBorder?: string
+  sidebar?: string
+  state?: Record<string, string>
+  accentFill?: string
 }
 
 export interface DesktopThemeTypography {
-  fontSans: string
-  fontMono: string
+  fontSans?: string
+  fontMono?: string
   /** Google/Bunny/self-hosted font stylesheet URL. */
   fontUrl?: string
+  baseSize?: string
+  lineHeight?: string | number
+  letterSpacing?: string
+  radiusScalar?: string | number
+  spacingMul?: string | number
+}
+
+export interface DesktopThemeLayout {
+  sidebarWidth?: string
+  composerWidth?: string
+}
+
+export interface DesktopThemeMixes {
+  chrome?: string
+  sidebar?: string
+  card?: string
+  elevated?: string
+  bubble?: string
 }
 
 /**
@@ -93,9 +115,13 @@ export interface DesktopTheme {
   colors: DesktopThemeColors
   /** Hand-tuned dark palette. Skins like `nous` ship one. */
   darkColors?: DesktopThemeColors
-  typography?: Partial<DesktopThemeTypography>
   /** Light-variant terminal ANSI palette (also the fallback for dark). */
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
+  typography?: DesktopThemeTypography
+  layout?: DesktopThemeLayout
+  /** Optional overrides for the seed/neutral glass mix percentages. */
+  mixes?: DesktopThemeMixes
+  darkMixes?: DesktopThemeMixes
 }

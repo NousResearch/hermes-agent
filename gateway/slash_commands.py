@@ -3563,6 +3563,19 @@ class GatewaySlashCommandsMixin:
                         defer_context_engine_notification=True,
                     )
                 )
+
+                # If _compress_context returned unchanged because a
+                # concurrent compression lock is held, tell the user
+                # clearly instead of showing the misleading
+                # "No changes from compression" no-op text.
+                _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
+                if _lock_skipped:
+                    holder = _lock_skipped if isinstance(_lock_skipped, str) else "unknown"
+                    return (
+                        f"⏳ Compression already in progress for this session "
+                        f"(holder: {holder}). Please wait for it to finish."
+                    )
+
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 

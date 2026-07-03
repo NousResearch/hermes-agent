@@ -1278,6 +1278,8 @@ def test_task_payload_frames_security_wording_as_authorized_maintenance(adapter)
 
     assert "対象はGootHandsが管理している許可済み環境" in payload["body"]
     assert "保守、原因調査、デプロイ確認、設定改善" in payload["body"]
+    assert "Discord最終回答ルール" in payload["body"]
+    assert "行っていない操作の列挙を付け足さない" in payload["body"]
     assert "アクセス異常の確認" in payload["body"]
     assert "権限設定の確認" in payload["body"]
     assert "侵入" not in payload["title"]

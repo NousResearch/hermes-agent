@@ -62,6 +62,15 @@ _TASK_MAINTENANCE_CONTEXT = (
     "- 保守範囲に収まらない内容は実行せず、理由を短く書いて確認待ちへ戻す。\n"
 )
 
+_TASK_FINAL_REPLY_CONTEXT = (
+    "Discord最終回答ルール:\n"
+    "- 最終回答は、依頼内容への結果だけを敬語で短く返す。\n"
+    "- 「カンバンに登録しました」「完了しました」だけの報告は出さない。\n"
+    "- 外部送信、公開、削除、GitHub push/PR、VPS変更、本番再起動などを実際に行った、"
+    "またはユーザーがその有無を確認している場合だけ、その事実を短く書く。\n"
+    "- 通常の確認、調査、短い回答では、行っていない操作の列挙を付け足さない。\n"
+)
+
 _TASK_MAINTENANCE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("権限奪取", "権限設定の確認"),
     ("侵入", "アクセス異常の確認"),
@@ -3388,6 +3397,7 @@ class DiscordAdapter(BasePlatformAdapter):
         body = (
             f"{origin_label}\n\n"
             f"{_TASK_MAINTENANCE_CONTEXT}\n"
+            f"{_TASK_FINAL_REPLY_CONTEXT}\n"
             "依頼内容:\n"
             f"{safe_prompt}\n\n"
             "登録元:\n"

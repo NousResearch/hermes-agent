@@ -187,6 +187,20 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
         if not key:
             continue
         value = value.strip()
+        # Strip inline # comments (only # outside quotes)
+        in_quote = None
+        comment_at = -1
+        for i, c in enumerate(value):
+            if c in ("'", '"') and (i == 0 or value[i - 1] != "\\"):
+                if in_quote is None:
+                    in_quote = c
+                elif c == in_quote:
+                    in_quote = None
+            elif c == "#" and in_quote is None:
+                comment_at = i
+                break
+        if comment_at >= 0:
+            value = value[:comment_at].rstrip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
         secrets[key] = value

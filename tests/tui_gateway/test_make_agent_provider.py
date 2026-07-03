@@ -157,9 +157,9 @@ def test_make_agent_provider_routing_defaults_when_unset():
         assert kwargs["provider_data_collection"] is None
 
 
-def test_make_agent_ignores_display_personality_without_system_prompt():
-    """The TUI matches the classic CLI: personality only becomes active once
-    it has been saved to agent.system_prompt."""
+def test_make_agent_uses_display_personality_when_system_prompt_unset():
+    """A globally configured display.personality should activate its prompt
+    even before the user has run /personality in the current session."""
 
     fake_runtime = {
         "provider": "openrouter",
@@ -192,7 +192,86 @@ def test_make_agent_ignores_display_personality_without_system_prompt():
 
         _make_agent("sid-default-personality", "key-default-personality")
 
-        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] is None
+        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] == "sparkle system prompt"
+
+
+def test_make_agent_display_personality_wins_over_stale_known_system_prompt():
+    """display.personality is the selected global personality; a legacy
+    agent.system_prompt containing another built-in personality is stale state."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {
+            "system_prompt": "pirate system prompt",
+            "personalities": {
+                "kawaii": "sparkle system prompt",
+                "pirate": "pirate system prompt",
+            },
+        },
+        "display": {"personality": "kawaii"},
+        "model": {"default": "glm-5"},
+    }
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-stale-personality", "key-stale-personality")
+
+        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] == "sparkle system prompt"
+
+
+def test_make_agent_preserves_custom_system_prompt_over_display_personality():
+    """A hand-written agent.system_prompt is a custom overlay, not stale
+    personality cache, so display.personality must not replace it."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {
+            "system_prompt": "custom reviewer prompt",
+            "personalities": {"kawaii": "sparkle system prompt"},
+        },
+        "display": {"personality": "kawaii"},
+        "model": {"default": "glm-5"},
+    }
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-custom-prompt", "key-custom-prompt")
+
+        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] == "custom reviewer prompt"
 
 
 def test_make_agent_honors_tui_launch_env_flags():

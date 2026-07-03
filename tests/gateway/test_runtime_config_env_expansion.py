@@ -56,6 +56,20 @@ def test_load_prefill_messages_prefers_top_level_over_legacy(monkeypatch, gatewa
     assert gateway_run.GatewayRunner._load_prefill_messages() == top_level
 
 
+def test_load_ephemeral_system_prompt_uses_display_personality(gateway_home):
+    _write_config(
+        gateway_home,
+        "agent:\n"
+        "  system_prompt: ''\n"
+        "  personalities:\n"
+        "    kawaii: sparkle system prompt\n"
+        "display:\n"
+        "  personality: kawaii\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "sparkle system prompt"
+
+
 @pytest.mark.parametrize(
     ("config_body", "env_name", "env_value", "loader_name", "expected"),
     [

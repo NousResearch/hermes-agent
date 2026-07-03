@@ -3,6 +3,7 @@ import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -14,6 +15,8 @@ import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { fieldCopyForSchemaKey } from './field-copy'
@@ -226,9 +229,13 @@ export function ConfigSettings({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord()
 
-  const { data: schemaResponse } = useQuery({
+  const {
+    data: schemaResponse,
+    isError: schemaFailed,
+    refetch: refetchSchema
+  } = useQuery({
     queryKey: ['hermes-config-schema'],
     queryFn: getHermesConfigSchema,
     staleTime: 5 * 60 * 1000
@@ -250,6 +257,17 @@ export function ConfigSettings({
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
+
+  // A profile switch invalidates (but doesn't clear) the shared config query, so
+  // the local draft would otherwise keep profile A's data and autosave it into
+  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
+  // the pending debounced autosave is cancelled by its effect cleanup.
+  useOnProfileSwitch(() => {
+    configSeeded.current = false
+    setConfig(null)
+    saveVersionRef.current = 0
+    setSaveVersion(0)
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -378,6 +396,29 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
+    // A failed config/schema fetch must surface a retry, not spin forever.
+    if ((configLoadFailed && !config) || (schemaFailed && !schema)) {
+      return (
+        <div className="flex h-full min-h-0 flex-1">
+          <PanelEmpty
+            action={
+              <Button
+                onClick={() => {
+                  void refetchConfig()
+                  void refetchSchema()
+                }}
+                size="sm"
+              >
+                {t.skills.refresh}
+              </Button>
+            }
+            icon="error"
+            title={c.failedLoad}
+          />
+        </div>
+      )
+    }
+
     // Model keeps its shape via a skeleton (its catalog fetch is the slow part);
     // other sections are quick config/schema reads, so a light loader is fine.
     if (activeSectionId === 'model') {

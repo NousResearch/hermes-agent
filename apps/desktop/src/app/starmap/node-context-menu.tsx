@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -8,6 +8,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
 import { notifyError } from '@/store/notifications'
 import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
+
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 export interface NodeMenuTarget {
   id: string
@@ -37,6 +39,20 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
+  // Bumped on profile switch so an in-flight openEdit fetch from profile A can't
+  // reopen the editor with A's node content after switching to B.
+  const editEpoch = useRef(0)
+
+  // A profile switch swaps the backend under an open edit/delete dialog — its
+  // node id belongs to the previous profile, so a Save/Delete after the switch
+  // would hit the newly active profile. Close everything on switch.
+  useOnProfileSwitch(() => {
+    editEpoch.current += 1
+    setEditing(null)
+    setDeleting(null)
+    setError(null)
+  })
+
   const noun = target?.kind === 'memory' ? 'memory' : 'skill'
 
   const openEdit = async () => {
@@ -44,11 +60,17 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
       return
     }
 
+    const epoch = editEpoch.current
     setLoading(true)
     setError(null)
 
     try {
       const detail = await getLearningNode(target.id)
+
+      if (editEpoch.current !== epoch) {
+        return
+      }
+
       setEditing({ content: detail.content, id: target.id, label: target.label })
       onClose()
     } catch (e) {

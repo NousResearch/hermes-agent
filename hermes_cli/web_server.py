@@ -19,6 +19,7 @@ import concurrent.futures
 import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -8953,7 +8954,11 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
 @app.post("/api/mcp/servers/{name}/test")
 async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect.  Returns tool list."""
-    from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+    from hermes_cli.mcp_config import (
+        _get_mcp_servers,
+        _oauth_tokens_present,
+        _probe_single_server,
+    )
 
     with _profile_scope(profile):
         servers = _get_mcp_servers()
@@ -8961,6 +8966,10 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
     details: Dict[str, Any] = {}
+    # An `auth: oauth` server that serves tools/list anonymously would probe OK
+    # with no token — a false green. Require a token on disk for it, matching the
+    # /auth verification (some providers don't enforce auth on tools/list).
+    needs_oauth_token = servers[name].get("auth") == "oauth"
 
     def _probe_scoped():
         # Home-only scope (contextvar), NOT _profile_scope. A probe blocks for
@@ -8974,16 +8983,24 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # contextvar provides (copied into this to_thread worker; and
         # _run_on_mcp_loop re-wraps it onto the MCP event-loop thread).
         with _config_profile_scope(profile):
-            return _probe_single_server(name, servers[name], details=details)
+            tools = _probe_single_server(name, servers[name], details=details)
+            token_present = _oauth_tokens_present(name) if needs_oauth_token else True
+            return tools, token_present
 
     try:
         # Probe blocks on a dedicated MCP event loop — run in a thread so the
         # FastAPI event loop is never blocked.
-        tools = await asyncio.to_thread(_probe_scoped)
+        tools, token_present = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
         return {
             "ok": False,
             "error": str(exc),
+            "tools": [],
+        }
+    if not token_present:
+        return {
+            "ok": False,
+            "error": "OAuth authentication required — no token found.",
             "tools": [],
         }
     return {
@@ -9033,24 +9050,35 @@ async def auth_mcp_server(name: str, profile: Optional[str] = None):
     cfg["auth"] = "oauth"
 
     def _run():
-        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth
 
         # Home-only scope, not _profile_scope: this blocks on the browser flow
         # for up to minutes; holding the shared skills lock that whole time
         # would freeze every other endpoint. Config writes here (_save_mcp_server)
         # resolve HERMES_HOME via the contextvar override, which is all they need.
         with _config_profile_scope(profile), force_interactive_oauth():
+            storage = HermesTokenStorage(name)
+            # Snapshot before clearing: a re-auth wipes cached state to force a
+            # fresh consent, but if the flow fails we must NOT leave the user
+            # worse off than before — restore the working token on any failure.
+            backup = storage.snapshot()
             try:
                 from tools.mcp_oauth_manager import get_manager
 
                 get_manager().remove(name)
             except Exception:
                 pass  # No cached state to clear — fine.
-            # The default 30s connect timeout would kill the flow while the
-            # user is still looking at the browser consent screen — give the
-            # whole browser round-trip room (the callback itself caps at 300s).
-            tools = _probe_single_server(name, cfg, connect_timeout=240)
+            try:
+                # The default 30s connect timeout would kill the flow while the
+                # user is still on the consent screen — give the browser
+                # round-trip the full callback window (300s in mcp_oauth) plus
+                # headroom so the connect wrapper can't pre-empt it.
+                tools = _probe_single_server(name, cfg, connect_timeout=315)
+            except Exception:
+                storage.restore(backup)
+                raise
             if not _oauth_tokens_present(name):
+                storage.restore(backup)
                 return {
                     "ok": False,
                     "error": (
@@ -9227,16 +9255,20 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # action path so the request returns immediately and the UI can tail logs.
     # The -p subprocess rebinds HERMES_HOME-derived paths in the child.
     if entry.install is not None:
+        # Unique per-entry action name: a shared "mcp-install" would let a
+        # re-click (or a second entry) overwrite the tracked process/log while
+        # the first clone is still running.
+        action = _mcp_install_action_name(name)
         try:
             proc = _spawn_hermes_action(
                 _profile_cli_args(effective_profile) + ["mcp", "install", name],
-                "mcp-install",
+                action,
             )
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Install failed: {exc}")
-        return {"ok": True, "name": name, "background": True, "action": "mcp-install"}
+        return {"ok": True, "name": name, "background": True, "action": action}
 
     # No git step — install synchronously via the catalog API. install_entry
     # routes through load_config/save_config + save_env_value, all call-time
@@ -9258,8 +9290,17 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     return {"ok": True, "name": name, "background": False}
 
 
-# Register the mcp-install action log so /api/actions/mcp-install/status works.
-_ACTION_LOG_FILES.setdefault("mcp-install", "action-mcp-install.log")
+def _mcp_install_action_name(name: str) -> str:
+    """Unique per-entry mcp-install action name (+ registered log file), so a
+    re-click or a second catalog install doesn't overwrite the first's tracked
+    process/log while its git clone is still running."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
+    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+    action = f"mcp-install-{slug}-{digest}"
+    _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
+    return action
+
+
 _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 
@@ -10205,23 +10246,39 @@ def _profile_cli_args(profile: Optional[str]) -> List[str]:
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
+def _hub_action_name(verb: str, key: str) -> str:
+    """Unique per-skill hub action name (+ registered log file).
+
+    ``_spawn_hermes_action`` tracks one process/log per name, so a shared
+    "skills-install"/"skills-uninstall" would make concurrent row-level actions
+    overwrite each other's status/log while the UI polls per identifier. Slug
+    (readable) + hash (collision-proof) keys each action to its own row.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
+    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    name = f"skills-{verb}-{slug}-{digest}"
+    _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
+    return name
+
+
 @app.post("/api/skills/hub/install")
 async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = None):
     identifier = (body.identifier or "").strip()
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
+    name = _hub_action_name("install", identifier)
     try:
         proc = _spawn_hermes_action(
             _profile_cli_args(body.profile or profile)
             + ["skills", "install", identifier, "--yes"],
-            "skills-install",
+            name,
         )
     except HTTPException:
         raise
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "skills-install"}
+    return {"ok": True, "pid": proc.pid, "name": name}
 
 
 class SkillUninstallRequest(BaseModel):
@@ -10234,17 +10291,18 @@ async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
+    action = _hub_action_name("uninstall", name)
     try:
         proc = _spawn_hermes_action(
             _profile_cli_args(body.profile or profile) + ["skills", "uninstall", name, "--yes"],
-            "skills-uninstall",
+            action,
         )
     except HTTPException:
         raise
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
         raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
+    return {"ok": True, "pid": proc.pid, "name": action}
 
 
 class SkillsUpdateRequest(BaseModel):
@@ -10341,7 +10399,8 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
     def _run():
         from tools.skills_hub import create_source_router
 
-        sources = create_source_router()
+        with _config_profile_scope(profile):
+            sources = create_source_router()
         out = []
         index_available = False
         featured = []
@@ -10372,6 +10431,17 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
                     except Exception:
                         featured = []
             out.append(entry)
+        # Tell the UI which sources are worth searching individually (for its
+        # progressive per-source fan-out). Mirror parallel_search_sources: when
+        # the centralized index is available it already subsumes the external
+        # API sources, so they're redundant — skipping them avoids ~70 GitHub
+        # calls per keystroke. Keep this set in sync with that function's
+        # ``_api_source_ids``.
+        _api_source_ids = frozenset(
+            {"github", "skills-sh", "clawhub", "claude-marketplace", "lobehub", "well-known"}
+        )
+        for entry in out:
+            entry["searchable"] = not (index_available and entry["id"] in _api_source_ids)
         return {
             "sources": out,
             "index_available": index_available,
@@ -10406,7 +10476,8 @@ async def search_skills_hub(
     def _run():
         from tools.skills_hub import create_source_router, parallel_search_sources
 
-        sources = create_source_router()
+        with _config_profile_scope(profile):
+            sources = create_source_router()
         capped = min(max(limit, 1), 50)
         all_results, source_counts, timed_out = parallel_search_sources(
             sources, query=query, source_filter=source or "all", overall_timeout=30
@@ -10439,13 +10510,16 @@ async def search_skills_hub(
 
 
 @app.get("/api/skills/hub/preview")
-async def preview_skill_hub(identifier: str = ""):
+async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None):
     """Fetch a hub skill's SKILL.md content + metadata for in-dashboard reading.
 
     Resolves the identifier across configured sources (same path the CLI
     installer uses), then returns the rendered SKILL.md text and the file
     manifest WITHOUT installing anything.  This is the 'read the actual skill
     before installing' affordance the Browse-hub tab was missing.
+
+    Scoped to ``profile`` so a non-default profile with different hub taps
+    resolves against ITS source router, not the default profile's.
     """
     ident = (identifier or "").strip()
     if not ident:
@@ -10455,8 +10529,9 @@ async def preview_skill_hub(identifier: str = ""):
         from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
         from tools.skills_hub import create_source_router
 
-        sources = create_source_router()
-        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
+        with _config_profile_scope(profile):
+            sources = create_source_router()
+            meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
         if not bundle and not meta:
             return None
 
@@ -10500,7 +10575,7 @@ async def preview_skill_hub(identifier: str = ""):
 
 
 @app.get("/api/skills/hub/scan")
-async def scan_skill_hub(identifier: str = ""):
+async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     """Run the install-time security scan on a hub skill WITHOUT installing it.
 
     Fetches the bundle, quarantines it, and runs the same `scan_skill` /
@@ -10508,6 +10583,9 @@ async def scan_skill_hub(identifier: str = ""):
     quarantine.  Returns the verdict, per-finding detail, trust tier, and the
     install-policy decision so the dashboard can show a visual safety result
     on demand (the 'scan' button the Browse-hub tab was missing).
+
+    Scoped to ``profile`` so the bundle resolves against that profile's hub
+    source router, matching where an install would pull it from.
     """
     ident = (identifier or "").strip()
     if not ident:
@@ -10520,8 +10598,9 @@ async def scan_skill_hub(identifier: str = ""):
         from tools.skills_hub import create_source_router, quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
-        sources = create_source_router()
-        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
+        with _config_profile_scope(profile):
+            sources = create_source_router()
+            meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
         if not bundle:
             return None
 
@@ -10963,7 +11042,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         try:
             proc = _spawn_hermes_action(
                 ["-p", body.name, "skills", "install", ident, "--yes"],
-                "skills-install",
+                _hub_action_name("install", ident),
             )
             hub_installs.append({"identifier": ident, "pid": proc.pid})
         except Exception:

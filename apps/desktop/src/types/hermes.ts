@@ -906,6 +906,9 @@ export interface SkillHubSource {
   label: string
   available?: boolean
   rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
 }
 
 /** A searchable/installable hub skill from `GET /api/skills/hub/search`. */

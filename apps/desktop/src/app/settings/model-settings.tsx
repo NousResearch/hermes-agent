@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,6 +30,7 @@ import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 
 import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
@@ -196,7 +197,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
 
+  // Every profile-scoped async here captures this and bails before writing back,
+  // so a request in flight when the user switches profiles can't paint profile
+  // A's models/providers into profile B (or fire onMainModelChanged for A).
+  const profileEpoch = useRef(0)
+
   const refresh = useCallback(async () => {
+    const epoch = profileEpoch.current
     setLoading(true)
     setError('')
 
@@ -207,6 +214,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         getAuxiliaryModels(),
         getMoaModels().catch(() => null)
       ])
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
 
       setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
       setProviders(modelOptions.providers || [])
@@ -223,15 +234,26 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       // change it server-side (aux slots), so nudge that cache to refetch.
       void invalidateHermesConfig()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (profileEpoch.current === epoch) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setLoading(false)
+      if (profileEpoch.current === epoch) {
+        setLoading(false)
+      }
     }
   }, [])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // A profile switch swaps the backend under the mounted panel — reload for the
+  // new profile (bumping the epoch first so any in-flight A request is discarded).
+  useOnProfileSwitch(() => {
+    profileEpoch.current += 1
+    void refresh()
+  })
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
@@ -306,11 +328,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [])
 
   const saveMoa = useCallback(async (next: MoaConfigResponse) => {
+    const epoch = profileEpoch.current
     setApplying(true)
     setError('')
 
     try {
       const saved = await saveMoaModels(next)
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setMoa(saved)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -395,6 +423,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       return
     }
 
+    const epoch = profileEpoch.current
     setActivating(true)
     setError('')
 
@@ -415,6 +444,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       }
 
       const options = await getGlobalModelOptions()
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setProviders(options.providers || [])
       const refreshedRow = options.providers?.find(p => p.slug === slug)
       const fallbackModel = refreshedRow?.models?.[0] ?? ''
@@ -452,11 +486,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       return
     }
 
+    const epoch = profileEpoch.current
     setApplying(true)
     setError('')
 
     try {
       const result = await setModelAssignment({ model: selectedModel, provider: selectedProvider, scope: 'main' })
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       const provider = result.provider || selectedProvider
       const model = result.model || selectedModel
       setMainModel({ provider, model })

@@ -28,6 +28,9 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   searchValue: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
+  /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
+   *  so mouse users get a visible affordance for the refresh hotkey. */
+  searchTrailingAction?: ReactNode
 }
 
 function ShellTabs({
@@ -61,6 +64,7 @@ export function PageSearchShell({
   searchHints,
   searchValue,
   searchHidden = false,
+  searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
   const hasTabs = (tabs?.length ?? 0) > 0
@@ -100,7 +104,7 @@ export function PageSearchShell({
               )}
             </div>
             {hasTabs ? <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} /> : <span />}
-            <span />
+            <div className="flex min-w-0 items-center justify-end">{searchTrailingAction}</div>
           </div>
         )}
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}

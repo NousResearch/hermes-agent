@@ -40,6 +40,8 @@ export interface CodeEditorApi {
 interface CodeEditorProps {
   apiRef?: RefObject<CodeEditorApi | null>
   className?: string
+  /** Read-only: block edits (e.g. while a save is in flight) without unmounting. */
+  disabled?: boolean
   /** Mod-Shift-F + `apiRef.formatJson()`. In-memory JSON docs only. */
   formatJson?: boolean
   /**
@@ -175,6 +177,7 @@ const FRAMED_THEME = EditorView.theme({
 export function CodeEditor({
   apiRef,
   className,
+  disabled = false,
   formatJson = false,
   framed = false,
   filePath,
@@ -192,6 +195,7 @@ export function CodeEditor({
   const languageConf = useRef(new Compartment())
   const themeConf = useRef(new Compartment())
   const highlightConf = useRef(new Compartment())
+  const editableConf = useRef(new Compartment())
   const onCancelRef = useRef(onCancel)
   const onChangeRef = useRef(onChange)
   const onCursorChangeRef = useRef(onCursorChange)
@@ -262,6 +266,7 @@ export function CodeEditor({
         languageConf.current.of([]),
         themeConf.current.of(githubEditorTheme(isDark)),
         highlightConf.current.of([]),
+        editableConf.current.of(EditorState.readOnly.of(disabled)),
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
             onChangeRef.current(update.state.doc.toString())
@@ -358,6 +363,10 @@ export function CodeEditor({
       )
     })
   }, [highlightFrom, highlightTo])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: editableConf.current.reconfigure(EditorState.readOnly.of(disabled)) })
+  }, [disabled])
 
   if (!framed) {
     return <div className={cn('h-full min-h-0 overflow-hidden', className)} ref={hostRef} />

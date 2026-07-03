@@ -3,6 +3,7 @@ import { atom, map } from 'nanostores'
 import { getActionStatus, installSkillFromHub, uninstallSkillFromHub, updateSkillsFromHub } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 const POLL_MS = 1200
 
@@ -35,29 +36,67 @@ export const $hubInstalledOverride = map<Record<string, boolean | undefined>>({}
 // The key whose log the bottom pane currently tails (the latest-started action).
 export const $hubActiveLog = atom<null | string>(null)
 
+// Hub action state is per-profile: a profile switch must drop every in-flight
+// entry, optimistic override, and active log so profile A's install/uninstall
+// state can never render (or be polled) in profile B. Cleared at the source so
+// it holds regardless of whether the Hub view is mounted. The epoch bumps on
+// every switch; a runHubAction() started before the switch captures it and bails
+// before any store write once it no longer matches (so an A action finishing
+// after the clear can't repopulate B).
+let _hubProfile: null | string = null
+let _hubEpoch = 0
+
+$activeGatewayProfile.subscribe(value => {
+  const key = normalizeProfileKey(value)
+
+  if (_hubProfile !== null && _hubProfile !== key) {
+    _hubEpoch += 1
+    $hubActions.set({})
+    $hubInstalledOverride.set({})
+    $hubActiveLog.set(null)
+  }
+
+  _hubProfile = key
+})
+
 // One self-contained task: spawn → tail its own action log into the store →
 // mark resolved. Concurrency-safe: state is per-key, so parallel installs never
 // stomp each other, and the sources query is invalidated once at the end.
 async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promise<{ name: string }>): Promise<void> {
+  const epoch = _hubEpoch
+  const switched = () => _hubEpoch !== epoch
+
   $hubActions.setKey(key, { kind, running: true, lines: [] })
   $hubActiveLog.set(key)
 
   try {
     const started = await spawn()
+    let exitCode: number | null = null
 
     for (;;) {
       const status = await getActionStatus(started.name, 200)
+
+      // Profile switched mid-flight: the store was cleared for the new profile,
+      // so drop this A-profile result instead of writing it back into B.
+      if (switched()) {
+        return
+      }
+
       upsertDesktopActionTask(status)
       $hubActions.setKey(key, { kind, running: status.running, lines: status.lines })
 
       if (!status.running) {
+        exitCode = status.exit_code
+
         break
       }
 
       await new Promise(resolve => setTimeout(resolve, POLL_MS))
     }
 
-    if (key !== UPDATE_ALL_KEY) {
+    // Only flip the row on a clean exit — a failed install/uninstall must not
+    // render as installed/removed.
+    if (key !== UPDATE_ALL_KEY && exitCode === 0) {
       $hubInstalledOverride.setKey(key, kind !== 'uninstall')
     }
 
@@ -65,10 +104,22 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
     void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+  } catch (err) {
+    // A profile switch points the next poll at the new backend, which 404s the
+    // old action name — that's an abandonment, not a failure, so swallow it
+    // instead of letting the caller toast a phantom error. Real (same-profile)
+    // failures still propagate.
+    if (switched()) {
+      return
+    }
+
+    throw err
   } finally {
+    // Skip the running=false write after a switch — it would re-add the key the
+    // profile-switch clear just dropped.
     const current = $hubActions.get()[key]
 
-    if (current) {
+    if (current && !switched()) {
       $hubActions.setKey(key, { ...current, running: false })
     }
   }

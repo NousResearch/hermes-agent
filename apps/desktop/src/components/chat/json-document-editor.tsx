@@ -80,6 +80,7 @@ export function JsonDocumentEditor({
       <div className="min-h-0 flex-1">
         <CodeEditor
           apiRef={editorApi}
+          disabled={disabled}
           filePath={filePath}
           formatJson
           highlight={highlight}

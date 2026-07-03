@@ -3551,7 +3551,7 @@ class TestNewEndpoints:
         assert spawned == [
             (
                 ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
-                "skills-install",
+                web_server._hub_action_name("install", "someuser/some-skill"),
             )
         ]
 
@@ -3800,12 +3800,16 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
+                "usage": 0,
+                "provenance": "agent",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
+                "usage": 0,
+                "provenance": "agent",
             },
         ]
 

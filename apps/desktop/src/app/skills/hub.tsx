@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
-import { useCallback, useState } from 'react'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { useCallback, useMemo, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
 import { DetailPane } from '@/app/master-detail'
@@ -41,6 +41,10 @@ import {
   updateHubSkills
 } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
+
+// Dedup rank when the same skill surfaces from multiple sources — higher trust
+// wins. Mirrors the backend's unified_search `_TRUST_RANK`.
+const TRUST_RANK: Record<string, number> = { builtin: 2, trusted: 1, community: 0 }
 
 function trustTone(level: string): string {
   switch (level) {
@@ -149,14 +153,26 @@ export function SkillsHub({ query }: SkillsHubProps) {
   })
 
   // Debounced hub search, keyed on the settled query so RQ dedupes/caches per
-  // term and cancels stale terms for us (no hand-rolled sequence guard).
+  // term and abandons stale terms for us (no hand-rolled sequence guard).
   const term = useDebounced(query.trim(), 350)
 
-  const searchQuery = useQuery({
-    queryKey: ['skill-hub-search', term],
-    queryFn: () => searchSkillsHub(term),
-    enabled: term.length > 0,
-    staleTime: 60_000
+  // Progressive per-source search: one query per source the backend says is
+  // worth hitting individually (it marks index-covered API sources unsearchable
+  // so we don't re-hammer ~70 GitHub calls). Each resolves independently, so the
+  // list fills in as sources return instead of blocking on the slowest one, and
+  // each source shows its own spinner. Stale terms key out and are abandoned.
+  const searchableSources = useMemo(
+    () => (sourcesQuery.data?.sources ?? []).filter(source => source.searchable !== false),
+    [sourcesQuery.data]
+  )
+
+  const sourceSearches = useQueries({
+    queries: searchableSources.map(source => ({
+      queryKey: ['skill-hub-search', term, source.id],
+      queryFn: () => searchSkillsHub(term, source.id),
+      enabled: term.length > 0,
+      staleTime: 60_000
+    }))
   })
 
   // Per-item action lifecycle + log live in the store (store/hub-actions): each
@@ -211,21 +227,57 @@ export function SkillsHub({ query }: SkillsHubProps) {
     setScan(null)
   }, [])
 
+  // Per-source progress, keyed by source id (drives the connected-hub chips'
+  // spinner/degraded tint while a search is streaming in).
+  const searchStateById = new Map<string, { failed: boolean; fetching: boolean }>()
+  searchableSources.forEach((source, i) => {
+    const q = sourceSearches[i]
+    searchStateById.set(source.id, { failed: q.isError, fetching: term.length > 0 && q.isFetching })
+  })
+
+  // Merge every source's results, deduped by identifier preferring higher trust
+  // (mirrors the backend's unified_search rank). Recomputes as each source lands.
+  const results = useMemo(() => {
+    const seen = new Map<string, SkillHubResult>()
+
+    for (const q of sourceSearches) {
+      for (const r of q.data?.results ?? []) {
+        const prev = seen.get(r.identifier)
+
+        if (!prev || (TRUST_RANK[r.trust_level] ?? 0) > (TRUST_RANK[prev.trust_level] ?? 0)) {
+          seen.set(r.identifier, r)
+        }
+      }
+    }
+
+    return [...seen.values()].sort(
+      (a, b) => (TRUST_RANK[b.trust_level] ?? 0) - (TRUST_RANK[a.trust_level] ?? 0) || a.name.localeCompare(b.name)
+    )
+  }, [sourceSearches])
+
   // Installed map: sources seeds it, search results patch it (a term can surface
   // installs the sources list didn't feature); the optimistic override wins so a
   // just-(un)installed row reflects its own outcome without the refetch race.
-  const installed = { ...(sourcesQuery.data?.installed ?? {}), ...(searchQuery.data?.installed ?? {}) }
+  const installed = { ...(sourcesQuery.data?.installed ?? {}) }
+
+  for (const q of sourceSearches) {
+    Object.assign(installed, q.data?.installed ?? {})
+  }
+
   const isInstalled = (identifier: string) => overrides[identifier] ?? Boolean(installed[identifier])
 
   const sources = sourcesQuery.data?.sources ?? []
   const featured = sourcesQuery.data?.featured ?? []
-  const results = searchQuery.data?.results ?? []
-  const timedOut = searchQuery.data?.timed_out ?? []
 
-  const searching = term.length > 0 && searchQuery.isFetching
-  const searched = term.length > 0 && searchQuery.isSuccess
+  // Still fetching from at least one source; "done" only once every source has
+  // settled (so "No results" doesn't flash while slower sources are still in).
+  const anyFetching = term.length > 0 && sourceSearches.some(q => q.isFetching)
+  const searched = term.length > 0 && sourceSearches.length > 0 && sourceSearches.every(q => !q.isFetching)
   const showLanding = term.length === 0
   const listed = showLanding ? featured : results
+  // Only block the whole pane on the first sources landing; after that results
+  // stream in progressively while a subtle footer shows more are coming.
+  const searching = anyFetching && results.length === 0
   const hasInstalled = Object.keys(installed).length > 0
 
   return (
@@ -237,17 +289,28 @@ export function SkillsHub({ query }: SkillsHubProps) {
           {sourcesQuery.isLoading
             ? null
             : sources.map(source => {
-                const degraded = source.available === false || source.rate_limited === true
+                const state = searchStateById.get(source.id)
+                const degraded = source.available === false || source.rate_limited === true || state?.failed
+                const fetching = state?.fetching ?? false
 
                 return (
                   <span
                     className={cn(
-                      'rounded px-1.5 py-0.5 text-[0.6rem]',
-                      degraded ? 'bg-amber-500/15 text-amber-400' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)'
+                      'relative rounded px-1.5 py-0.5 text-[0.6rem] transition-opacity',
+                      degraded ? 'bg-amber-500/15 text-amber-400' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)',
+                      // While searching, un-hit sources dim so the active ones read clearly.
+                      term.length > 0 && !fetching && !state?.failed && 'opacity-55'
                     )}
                     key={source.id}
                   >
-                    {source.label}
+                    {/* Spinner overlays the (dimmed) label rather than pushing it,
+                        so a chip never resizes as its search starts/finishes. */}
+                    <span className={cn(fetching && 'opacity-30')}>{source.label}</span>
+                    {fetching && (
+                      <span className="absolute inset-0 grid place-items-center">
+                        <Loader2 className="size-2.5 animate-spin" />
+                      </span>
+                    )}
                   </span>
                 )
               })}
@@ -259,8 +322,8 @@ export function SkillsHub({ query }: SkillsHubProps) {
       {listed.length > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-1.5 text-[0.68rem] text-(--ui-text-tertiary)">
           <span className="min-w-0 truncate">
-            {searched ? h.resultCount(results.length, null) : h.featured}
-            {timedOut.length > 0 && <span className="ml-2 text-amber-400">{h.timedOut(timedOut.join(', '))}</span>}
+            {term.length > 0 ? h.resultCount(results.length, null) : h.featured}
+            {anyFetching && results.length > 0 && <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>}
           </span>
 
           {hasInstalled && (

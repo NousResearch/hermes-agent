@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -88,7 +88,12 @@ async function loadToolCalls(force = false): Promise<Record<string, number>> {
   const analytics = await getUsageAnalytics(365)
 
   const value = Object.fromEntries((analytics.tools ?? []).map(e => [e.tool, e.count]))
-  toolCallsCache.set(key, { at: Date.now(), value })
+
+  // Only cache if the active profile hasn't changed during the request — else a
+  // switch mid-flight would file this result under the wrong profile's key.
+  if (normalizeProfileKey($activeGatewayProfile.get()) === key) {
+    toolCallsCache.set(key, { at: Date.now(), value })
+  }
 
   return value
 }
@@ -206,6 +211,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   // tool name -> call count over the analytics window. null = still loading
   // (badges show skeletons); {} = loaded empty / unavailable backend.
   const [toolCalls, setToolCalls] = useState<Record<string, number> | null>(null)
+  // Bumped on profile switch so a slow analytics load from profile A can't set
+  // toolCalls after the user moved to B.
+  const toolCallsEpoch = useRef(0)
   const skillsSortDesc = useStore($skillsSortDesc)
   const toolsetsSortDesc = useStore($toolsetsSortDesc)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -220,11 +228,14 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     // An explicit refresh is the one time we bypass the analytics TTL — but
     // only if the badges are already on screen; otherwise let the lazy load
-    // pick it up when Toolsets is first shown.
+    // pick it up when Toolsets is first shown. Guard the async set against a
+    // profile switch landing before it resolves.
     if (toolCallsCache.size > 0) {
+      const epoch = toolCallsEpoch.current
+
       loadToolCalls(true)
-        .then(setToolCalls)
-        .catch(() => setToolCalls({}))
+        .then(value => toolCallsEpoch.current === epoch && setToolCalls(value))
+        .catch(() => toolCallsEpoch.current === epoch && setToolCalls({}))
     }
   }, [])
 
@@ -244,10 +255,15 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     }
 
     let cancelled = false
+    // Guard the setter by epoch too: when toolCalls is already null at switch
+    // time, setToolCalls(null) is a no-op so this effect never re-runs to flip
+    // `cancelled` — the epoch check catches that gap.
+    const epoch = toolCallsEpoch.current
+    const live = () => !cancelled && toolCallsEpoch.current === epoch
 
     loadToolCalls()
-      .then(value => !cancelled && setToolCalls(value))
-      .catch(() => !cancelled && setToolCalls({}))
+      .then(value => live() && setToolCalls(value))
+      .catch(() => live() && setToolCalls({}))
 
     return () => void (cancelled = true)
   }, [mode, toolCalls])
@@ -256,7 +272,10 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   // toolCalls state isn't — leaving it non-null would keep the lazy effect from
   // ever re-running, so badges/sort would show the previous profile's counts.
   // Reset to null so the next Toolsets view reloads for the active profile.
-  useOnProfileSwitch(() => setToolCalls(null))
+  useOnProfileSwitch(() => {
+    toolCallsEpoch.current += 1
+    setToolCalls(null)
+  })
 
   const visibleSkills = useMemo(
     () => (skills ? filteredSkills(skills, query, skillsSortDesc) : []),
@@ -444,10 +463,30 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [skillDraft, setSkillDraft] = useState('')
   const [skillSaving, setSkillSaving] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<null | string>(null)
+  // Bumped on profile switch so an in-flight openSkillEditor fetch from profile
+  // A can't reopen the editor with A's content after switching to B.
+  const skillEditorEpoch = useRef(0)
+
+  // A profile switch swaps the backend under the open editor/archive dialog —
+  // their targets belong to profile A, so a save/archive would hit B. Drop them
+  // so nothing edits or archives against the newly active profile.
+  useOnProfileSwitch(() => {
+    skillEditorEpoch.current += 1
+    setSkillEditor(null)
+    setSkillDraft('')
+    setArchiveTarget(null)
+  })
 
   const openSkillEditor = async (name: string) => {
+    const epoch = skillEditorEpoch.current
+
     try {
       const node = await getLearningNode(name)
+
+      if (skillEditorEpoch.current !== epoch) {
+        return
+      }
+
       setSkillEditor({ content: node.content, name })
       setSkillDraft(node.content)
     } catch (err) {

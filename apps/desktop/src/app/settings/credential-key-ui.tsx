@@ -184,6 +184,13 @@ export function CredentialKeyCard({
       onKeyDown={
         expandable
           ? e => {
+              // Only the card's own focus toggles it — ignore Enter/Space
+              // bubbling up from the inputs/buttons inside (Enter saves a key,
+              // Space types a space) so keyboard editing never collapses the card.
+              if (e.target !== e.currentTarget) {
+                return
+              }
+
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onToggle()
@@ -264,6 +271,13 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
       onKeyDown={
         expandable
           ? e => {
+              // Only the card's own focus toggles it — ignore Enter/Space
+              // bubbling up from the inputs/buttons inside (Enter saves a key,
+              // Space types a space) so keyboard editing never collapses the card.
+              if (e.target !== e.currentTarget) {
+                return
+              }
+
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onToggle()

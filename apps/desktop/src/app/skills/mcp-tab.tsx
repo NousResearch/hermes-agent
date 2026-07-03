@@ -26,6 +26,7 @@ import { Switch } from '@/components/ui/switch'
 import { TextTab } from '@/components/ui/text-tab'
 import {
   authMcpServer,
+  getActionStatus,
   getLogs,
   getMcpCatalog,
   type HermesGateway,
@@ -43,7 +44,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../master-detail'
 import { PanelAddButton, PanelEmpty } from '../overlays/panel'
@@ -349,15 +350,28 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     isLoading: configLoading,
     isError: configFailed,
     error: configError,
-    refetch: refetchConfig
+    refetch: refetchConfig,
+    dataUpdatedAt: configUpdatedAt,
+    errorUpdatedAt: configErroredAt
   } = useHermesConfigRecord()
 
   const setConfig = setHermesConfigCache
+
+  // True from a profile switch until the config query resettles for the new
+  // profile. Until then `config` (and thus `servers`) still holds profile A's
+  // data, so any persist would write A's server list into B — block mutations.
+  const [profilePending, setProfilePending] = useState(false)
+  const staleConfigStamp = useRef<null | number>(null)
+  const staleErrorStamp = useRef<null | number>(null)
 
   const [saving, setSaving] = useState(false)
   const [probes, setProbes] = useState<Record<string, Probe>>({})
   const probesRef = useRef(probes)
   probesRef.current = probes
+
+  // Blocks the browser until an OAuth flow lands a token; also reset on profile
+  // switch, so declared up here alongside the other per-profile view state.
+  const [authing, setAuthing] = useState<null | string>(null)
 
   // Master document draft. `docVersion` remounts the editor when the draft is
   // regenerated programmatically (list-side mutations); `dirty` guards user
@@ -399,7 +413,15 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // install from. Both share one cached catalog fetch (also feeds description
   // enrichment below), so switching between them never re-requests.
   const [leftView, setLeftView] = useState<'catalog' | 'servers'>('servers')
-  const catalogQuery = useQuery({ queryKey: MCP_CATALOG_KEY, queryFn: getMcpCatalog, staleTime: 5 * 60_000 })
+
+  // Key by active profile — installed/enabled badges are per-profile, so sharing
+  // one cache across profiles would flash the previous profile's state on switch.
+  const catalogQuery = useQuery({
+    queryKey: [...MCP_CATALOG_KEY, normalizeProfileKey(useStore($activeGatewayProfile))],
+    queryFn: getMcpCatalog,
+    staleTime: 5 * 60_000
+  })
+
   const catalog = catalogQuery.data?.entries ?? []
 
   const descriptionFor = (serverName: string, server: Record<string, unknown>): null | string => {
@@ -444,15 +466,47 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     }
   }, [config])
 
+  // Bumped on every profile switch. Async probe/auth completions capture the
+  // epoch at call time and bail if it changed, so a slow profile-A request can't
+  // write its result into profile B's state after the user switched.
+  const profileEpoch = useRef(0)
+
   // A profile switch invalidates the config query (see store/profile.ts), which
-  // refetches the new backend's mcp.json. Reset per-profile view state so the
-  // draft reseeds for the new profile and the old profile's probes don't linger
-  // (the probe cache is already profile-keyed, so this just forces a re-probe).
+  // refetches the new backend's mcp.json. Reset ALL per-profile view state — the
+  // draft (incl. a dirty one, so profile A's edits can't be saved into B), its
+  // seed latch, probes, and cursor — so everything reseeds for the new profile.
+  // The probe cache is already profile-keyed, so this just forces a re-probe.
   useOnProfileSwitch(() => {
+    profileEpoch.current += 1
     draftSeeded.current = false
     setProbes({})
     setCursor(0)
+    setAuthing(null)
+    setDirty(false)
+    setDraft('')
+    setDocVersion(version => version + 1)
+    // Mark stale until the config query replaces profile A's data — guards
+    // sidebar mutations from persisting A's server list into B mid-refetch.
+    staleConfigStamp.current = configUpdatedAt
+    staleErrorStamp.current = configErroredAt
+    setProfilePending(true)
   })
+
+  // Clear once the config query settles for the new profile: dataUpdatedAt bumps
+  // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
+  // means a failed refetch surfaces the retry UI instead of leaving mutations
+  // silently no-op forever.
+  useEffect(() => {
+    if (
+      profilePending &&
+      staleConfigStamp.current !== null &&
+      (configUpdatedAt !== staleConfigStamp.current || configErroredAt !== staleErrorStamp.current)
+    ) {
+      setProfilePending(false)
+      staleConfigStamp.current = null
+      staleErrorStamp.current = null
+    }
+  }, [profilePending, configUpdatedAt, configErroredAt])
 
   useDeepLinkHighlight({
     block: 'nearest',
@@ -463,14 +517,25 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   })
 
   const runProbe = async (serverName: string) => {
+    const epoch = profileEpoch.current
     const key = probeKey(serverName, servers[serverName])
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
       const result = await testMcpServer(serverName)
+
+      // Drop the result if the profile changed mid-probe — it belongs to A.
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       probeCache.set(key, { at: Date.now(), result })
       setProbes(current => ({ ...current, [serverName]: result }))
     } catch (err) {
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       const result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] }
       probeCache.set(key, { at: Date.now(), result })
       setProbes(current => ({ ...current, [serverName]: result }))
@@ -480,14 +545,19 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // First-class OAuth: opens the system browser, blocks until the flow lands a
   // token (verified on disk — a friendly tools/list is not proof), then the
   // auth result doubles as the probe (it carries the tool list).
-  const [authing, setAuthing] = useState<null | string>(null)
-
   const authenticate = async (serverName: string) => {
+    const epoch = profileEpoch.current
     setAuthing(serverName)
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
       const result = await authMcpServer(serverName)
+
+      // Bail if the user switched profiles mid-flow — this result is profile A's.
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setProbes(current => ({ ...current, [serverName]: result }))
       // Cache under the POST-auth fingerprint (auth: oauth) on success — that's
       // the config the mount effect will read back, so it hits this entry.
@@ -516,13 +586,19 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
         notifyError(new Error(result.error), serverName)
       }
     } catch (err) {
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setProbes(current => ({
         ...current,
         [serverName]: { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] }
       }))
       notifyError(err, serverName)
     } finally {
-      setAuthing(null)
+      if (profileEpoch.current === epoch) {
+        setAuthing(null)
+      }
     }
   }
 
@@ -563,18 +639,41 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // Whole-map replace (NOT saveHermesConfig, which deep-merges and so can never
   // delete a server, drop `enabled: false`, or remove a nested field). Only
   // after the replace lands do we write the cache through + reload live sessions.
-  const persist = async (nextServers: McpServers) => {
+  // Returns false when the profile switched mid-save: the write hit profile A's
+  // backend (correct), but the client-side cache/editor now belong to B, so the
+  // caller must skip its post-await writes.
+  const persist = async (nextServers: McpServers): Promise<boolean> => {
+    const epoch = profileEpoch.current
     await saveMcpServers(nextServers)
+
+    if (profileEpoch.current !== epoch) {
+      return false
+    }
+
     setConfig(current => ({ ...current, mcp_servers: nextServers }))
     void silentReload()
+
+    return true
   }
 
   // A catalog install wrote a new server into config.yaml on the backend —
-  // refresh both the config (so the fleet + editor pick it up) and the catalog
-  // (installed state), then reload live sessions.
-  const onCatalogInstalled = () => {
-    void invalidateHermesConfig()
+  // refresh the catalog (installed state) and the config, then RECONCILE THE
+  // EDITOR DRAFT with the fresh servers. Without this a dirty draft (or even a
+  // clean one the seed never refreshes) would omit the new server, and the next
+  // whole-map Save would silently drop it.
+  const onCatalogInstalled = async () => {
     void catalogQuery.refetch()
+    const { data } = await refetchConfig()
+    const nextServers = getServers(data ?? null)
+
+    if (dirty) {
+      // Keep the user's in-progress edits (doc wins), add any server the install
+      // introduced that the draft doesn't have yet.
+      patchDraft(doc => ({ ...nextServers, ...doc }))
+    } else {
+      resetDraft(nextServers)
+    }
+
     void silentReload()
   }
 
@@ -591,8 +690,14 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   }
 
   const toggleServer = async (serverName: string, enabled: boolean) => {
+    if (profilePending) {
+      return
+    }
+
     try {
-      await persist({ ...servers, [serverName]: withEnabled(servers[serverName], enabled) })
+      if (!(await persist({ ...servers, [serverName]: withEnabled(servers[serverName], enabled) }))) {
+        return
+      }
 
       if (dirty) {
         patchDraft(doc => (doc[serverName] ? { ...doc, [serverName]: withEnabled(doc[serverName], enabled) } : doc))
@@ -615,14 +720,16 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   const toggleTool = async (serverName: string, toolName: string) => {
     const base = servers[serverName]
 
-    if (!base) {
+    if (!base || profilePending) {
       return
     }
 
     const next = toggleToolInServer(base, toolName)
 
     try {
-      await persist({ ...servers, [serverName]: next })
+      if (!(await persist({ ...servers, [serverName]: next }))) {
+        return
+      }
 
       if (dirty) {
         patchDraft(doc =>
@@ -637,13 +744,19 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   }
 
   const removeServer = async (serverName: string) => {
+    if (profilePending) {
+      return
+    }
+
     setSaving(true)
 
     try {
       const next = { ...servers }
       delete next[serverName]
 
-      await persist(next)
+      if (!(await persist(next))) {
+        return
+      }
 
       if (dirty) {
         patchDraft(doc => {
@@ -667,6 +780,10 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // "+" seeds a starter entry into the document (unique key) and marks it
   // dirty — naming happens in the editor, like every other mcp.json.
   const addServer = () => {
+    if (profilePending) {
+      return
+    }
+
     let base: McpServers
 
     try {
@@ -698,6 +815,10 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   }
 
   const saveDoc = async () => {
+    if (profilePending) {
+      return
+    }
+
     let entries: McpServers
 
     try {
@@ -713,7 +834,10 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     const prevServers = servers
 
     try {
-      await persist(entries)
+      if (!(await persist(entries))) {
+        return
+      }
+
       resetDraft(entries)
       // Keep only probes for servers that survived AND kept the same config;
       // removed OR edited entries drop their probe so the mount effect re-probes
@@ -1210,7 +1334,28 @@ function McpCatalog({
     setInstalling(entry.name)
 
     try {
-      await installMcpCatalogEntry(entry.name, draft)
+      const res = await installMcpCatalogEntry(entry.name, draft)
+
+      // Git-backed entries clone in the background — keep the row busy and poll
+      // the action to completion before refetching / re-enabling, so a re-click
+      // can't spawn a second install over the first's tracked process. A non-zero
+      // exit is a real failure — surface it instead of a false success.
+      if (res.background && res.action) {
+        for (;;) {
+          const status = await getActionStatus(res.action, 1)
+
+          if (!status.running) {
+            if (status.exit_code !== 0) {
+              throw new Error(m.catalogInstallFailed(entry.name))
+            }
+
+            break
+          }
+
+          await new Promise(resolve => setTimeout(resolve, CATALOG_INSTALL_POLL_MS))
+        }
+      }
+
       notify({ kind: 'success', title: m.catalogInstallStarted(entry.name), message: '' })
       setEnvOpenFor(null)
       onInstalled()
@@ -1307,6 +1452,9 @@ function McpCatalog({
 
 const LOG_POLL_MS = 2000
 
+// Cadence for polling a background (git-bootstrap) catalog install to completion.
+const CATALOG_INSTALL_POLL_MS = 1500
+
 const STDIO_MARKER_RE = /^===== \[.*\] starting MCP server '(.+)' =====$/
 
 // Keep only the stdio-log sections belonging to one server. The shared file
@@ -1337,6 +1485,10 @@ function filterStdioSections(lines: string[], server: string): string[] {
 // surface: CodeCardBody typography + the floating hover-reveal copy button.
 function McpLogs({ server, source }: { server: null | string; source: 'stdio' | 'agent' }) {
   const [lines, setLines] = useState<null | string[]>(null)
+  // A profile switch reroutes getLogs to the new backend; keying the effect on
+  // the active profile tears down the old poll (its `cancelled` flag blocks a
+  // late setLines) so profile A's logs never flash in B.
+  const activeProfile = useStore($activeGatewayProfile)
 
   useEffect(() => {
     let cancelled = false
@@ -1364,7 +1516,7 @@ function McpLogs({ server, source }: { server: null | string; source: 'stdio' | 
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [server, source])
+  }, [server, source, activeProfile])
 
   // TODO(i18n): literal until the UX settles.
   return <LogTail emptyLabel="No output yet." lines={lines} />

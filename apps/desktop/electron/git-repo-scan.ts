@@ -23,6 +23,19 @@ const MAX_CONCURRENCY = 32
 // only needs the non-hidden heavyweights.
 const JUNK_DIRS = new Set(['Applications', 'Library', 'node_modules', 'site-packages', 'vendor', 'venv'])
 
+// Avoid macOS TCC prompts when the default home scan reaches protected media
+// folders. Nested names and explicitly supplied media roots remain scannable.
+const MEDIA_ROOT_DIRS = new Set(['Movies', 'Music', 'Pictures', 'Public'])
+
+// These packages look like directories but are TCC-protected and cannot contain
+// user repositories, including when stored outside the default media folders.
+const LIBRARY_PACKAGE_SUFFIXES = ['.photoslibrary', '.musiclibrary', '.tvlibrary', '.aplibrary']
+
+function isLibraryPackage(name) {
+  const lower = String(name).toLowerCase()
+  return LIBRARY_PACKAGE_SUFFIXES.some(suffix => lower.endsWith(suffix))
+}
+
 async function mapLimit(items, limit, fn) {
   let cursor = 0
 
@@ -77,6 +90,14 @@ async function scanGitRepos(roots, options: any = {}) {
       // Real directories only (skip symlinks to avoid loops), no hidden dirs, no
       // known heavy trees.
       if (!entry.isDirectory() || entry.name.startsWith('.') || JUNK_DIRS.has(entry.name)) {
+        continue
+      }
+
+      if (depth === 0 && MEDIA_ROOT_DIRS.has(entry.name)) {
+        continue
+      }
+
+      if (isLibraryPackage(entry.name)) {
         continue
       }
 

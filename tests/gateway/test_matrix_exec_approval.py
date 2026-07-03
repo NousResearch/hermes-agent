@@ -32,6 +32,28 @@ class TestMatrixExecApprovalReactions:
         assert adapter._send_reaction.await_count == 3
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
         assert emojis == ["✅", "♾️", "❌"]
+        prompt_text = adapter.send.await_args.args[1]
+        assert "✅ = approve once" in prompt_text
+        assert "♾️ = approve always" in prompt_text
+        assert "❌ = deny" in prompt_text
+        assert "❎ = deny" not in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_warns_when_seed_reaction_fails(self, caplog):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(return_value=types.SimpleNamespace(success=True, message_id="$evt1"))
+        adapter._send_reaction = AsyncMock(return_value=None)
+
+        await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="rm -rf /tmp/test",
+            session_key="sess-1",
+        )
+
+        assert "failed to add approval reaction" in caplog.text
 
     @pytest.mark.asyncio
     async def test_send_exec_approval_stores_requester_user(self, monkeypatch):

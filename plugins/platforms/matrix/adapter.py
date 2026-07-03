@@ -2028,9 +2028,10 @@ class MatrixAdapter(BasePlatformAdapter):
             f"Reason: {description}\n\n"
             "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "
             "`!approve always` to approve permanently, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n"
-            "✅ = approve\n"
-            "❎ = deny"
+            "You can also react to this prompt:\n"
+            "✅ = approve once\n"
+            "♾️ = approve always\n"
+            "❌ = deny"
         )
 
         result = await self.send(chat_id, text, metadata=metadata)
@@ -2056,8 +2057,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 # Save the bot's reaction event_id for later cleanup
                 if reaction_result:
                     prompt.bot_reaction_events[emoji] = str(reaction_result)
+                else:
+                    logger.warning(
+                        "Matrix: failed to add approval reaction %s to %s",
+                        emoji,
+                        result.message_id,
+                    )
             except Exception as exc:
-                logger.debug("Matrix: failed to add approval reaction %s: %s", emoji, exc)
+                logger.warning("Matrix: failed to add approval reaction %s: %s", emoji, exc)
 
         return result
 

@@ -3650,6 +3650,22 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+def persist_model_switch_config(result) -> bool:
+    """Persist a successful /model switch as one coherent model config update."""
+    if not getattr(result, "success", False):
+        return False
+    try:
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.model_switch import apply_model_switch_to_config
+
+        cfg = apply_model_switch_to_config(load_config(), result)
+        save_config(cfg)
+        return True
+    except Exception as e:
+        logger.error("Failed to persist model switch config: %s", e)
+        return False
+
+
 
 
 # ============================================================================
@@ -7833,9 +7849,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            persist_model_switch_config(result)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -8144,9 +8158,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Persistence
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            persist_model_switch_config(result)
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")

@@ -300,6 +300,69 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+
+
+def apply_model_switch_to_config(config: dict, result: ModelSwitchResult) -> dict:
+    """Mutate ``config`` with the persistent fields from a global /model switch.
+
+    ``/model --global`` must update the active model/provider as one coherent
+    runtime tuple.  When switching providers, endpoint-scoped fields from the
+    previous provider must be cleared so later sessions do not pair the new
+    provider with stale values such as an old custom ``base_url`` or
+    model-specific ``context_length``.
+
+    Only endpoint-backed providers persist ``base_url``/``api_mode`` in the
+    global ``model`` block.  Built-in providers resolve those details from
+    provider defaults, auth state, or environment variables.
+    """
+    if not isinstance(config, dict):
+        config = {}
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        model_cfg = dict(model_cfg)
+    elif isinstance(model_cfg, str) and model_cfg.strip():
+        model_cfg = {"default": model_cfg.strip()}
+    else:
+        model_cfg = {}
+
+    if bool(getattr(result, "provider_changed", False)):
+        from hermes_cli.config import clear_model_endpoint_credentials
+
+        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+        for stale_key in (
+            "context_length",
+            "auth_mode",
+            "key_env",
+            "api_key_env",
+            "extra_body",
+            "entra",
+        ):
+            model_cfg.pop(stale_key, None)
+
+    model_cfg["default"] = getattr(result, "new_model", "") or ""
+    model_cfg["provider"] = getattr(result, "target_provider", "") or ""
+
+    target_provider = str(model_cfg.get("provider") or "").strip().lower()
+    result_base_url = str(getattr(result, "base_url", "") or "").strip().rstrip("/")
+    result_api_mode = str(getattr(result, "api_mode", "") or "").strip()
+    endpoint_backed_provider = (
+        target_provider == "custom"
+        or target_provider.startswith("custom:")
+        or target_provider == "azure-foundry"
+    )
+
+    if endpoint_backed_provider and result_base_url:
+        model_cfg["base_url"] = result_base_url
+        if result_api_mode:
+            model_cfg["api_mode"] = result_api_mode
+    elif not endpoint_backed_provider:
+        from hermes_cli.config import clear_model_endpoint_credentials
+
+        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+
+    config["model"] = model_cfg
+    return config
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------

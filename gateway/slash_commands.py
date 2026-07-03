@@ -38,7 +38,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
+from hermes_cli.config import cfg_get
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -1626,23 +1626,10 @@ class GatewaySlashCommandsMixin:
                                         _persist_cfg = yaml.safe_load(f) or {}
                                 else:
                                     _persist_cfg = {}
-                                _raw_model = _persist_cfg.get("model")
-                                if isinstance(_raw_model, dict):
-                                    _persist_model_cfg = _raw_model
-                                elif isinstance(_raw_model, str) and _raw_model.strip():
-                                    _persist_model_cfg = {"default": _raw_model.strip()}
-                                    _persist_cfg["model"] = _persist_model_cfg
-                                else:
-                                    _persist_model_cfg = {}
-                                    _persist_cfg["model"] = _persist_model_cfg
-                                _persist_model_cfg["default"] = result.new_model
-                                _persist_model_cfg["provider"] = result.target_provider
-                                if result.base_url:
-                                    _persist_model_cfg["base_url"] = result.base_url
-                                if str(result.target_provider or "").strip().lower() != "custom":
-                                    clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
                                 from hermes_cli.config import save_config
-                                save_config(_persist_cfg)
+                                from hermes_cli.model_switch import apply_model_switch_to_config
+
+                                save_config(apply_model_switch_to_config(_persist_cfg, result))
                             except Exception as e:
                                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -1870,29 +1857,10 @@ class GatewaySlashCommandsMixin:
                             cfg = yaml.safe_load(f) or {}
                     else:
                         cfg = {}
-                    # Coerce scalar/None ``model:`` into a dict before mutation —
-                    # otherwise ``cfg.setdefault("model", {})`` returns the existing
-                    # scalar and the next assignment raises
-                    # ``TypeError: 'str' object does not support item assignment``.
-                    # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
-                    # string) instead of the proper nested ``model: {default: ...}``.
-                    raw_model = cfg.get("model")
-                    if isinstance(raw_model, dict):
-                        model_cfg = raw_model
-                    elif isinstance(raw_model, str) and raw_model.strip():
-                        model_cfg = {"default": raw_model.strip()}
-                        cfg["model"] = model_cfg
-                    else:
-                        model_cfg = {}
-                        cfg["model"] = model_cfg
-                    model_cfg["default"] = result.new_model
-                    model_cfg["provider"] = result.target_provider
-                    if result.base_url:
-                        model_cfg["base_url"] = result.base_url
-                    if str(result.target_provider or "").strip().lower() != "custom":
-                        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
                     from hermes_cli.config import save_config
-                    save_config(cfg)
+                    from hermes_cli.model_switch import apply_model_switch_to_config
+
+                    save_config(apply_model_switch_to_config(cfg, result))
                 except Exception as e:
                     logger.warning("Failed to persist model switch: %s", e)
 

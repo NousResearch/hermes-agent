@@ -491,15 +491,24 @@ class GithubPRPolicy:
 
 @dataclass(frozen=True)
 class ProductionActionPolicy:
-    """One root-scoped owner-mode production action group."""
+    """One root-scoped owner-mode production action group.
+
+    Actions can either execute a workspace-local deterministic argv or dispatch
+    to one server alias command group.  The latter is the owner-mode path for
+    natural "deploy this project" requests: the public client names only the
+    production action while the private node resolves the allowlisted SSH/local
+    command server-side.
+    """
 
     name: str
-    argv: tuple[str, ...]
+    argv: tuple[str, ...] = ()
     enabled: bool = True
     working_directory: str = "."
     timeout_seconds: int = 60
     category: str = "production"
     rollback_action: str | None = None
+    server_alias: str | None = None
+    server_command: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1411,7 +1420,26 @@ def _parse_production_action_policy(name: str, value: Any, field: str) -> Produc
     action_name = _policy_slug(name, field=f"{field}.name")
     policy = _policy_mapping(value, field)
     enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled", default=True)
-    argv = _policy_argv_tuple(policy.get("argv", policy.get("command_argv")), f"{field}.argv")
+    raw_argv = policy.get("argv", policy.get("command_argv"))
+    argv = _policy_argv_tuple(raw_argv, f"{field}.argv", required=False)
+    raw_server_alias = policy.get("server_alias", policy.get("server"))
+    raw_server_command = policy.get("server_command", policy.get("command_group"))
+    server_alias = None
+    server_command = None
+    if raw_server_alias is not None:
+        server_alias = _policy_slug(str(raw_server_alias), field=f"{field}.server_alias")
+    if raw_server_command is not None:
+        server_command = _policy_slug(str(raw_server_command), field=f"{field}.server_command")
+    if bool(argv) == bool(server_alias or server_command):
+        raise ProfileRouterError(
+            "invalid_policy",
+            f"{field} must configure exactly one execution target: argv or server_alias+server_command",
+        )
+    if (server_alias is None) != (server_command is None):
+        raise ProfileRouterError(
+            "invalid_policy",
+            f"{field}.server_alias and {field}.server_command must be configured together",
+        )
     working_directory = _policy_workspace_relative_dir(policy.get("working_directory", policy.get("cwd", ".")), f"{field}.working_directory")
     timeout_seconds = _policy_timeout_seconds(
         policy.get("timeout_seconds"),
@@ -1431,6 +1459,8 @@ def _parse_production_action_policy(name: str, value: Any, field: str) -> Produc
         timeout_seconds=timeout_seconds,
         category=category,
         rollback_action=rollback_action,
+        server_alias=server_alias,
+        server_command=server_command,
     )
 
 
@@ -4888,7 +4918,7 @@ def _require_workspace_production_access(
     *,
     context_token: str | None = None,
     registry: WorkspaceRegistry | None = None,
-) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy, ProfileRouterPolicy]:
     """Require fresh context plus explicit deploy/production action policy."""
 
     workspace = require_fresh_workspace_context(
@@ -4896,13 +4926,13 @@ def _require_workspace_production_access(
         context_token=context_token,
         registry=registry,
     )
-    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    _ref, route_policy, router_policy = _require_local_profile_policy(workspace.profile_ref)
     if not route_policy.allow_deploy:
         raise ProfileRouterError(
             "production_actions_not_allowed",
             f"Production actions are disabled by profile_router deploy policy: {workspace.profile_ref}",
         )
-    return workspace, route_policy
+    return workspace, route_policy, router_policy
 
 
 def _require_workspace_web_access(
@@ -5090,6 +5120,10 @@ def _production_action_summary(action: ProductionActionPolicy) -> dict:
         "rollback_action": action.rollback_action,
         "working_directory": action.working_directory,
         "timeout_seconds": action.timeout_seconds,
+        "execution_target": "server_alias" if action.server_alias else "workspace_argv",
+        "server_alias": action.server_alias,
+        "server_command": action.server_command,
+        "server_target_exposed": False,
         "argv_redacted": True,
         "root_exposed": False,
     }
@@ -5102,7 +5136,7 @@ def list_workspace_production_actions(
     registry: WorkspaceRegistry | None = None,
 ) -> dict:
     assert_default_tools_are_no_model()
-    workspace, route_policy = _require_workspace_production_access(
+    workspace, route_policy, _router_policy = _require_workspace_production_access(
         workspace_id,
         context_token=context_token,
         registry=registry,
@@ -5130,7 +5164,7 @@ def get_workspace_production_action_status(
     registry: WorkspaceRegistry | None = None,
 ) -> dict:
     assert_default_tools_are_no_model()
-    workspace, route_policy = _require_workspace_production_access(
+    workspace, route_policy, _router_policy = _require_workspace_production_access(
         workspace_id,
         context_token=context_token,
         registry=registry,
@@ -5159,7 +5193,7 @@ def run_workspace_production_action(
     assert_default_tools_are_no_model()
     if args:
         raise ProfileRouterError("production_action_args_not_supported", "Production actions only accept server-configured argv in this phase")
-    workspace, route_policy = _require_workspace_production_access(
+    workspace, route_policy, _router_policy = _require_workspace_production_access(
         workspace_id,
         context_token=context_token,
         registry=registry,
@@ -5168,15 +5202,44 @@ def run_workspace_production_action(
     action = route_policy.production_actions.get(name)
     if action is None or not action.enabled:
         raise ProfileRouterError("production_action_not_found", "Production action is not configured or enabled for this profile")
-    resolved_cwd, public_cwd = _resolve_terminal_working_directory(workspace, action.working_directory)
-    result = _run_policy_subprocess(
-        action.argv,
-        cwd=resolved_cwd,
-        timeout_seconds=action.timeout_seconds,
-        tool_name="workspace_production_action_run",
-        max_output_chars=MAX_PRODUCTION_ACTION_OUTPUT_CHARS,
-        redactions=(workspace.root, str(resolved_cwd)),
-    )
+    resolved_cwd: Path | None = None
+    public_cwd = action.working_directory
+    execution_target = "workspace_argv"
+    if action.server_alias:
+        if not action.server_command:
+            raise ProfileRouterError("production_action_invalid", "Production action server command is not configured")
+        _ref, _server_route_policy, _server_router_policy, alias_policy = _require_profile_server_access(
+            workspace.profile_ref,
+            action.server_alias,
+            operation="commands",
+        )
+        assert alias_policy is not None
+        server_argv = alias_policy.command_groups.get(action.server_command)
+        if server_argv is None:
+            raise ProfileRouterError(
+                "production_server_command_not_allowed",
+                "Production action server command group is not allowlisted for this server alias",
+            )
+        server_argv = _render_workspace_server_command_argv(server_argv, workspace)
+        result = _run_server_alias_command(
+            alias_policy,
+            server_argv,
+            tool_name="workspace_production_action_run",
+            timeout_seconds=action.timeout_seconds,
+            extra_redactions=(workspace.root,),
+        )
+        execution_target = "server_alias"
+        public_cwd = "server_alias"
+    else:
+        resolved_cwd, public_cwd = _resolve_terminal_working_directory(workspace, action.working_directory)
+        result = _run_policy_subprocess(
+            action.argv,
+            cwd=resolved_cwd,
+            timeout_seconds=action.timeout_seconds,
+            tool_name="workspace_production_action_run",
+            max_output_chars=MAX_PRODUCTION_ACTION_OUTPUT_CHARS,
+            redactions=(workspace.root, str(resolved_cwd)),
+        )
     audit = dict(result.get("audit") or {})
     audit.update(
         {
@@ -5185,6 +5248,10 @@ def run_workspace_production_action(
             "llm_calls": 0,
             "root_exposed": False,
             "working_directory": public_cwd,
+            "execution_target": execution_target,
+            "server_alias": action.server_alias,
+            "server_command": action.server_command,
+            "server_target_exposed": False,
             "production_action_policy_gated": True,
         }
     )
@@ -5245,6 +5312,51 @@ def _server_command_argv(alias: ServerAliasPolicy, argv: tuple[str, ...]) -> tup
     if not alias.ssh_target:
         raise ProfileRouterError("server_alias_invalid", "SSH alias is missing its server-side target")
     return ("ssh", "-o", "BatchMode=yes", alias.ssh_target, *argv)
+
+
+SERVER_COMMAND_TEMPLATE_RE = re.compile(
+    r"\{(profile_ref|profile|root_id|root_label|root_index|project|workspace_id)\}"
+)
+
+
+def _workspace_template_safe_value(value: Any, *, fallback: str = "workspace") -> str:
+    text = str(value or fallback).strip()
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "-", text).strip("-._:")
+    if not text or _is_secret_path(text):
+        text = fallback
+    return text[:120]
+
+
+def _workspace_server_command_template_values(workspace: WorkspaceMetadata) -> dict[str, str]:
+    project = workspace.root_label or Path(workspace.root).name or workspace.profile
+    return {
+        "profile_ref": _workspace_template_safe_value(workspace.profile_ref),
+        "profile": _workspace_template_safe_value(workspace.profile),
+        "root_id": _workspace_template_safe_value(workspace.root_id, fallback="root"),
+        "root_label": _workspace_template_safe_value(workspace.root_label, fallback="root"),
+        "root_index": str(workspace.root_index if workspace.root_index is not None else 0),
+        "project": _workspace_template_safe_value(project, fallback="project"),
+        "workspace_id": _workspace_template_safe_value(workspace.workspace_id, fallback="workspace"),
+    }
+
+
+def _render_workspace_server_command_argv(
+    argv: tuple[str, ...],
+    workspace: WorkspaceMetadata,
+) -> tuple[str, ...]:
+    """Render safe workspace placeholders for server-side action groups.
+
+    Only a small fixed set of placeholders is substituted; other braces (for
+    example Docker Go templates such as ``{{json .}}``) are left untouched.
+    Absolute host roots are never substituted into SSH commands.
+    """
+
+    values = _workspace_server_command_template_values(workspace)
+
+    def _replace(match: re.Match[str]) -> str:
+        return values[match.group(1)]
+
+    return tuple(SERVER_COMMAND_TEMPLATE_RE.sub(_replace, item) for item in argv)
 
 
 def _run_server_alias_command(

@@ -3337,7 +3337,7 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
                     "allowed_ports": [9],
                     "command_groups": {
                         "status": [sys.executable, "-c", "print('status-ok')"],
-                        "deploy_echo": [sys.executable, "-c", "print('command-ok')"],
+                        "deploy_echo": [sys.executable, "-c", "import sys; print('command-ok:' + sys.argv[1])", "{project}"],
                     },
                 }
             }
@@ -3353,7 +3353,12 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
                         "smoke_deploy": {
                             "argv": [sys.executable, "-c", "print('deploy-ok')"],
                             "rollback_action": "smoke_rollback",
-                        }
+                        },
+                        "smoke_ssh_deploy": {
+                            "server_alias": "local_ops",
+                            "server_command": "deploy_echo",
+                            "rollback_action": "smoke_rollback",
+                        },
                     },
                 },
                 "server": {
@@ -3381,7 +3386,22 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
     assert ran["ok"] is True
     assert ran["production_action"]["result"]["status"] == "success"
     assert ran["production_action"]["result"]["audit"]["llm_calls"] == 0
+    assert ran["production_action"]["action"]["execution_target"] == "workspace_argv"
     assert str(workspace_root) not in json.dumps(ran)
+
+    ssh_ran = json.loads(workspace_production_action_run(workspace_id, "smoke_ssh_deploy", context_token=token))
+    assert ssh_ran["ok"] is True
+    ssh_action = ssh_ran["production_action"]["action"]
+    assert ssh_action["execution_target"] == "server_alias"
+    assert ssh_action["server_alias"] == "local_ops"
+    assert ssh_action["server_command"] == "deploy_echo"
+    assert ssh_action["server_target_exposed"] is False
+    assert ssh_ran["production_action"]["result"]["status"] == "success"
+    assert "command-ok:project" in ssh_ran["production_action"]["result"]["stdout"]["text"]
+    assert ssh_ran["production_action"]["result"]["audit"]["execution_target"] == "server_alias"
+    assert ssh_ran["production_action"]["result"]["audit"]["server_target_exposed"] is False
+    assert ssh_ran["production_action"]["result"]["audit"]["llm_calls"] == 0
+    assert str(workspace_root) not in json.dumps(ssh_ran)
 
     status = json.loads(workspace_production_action_status(workspace_id, "smoke_deploy", context_token=token))
     assert status["ok"] is True

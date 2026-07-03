@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
     cache_image_from_bytes,
 )
 from gateway.config import Platform
@@ -1067,6 +1068,11 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
+            # Audio/video/file payloads must not go through the image cache —
+            # cache_image_from_bytes validates magic bytes and refuses
+            # non-image data (e.g. LINE voice notes arrive as .m4a).
+            if msg_type in ("audio", "video", "file"):
+                return cache_audio_from_bytes(data, ext=ext)
             return cache_image_from_bytes(data, ext=ext)
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)

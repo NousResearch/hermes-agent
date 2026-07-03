@@ -370,6 +370,14 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+_ADVISORY_INSTRUCTION = (
+    "[The conversation above is the current state of the task. Give your "
+    "most intelligent judgement: what is going on, what should happen next, "
+    "what risks or mistakes you see, and how the acting agent should "
+    "proceed.]"
+)
+
+
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build an advisory view of the conversation for reference models.
 
@@ -401,13 +409,6 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     The acting aggregator always receives the full, untrimmed transcript; this
     function only shapes the disposable advisory copy.
     """
-    advisory_instruction = (
-        "[The conversation above is the current state of the task. Give your "
-        "most intelligent judgement: what is going on, what should happen next, "
-        "what risks or mistakes you see, and how the acting agent should "
-        "proceed.]"
-    )
-
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
     for msg in messages:
@@ -449,7 +450,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # deleting the agent's latest assistant context. This satisfies Anthropic's
     # no-trailing-assistant-prefill rule while preserving full state.
     if rendered and rendered[-1].get("role") == "assistant":
-        rendered.append({"role": "user", "content": advisory_instruction})
+        rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
     elif rendered and rendered[-1].get("role") == "user":
         # Already ends on a user turn (fresh user prompt, no agent action yet).
         # Leave it — the reference answers that prompt directly.
@@ -784,9 +785,17 @@ class MoAChatCompletions:
         fanout_mode = str(preset.get("fanout") or "per_iteration").strip().lower()
         sig_messages = ref_messages
         if fanout_mode == "user_turn":
+            # Find the last REAL user message. The advisory view appends a
+            # synthetic user marker (_ADVISORY_INSTRUCTION) when it ends on an
+            # assistant turn — i.e. on every tool iteration after the first —
+            # so that marker must not count as a user turn or the prefix
+            # would include the grown mid-turn context and the signature
+            # would change every iteration (defeating the once-per-turn
+            # cadence entirely).
             last_user_idx = None
             for _i in range(len(ref_messages) - 1, -1, -1):
-                if ref_messages[_i].get("role") == "user":
+                _m = ref_messages[_i]
+                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
                     last_user_idx = _i
                     break
             if last_user_idx is not None:

@@ -89,6 +89,22 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == mixed
 
+    def test_existing_named_profile_still_bootstraps_subdirs(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            ensure_hermes_home()
+            assert (profile_home / "cron").is_dir()
+            assert (profile_home / "sessions").is_dir()
+            assert (profile_home / "memories").is_dir()
+
+    def test_missing_named_profile_is_not_recreated(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                ensure_hermes_home()
+        assert not profile_home.exists()
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
@@ -613,6 +629,23 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("GLM_API_KEY=")
         assert result[1].startswith("LM_API_KEY=")
 
+    def test_value_embedding_known_key_not_split(self):
+        """A single valid line whose value embeds a known KEY= (e.g. a URL with
+        a query parameter) must be preserved verbatim — not truncated into a
+        bogus pair."""
+        lines = [
+            "OPENAI_BASE_URL=https://proxy.example.com/v1?TAVILY_API_KEY=sk-embedded\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"embedded key in value corrupted the secret: {result}"
+
+    def test_leading_text_before_first_key_not_dropped(self):
+        """When the first known KEY= is not at the line start, the leading text
+        must not be silently dropped."""
+        lines = ["export OPENAI_API_KEY=sk1ANTHROPIC_API_KEY=sk2\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"leading text was dropped: {result}"
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"
@@ -1086,11 +1119,17 @@ class TestInterimAssistantMessageConfig:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            loaded = load_config()
 
         from hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        # The user's explicit non-default value is preserved on disk.
         assert raw["display"]["tool_progress"] == "off"
-        assert raw["display"]["interim_assistant_messages"] is True
+        # interim_assistant_messages defaults to True and merges in transparently
+        # at read time, so the migration must NOT materialise it to disk (that
+        # was the config-bloat bug). It is still effective via load_config().
+        assert "interim_assistant_messages" not in raw.get("display", {})
+        assert loaded["display"]["interim_assistant_messages"] is True
 
 
 class TestCliRefreshIntervalConfig:
@@ -1322,19 +1361,103 @@ class TestWriteApprovalMigration:
                         "skills:\n  write_mode: 'off'\n")
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            assert raw["memory"]["write_approval"] is False
-            assert raw["skills"]["write_approval"] is False
+            loaded = load_config()
+            # write_approval=False equals the schema default, so it is NOT
+            # materialised to disk (lean-config invariant) — the legacy
+            # write_mode key is gone and the effective value resolves to False
+            # via load_config()'s deep-merge.
+            assert "write_mode" not in raw.get("memory", {})
+            assert "write_mode" not in raw.get("skills", {})
+            assert loaded["memory"]["write_approval"] is False
+            assert loaded["skills"]["write_approval"] is False
 
     def test_unset_key_defaults_to_false(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(tmp_path, "_config_version: 28\nmemory:\n  memory_enabled: true\n")
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            # No write_mode was persisted, so the rename is a no-op; the missing-
-            # field pass then seeds the default (False = gate off). Either way the
-            # gate ends up off and there's no leftover write_mode key.
-            assert raw["memory"].get("write_approval", False) is False
+            loaded = load_config()
+            # No write_mode was persisted, so the rename is a no-op; the gate
+            # ends up off (default) via deep-merge and there's no leftover
+            # write_mode key on disk.
+            assert loaded["memory"]["write_approval"] is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestMigrationWriteInvariant:
+    """Architectural guard: every migration write routes through the single
+    _persist_migration() chokepoint, which strips schema defaults so a lean
+    config is never bloated into a DEFAULT_CONFIG dump on a version bump.
+
+    These lock the centralised invariant so a future migration that calls
+    save_config(...) directly (re-introducing the config-bloat bug class) is
+    caught immediately.
+    """
+
+    def test_migrate_config_never_calls_save_config_directly(self):
+        """No `save_config(` call may live inside migrate_config()'s body — all
+        writes must go through _persist_migration()."""
+        import ast
+        import inspect
+        from hermes_cli import config as cfg_mod
+
+        src = inspect.getsource(cfg_mod.migrate_config)
+        tree = ast.parse(src.lstrip())
+        direct = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "save_config"
+        ]
+        assert not direct, (
+            "migrate_config must route every write through _persist_migration(); "
+            f"found {len(direct)} direct save_config() call(s) — these re-introduce "
+            "the config-bloat regression (lean config → DEFAULT_CONFIG dump)."
+        )
+
+    @pytest.mark.parametrize("start_version", [1, "latest_minus_one"])
+    def test_version_bump_keeps_config_lean(self, tmp_path, start_version):
+        """A lean config migrated to the latest version must never be rewritten
+        into a defaults dump — neither across the whole range (start=1, where
+        per-version seeds also fire) nor on a bare one-version bump (where only
+        the catch-all finalizer runs). In both cases no default-only top-level
+        section the user never wrote may land on disk, the merged view still
+        exposes every default, and the user's explicit non-default value
+        survives.
+        """
+        latest = DEFAULT_CONFIG["_config_version"]
+        start = latest - 1 if start_version == "latest_minus_one" else start_version
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "_config_version": start,
+                "model": {"default": "test-model", "provider": "openrouter"},
+                "matrix": {"require_mention": False},
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            loaded = load_config()
+
+        assert raw["_config_version"] == latest
+        # User's explicit non-default value preserved (not reset to True default).
+        assert raw["matrix"]["require_mention"] is False
+        assert loaded["matrix"]["require_mention"] is False
+        # No default-only top-level section the user never wrote lands on disk —
+        # neither from per-version seeds nor the catch-all finalizer.
+        for default_key in (
+            "timezone", "curator", "auxiliary", "tts", "compression",
+            "whatsapp", "bedrock",
+        ):
+            assert default_key not in raw, (
+                f"{default_key} was materialised into a lean config by the "
+                f"version bump — the default-dump regression returned"
+            )
+        # Defaults still take effect transparently via the read-time merge.
+        assert loaded["curator"]["enabled"] == DEFAULT_CONFIG["curator"]["enabled"]
+        assert loaded["display"]["compact"] == DEFAULT_CONFIG["display"]["compact"]
 
 
 class TestVerifyOnStopMigration:
@@ -1420,6 +1543,61 @@ class TestVerifyOnStopMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
+
+class TestDelegationCapUnificationMigration:
+    """v32 → v33: fold deprecated max_async_children into max_concurrent_children."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_stale_default_key_removed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 3\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        # Default-valued (3) async cap must not shrink a raised children cap.
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_raised_async_cap_folded_into_children_cap(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 20\n"
+                "  max_concurrent_children: 5\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 20
+
+    def test_higher_children_cap_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 8\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_no_delegation_section_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        # Migration must not materialize a delegation section it never had.
+        assert "delegation" not in raw
+
+    def test_default_config_has_no_max_async_children(self):
+        assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
+
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""

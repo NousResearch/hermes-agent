@@ -3,7 +3,7 @@
 Proves the gateway side of the relay works with no real connector:
   - connect() registers the inbound handler,
   - a connector-delivered MessageEvent reaches the adapter's message path,
-  - SessionSource discriminators (guild_id) drive build_session_key isolation,
+  - SessionSource discriminators (scope_id) drive build_session_key isolation,
   - an outbound send round-trips through the transport.
 
 These target the transport contract + session-key derivation (Task 1.2's gate),
@@ -40,14 +40,14 @@ def _discord_descriptor() -> CapabilityDescriptor:
     )
 
 
-def _discord_event(guild_id: str, channel_id: str, user_id: str, text: str) -> MessageEvent:
+def _discord_event(scope_id: str, channel_id: str, user_id: str, text: str) -> MessageEvent:
     """Synthetic inbound the connector would build from a discord.js message."""
     source = SessionSource(
         platform=Platform.DISCORD,
         chat_id=channel_id,
         chat_type="group",
         user_id=user_id,
-        guild_id=guild_id,
+        scope_id=scope_id,
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
@@ -79,18 +79,18 @@ async def test_inbound_event_reaches_adapter(wired, monkeypatch):
     await stub.push_inbound(ev)
     assert len(captured) == 1
     assert captured[0].text == "hello"
-    assert captured[0].source.guild_id == "guildA"
+    assert captured[0].source.scope_id == "guildA"
 
 
 @pytest.mark.asyncio
-async def test_two_guilds_isolate_into_distinct_session_keys(wired):
+async def test_two_scopes_isolate_into_distinct_session_keys(wired):
     adapter, _ = wired
     ev_a = _discord_event("guildA", "chan1", "userX", "hi from A")
     ev_b = _discord_event("guildB", "chan2", "userX", "hi from B")
     key_a = build_session_key(ev_a.source)
     key_b = build_session_key(ev_b.source)
     assert key_a != key_b
-    # Same guild + channel + user collapses to one session.
+    # Same scope + channel + user collapses to one session.
     ev_a2 = _discord_event("guildA", "chan1", "userX", "again")
     assert build_session_key(ev_a2.source) == key_a
 

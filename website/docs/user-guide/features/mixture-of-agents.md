@@ -85,8 +85,11 @@ moa:
       aggregator:
         provider: openrouter
         model: anthropic/claude-opus-4.8
-      reference_temperature: 0.6
-      aggregator_temperature: 0.4
+      # Optional: pin sampling temperatures. When omitted (the default),
+      # temperature is NOT sent and each model uses its provider default —
+      # the same behavior as a single-model Hermes agent.
+      # reference_temperature: 0.6
+      # aggregator_temperature: 0.4
       max_tokens: 4096
       enabled: true
 ```
@@ -96,6 +99,38 @@ Default preset:
 - reference: `openai-codex:gpt-5.5`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
+
+### Tuning advisor speed with `reference_max_tokens`
+
+Each turn, MoA runs the reference models (advisors) in parallel and then the
+aggregator acts. Advisor generation is the dominant per-turn latency — turn
+wall time correlates strongly with how many tokens the advisors emit, because
+the turn waits for the slowest advisor to finish writing. By default advisors
+are **uncapped** (`reference_max_tokens` unset), so they may write long,
+essay-length advice.
+
+Set `reference_max_tokens` on a preset to cap advisor output and give concise
+advice instead. The aggregator only needs the gist of each advisor's
+judgement, so a cap (e.g. `600`) measurably cuts per-turn wall time with little
+quality impact. It caps **advisors only** — the acting aggregator's output (the
+user-visible answer) is never capped.
+
+```yaml
+moa:
+  presets:
+    fast:
+      reference_models:
+        - provider: openrouter
+          model: anthropic/claude-opus-4.8
+        - provider: openrouter
+          model: openai/gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+      reference_max_tokens: 600   # concise advice → faster turns
+```
+
+Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
 ## Terminal preset management
 

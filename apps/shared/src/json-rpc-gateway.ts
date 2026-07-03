@@ -98,7 +98,15 @@ export class JsonRpcGatewayClient {
 
     this.setState('connecting')
 
-    const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    let socket: WebSocketLike
+    try {
+      socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    } catch (error) {
+      this.socket = null
+      this.setState('error')
+      throw (error instanceof Error ? error : new Error(this.options.connectErrorMessage))
+    }
+
     this.socket = socket
 
     socket.addEventListener('message', message => {

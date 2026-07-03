@@ -3082,7 +3082,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False,
+                return_result: bool = False):
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3094,8 +3095,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     under the file lock before dispatch; an external provider claims via the
     store CAS). This function only fires the given job once.
 
-    Returns True if the job was processed (even if the job itself failed —
-    failure is recorded via ``mark_job_run``), False only if processing raised.
+    By default this returns the historical bool: True if the job was processed
+    (even if the job itself failed — failure is recorded via ``mark_job_run``),
+    False only if processing raised. With ``return_result=True``, return a
+    structured snapshot of the run status so immediate-run callers can report
+    status even when a finite repeat job is removed by ``mark_job_run`` before
+    they can re-read it from the job store.
     """
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
@@ -3110,7 +3115,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
             )
-            return True  # not an error — already handled/removed
+            result = {
+                "processed": True,
+                "success": True,
+                "status": "ok",
+                "error": None,
+                "delivery_error": None,
+                "skipped": True,
+            }
+            return result if return_result else True  # not an error — already handled/removed
 
         success, output, final_response, error = run_job(job)
 
@@ -3152,11 +3165,27 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        if return_result:
+            return {
+                "processed": True,
+                "success": bool(success),
+                "status": "ok" if success else "error",
+                "error": error,
+                "delivery_error": delivery_error,
+            }
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         mark_job_run(job["id"], False, str(e))
+        if return_result:
+            return {
+                "processed": False,
+                "success": False,
+                "status": "error",
+                "error": str(e),
+                "delivery_error": None,
+            }
         return False
 
 
@@ -3260,7 +3289,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return bool(run_one_job(job, adapters=adapters, loop=loop, verbose=verbose))
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

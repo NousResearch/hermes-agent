@@ -59,6 +59,43 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["execution_success"] is False
         assert out["job"]["execution_error"] == "provider 500"
 
+    def test_run_repeat1_depleted_success_reports_success(self):
+        """A repeat=1 job removed after a successful run still reports success."""
+        run_result = {"processed": True, "success": True, "error": None}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=run_result), \
+             patch("tools.cronjob_tools.get_job", return_value=None):
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["executed"] is True
+        assert out["job"]["execution_success"] is True
+
+    def test_run_repeat1_depleted_failure_reports_failure(self):
+        """A repeat=1 job removed after a failed run still reports failure."""
+        run_result = {"processed": True, "success": False, "error": "Script exited with code 7"}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=run_result), \
+             patch("tools.cronjob_tools.get_job", return_value=None):
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["executed"] is True
+        assert out["job"]["execution_success"] is False
+        assert out["job"]["execution_error"] == "Script exited with code 7"
+
+    def test_run_repeat1_depleted_empty_no_agent_reports_silent_success(self):
+        """A removed repeat=1 no_agent empty-stdout run keeps silent success semantics."""
+        run_result = {"processed": True, "success": True, "error": None, "status": "ok"}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=run_result), \
+             patch("tools.cronjob_tools.get_job", return_value=None):
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["executed"] is True
+        assert out["job"]["execution_success"] is True
+
     def test_execute_job_now_bails_without_claim(self):
         """_execute_job_now never calls run_one_job when the claim is lost."""
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \

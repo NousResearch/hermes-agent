@@ -24,6 +24,7 @@ import type { DashboardTheme } from "@/themes/types";
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_CSRF_TOKEN__?: string;
     __HERMES_BASE_PATH__?: string;
   }
 }
@@ -42,6 +43,11 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
+  }
+  const method = (init?.method ?? "GET").toUpperCase();
+  const csrfToken = window.__HERMES_CSRF_TOKEN__;
+  if (csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("X-CSRF-Token")) {
+    headers.set("X-CSRF-Token", csrfToken);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
@@ -276,6 +282,45 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Knowledge vault
+  getKnowledgeStatus: () => fetchJSON<KnowledgeStatusResponse>("/api/knowledge/status"),
+  getKnowledgeTree: (path = "") => {
+    const qs = new URLSearchParams();
+    if (path) qs.set("path", path);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<KnowledgeTreeResponse>(`/api/knowledge/tree${suffix}`);
+  },
+  getKnowledgeFile: (path: string) =>
+    fetchJSON<KnowledgeFileResponse>(
+      `/api/knowledge/file?path=${encodeURIComponent(path)}`,
+    ),
+  saveKnowledgeFile: (path: string, content: string, expectedModified?: number) =>
+    fetchJSON<KnowledgeFileResponse>(
+      `/api/knowledge/file?path=${encodeURIComponent(path)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, expected_modified: expectedModified ?? null }),
+      },
+    ),
+  resolveKnowledgeLink: (link: string, fromPath = "") => {
+    const qs = new URLSearchParams({ link });
+    if (fromPath) qs.set("from_path", fromPath);
+    return fetchJSON<KnowledgeResolveResponse>(`/api/knowledge/resolve?${qs.toString()}`);
+  },
+  searchKnowledge: (q: string) =>
+    fetchJSON<KnowledgeSearchResponse>(
+      `/api/knowledge/search?q=${encodeURIComponent(q)}`,
+    ),
+  getKnowledgeBacklinks: (path: string) =>
+    fetchJSON<KnowledgeBacklinksResponse>(
+      `/api/knowledge/backlinks?path=${encodeURIComponent(path)}`,
+    ),
+  getKnowledgeGraph: (path: string) =>
+    fetchJSON<KnowledgeGraphResponse>(
+      `/api/knowledge/graph?path=${encodeURIComponent(path)}`,
+    ),
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -342,6 +387,106 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 };
+
+export interface KnowledgeStatusResponse {
+  ok: boolean;
+  read_only: boolean;
+  vault_name: string;
+  vault_path: string;
+  safe_file_count: number;
+  by_extension: Record<string, number>;
+  owner_mode: boolean;
+  write_enabled: boolean;
+}
+
+export interface KnowledgeTreeItem {
+  name: string;
+  path: string;
+  type: "directory" | "file";
+  extension?: string;
+  size?: number;
+  modified?: number;
+}
+
+export interface KnowledgeTreeResponse {
+  ok: boolean;
+  path: string;
+  items: KnowledgeTreeItem[];
+}
+
+export interface KnowledgeHeading {
+  level: number;
+  title: string;
+  slug: string;
+  line: number;
+}
+
+export interface KnowledgeFileResponse {
+  ok: boolean;
+  path: string;
+  title: string;
+  content: string;
+  truncated: boolean;
+  size: number;
+  modified: number;
+  links: string[];
+  frontmatter: Record<string, unknown>;
+  headings: KnowledgeHeading[];
+  write_enabled: boolean;
+  backup_path?: string | null;
+}
+
+export interface KnowledgeSearchItem {
+  path: string;
+  title: string;
+  snippet: string;
+  extension: string;
+}
+
+export interface KnowledgeResolveResponse {
+  ok: boolean;
+  link: string;
+  from_path: string;
+  path: string;
+  title: string;
+}
+
+export interface KnowledgeSearchResponse {
+  ok: boolean;
+  query: string;
+  items: KnowledgeSearchItem[];
+}
+
+export interface KnowledgeBacklinkItem {
+  path: string;
+  title: string;
+  links: string[];
+  snippet: string;
+}
+
+export interface KnowledgeBacklinksResponse {
+  ok: boolean;
+  path: string;
+  items: KnowledgeBacklinkItem[];
+}
+
+export interface KnowledgeGraphNode {
+  id: string;
+  path: string;
+  label: string;
+}
+
+export interface KnowledgeGraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface KnowledgeGraphResponse {
+  ok: boolean;
+  path: string;
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+}
 
 export interface ActionResponse {
   name: string;

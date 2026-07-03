@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -563,6 +564,518 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+
+# ---------------------------------------------------------------------------
+# Knowledge vault read-only API
+# ---------------------------------------------------------------------------
+_KNOWLEDGE_SAFE_SUFFIXES = {".md", ".canvas", ".base"}
+_KNOWLEDGE_DENIED_PARTS = {
+    ".git",
+    ".obsidian",
+    ".trash",
+    ".env",
+    "auth.json",
+    "auth.lock",
+    "config.yaml",
+    "config.yaml.bak",
+}
+_KNOWLEDGE_OWNER_ONLY_PREFIXES = ("90-Owner-Private/",)
+_KNOWLEDGE_DEFAULT_MAX_CHARS = 200_000
+_KNOWLEDGE_MAX_WRITE_CHARS = 1_000_000
+_KNOWLEDGE_SEARCH_MAX_RESULTS = 100
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
+_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+class KnowledgeSaveRequest(BaseModel):
+    content: str
+    expected_modified: int | None = None
+
+
+
+def _knowledge_vault_root() -> Path:
+    configured = (
+        os.environ.get("HERMES_OBSIDIAN_VAULT_PATH", "").strip()
+        or os.environ.get("HERMES_OBSIDIAN_VAULT", "").strip()
+    )
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / "ObsidianVault" / "HermesAgent").resolve()
+
+
+def _knowledge_owner_mode() -> bool:
+    return os.environ.get("HERMES_OWNER", "").strip() == "1"
+
+
+def _knowledge_write_enabled() -> bool:
+    return os.environ.get("HERMES_KNOWLEDGE_WRITE", "").strip() == "1"
+
+
+def _knowledge_backup_root(root: Path) -> Path:
+    configured = os.environ.get("HERMES_KNOWLEDGE_BACKUP_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (root / ".hermes-knowledge-backups").resolve()
+
+
+def _knowledge_is_owner_only(rel: Path) -> bool:
+    posix = rel.as_posix().lstrip("./")
+    if posix == "90-Owner-Private" or any(
+        posix.startswith(prefix) for prefix in _KNOWLEDGE_OWNER_ONLY_PREFIXES
+    ):
+        return True
+    return "owner-private" in rel.parts
+
+
+def _knowledge_is_denied(rel: Path) -> bool:
+    for part in rel.parts:
+        if part in {"", "."}:
+            continue
+        if part in _KNOWLEDGE_DENIED_PARTS:
+            return True
+        if part.startswith(".env") or part.startswith("."):
+            return True
+    return _knowledge_is_owner_only(rel) and not _knowledge_owner_mode()
+
+
+def _knowledge_http_error(status_code: int, detail: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _knowledge_resolve(path_value: str | None = None) -> tuple[Path, Path]:
+    root = _knowledge_vault_root()
+    raw = (path_value or "").strip()
+    rel_text = raw.strip("/")
+    rel = Path(".") if rel_text in {"", "."} else Path(rel_text)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise _knowledge_http_error(400, "Path must stay inside the knowledge vault.")
+    if _knowledge_is_denied(rel):
+        raise _knowledge_http_error(400, "Path is not available through the knowledge API.")
+    target = (root / rel).resolve() if rel != Path(".") else root.resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise _knowledge_http_error(400, "Path escapes the knowledge vault.") from exc
+    return root, target
+
+
+def _knowledge_relative(root: Path, target: Path) -> str:
+    return target.relative_to(root).as_posix()
+
+
+def _knowledge_safe_file(root: Path, target: Path) -> bool:
+    if not target.is_file() or target.suffix.lower() not in _KNOWLEDGE_SAFE_SUFFIXES:
+        return False
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return False
+    return not _knowledge_is_denied(rel)
+
+
+def _knowledge_safe_files(root: Path) -> list[Path]:
+    if not root.exists() or not root.is_dir():
+        return []
+    files: list[Path] = []
+    for item in root.rglob("*"):
+        if _knowledge_safe_file(root, item):
+            files.append(item)
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix().lower())
+
+
+def _knowledge_title(path: Path, content: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            title = stripped[2:].strip()
+            if title:
+                return title
+    return path.stem
+
+
+def _knowledge_public_value(value: Any, depth: int = 0) -> Any:
+    if depth > 2:
+        return str(value)[:200]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:500]
+    if isinstance(value, list):
+        return [_knowledge_public_value(item, depth + 1) for item in value[:50]]
+    if isinstance(value, dict):
+        public: dict[str, Any] = {}
+        for key, item in list(value.items())[:50]:
+            public[str(key)[:80]] = _knowledge_public_value(item, depth + 1)
+        return public
+    return str(value)[:200]
+
+
+def _knowledge_frontmatter(content: str) -> dict[str, Any]:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    yaml_lines: list[str] = []
+    for line in lines[1:80]:
+        if line.strip() == "---":
+            try:
+                parsed = yaml.safe_load("\n".join(yaml_lines))
+            except yaml.YAMLError:
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            return {
+                str(key)[:80]: _knowledge_public_value(value)
+                for key, value in list(parsed.items())[:50]
+            }
+        yaml_lines.append(line)
+    return {}
+
+
+def _knowledge_slug(text: str) -> str:
+    slug = re.sub(r"[^\w\u0E00-\u0E7F]+", "-", text.strip().lower(), flags=re.UNICODE)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "heading"
+
+
+def _knowledge_headings(content: str) -> list[dict[str, Any]]:
+    headings: list[dict[str, Any]] = []
+    in_code_block = False
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        match = re.match(r"^(#{1,4})\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        title = match.group(2).strip()
+        if not title:
+            continue
+        headings.append({
+            "level": len(match.group(1)),
+            "title": title,
+            "slug": _knowledge_slug(title),
+            "line": line_number,
+        })
+    return headings
+
+
+def _knowledge_normalize_link(raw: str) -> str:
+    link = urllib.parse.unquote(raw.strip()).split("#", 1)[0].strip()
+    if not link or "://" in link or link.startswith("#"):
+        return ""
+    link = link.lstrip("/")
+    if link.lower().endswith(".md"):
+        link = link[:-3]
+    return link
+
+
+def _knowledge_extract_links(content: str) -> list[str]:
+    links: list[str] = []
+    seen: set[str] = set()
+    for raw in [*_WIKILINK_RE.findall(content), *_MARKDOWN_LINK_RE.findall(content)]:
+        normalized = _knowledge_normalize_link(raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            links.append(normalized)
+    return links
+
+
+def _knowledge_read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _knowledge_file_payload(root: Path, target: Path, max_chars: int = _KNOWLEDGE_DEFAULT_MAX_CHARS) -> dict[str, Any]:
+    content = _knowledge_read_text(target)
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    rel = _knowledge_relative(root, target)
+    stat = target.stat()
+    return {
+        "ok": True,
+        "path": rel,
+        "title": _knowledge_title(target, content),
+        "content": content,
+        "truncated": truncated,
+        "size": stat.st_size,
+        "modified": int(stat.st_mtime),
+        "links": _knowledge_extract_links(content),
+        "frontmatter": _knowledge_frontmatter(content),
+        "headings": _knowledge_headings(content),
+        "write_enabled": _knowledge_write_enabled(),
+    }
+
+
+def _knowledge_backup_file(root: Path, target: Path) -> str | None:
+    if not target.exists():
+        return None
+    rel = target.relative_to(root)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup_root = _knowledge_backup_root(root)
+    backup = backup_root / rel.parent / f"{target.name}.{stamp}.bak"
+    try:
+        backup.relative_to(backup_root)
+    except ValueError as exc:
+        raise _knowledge_http_error(400, "Backup path escapes the knowledge backup root.") from exc
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_bytes(target.read_bytes())
+    return backup.relative_to(backup_root).as_posix()
+
+
+def _knowledge_snippet(content: str, query: str) -> str:
+    lower = content.lower()
+    idx = lower.find(query.lower())
+    if idx < 0:
+        return ""
+    start = max(0, idx - 80)
+    end = min(len(content), idx + len(query) + 120)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(content) else ""
+    return prefix + content[start:end].replace("\n", " ").strip() + suffix
+
+
+def _knowledge_file_index(root: Path) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for item in _knowledge_safe_files(root):
+        rel = _knowledge_relative(root, item)
+        stem_path = Path(rel).with_suffix("").as_posix()
+        for key in (rel, stem_path, item.stem):
+            index.setdefault(key, rel)
+    return index
+
+
+def _knowledge_resolve_link(root: Path, link: str, from_path: str = "") -> str | None:
+    normalized = _knowledge_normalize_link(link)
+    if not normalized:
+        return None
+
+    file_index = _knowledge_file_index(root)
+    candidates: list[str] = []
+    source_parent = Path(from_path).parent if from_path else Path("")
+    if from_path and source_parent != Path("."):
+        parent = source_parent.as_posix().strip("/")
+        candidates.extend([
+            f"{parent}/{normalized}",
+            f"{parent}/{normalized}.md",
+        ])
+    candidates.extend([
+        normalized,
+        f"{normalized}.md",
+        Path(normalized).with_suffix("").as_posix(),
+        Path(normalized).stem,
+    ])
+
+    for candidate in candidates:
+        clean = candidate.strip("/")
+        if not clean:
+            continue
+        resolved = file_index.get(clean)
+        if resolved:
+            return resolved
+    return None
+
+
+def _knowledge_target_candidates(rel: str) -> set[str]:
+    path = Path(rel)
+    stem_path = path.with_suffix("").as_posix()
+    return {rel, stem_path, path.stem}
+
+
+def _knowledge_backlink_rows(root: Path, target_rel: str) -> list[dict[str, Any]]:
+    candidates = _knowledge_target_candidates(target_rel)
+    rows: list[dict[str, Any]] = []
+    for item in _knowledge_safe_files(root):
+        rel = _knowledge_relative(root, item)
+        if rel == target_rel:
+            continue
+        content = _knowledge_read_text(item)
+        links = _knowledge_extract_links(content)
+        if any(link in candidates for link in links):
+            rows.append({
+                "path": rel,
+                "title": _knowledge_title(item, content),
+                "links": links,
+                "snippet": _knowledge_snippet(content, Path(target_rel).stem),
+            })
+    return rows
+
+
+@app.get("/api/knowledge/status")
+async def get_knowledge_status():
+    root = _knowledge_vault_root()
+    safe_files = _knowledge_safe_files(root)
+    by_extension: dict[str, int] = {}
+    for item in safe_files:
+        by_extension[item.suffix.lower()] = by_extension.get(item.suffix.lower(), 0) + 1
+    return {
+        "ok": root.exists() and root.is_dir(),
+        "read_only": not _knowledge_write_enabled(),
+        "write_enabled": _knowledge_write_enabled(),
+        "vault_name": root.name,
+        "vault_path": str(root),
+        "safe_file_count": len(safe_files),
+        "by_extension": by_extension,
+        "owner_mode": _knowledge_owner_mode(),
+    }
+
+
+@app.get("/api/knowledge/tree")
+async def get_knowledge_tree(path: str = ""):
+    root, target = _knowledge_resolve(path)
+    if not target.exists():
+        raise _knowledge_http_error(404, "Knowledge path not found.")
+    if not target.is_dir():
+        raise _knowledge_http_error(400, "Knowledge tree path must be a directory.")
+    items: list[dict[str, Any]] = []
+    for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        try:
+            rel = child.relative_to(root)
+        except ValueError:
+            continue
+        if _knowledge_is_denied(rel):
+            continue
+        if child.is_dir():
+            items.append({"name": child.name, "path": rel.as_posix(), "type": "directory"})
+            continue
+        if child.suffix.lower() not in _KNOWLEDGE_SAFE_SUFFIXES:
+            continue
+        stat = child.stat()
+        items.append({
+            "name": child.name,
+            "path": rel.as_posix(),
+            "type": "file",
+            "extension": child.suffix.lower(),
+            "size": stat.st_size,
+            "modified": int(stat.st_mtime),
+        })
+    current_path = "" if target == root else _knowledge_relative(root, target)
+    return {"ok": True, "path": current_path, "items": items}
+
+
+@app.get("/api/knowledge/file")
+async def get_knowledge_file(path: str, max_chars: int = _KNOWLEDGE_DEFAULT_MAX_CHARS):
+    root, target = _knowledge_resolve(path)
+    if not target.exists() or not target.is_file():
+        raise _knowledge_http_error(404, "Knowledge file not found.")
+    if not _knowledge_safe_file(root, target):
+        raise _knowledge_http_error(400, "File type is not available through the knowledge API.")
+    return _knowledge_file_payload(root, target, max_chars=max_chars)
+
+
+@app.put("/api/knowledge/file")
+async def save_knowledge_file(path: str, body: KnowledgeSaveRequest):
+    if not _knowledge_write_enabled():
+        raise _knowledge_http_error(403, "Knowledge write mode is disabled.")
+    if len(body.content) > _KNOWLEDGE_MAX_WRITE_CHARS:
+        raise _knowledge_http_error(413, "Knowledge file is too large to save through the dashboard.")
+
+    root, target = _knowledge_resolve(path)
+    if not target.exists() or not target.is_file():
+        raise _knowledge_http_error(404, "Knowledge file not found.")
+    if not _knowledge_safe_file(root, target):
+        raise _knowledge_http_error(400, "File type is not available through the knowledge API.")
+
+    current_modified = int(target.stat().st_mtime)
+    if body.expected_modified is not None and body.expected_modified != current_modified:
+        raise _knowledge_http_error(409, "Knowledge file changed on disk. Reload before saving.")
+
+    backup_path = _knowledge_backup_file(root, target)
+    target.write_text(body.content, encoding="utf-8")
+    payload = _knowledge_file_payload(root, target)
+    payload["backup_path"] = backup_path
+    return payload
+
+
+@app.get("/api/knowledge/search")
+async def search_knowledge(q: str = "", limit: int = _KNOWLEDGE_SEARCH_MAX_RESULTS):
+    query = q.strip()
+    if not query:
+        return {"ok": True, "query": query, "items": []}
+    root = _knowledge_vault_root()
+    max_items = max(1, min(limit, _KNOWLEDGE_SEARCH_MAX_RESULTS))
+    rows: list[dict[str, Any]] = []
+    for item in _knowledge_safe_files(root):
+        rel = _knowledge_relative(root, item)
+        content = _knowledge_read_text(item)
+        haystack = f"{rel}\n{content}"
+        if query.lower() not in haystack.lower():
+            continue
+        rows.append({
+            "path": rel,
+            "title": _knowledge_title(item, content),
+            "snippet": _knowledge_snippet(haystack, query),
+            "extension": item.suffix.lower(),
+        })
+        if len(rows) >= max_items:
+            break
+    return {"ok": True, "query": query, "items": rows}
+
+
+@app.get("/api/knowledge/resolve")
+async def resolve_knowledge_link(link: str, from_path: str = ""):
+    root = _knowledge_vault_root()
+    resolved = _knowledge_resolve_link(root, link, from_path)
+    if not resolved:
+        raise _knowledge_http_error(404, "Knowledge link target not found.")
+    root, target = _knowledge_resolve(resolved)
+    if not _knowledge_safe_file(root, target):
+        raise _knowledge_http_error(404, "Knowledge link target not found.")
+    content = _knowledge_read_text(target)
+    return {
+        "ok": True,
+        "link": link,
+        "from_path": from_path,
+        "path": _knowledge_relative(root, target),
+        "title": _knowledge_title(target, content),
+    }
+
+
+@app.get("/api/knowledge/backlinks")
+async def get_knowledge_backlinks(path: str):
+    root, target = _knowledge_resolve(path)
+    if not _knowledge_safe_file(root, target):
+        raise _knowledge_http_error(404, "Knowledge file not found.")
+    target_rel = _knowledge_relative(root, target)
+    return {"ok": True, "path": target_rel, "items": _knowledge_backlink_rows(root, target_rel)}
+
+
+@app.get("/api/knowledge/graph")
+async def get_knowledge_graph(path: str):
+    root, target = _knowledge_resolve(path)
+    if not _knowledge_safe_file(root, target):
+        raise _knowledge_http_error(404, "Knowledge file not found.")
+    target_rel = _knowledge_relative(root, target)
+    file_index = _knowledge_file_index(root)
+    target_content = _knowledge_read_text(target)
+    nodes: dict[str, dict[str, Any]] = {
+        target_rel: {"id": target_rel, "path": target_rel, "label": _knowledge_title(target, target_content)}
+    }
+    edges: set[tuple[str, str]] = set()
+    for link in _knowledge_extract_links(target_content):
+        resolved = file_index.get(link)
+        if not resolved:
+            continue
+        linked_path = root / resolved
+        linked_content = _knowledge_read_text(linked_path)
+        nodes.setdefault(
+            resolved,
+            {"id": resolved, "path": resolved, "label": _knowledge_title(linked_path, linked_content)},
+        )
+        edges.add((target_rel, resolved))
+    for row in _knowledge_backlink_rows(root, target_rel):
+        source = row["path"]
+        nodes.setdefault(source, {"id": source, "path": source, "label": row["title"]})
+        edges.add((source, target_rel))
+    return {
+        "ok": True,
+        "path": target_rel,
+        "nodes": sorted(nodes.values(), key=lambda node: node["id"]),
+        "edges": [{"source": source, "target": target} for source, target in sorted(edges)],
+    }
 
 
 @app.get("/api/status")
@@ -3298,7 +3811,6 @@ async def get_models_analytics(days: int = 30):
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
 
-import re
 import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native

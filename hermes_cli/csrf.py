@@ -108,6 +108,7 @@ def extract_csrf_token(headers: dict[str, str]) -> Optional[str]:
     """
     return (
         headers.get(_CSRF_HEADER_NAME)
+        or headers.get(_CSRF_HEADER_NAME.lower())
         or headers.get("x-hermes-csrf-token")
     )
 

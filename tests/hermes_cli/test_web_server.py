@@ -1869,6 +1869,16 @@ class TestPluginAPIAuth:
         resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
 
+    def test_example_dashboard_bundle_is_served(self):
+        """The bundled example dashboard plugin should not create a 404 in the SPA."""
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        resp = self.client.get("/dashboard-plugins/example/dist/index.js")
+
+        assert resp.status_code == 200
+        assert "window.__HERMES_PLUGINS__" in resp.text
+
     def test_plugin_post_requires_auth(self):
         """Plugin POST routes should return 401 without a valid session token."""
         resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})

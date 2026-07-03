@@ -141,6 +141,79 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   }
 }
 
+@media (max-width: 640px) {
+  :root {
+    --theme-base-size: 16px;
+  }
+
+  button,
+  [role="button"],
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    min-height: 44px;
+    font-size: 1rem;
+  }
+
+  header.lg\:hidden {
+    min-height: calc(3.75rem + env(safe-area-inset-top, 0px));
+    padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+  }
+
+  [data-app-content] {
+    padding-top: calc(3.75rem + env(safe-area-inset-top, 0px));
+  }
+
+  [data-page-header="chat"] {
+    min-height: 4.25rem;
+    padding-block: 0.5rem;
+  }
+
+  [data-page-header="chat"] > div {
+    align-items: center;
+    gap: 0.5rem;
+    padding-inline: 0.75rem;
+  }
+
+  [data-page-header="chat"] h1 {
+    font-size: 0.95rem;
+    line-height: 1.1;
+  }
+
+  [data-page-header="chat"] button {
+    white-space: nowrap;
+  }
+
+  .hermes-chat-page {
+    gap: 0.375rem;
+  }
+
+  .hermes-chat-xterm-host {
+    overflow: hidden;
+    touch-action: pan-y;
+  }
+
+  .hermes-chat-xterm-host .xterm {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .hermes-chat-xterm-host .xterm-viewport,
+  .hermes-chat-xterm-host .xterm-screen {
+    max-width: 100%;
+  }
+
+  .hermes-chat-xterm-host .xterm-screen canvas {
+    max-width: 100%;
+  }
+
+  .hermes-chat-copy-button {
+    min-height: 2rem;
+    padding: 0.25rem 0.375rem;
+    opacity: 0.55;
+  }
+}
+
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }

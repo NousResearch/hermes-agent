@@ -52,6 +52,7 @@ export function PageHeaderProvider({
     <PageHeaderContext.Provider value={value}>
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
         <header
+          data-page-header={isChatRoute ? "chat" : "page"}
           className={cn(
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",

@@ -3210,10 +3210,11 @@ class GatewaySlashCommandsMixin:
                 # "No changes from compression" no-op text.
                 _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
                 if _lock_skipped:
-                    holder = _lock_skipped if isinstance(_lock_skipped, str) else "unknown"
+                    holder = _lock_skipped if isinstance(_lock_skipped, str) else None
+                    holder_clause = f" (holder: {holder})" if holder else ""
                     return (
-                        f"⏳ Compression already in progress for this session "
-                        f"(holder: {holder}). Please wait for it to finish."
+                        f"⏳ Compression already in progress for this session"
+                        f"{holder_clause}. Please wait for it to finish."
                     )
 
                 # Re-append the verbatim tail after the compressed head,

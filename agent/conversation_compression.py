@@ -500,6 +500,12 @@ def compress_context(
     # and proceed with compression.  Skipping the lock risks a rare
     # concurrent-compression session fork; an infinite no-progress loop
     # that never compresses at all is strictly worse.
+    # Clear any stale lock-skip signal from a prior call so this call's
+    # outcome alone determines what callers see.  Without this an
+    # auto-compress lock-skip followed by a successful manual /compress
+    # would falsely report "Compression already in progress" and discard
+    # the compression results.
+    agent._compression_skipped_due_to_lock = None
     try:
         _lock_ttl = float(getattr(agent, "_compression_lock_ttl_seconds", 300.0) or 300.0)
     except (TypeError, ValueError):

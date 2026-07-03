@@ -127,6 +127,7 @@ async def test_compress_works_with_plugin_context_engine():
     agent_instance.context_compressor = plugin_engine
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),

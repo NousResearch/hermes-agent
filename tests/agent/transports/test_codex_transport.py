@@ -243,6 +243,26 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_gpt55_sets_prompt_cache_retention(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openai.gpt-5.5", messages=messages, tools=[],
+            session_id="test-session",
+        )
+        assert kw["prompt_cache_retention"] == "24h"
+
+    def test_gpt55_prompt_cache_retention_skipped_for_known_incompatible_backends(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        assert "prompt_cache_retention" not in transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[], is_xai_responses=True
+        )
+        assert "prompt_cache_retention" not in transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[], is_github_responses=True
+        )
+        assert "prompt_cache_retention" not in transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[], is_codex_backend=True
+        )
+
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
         body-level cache-routing key (the ``x-grok-conv-id`` header is

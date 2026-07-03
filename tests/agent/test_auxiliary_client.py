@@ -4413,6 +4413,29 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_key" not in captured
 
+    def test_gpt55_sets_prompt_cache_retention(self):
+        adapter, captured = self._build_adapter(base_url="https://bedrock-mantle.us-east-1.api.aws/openai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
+    def test_prompt_cache_retention_skipped_for_xai_and_github_hosts(self):
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:
     """_CodexCompletionsAdapter must drop codex_message_items ``id`` when

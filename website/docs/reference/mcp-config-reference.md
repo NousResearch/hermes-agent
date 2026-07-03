@@ -57,6 +57,7 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `lazy` | bool | stdio | Defer subprocess spawn until the first tool call (see [Lazy startup](#lazy-startup)) |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
@@ -232,6 +233,46 @@ Notes:
 - Paths support `~` expansion. Missing files fail fast at connect time with a server-scoped error message.
 - `ssl_verify: false` disables server certificate verification entirely. Don't use this with real services.
 - Works on both Streamable HTTP and SSE transports.
+
+## Lazy startup
+
+Set `lazy: true` on a stdio MCP server to register its tool schemas at agent
+build time **without** spawning the subprocess until the first tool call.
+Hermes persists successful tool manifests to
+`~/.hermes/mcp_schema_cache.json` (profile-aware) keyed by server name and
+connection config.
+
+```yaml
+mcp_servers:
+  playwright:
+    command: "npx"
+    args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated"]
+    lazy: true
+    tools:
+      resources: false
+      prompts: false
+```
+
+Behavior:
+- **First launch (no cache):** Hermes connects once to populate the cache, then
+  subsequent launches can register from cache without spawning at idle.
+- **Desktop default:** when `dashboard.memory.lazy_mcp` is true (default on
+  `HERMES_DESKTOP=1`), stdio servers default to lazy when a valid cache entry
+  exists. Override per server with `lazy: false`.
+- **Prompt caching:** lazy registration keeps MCP tools in the frozen agent
+  tool snapshot — no mid-conversation `/reload-mcp` is required for visibility.
+- **HTTP servers:** `lazy` is ignored; remote servers are not subprocess spawns.
+
+For Playwright, prefer `--headless --isolated` in `args` to reduce browser
+process footprint when the server does start.
+
+Disable lazy MCP on desktop globally:
+
+```yaml
+dashboard:
+  memory:
+    lazy_mcp: false
+```
 
 ## Reloading config
 

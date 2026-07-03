@@ -1940,6 +1940,21 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Desktop backend memory optimization (idle RSS).  Applies when the
+        # dashboard is spawned by the Electron app (``HERMES_DESKTOP=1``).
+        # CLI/gateway users are unaffected unless they opt in here.
+        "memory": {
+            # ``auto`` — preload mimalloc on macOS/Linux desktop backends;
+            # ``mimalloc`` — always preload; ``system`` — OS allocator only.
+            "allocator": "auto",
+            # Defer stdio MCP child processes (e.g. Playwright) until first
+            # tool call when a schema cache exists (or connect once to build it).
+            "lazy_mcp": True,
+            # Return freed Python heap to the OS after startup / idle ticks.
+            "trim": True,
+            "trim_idle_seconds": 60,
+            "trim_cooldown_seconds": 120,
+        },
     },
 
     # Privacy settings

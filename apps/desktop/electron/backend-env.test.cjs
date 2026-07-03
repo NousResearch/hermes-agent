@@ -1,14 +1,18 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 
 const {
   POSIX_SANE_PATH_ENTRIES,
   appendUniquePathEntries,
+  buildBackendAllocatorEnv,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   normalizeHermesHomeRoot,
-  pathEnvKey
+  pathEnvKey,
+  readDashboardAllocatorPreloadEnabled
 } = require('./backend-env.cjs')
 
 test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entries', () => {
@@ -102,4 +106,25 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {
   assert.equal(appendUniquePathEntries([':/a::/b', ['/a', '/c']], { delimiter: ':' }), '/a:/b:/c')
+})
+
+test('readDashboardAllocatorPreloadEnabled respects allocator: system in config', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-alloc-'))
+  fs.writeFileSync(
+    path.join(tmp, 'config.yaml'),
+    'dashboard:\n  memory:\n    allocator: system\n'
+  )
+  assert.equal(readDashboardAllocatorPreloadEnabled(tmp), false)
+})
+
+test('buildBackendAllocatorEnv is empty when allocator disabled', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-alloc-'))
+  fs.writeFileSync(
+    path.join(tmp, 'config.yaml'),
+    'dashboard:\n  memory:\n    allocator: system\n'
+  )
+  assert.deepEqual(
+    buildBackendAllocatorEnv({ hermesHome: tmp, platform: 'linux', arch: 'x64' }),
+    {}
+  )
 })

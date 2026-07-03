@@ -60,9 +60,16 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
-    monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
+    opened = {}
+
+    def _open_profile(profile, *, read_only=False):
+        opened["read_only"] = read_only
+        return _FakeSessionDB()
+
+    monkeypatch.setattr(web_server, "_open_session_db_for_profile", _open_profile)
 
     response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
+    assert opened.get("read_only") is True
 
     # ID match surfaces first; the content hit on the SAME session is deduped
     # by lineage root (not double-listed); the unrelated content hit follows.

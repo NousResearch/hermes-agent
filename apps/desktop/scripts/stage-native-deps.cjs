@@ -277,7 +277,48 @@ function main() {
   for (const spec of NATIVE_DEPS) {
     stageOne(spec)
   }
+  stageMimalloc()
   stageJsClosure(JS_DEP_ROOTS)
+}
+
+function stageMimalloc() {
+  const platformKey =
+    TARGET_PLATFORM === 'darwin' ? 'darwin' : TARGET_PLATFORM === 'win32' ? 'win32' : 'linux'
+  const subdir = `${platformKey}-${TARGET_ARCH}`
+  const destDir = path.join(STAGE_ROOT, 'mimalloc', subdir)
+  const libName =
+    TARGET_PLATFORM === 'darwin'
+      ? 'libmimalloc.dylib'
+      : TARGET_PLATFORM === 'win32'
+        ? 'mimalloc-redirect.dll'
+        : 'libmimalloc.so'
+
+  const candidates = []
+  if (TARGET_PLATFORM === 'linux') {
+    candidates.push(
+      `/usr/lib/${TARGET_ARCH}-linux-gnu/${libName}`,
+      `/usr/lib/${TARGET_ARCH}-linux-gnu/libmimalloc.so.2`,
+      `/usr/lib/${libName}`,
+      `/usr/local/lib/${libName}`
+    )
+  } else if (TARGET_PLATFORM === 'darwin') {
+    candidates.push(
+      '/opt/homebrew/lib/libmimalloc.dylib',
+      '/usr/local/lib/libmimalloc.dylib'
+    )
+  }
+
+  for (const src of candidates) {
+    if (!src || !fs.existsSync(src)) continue
+    ensureDir(destDir)
+    fs.copyFileSync(src, path.join(destDir, libName))
+    console.log(`[stage-native-deps] mimalloc: staged ${src} -> ${destDir}`)
+    return
+  }
+  console.warn(
+    '[stage-native-deps] mimalloc library not found on build host — ' +
+      'dashboard allocator preload will be skipped until libmimalloc is staged'
+  )
 }
 
 main()

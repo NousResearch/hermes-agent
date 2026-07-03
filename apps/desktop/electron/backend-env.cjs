@@ -1,4 +1,7 @@
 const path = require('node:path')
+const fs = require('node:fs')
+
+const { buildAllocatorEnv } = require('./allocator-env.cjs')
 
 // Match the POSIX fallback surface used by the Python terminal environment.
 // macOS apps launched from Finder/Dock often inherit only /usr/bin:/bin:/usr/sbin:/sbin,
@@ -74,6 +77,35 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   return resolved
 }
 
+function readDashboardAllocatorPreloadEnabled(hermesHome) {
+  if (!hermesHome) return process.platform === 'darwin' || process.platform === 'linux'
+  try {
+    const cfgPath = path.join(hermesHome, 'config.yaml')
+    const text = fs.readFileSync(cfgPath, 'utf8')
+    if (/^\s*allocator:\s*system\s*$/m.test(text)) return false
+    if (/^\s*allocator:\s*mimalloc\s*$/m.test(text)) return true
+  } catch {
+    // fall through to auto default
+  }
+  return process.platform === 'darwin' || process.platform === 'linux'
+}
+
+function buildBackendAllocatorEnv({
+  hermesHome,
+  resourcesPath,
+  appRoot,
+  platform = process.platform,
+  arch = process.arch
+} = {}) {
+  return buildAllocatorEnv({
+    resourcesPath,
+    appRoot,
+    platform,
+    arch,
+    enabled: readDashboardAllocatorPreloadEnabled(hermesHome)
+  })
+}
+
 function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
@@ -101,9 +133,12 @@ function buildDesktopBackendEnv({
 module.exports = {
   POSIX_SANE_PATH_ENTRIES,
   appendUniquePathEntries,
+  buildAllocatorEnv,
+  buildBackendAllocatorEnv,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
   normalizeHermesHomeRoot,
-  pathEnvKey
+  pathEnvKey,
+  readDashboardAllocatorPreloadEnabled
 }

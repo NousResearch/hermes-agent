@@ -224,6 +224,13 @@ VALID_HOOKS: Set[str] = {
     # Kwargs: name, category, path (abs str), success (bool)
     "pre_skill_create",
     "post_skill_create",
+    # Skill lifecycle — edit. Fired by skill_manage(action='edit') before
+    # searching for the existing skill.  Plugins may return:
+    #   {"action": "handled"}  → plugin handled the edit; skip Hermes edit
+    #   {"action": "block", "reason": "..."}  → abort
+    #   None / {}              → default: _find_skill + in-place rewrite
+    # Kwargs: name, content (new full SKILL.md), old_content (str or None)
+    "pre_skill_edit",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

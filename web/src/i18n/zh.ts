@@ -437,6 +437,7 @@ export const zh: Translations = {
     invalidKeyName: "只能使用字母、数字和下划线（必须以字母或下划线开头）。",
   },
 
+
   oauth: {
     title: "提供商登录（OAuth）",
     providerLogins: "提供商登录（OAuth）",

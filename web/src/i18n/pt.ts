@@ -444,6 +444,7 @@ export const pt: Translations = {
     invalidKeyName: "Use apenas letras, números e sublinhados (deve começar com uma letra ou sublinhado).",
   },
 
+
   oauth: {
     title: "Inícios de sessão de fornecedor (OAuth)",
     providerLogins: "Inícios de sessão de fornecedor (OAuth)",

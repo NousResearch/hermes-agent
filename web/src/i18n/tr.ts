@@ -443,6 +443,7 @@ export const tr: Translations = {
     invalidKeyName: "Yalnızca harf, rakam ve alt çizgi kullanın (bir harf veya alt çizgi ile başlamalıdır).",
   },
 
+
   oauth: {
     title: "Sağlayıcı Girişleri (OAuth)",
     providerLogins: "Sağlayıcı Girişleri (OAuth)",

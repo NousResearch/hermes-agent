@@ -442,6 +442,7 @@ export const zhHant: Translations = {
     invalidKeyName: "僅能使用字母、數字和底線（必須以字母或底線開頭）。",
   },
 
+
   oauth: {
     title: "提供者登入（OAuth）",
     providerLogins: "提供者登入（OAuth）",

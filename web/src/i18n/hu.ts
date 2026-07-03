@@ -443,6 +443,7 @@ export const hu: Translations = {
     invalidKeyName: "Csak betűket, számokat és aláhúzásokat használj (betűvel vagy aláhúzással kell kezdődnie).",
   },
 
+
   oauth: {
     title: "Szolgáltatói bejelentkezések (OAuth)",
     providerLogins: "Szolgáltatói bejelentkezések (OAuth)",

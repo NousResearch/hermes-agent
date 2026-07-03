@@ -451,6 +451,7 @@ export const ga: Translations = {
     invalidKeyName: "Úsáid litreacha, uimhreacha agus fostríoca amháin (caithfidh sé tosú le litir nó fostríoc).",
   },
 
+
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",

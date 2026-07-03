@@ -442,6 +442,7 @@ export const ko: Translations = {
     invalidKeyName: "문자, 숫자, 밑줄만 사용하세요(문자 또는 밑줄로 시작해야 합니다).",
   },
 
+
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",

@@ -444,6 +444,7 @@ export const fr: Translations = {
     invalidKeyName: "Utilisez uniquement des lettres, des chiffres et des traits de soulignement (doit commencer par une lettre ou un trait de soulignement).",
   },
 
+
   oauth: {
     title: "Connexions fournisseurs (OAuth)",
     providerLogins: "Connexions fournisseurs (OAuth)",

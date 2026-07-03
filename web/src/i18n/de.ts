@@ -443,6 +443,7 @@ export const de: Translations = {
     invalidKeyName: "Nur Buchstaben, Zahlen und Unterstriche verwenden (muss mit einem Buchstaben oder Unterstrich beginnen).",
   },
 
+
   oauth: {
     title: "Anbieter-Logins (OAuth)",
     providerLogins: "Anbieter-Logins (OAuth)",

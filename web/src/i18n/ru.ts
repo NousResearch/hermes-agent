@@ -443,6 +443,7 @@ export const ru: Translations = {
     invalidKeyName: "Используйте только буквы, цифры и подчёркивания (должно начинаться с буквы или подчёркивания).",
   },
 
+
   oauth: {
     title: "Входы провайдеров (OAuth)",
     providerLogins: "Входы провайдеров (OAuth)",

@@ -444,6 +444,7 @@ export const uk: Translations = {
     invalidKeyName: "Використовуйте лише літери, цифри та підкреслення (має починатися з літери або підкреслення).",
   },
 
+
   oauth: {
     title: "Входи постачальників (OAuth)",
     providerLogins: "Входи постачальників (OAuth)",

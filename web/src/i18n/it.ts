@@ -443,6 +443,7 @@ export const it: Translations = {
     invalidKeyName: "Usa solo lettere, numeri e trattini bassi (deve iniziare con una lettera o un trattino basso).",
   },
 
+
   oauth: {
     title: "Accessi provider (OAuth)",
     providerLogins: "Accessi provider (OAuth)",

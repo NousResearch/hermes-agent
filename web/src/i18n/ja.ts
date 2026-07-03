@@ -442,6 +442,7 @@ export const ja: Translations = {
     invalidKeyName: "英字・数字・アンダースコアのみ使用できます（英字またはアンダースコアで始める必要があります）。",
   },
 
+
   oauth: {
     title: "プロバイダーログイン (OAuth)",
     providerLogins: "プロバイダーログイン (OAuth)",

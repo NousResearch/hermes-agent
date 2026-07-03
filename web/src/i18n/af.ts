@@ -443,6 +443,7 @@ export const af: Translations = {
     invalidKeyName: "Gebruik slegs letters, syfers en onderstrepe (moet met 'n letter of onderstreep begin).",
   },
 
+
   oauth: {
     title: "Verskaffer-aanmeldings (OAuth)",
     providerLogins: "Verskaffer-aanmeldings (OAuth)",

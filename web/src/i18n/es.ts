@@ -444,6 +444,7 @@ export const es: Translations = {
     invalidKeyName: "Usa solo letras, números y guiones bajos (debe empezar por una letra o un guion bajo).",
   },
 
+
   oauth: {
     title: "Inicios de sesión de proveedores (OAuth)",
     providerLogins: "Inicios de sesión de proveedores (OAuth)",

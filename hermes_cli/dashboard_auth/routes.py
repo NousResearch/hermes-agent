@@ -195,6 +195,16 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except NotImplementedError:
+        # Password-only providers (e.g. BasicAuthProvider) do not support
+        # OAuth redirect flows.  Redirect to the server-rendered login
+        # page instead of crashing with a 500.
+        from urllib.parse import quote
+
+        next_path = request.query_params.get("next", "")
+        safe = _validate_post_login_target(next_path)
+        target = f"/login?next={quote(safe, safe='')}" if safe else "/login"
+        return RedirectResponse(url=target, status_code=302)
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

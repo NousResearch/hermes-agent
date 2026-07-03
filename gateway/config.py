@@ -1172,6 +1172,17 @@ def load_gateway_config() -> GatewayConfig:
     # Override with environment variables
     _apply_env_overrides(config)
     
+    # Force-disable port-binding platforms on secondary profiles under multiplex mode.
+    # Secondary profiles must never bind their own ports.
+    import hermes_constants as _hermes_constants_local
+    primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
+    active_home = _hermes_constants_local.get_hermes_home().resolve()
+    is_secondary_override = active_home != primary_home
+    if is_secondary_override and getattr(config, "multiplex_profiles", False):
+        for plat_type in (Platform.API_SERVER, Platform.WEBHOOK):
+            if plat_type in config.platforms:
+                config.platforms[plat_type].enabled = False
+
     # --- Validate loaded values ---
     _validate_gateway_config(config)
 
@@ -1249,6 +1260,16 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+    import hermes_constants as _hermes_constants_local
+
+    # Determine default/primary home dynamically
+    primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
+    active_home = _hermes_constants_local.get_hermes_home().resolve()
+    
+    # A profile is secondary if its active home is different from the primary home
+    is_secondary = active_home != primary_home
+    if is_secondary:
+        return
 
     def _enable_from_env(platform: Platform) -> PlatformConfig:
         if platform not in config.platforms:
@@ -1558,7 +1579,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
-    if api_server_enabled or api_server_key:
+    if (api_server_enabled or api_server_key) and not is_secondary:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
         config.platforms[Platform.API_SERVER].enabled = True
@@ -1583,7 +1604,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
     webhook_port = os.getenv("WEBHOOK_PORT")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
-    if webhook_enabled:
+    if webhook_enabled and not is_secondary:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
         config.platforms[Platform.WEBHOOK].enabled = True

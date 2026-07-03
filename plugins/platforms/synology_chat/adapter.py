@@ -184,7 +184,9 @@ class SynologyChatAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is forwarded by the 0.18 gateway reconnection watcher;
+        # a fresh connect and a reconnect follow the same path here.
         if not self._token or not self._incoming_url:
             logger.error(
                 "Synology Chat: SYNOLOGY_CHAT_TOKEN and SYNOLOGY_CHAT_INCOMING_URL are required"

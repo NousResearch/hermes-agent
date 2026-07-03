@@ -20,24 +20,9 @@ disk. The fix should re-check that the path doesn't exist after the
 executor returns 0.
 """
 
-import os
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
 from tools.file_operations import ShellFileOperations, WriteResult
-
-
-def _make_env(*, exit_code: int = 0, stdout: str = "", stderr: str = ""):
-    """Build a minimal env stub that returns the given exit/output for _exec."""
-    env = MagicMock()
-    env.execute.return_value = {
-        "output": stdout,
-        "error": stderr,
-        "returncode": exit_code,
-    }
-    return env
 
 
 def _make_verifying_env(*, delete_success: bool, verify_state: str):

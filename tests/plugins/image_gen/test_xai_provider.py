@@ -492,3 +492,22 @@ def test_xai_image_field_expands_user_home(tmp_path, monkeypatch):
     field = _xai_image_field("~/pic.png")
     assert field["type"] == "image_url"
     assert field["url"].startswith("data:image/png;base64,")
+
+
+def test_xai_image_field_blocks_credential_store_symlink(tmp_path, monkeypatch):
+    from plugins.image_gen.xai import _xai_image_field
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+    image_link = hermes_home / "leak.png"
+    try:
+        image_link.symlink_to(auth_json)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable on this platform: {exc}")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(ValueError, match="credential store"):
+        _xai_image_field(str(image_link))

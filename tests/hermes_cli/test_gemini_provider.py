@@ -339,7 +339,7 @@ class TestGeminiModelsDev:
                 "models": {
                     "gemini-2.5-pro": {},
                     "gemma-4-31b-it": {},
-                    "gemma-3-27b-it": {},
+                    "gemma-4-26b-a4b-it": {},
                     "gemini-1.5-pro": {},
                     "gemini-2.0-flash": {},
                 }
@@ -352,6 +352,6 @@ class TestGeminiModelsDev:
 
         assert "gemini-2.5-pro" in result
         assert "gemma-4-31b-it" in result
-        assert "gemma-3-27b-it" in result
+        assert "gemma-4-26b-a4b-it" in result
         assert "gemini-1.5-pro" not in result
         assert "gemini-2.0-flash" not in result

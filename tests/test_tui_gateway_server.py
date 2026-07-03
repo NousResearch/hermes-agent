@@ -4061,7 +4061,9 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
             }
         )
 
-        stored = workspace / ".hermes" / "desktop-attachments" / "report.txt"
+        from hermes_constants import get_desktop_attachments_dir
+
+        stored = get_desktop_attachments_dir() / "report.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["path"] == str(stored)
@@ -4094,7 +4096,9 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
             }
         )
 
-        stored = workspace / ".hermes" / "desktop-attachments" / "outside.txt"
+        from hermes_constants import get_desktop_attachments_dir
+
+        stored = get_desktop_attachments_dir() / "outside.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/outside.txt"
@@ -4130,7 +4134,9 @@ def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_pat
         assert resp["result"]["uploaded"] is False
         assert resp["result"]["ref_text"] == "@file:data/exam.csv"
         # No copy: nothing staged under desktop-attachments.
-        assert not (workspace / ".hermes" / "desktop-attachments").exists()
+        from hermes_constants import get_desktop_attachments_dir
+
+        assert not get_desktop_attachments_dir().exists()
     finally:
         server._sessions.pop("sid", None)
 
@@ -4189,6 +4195,47 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
 
         assert resp["result"]["attached"] is True
         assert resp["result"]["ref_text"] == "@file:`.hermes/desktop-attachments/my exam schedule.csv`"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_stages_under_hermes_home_when_cwd_is_read_only_install(monkeypatch, tmp_path):
+    """Docker: cwd may be the read-only install tree (/opt/hermes), not HERMES_HOME."""
+    data_home = tmp_path / "data"
+    data_home.mkdir()
+    install_cwd = tmp_path / "opt" / "hermes"
+    install_cwd.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(data_home))
+    monkeypatch.chdir(install_cwd)
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(install_cwd))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        stored = data_home / "desktop-attachments" / "report.txt"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["path"] == str(stored)
+        assert stored.read_text(encoding="utf-8") == "hello world"
+        assert not (install_cwd / ".hermes").exists()
     finally:
         server._sessions.pop("sid", None)
 

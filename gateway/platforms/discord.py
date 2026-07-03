@@ -3265,6 +3265,33 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return context
 
+    async def _pulse_natural_task_typing(
+        self,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> None:
+        metadata = {"thread_id": thread_id} if thread_id else None
+        try:
+            await self.send_typing(chat_id, metadata=metadata)
+        except Exception:
+            return
+
+        try:
+            duration = float(os.getenv("DISCORD_NATURAL_TASK_TYPING_SECONDS", "3"))
+        except (TypeError, ValueError):
+            duration = 3.0
+
+        async def _stop_later() -> None:
+            try:
+                if duration > 0:
+                    await asyncio.sleep(duration)
+                await self.stop_typing(chat_id)
+            except Exception:
+                pass
+
+        asyncio.create_task(_stop_later())
+
     def _build_task_payload(
         self,
         *,
@@ -3527,6 +3554,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 payload = self._build_natural_task_payload(message, prompt)
             except ValueError:
                 return NaturalTaskIntakeResult()
+            await self._pulse_natural_task_typing(
+                chat_id=chat_id,
+                thread_id=thread_id,
+            )
             try:
                 task_data = await asyncio.to_thread(
                     self._append_to_recent_ai_company_task,
@@ -3562,6 +3593,11 @@ class DiscordAdapter(BasePlatformAdapter):
             payload = self._build_natural_task_payload(message, prompt)
         except ValueError:
             return NaturalTaskIntakeResult()
+
+        await self._pulse_natural_task_typing(
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
 
         def _create_task() -> Dict[str, str]:
             message_id = str(getattr(message, "id", "") or "")

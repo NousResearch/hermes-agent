@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+import re
 import time
 from unittest.mock import patch
 
@@ -1521,6 +1522,59 @@ class TestTruncateMessage:
             assert len(chunk) <= max_len + 20, (
                 f"Chunk {i} too long: {len(chunk)} > {max_len}"
             )
+
+    def test_indicator_not_glued_to_closing_fence(self):
+        """Regression: '``` (1/2)' puts the indicator on the fence line —
+        it renders as fence trailing text and gets glued into the code
+        when readers reassemble the chunks."""
+        adapter = self._adapter()
+        # A single giant code block forces a split inside the block
+        # (opener at position 0 defeats the fence-boundary preference),
+        # so the first chunk ends with an auto-closed fence.
+        msg = "```python\n" + "x = 1\n" * 120 + "```\n"
+        chunks = adapter.truncate_message(msg, max_length=300)
+        assert len(chunks) > 1
+        for i, chunk in enumerate(chunks):
+            for line in chunk.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    assert "(" not in stripped[3:], (
+                        f"Chunk {i}: indicator glued to fence line {line!r}"
+                    )
+        # Indicators are still present, on their own line after the fence
+        last_line = chunks[0].rstrip().rsplit("\n", 1)[-1]
+        assert last_line == f"(1/{len(chunks)})"
+
+    def test_split_prefers_fence_boundary(self):
+        """A code block whose opener sits late in the chunk moves whole to
+        the next chunk instead of being split mid-block."""
+        adapter = self._adapter()
+        prose = "word " * 40
+        code = "```python\n" + "y = 2\n" * 10 + "```"
+        msg = prose + "\n" + code + "\nAfter"
+        chunks = adapter.truncate_message(msg, max_length=260)
+        assert len(chunks) > 1
+        # The block must arrive intact: no chunk needs an auto-close, and
+        # the chunk with the opener also carries every code line.
+        code_chunks = [c for c in chunks if "```python" in c]
+        assert len(code_chunks) == 1
+        assert code_chunks[0].count("y = 2") == 10
+        for i, chunk in enumerate(chunks):
+            assert chunk.count("```") % 2 == 0, (
+                f"Chunk {i} has unbalanced fences"
+            )
+
+    def test_fence_boundary_preference_preserves_content(self):
+        adapter = self._adapter()
+        prose = "word " * 40
+        code = "```python\n" + "y = 2\n" * 10 + "```"
+        msg = prose + "\n" + code + "\nAfter"
+        chunks = adapter.truncate_message(msg, max_length=260)
+        stripped = [re.sub(r"(?:\s|\n)\(\d+/\d+\)$", "", c) for c in chunks]
+        reassembled = "\n".join(stripped)
+        assert "```python" in reassembled
+        assert "After" in reassembled
+        assert reassembled.count("y = 2") == 10
 
 
 # ---------------------------------------------------------------------------

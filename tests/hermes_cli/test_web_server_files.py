@@ -548,3 +548,15 @@ def test_sensitive_env_suffix_variants_blocked(forced_files_client):
         p.write_text(f"SECRET_{suffix}=abc123")
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403
+
+
+def test_sensitive_env_case_insensitive_blocked(forced_files_client):
+    """Regression: .ENV / .Env.local casings must be blocked too (case-insensitive FS mounts)."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    for name in (".ENV", ".Env.local", ".eNv.PROD"):
+        p = root / name
+        p.write_text("SECRET=abc123")
+        assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403
+        assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403

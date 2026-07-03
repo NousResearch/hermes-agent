@@ -1192,8 +1192,13 @@ _FS_READDIR_HIDDEN = {
 # and exposing them through the dashboard file browser is a security leak —
 # see issue #57505.
 def _is_sensitive_filename(name: str) -> bool:
-    """Return True for ``.env`` and any ``.env.<suffix>`` variant."""
-    return name == ".env" or name.startswith(".env.")
+    """Return True for ``.env`` and any ``.env.<suffix>`` variant.
+
+    Case-insensitive so ``.ENV`` / ``.Env.local`` on case-insensitive
+    filesystems (macOS/Windows mounts) can't slip past the guard.
+    """
+    lowered = name.lower()
+    return lowered == ".env" or lowered.startswith(".env.")
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024

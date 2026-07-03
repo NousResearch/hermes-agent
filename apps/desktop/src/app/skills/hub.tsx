@@ -97,9 +97,7 @@ function HubSkillRow({
 
   const doUninstall = () => {
     notify({ kind: 'success', title: h.uninstallStarted(skill.name), message: h.actionLog })
-    void uninstallHubSkill(skill.identifier, installedName || skill.name).catch(err =>
-      notifyError(err, h.actionFailed)
-    )
+    void uninstallHubSkill(skill.identifier, installedName || skill.name).catch(err => notifyError(err, h.actionFailed))
   }
 
   return (

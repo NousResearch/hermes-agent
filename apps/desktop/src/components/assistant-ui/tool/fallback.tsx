@@ -22,6 +22,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -324,7 +325,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       .filter(Boolean)
 
     const [summary = '', ...rest] = chunks
-    const subtitleNorm = view.subtitle.trim().toLowerCase()
+    const subtitleNorm = normalize(view.subtitle)
     const summaryDuplicatesSubtitle = summary && summary.toLowerCase() === subtitleNorm
 
     if (summaryDuplicatesSubtitle) {

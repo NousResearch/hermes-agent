@@ -38,11 +38,7 @@ export const $hubActiveLog = atom<null | string>(null)
 // One self-contained task: spawn → tail its own action log into the store →
 // mark resolved. Concurrency-safe: state is per-key, so parallel installs never
 // stomp each other, and the sources query is invalidated once at the end.
-async function runHubAction(
-  key: string,
-  kind: HubActionKind,
-  spawn: () => Promise<{ name: string }>
-): Promise<void> {
+async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promise<{ name: string }>): Promise<void> {
   $hubActions.setKey(key, { kind, running: true, lines: [] })
   $hubActiveLog.set(key)
 

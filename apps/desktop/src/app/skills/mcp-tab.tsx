@@ -169,7 +169,12 @@ const STATUS_DOT: Record<ServerStatus, string> = {
 // registered), not the raw discovered count.
 // TODO(i18n): literals until the UX settles.
 function capabilitySummary(probe: McpTestResult, server?: Record<string, unknown>): string {
-  const toolCount = server ? countEnabledTools(server, probe.tools.map(tool => tool.name)) : probe.tools.length
+  const toolCount = server
+    ? countEnabledTools(
+        server,
+        probe.tools.map(tool => tool.name)
+      )
+    : probe.tools.length
 
   const parts = [
     `${toolCount} tools`,
@@ -1241,7 +1246,9 @@ function McpCatalog({
               />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="truncate text-[0.78rem] font-medium text-foreground/85">{prettyName(entry.name)}</span>
+                  <span className="truncate text-[0.78rem] font-medium text-foreground/85">
+                    {prettyName(entry.name)}
+                  </span>
                   <CatalogTag>{entry.transport}</CatalogTag>
                   {entry.auth_type === 'oauth' && <CatalogTag>OAuth</CatalogTag>}
                   {entry.auth_type === 'api_key' && <CatalogTag>API key</CatalogTag>}
@@ -1284,7 +1291,11 @@ function McpCatalog({
                 size="xs"
                 variant="text"
               >
-                {installing === entry.name ? m.catalogInstalling : entry.installed ? m.catalogInstalled : m.catalogInstall}
+                {installing === entry.name
+                  ? m.catalogInstalling
+                  : entry.installed
+                    ? m.catalogInstalled
+                    : m.catalogInstall}
               </Button>
             </div>
           </div>

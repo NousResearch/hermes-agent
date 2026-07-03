@@ -544,47 +544,47 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         visibleSkills.length === 0 ? (
           capabilityEmpty('skills')
         ) : (
-        <MasterDetail pane={skillEditorPane} split="wide">
-          <ListColumn
-            header={
-              <ListStrip
-                left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
-                right={
-                  <ListStripMenu
-                    items={[{ disabled: bulkBusy, label: 'Disable unused', onSelect: () => void disableUnused() }]}
-                    label={t.skills.tabSkills}
-                    toggle={bulkSwitch(allSkillsEnabled)}
-                  />
-                }
-              />
-            }
-          >
-            {visibleSkills.map(skill => (
-              <CapRow
-                active={activeSkill?.name === skill.name}
-                busy={bulkBusy}
-                enabled={skill.enabled}
-                key={skill.name}
-                meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                onSelect={() => setSelectedSkill(skill.name)}
-                onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
-                title={skill.name}
-                toggleLabel={skill.name}
-              />
-            ))}
-          </ListColumn>
-          {/* TODO(i18n): literal until the UX settles. */}
-          <DetailColumn footer="Changes apply to new sessions.">
-            {activeSkill && (
-              <SkillDetail
-                onArchive={() => setArchiveTarget(activeSkill.name)}
-                onEdit={() => void openSkillEditor(activeSkill.name)}
-                skill={activeSkill}
-              />
-            )}
-          </DetailColumn>
-        </MasterDetail>
+          <MasterDetail pane={skillEditorPane} split="wide">
+            <ListColumn
+              header={
+                <ListStrip
+                  left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                  right={
+                    <ListStripMenu
+                      items={[{ disabled: bulkBusy, label: 'Disable unused', onSelect: () => void disableUnused() }]}
+                      label={t.skills.tabSkills}
+                      toggle={bulkSwitch(allSkillsEnabled)}
+                    />
+                  }
+                />
+              }
+            >
+              {visibleSkills.map(skill => (
+                <CapRow
+                  active={activeSkill?.name === skill.name}
+                  busy={bulkBusy}
+                  enabled={skill.enabled}
+                  key={skill.name}
+                  meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
+                  onSelect={() => setSelectedSkill(skill.name)}
+                  onToggle={enabled => void handleToggleSkill(skill, enabled)}
+                  subtitle={skillSubtitle(skill)}
+                  title={skill.name}
+                  toggleLabel={skill.name}
+                />
+              ))}
+            </ListColumn>
+            {/* TODO(i18n): literal until the UX settles. */}
+            <DetailColumn footer="Changes apply to new sessions.">
+              {activeSkill && (
+                <SkillDetail
+                  onArchive={() => setArchiveTarget(activeSkill.name)}
+                  onEdit={() => void openSkillEditor(activeSkill.name)}
+                  skill={activeSkill}
+                />
+              )}
+            </DetailColumn>
+          </MasterDetail>
         )
       ) : visibleToolsets.length === 0 ? (
         capabilityEmpty('tools')

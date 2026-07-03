@@ -1,11 +1,7 @@
 import type { ReactNode } from 'react'
 
-import { Codicon } from '@/components/ui/codicon'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { SearchField } from '@/components/ui/search-field'
-import { CountSkeleton } from '@/components/ui/skeleton'
-import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { compactNumber } from '@/lib/format'
+import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { cn } from '@/lib/utils'
 
 // Tabs are data, not nodes: the shell owns their presentation so every page
@@ -17,10 +13,6 @@ export interface PageShellTab {
   /** Count badge. `null` = still loading (renders a skeleton); `undefined` = no badge. */
   meta?: string | number | null
 }
-
-// null = loading (pulsing chip instead of a fake 0); numbers render compact.
-const metaContent = (meta: string | number | null) =>
-  meta === null ? <CountSkeleton /> : typeof meta === 'number' ? compactNumber(meta) : meta
 
 interface PageSearchShellProps extends React.ComponentProps<'section'> {
   children: ReactNode
@@ -47,45 +39,13 @@ function ShellTabs({
   activeTab?: string
   onTabChange?: (id: string) => void
 }) {
-  const active = tabs.find(tab => tab.id === activeTab) ?? tabs[0]
-
   return (
-    <>
-      <div className="hidden min-w-0 flex-wrap items-center justify-center gap-x-2 gap-y-1 md:flex">
-        {tabs.map(tab => (
-          <TextTab active={tab.id === activeTab} key={tab.id} onClick={() => onTabChange?.(tab.id)}>
-            {tab.label}
-            {/* Direct TextTabMeta child — TextTab type-checks for it to keep the
-                count outside the active-underline span. */}
-            {tab.meta !== undefined && <TextTabMeta>{metaContent(tab.meta)}</TextTabMeta>}
-          </TextTab>
-        ))}
-      </div>
-      <div className="md:hidden">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="flex h-7 cursor-pointer items-center gap-1 px-1 text-[length:var(--conversation-caption-font-size)] font-medium text-foreground [-webkit-app-region:no-drag]"
-              type="button"
-            >
-              {active.label}
-              {active.meta !== undefined && <TextTabMeta>{metaContent(active.meta)}</TextTabMeta>}
-              <Codicon className="text-muted-foreground" name="chevron-down" size="0.75rem" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="center" className="w-44" sideOffset={6}>
-            {tabs.map(tab => (
-              <DropdownMenuItem key={tab.id} onSelect={() => onTabChange?.(tab.id)}>
-                <span className="min-w-0 flex-1 truncate">{tab.label}</span>
-                {tab.meta !== undefined && (
-                  <span className="text-xs text-muted-foreground">{metaContent(tab.meta)}</span>
-                )}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </>
+    <ResponsiveTabs
+      onChange={id => onTabChange?.(id)}
+      tabs={tabs}
+      value={activeTab ?? tabs[0]?.id ?? ''}
+      wideClassName="justify-center"
+    />
   )
 }
 

@@ -687,8 +687,6 @@ export const zh: Translations = {
       enterValueFirst: '请先输入一个值。',
       couldNotSave: '无法保存凭据。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '获取密钥',
       saving: '保存中'
     },

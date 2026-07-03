@@ -5,6 +5,7 @@ import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -15,13 +16,15 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { ListRow } from '../settings/primitives'
@@ -171,7 +174,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       return []
     }
 
-    const q = query.trim().toLowerCase()
+    const q = normalize(query)
 
     if (!q) {
       return platforms
@@ -266,14 +269,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
+      // TODO(i18n): literal until the UX settles.
+      searchHints={platforms?.slice(0, 5).map(platform => `Try “${platform.name.toLowerCase()}”`)}
       searchPlaceholder={m.search}
       searchValue={query}
     >
       {!platforms ? (
         <PageLoader label={m.loading} />
       ) : (
-        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto p-2">
+        <MasterDetail>
+          <ListColumn>
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
@@ -285,9 +290,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 </li>
               ))}
             </ul>
-          </aside>
+          </ListColumn>
 
-          <main className="min-h-0 overflow-hidden">
+          <DetailColumn
+            actionBar={
+              selected && (
+                <PlatformActionBar
+                  hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                  onSave={() => void handleSave(selected)}
+                  onToggle={enabled => void handleToggle(selected, enabled)}
+                  platform={selected}
+                  saving={saving}
+                />
+              )
+            }
+          >
             {selected && (
               <PlatformDetail
                 edits={edits[selected.id] || {}}
@@ -301,14 +318,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     }
                   }))
                 }
-                onSave={() => void handleSave(selected)}
-                onToggle={enabled => void handleToggle(selected, enabled)}
                 platform={selected}
                 saving={saving}
               />
             )}
-          </main>
-        </div>
+          </DetailColumn>
+        </MasterDetail>
       )}
     </PageSearchShell>
   )
@@ -326,10 +341,8 @@ function PlatformRow({
   return (
     <button
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-        active
-          ? 'bg-(--ui-row-active-background) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
+        'row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:text-foreground',
+        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       onClick={onSelect}
       type="button"
@@ -347,16 +360,12 @@ function PlatformDetail({
   edits,
   onClear,
   onEdit,
-  onSave,
-  onToggle,
   platform,
   saving
 }: {
   edits: Record<string, string>
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
-  onSave: () => void
-  onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
 }) {
@@ -364,163 +373,169 @@ function PlatformDetail({
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const hasEdits = Object.keys(trimEdits(edits)).length > 0
   const requiredFields = platform.env_vars.filter(field => field.required)
   const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
   const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
   const hiddenCount = advancedFields.length
+
+  return (
+    <>
+      <header className="flex items-start gap-3">
+        <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
+            <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {/* Resting states earn no pill — only actionable ones. */}
+            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
+          </div>
+          <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {platform.description}
+          </p>
+          <PlatformHint platform={platform} />
+        </div>
+      </header>
+
+      {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
+
+      <section>
+        <SectionTitle>{m.getCredentials}</SectionTitle>
+        <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {introCopy(platform, m)}
+        </p>
+        {platform.docs_url && (
+          <div className="mt-3">
+            <Button asChild size="sm" variant="textStrong">
+              <a
+                href={platform.docs_url}
+                onClick={event => {
+                  // Route through the validated external opener instead of
+                  // letting Electron resolve the anchor. A packaged build's
+                  // empty/relative href resolves to the app's own
+                  // index.html file path, which shell.openPath then fails to
+                  // open ("file not found"). Plugin platforms (Teams, etc.)
+                  // ship no docs_url, so this guard + handler keeps the
+                  // button from ever pointing at a local bundle path.
+                  event.preventDefault()
+                  openExternalLink(platform.docs_url)
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {m.openSetupGuide}
+                <ExternalLink className="size-3.5" />
+              </a>
+            </Button>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <SectionTitle>{m.required}</SectionTitle>
+        <div className="mt-3 grid gap-1">
+          {requiredFields.length > 0 ? (
+            requiredFields.map(field => (
+              <MessagingField
+                edits={edits}
+                field={field}
+                key={field.key}
+                onClear={onClear}
+                onEdit={onEdit}
+                saving={saving}
+              />
+            ))
+          ) : (
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {m.noTokenNeeded}
+            </p>
+          )}
+        </div>
+      </section>
+
+      {optionalFields.length > 0 && (
+        <section>
+          <SectionTitle>{m.recommended}</SectionTitle>
+          <div className="mt-3 grid gap-1">
+            {optionalFields.map(field => (
+              <MessagingField
+                edits={edits}
+                field={field}
+                key={field.key}
+                onClear={onClear}
+                onEdit={onEdit}
+                saving={saving}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {hiddenCount > 0 && (
+        <section>
+          <button
+            className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
+            onClick={() => setShowAdvanced(value => !value)}
+            type="button"
+          >
+            <span>{m.advanced(hiddenCount)}</span>
+            <DisclosureCaret open={showAdvanced} size="0.875rem" />
+          </button>
+          {showAdvanced && (
+            <div className="mt-3 grid gap-1">
+              {advancedFields.map(field => (
+                <MessagingField
+                  edits={edits}
+                  field={field}
+                  key={field.key}
+                  onClear={onClear}
+                  onEdit={onEdit}
+                  saving={saving}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </>
+  )
+}
+
+function PlatformActionBar({
+  hasEdits,
+  onSave,
+  onToggle,
+  platform,
+  saving
+}: {
+  hasEdits: boolean
+  onSave: () => void
+  onToggle: (enabled: boolean) => void
+  platform: MessagingPlatformInfo
+  saving: string | null
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-5 px-5 py-4">
-          <header className="flex items-start gap-3">
-            <PlatformAvatar platformId={platform.id} platformName={platform.name} />
-            <div className="min-w-0 flex-1">
-              <h3 className="text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-              <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {platform.description}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
-                <SetupPill active={platform.configured}>
-                  {platform.configured ? m.credentialsSet : m.needsSetup}
-                </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
-              </div>
-              <PlatformHint platform={platform} />
-            </div>
-          </header>
+    <>
+      <Switch
+        aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+        checked={platform.enabled}
+        disabled={saving === `enabled:${platform.id}`}
+        onCheckedChange={onToggle}
+        size="xs"
+      />
 
-          {platform.error_message && (
-            <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{platform.error_message}</span>
-            </div>
-          )}
-
-          <section>
-            <SectionTitle>{m.getCredentials}</SectionTitle>
-            <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform, m)}
-            </p>
-            {platform.docs_url && (
-              <div className="mt-3">
-                <Button asChild size="sm" variant="textStrong">
-                  <a
-                    href={platform.docs_url}
-                    onClick={event => {
-                      // Route through the validated external opener instead of
-                      // letting Electron resolve the anchor. A packaged build's
-                      // empty/relative href resolves to the app's own
-                      // index.html file path, which shell.openPath then fails to
-                      // open ("file not found"). Plugin platforms (Teams, etc.)
-                      // ship no docs_url, so this guard + handler keeps the
-                      // button from ever pointing at a local bundle path.
-                      event.preventDefault()
-                      openExternalLink(platform.docs_url)
-                    }}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {m.openSetupGuide}
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
-              </div>
-            )}
-          </section>
-
-          <section>
-            <SectionTitle>{m.required}</SectionTitle>
-            <div className="mt-3 grid gap-1">
-              {requiredFields.length > 0 ? (
-                requiredFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))
-              ) : (
-                <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  {m.noTokenNeeded}
-                </p>
-              )}
-            </div>
-          </section>
-
-          {optionalFields.length > 0 && (
-            <section>
-              <SectionTitle>{m.recommended}</SectionTitle>
-              <div className="mt-3 grid gap-1">
-                {optionalFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {hiddenCount > 0 && (
-            <section>
-              <button
-                className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
-                onClick={() => setShowAdvanced(value => !value)}
-                type="button"
-              >
-                <span>{m.advanced(hiddenCount)}</span>
-                <DisclosureCaret open={showAdvanced} size="0.875rem" />
-              </button>
-              {showAdvanced && (
-                <div className="mt-3 grid gap-1">
-                  {advancedFields.map(field => (
-                    <MessagingField
-                      edits={edits}
-                      field={field}
-                      key={field.key}
-                      onClear={onClear}
-                      onEdit={onEdit}
-                      saving={saving}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-        </div>
+      <div className="ml-auto flex items-center gap-2">
+        {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
+        <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
+          <Save />
+          {isSavingEnv ? m.saving : m.saveChanges}
+        </Button>
       </div>
-
-      <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
-        <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <Switch
-            aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-            checked={platform.enabled}
-            disabled={saving === `enabled:${platform.id}`}
-            onCheckedChange={onToggle}
-            size="xs"
-          />
-
-          <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
-            <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
-              <Save />
-              {isSavingEnv ? m.saving : m.saveChanges}
-            </Button>
-          </div>
-        </div>
-      </footer>
-    </div>
+    </>
   )
 }
 

@@ -11,7 +11,7 @@ import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
-import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 import { SKILLS_ROUTE } from '../routes'
 
@@ -39,7 +39,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const { search } = useLocation()
+  const { hash, pathname, search } = useLocation()
 
   // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
   // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
@@ -54,17 +54,27 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
-  const [keysView, setKeysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
+  const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
 
-  const openProviderView = (view: ProviderView) => {
-    setActiveView('providers')
-    setProviderView(view)
+  // Jump to a section + its sub-view in one navigate. Two sequential setters
+  // would each read the same stale `search` and the second would clobber the
+  // first's `tab` — so the sub-view never opened on narrow screens.
+  const openSubView = (tab: SettingsViewId, param: string, value: string, fallback: string) => {
+    const params = new URLSearchParams(search)
+    params.set('tab', tab)
+
+    if (value === fallback) {
+      params.delete(param)
+    } else {
+      params.set(param, value)
+    }
+
+    const qs = params.toString()
+    navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
   }
 
-  const openKeysView = (view: KeysView) => {
-    setActiveView('keys')
-    setKeysView(view)
-  }
+  const openProviderView = (view: ProviderView) => openSubView('providers', 'pview', view, 'accounts')
+  const openKeysView = (view: KeysView) => openSubView('keys', 'kview', view, 'tools')
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -98,128 +108,133 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
+  const navGroups: OverlayNavGroup[] = [
+    ...SECTIONS.map(s => {
+      const view = `config:${s.id}` as SettingsViewId
+
+      return {
+        active: activeView === view,
+        icon: s.icon,
+        id: view,
+        label: t.settings.sections[s.id] ?? s.label,
+        onSelect: () => setActiveView(view)
+      }
+    }),
+    {
+      active: activeView === 'notifications',
+      icon: Bell,
+      id: 'notifications',
+      label: t.settings.nav.notifications,
+      onSelect: () => setActiveView('notifications')
+    },
+    {
+      active: activeView === 'providers',
+      children: [
+        {
+          active: activeView === 'providers' && providerView === 'accounts',
+          icon: codiconIcon('account'),
+          id: 'pview:accounts',
+          label: t.settings.nav.providerAccounts,
+          onSelect: () => openProviderView('accounts')
+        },
+        {
+          active: activeView === 'providers' && providerView === 'keys',
+          icon: KeyRound,
+          id: 'pview:keys',
+          label: t.settings.nav.providerApiKeys,
+          onSelect: () => openProviderView('keys')
+        }
+      ],
+      gapBefore: true,
+      icon: Zap,
+      id: 'providers',
+      label: t.settings.nav.providers,
+      onSelect: () => setActiveView('providers')
+    },
+    {
+      active: activeView === 'gateway',
+      icon: Globe,
+      id: 'gateway',
+      label: t.settings.nav.gateway,
+      onSelect: () => setActiveView('gateway')
+    },
+    {
+      active: activeView === 'keys',
+      children: [
+        {
+          active: activeView === 'keys' && keysView === 'tools',
+          icon: Wrench,
+          id: 'kview:tools',
+          label: t.settings.nav.keysTools,
+          onSelect: () => openKeysView('tools')
+        },
+        {
+          active: activeView === 'keys' && keysView === 'settings',
+          icon: Settings2,
+          id: 'kview:settings',
+          label: t.settings.nav.keysSettings,
+          onSelect: () => openKeysView('settings')
+        }
+      ],
+      icon: KeyRound,
+      id: 'keys',
+      label: t.settings.nav.apiKeys,
+      onSelect: () => setActiveView('keys')
+    },
+    {
+      active: activeView === 'sessions',
+      icon: Archive,
+      id: 'sessions',
+      label: t.settings.nav.archivedChats,
+      onSelect: () => setActiveView('sessions')
+    },
+    {
+      active: activeView === 'about',
+      gapBefore: true,
+      icon: Info,
+      id: 'about',
+      label: t.settings.nav.about,
+      onSelect: () => setActiveView('about')
+    }
+  ]
+
+  const navFooter = (
+    <>
+      <Tip label={t.settings.exportConfig}>
+        <OverlayIconButton onClick={() => void exportConfig()}>
+          <Download />
+        </OverlayIconButton>
+      </Tip>
+      <Tip label={t.settings.importConfig}>
+        <OverlayIconButton
+          onClick={() => {
+            triggerHaptic('open')
+            importInputRef.current?.click()
+          }}
+        >
+          <Upload />
+        </OverlayIconButton>
+      </Tip>
+      <Tip label={t.settings.resetToDefaults}>
+        <OverlayIconButton
+          className="hover:text-destructive"
+          onClick={() => {
+            triggerHaptic('warning')
+            void resetConfig()
+          }}
+        >
+          <RefreshCw />
+        </OverlayIconButton>
+      </Tip>
+    </>
+  )
+
   return (
     <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlaySidebar>
-          {SECTIONS.map(s => {
-            const view = `config:${s.id}` as SettingsViewId
+        <OverlayNav footer={navFooter} groups={navGroups} />
 
-            return (
-              <OverlayNavItem
-                active={activeView === view}
-                icon={s.icon}
-                key={s.id}
-                label={t.settings.sections[s.id] ?? s.label}
-                onClick={() => setActiveView(view)}
-              />
-            )
-          })}
-          <OverlayNavItem
-            active={activeView === 'notifications'}
-            icon={Bell}
-            label={t.settings.nav.notifications}
-            onClick={() => setActiveView('notifications')}
-          />
-          <div aria-hidden className="h-2" />
-          <OverlayNavItem
-            active={activeView === 'providers'}
-            icon={Zap}
-            label={t.settings.nav.providers}
-            onClick={() => setActiveView('providers')}
-          />
-          {activeView === 'providers' && (
-            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
-              <OverlayNavItem
-                active={providerView === 'accounts'}
-                icon={codiconIcon('account')}
-                label={t.settings.nav.providerAccounts}
-                nested
-                onClick={() => openProviderView('accounts')}
-              />
-              <OverlayNavItem
-                active={providerView === 'keys'}
-                icon={KeyRound}
-                label={t.settings.nav.providerApiKeys}
-                nested
-                onClick={() => openProviderView('keys')}
-              />
-            </div>
-          )}
-          <OverlayNavItem
-            active={activeView === 'gateway'}
-            icon={Globe}
-            label={t.settings.nav.gateway}
-            onClick={() => setActiveView('gateway')}
-          />
-          <OverlayNavItem
-            active={activeView === 'keys'}
-            icon={KeyRound}
-            label={t.settings.nav.apiKeys}
-            onClick={() => setActiveView('keys')}
-          />
-          {activeView === 'keys' && (
-            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
-              <OverlayNavItem
-                active={keysView === 'tools'}
-                icon={Wrench}
-                label={t.settings.nav.keysTools}
-                nested
-                onClick={() => openKeysView('tools')}
-              />
-              <OverlayNavItem
-                active={keysView === 'settings'}
-                icon={Settings2}
-                label={t.settings.nav.keysSettings}
-                nested
-                onClick={() => openKeysView('settings')}
-              />
-            </div>
-          )}
-          <OverlayNavItem
-            active={activeView === 'sessions'}
-            icon={Archive}
-            label={t.settings.nav.archivedChats}
-            onClick={() => setActiveView('sessions')}
-          />
-          <div aria-hidden className="h-2" />
-          <OverlayNavItem
-            active={activeView === 'about'}
-            icon={Info}
-            label={t.settings.nav.about}
-            onClick={() => setActiveView('about')}
-          />
-          <div className="mt-auto flex items-center gap-1 pt-2">
-            <Tip label={t.settings.exportConfig}>
-              <OverlayIconButton onClick={() => void exportConfig()}>
-                <Download className="size-3.5" />
-              </OverlayIconButton>
-            </Tip>
-            <Tip label={t.settings.importConfig}>
-              <OverlayIconButton
-                onClick={() => {
-                  triggerHaptic('open')
-                  importInputRef.current?.click()
-                }}
-              >
-                <Upload className="size-3.5" />
-              </OverlayIconButton>
-            </Tip>
-            <Tip label={t.settings.resetToDefaults}>
-              <OverlayIconButton
-                className="hover:text-destructive"
-                onClick={() => {
-                  triggerHaptic('warning')
-                  void resetConfig()
-                }}
-              >
-                <RefreshCw className="size-3.5" />
-              </OverlayIconButton>
-            </Tip>
-          </div>
-        </OverlaySidebar>
-
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)/2+1rem)]">
+        <OverlayMain className="px-0 pb-0">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (

@@ -58,11 +58,25 @@ test('createLinkTitleWindow still returns the window if muting throws', () => {
 test('guardLinkTitleSession cancels downloads triggered by the title-fetch window', () => {
   let cancelled = false
   const handlers = {}
-  guardLinkTitleSession({ on: (e, h) => { handlers[e] = h } })
-  handlers['will-download'](null, { cancel: () => { cancelled = true } })
+  guardLinkTitleSession({
+    on: (e, h) => {
+      handlers[e] = h
+    }
+  })
+  handlers['will-download'](null, {
+    cancel: () => {
+      cancelled = true
+    }
+  })
   assert.ok(cancelled)
 })
 
 test('guardLinkTitleSession is a no-op when session.on throws', () => {
-  assert.doesNotThrow(() => guardLinkTitleSession({ on() { throw new Error() } }))
+  assert.doesNotThrow(() =>
+    guardLinkTitleSession({
+      on() {
+        throw new Error()
+      }
+    })
+  )
 })

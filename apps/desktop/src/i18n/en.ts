@@ -495,8 +495,6 @@ export const en: Translations = {
       enterValueFirst: 'Enter a value first.',
       couldNotSave: 'Could not save credential.',
       remove: 'Remove',
-      or: 'or',
-      escToCancel: 'esc to cancel',
       getKey: 'Get a key',
       saving: 'Saving'
     },

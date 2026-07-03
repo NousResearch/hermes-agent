@@ -596,8 +596,6 @@ export const zhHant = defineLocale({
       enterValueFirst: '請先輸入一個值。',
       couldNotSave: '無法儲存憑證。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '取得金鑰',
       saving: '儲存中'
     },

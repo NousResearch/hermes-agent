@@ -49,10 +49,6 @@ def _db_returning(rows: dict) -> MagicMock:
     db.find_latest_gateway_session_for_peer.return_value = None
     db.reopen_session.return_value = None
     db.create_session.return_value = None
-    # No compression continuation → the tip is the session itself (identity),
-    # mirroring the real SessionDB.get_compression_tip. Without this a bare Mock
-    # would return a Mock the routing heal then assigns as session_id.
-    db.get_compression_tip.side_effect = lambda sid: sid
     return db
 
 

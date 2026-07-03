@@ -411,8 +411,6 @@ export interface Translations {
       enterValueFirst: string
       couldNotSave: string
       remove: string
-      or: string
-      escToCancel: string
       getKey: string
       saving: string
     }

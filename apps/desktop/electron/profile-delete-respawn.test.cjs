@@ -32,11 +32,7 @@ test('prepareProfileDeleteRequest returns the torn-down profile name', () => {
   )
 
   // The early-exit guard must return null (not void/undefined).
-  assert.match(
-    fnBody,
-    /return null/,
-    'early-exit guard should return null, not undefined'
-  )
+  assert.match(fnBody, /return null/, 'early-exit guard should return null, not undefined')
 })
 
 test('hermes:api handler routes profile-delete requests to the primary backend', () => {

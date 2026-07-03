@@ -608,8 +608,6 @@ export const ja = defineLocale({
       enterValueFirst: '最初に値を入力してください。',
       couldNotSave: '認証情報を保存できませんでした。',
       remove: '削除',
-      or: 'または',
-      escToCancel: 'Esc でキャンセル',
       getKey: 'キーを取得',
       saving: '保存中'
     },

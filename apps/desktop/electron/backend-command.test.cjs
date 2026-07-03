@@ -3,32 +3,14 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const {
-  serveBackendArgs,
-  dashboardFallbackArgs,
-  sourceDeclaresServe,
-} = require('./backend-command.cjs')
+const { serveBackendArgs, dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 
 test('serveBackendArgs builds a headless serve invocation', () => {
-  assert.deepEqual(serveBackendArgs(), [
-    'serve',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    '0',
-  ])
+  assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('serveBackendArgs pins a profile when provided', () => {
-  assert.deepEqual(serveBackendArgs('worker'), [
-    '--profile',
-    'worker',
-    'serve',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    '0',
-  ])
+  assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {
@@ -41,7 +23,7 @@ test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -
     '--host',
     '127.0.0.1',
     '--port',
-    '0',
+    '0'
   ])
 })
 
@@ -57,7 +39,7 @@ test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
     '--host',
     '127.0.0.1',
     '--port',
-    '0',
+    '0'
   ])
 })
 

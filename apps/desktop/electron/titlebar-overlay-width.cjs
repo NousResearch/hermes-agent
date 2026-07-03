@@ -12,11 +12,11 @@ const OVERLAY_FALLBACK_WIDTH = 144
  * macOS uses traffic lights positioned via trafficLightPosition, not a WCO
  * overlay, so it reserves nothing here. Every other desktop platform now paints
  * the Electron overlay (Windows, WSLg, and plain Linux KDE/GNOME), so they all
- * reserve the fallback width.
+ * reserve the fallback width — the split is simply mac vs. not.
  *
- * @param {{ isWindows?: boolean, isWsl?: boolean, isMac?: boolean }} opts
+ * @param {{ isMac?: boolean }} opts
  */
-function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } = {}) {
+function nativeOverlayWidth({ isMac = false } = {}) {
   if (isMac) return 0
   return OVERLAY_FALLBACK_WIDTH
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import {
   getAuxiliaryModels,
@@ -32,7 +33,51 @@ import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } f
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
-import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
+import { ListRow, Pill, SectionHeading } from './primitives'
+
+// Skeleton mirror of the Model settings DOM so the page keeps its shape while
+// the provider/model catalog loads, instead of collapsing to a centered
+// spinner. Same containers/rhythm as the real render below.
+export function ModelSettingsSkeleton() {
+  return (
+    <div className="grid gap-6" data-slot="model-settings-skeleton">
+      <section>
+        <Skeleton className="mb-3 h-3 w-72 max-w-full" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-8 w-60 max-w-full" />
+          <Skeleton className="h-8 w-16" />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-8 w-28" />
+          <Skeleton className="h-6 w-20" />
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-2.5 flex items-center gap-2 pt-2">
+          <Skeleton className="size-4" />
+          <Skeleton className="h-4 w-36" />
+        </div>
+        <div className="grid gap-1">
+          {[0, 1, 2, 3].map(row => (
+            <div
+              className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
+              key={row}
+            >
+              <div className="min-w-0 space-y-1.5">
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="h-3 w-52 max-w-full" />
+              </div>
+              <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
 
 // Hermes' reasoning levels (VALID_REASONING_EFFORTS); `none` = thinking off.
 // Empty config = Hermes default (medium), shown as Medium.
@@ -507,7 +552,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [mainModel, refresh])
 
   if (loading && !mainModel) {
-    return <LoadingState label={m.loading} />
+    return <ModelSettingsSkeleton />
   }
 
   return (

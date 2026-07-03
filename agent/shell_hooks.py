@@ -106,6 +106,7 @@ emitted by each built-in hook site.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -663,12 +664,28 @@ def save_allowlist(data: Dict[str, Any]) -> None:
 
 def _is_allowlisted(event: str, command: str) -> bool:
     data = load_allowlist()
-    return any(
-        isinstance(e, dict)
-        and e.get("event") == event
-        and e.get("command") == command
-        for e in data.get("approvals", [])
-    )
+    for e in data.get("approvals", []):
+        if (
+            isinstance(e, dict)
+            and e.get("event") == event
+            and e.get("command") == command
+        ):
+            # Verify script content hash when available.  If the script
+            # was edited after approval the hash will not match and the
+            # hook is no longer trusted — force re-approval.
+            stored_hash = e.get("script_content_hash")
+            if stored_hash is not None:
+                current_hash = _script_content_hash(command)
+                if current_hash != stored_hash:
+                    logger.warning(
+                        "shell hook %s -> %s: script content changed "
+                        "since approval (hash mismatch) — re-approval "
+                        "required.",
+                        event, command,
+                    )
+                    return False
+            return True
+    return False
 
 
 @contextmanager
@@ -749,6 +766,7 @@ def _record_approval(event: str, command: str) -> None:
         "command": command,
         "approved_at": _utc_now_iso(),
         "script_mtime_at_approval": script_mtime_iso(command),
+        "script_content_hash": _script_content_hash(command),
     }
     with _locked_update_approvals() as data:
         data["approvals"] = [
@@ -867,6 +885,22 @@ def script_mtime_iso(command: str) -> Optional[str]:
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
+    except OSError:
+        return None
+
+
+def _script_content_hash(command: str) -> Optional[str]:
+    """SHA-256 hex digest of the resolved script, or ``None`` if the
+    script is missing or unreadable.  Stored at approval time and
+    verified on every subsequent allowlist check so that editing a
+    trusted script forces re-approval."""
+    path = _command_script_path(command)
+    if not path:
+        return None
+    try:
+        expanded = os.path.expanduser(path)
+        with open(expanded, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
     except OSError:
         return None
 

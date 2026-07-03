@@ -111,3 +111,76 @@ def test_interruptible_api_call_returns_quickly_after_interrupt():
         f"means the main-thread poll window is too long — see issue "
         f"#57903."
     )
+
+
+def test_interruptible_api_call_poll_window_is_short(monkeypatch):
+    """Pin the main-thread poll window to <= 0.2s. The original busy-poll
+    used ``t.join(timeout=0.3)``; issue #57903 reduces it to 0.05s
+    (configurable via HERMES_INTERRUPTIBLE_API_POLL_SECONDS). This test
+    captures every ``t.join(timeout=...)`` argument the production
+    function uses and asserts none exceed 0.2s — a generous budget
+    that still flags a regression like ``t.join(timeout=0.3)`` coming
+    back or someone introducing ``t.join(timeout=1.0)``.
+
+    Implementation: we don't reach into the production source text;
+    instead we instrument ``threading.Thread.join`` on the worker
+    thread the test creates. The mock's SDK call runs forever (until
+    interrupt), so the main thread enters its poll loop and calls
+    ``t.join(timeout=X)`` repeatedly. We record every X and assert the
+    maximum is <= 0.2s.
+    """
+    # Build an agent whose SDK call hangs forever (until the main
+    # thread force-closes on interrupt).
+    import httpx
+
+    agent = MagicMock()
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    agent._compute_non_stream_stale_timeout.return_value = 60.0
+
+    join_timeouts: list = []
+    real_join = threading.Thread.join
+
+    def _instrumented_join(self, timeout=None):
+        # Record the timeout this specific join call uses.
+        join_timeouts.append(timeout)
+        # Trigger interrupt on the first join so the call returns
+        # promptly. Without this the test would block for the full
+        # 60s stale timeout.
+        if agent._interrupt_requested is False and len(join_timeouts) > 5:
+            agent._interrupt_requested = True
+        return real_join(self, timeout=timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", _instrumented_join)
+
+    fake_client = MagicMock()
+
+    def _hang(**_kwargs):
+        # Sleep longer than the test budget but short enough to keep CI fast.
+        time.sleep(3.0)
+        raise httpx.RemoteProtocolError("forced close")
+
+    fake_client.chat.completions.create.side_effect = _hang
+    agent._create_request_openai_client.return_value = fake_client
+    agent._close_request_openai_client = MagicMock()
+    agent._abort_request_openai_client = MagicMock()
+
+    with pytest.raises(Exception):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+    # Filter out the long waits for stale-timeout joins (the
+    # interrupt path uses 2.0s joins to give the worker time to
+    # observe the close). We're only pinning the **poll** window.
+    poll_timeouts = [t for t in join_timeouts if t is not None and t <= 1.0]
+    assert poll_timeouts, (
+        f"interruptible_api_call never entered the poll loop on this code path; "
+        f"recorded joins = {join_timeouts!r}"
+    )
+    max_poll_timeout = max(poll_timeouts)
+    assert max_poll_timeout <= 0.2, (
+        f"interruptible_api_call poll window is {max_poll_timeout}s; "
+        f"the fix in commit 29f55d4 sets it to 0.05s (env-configurable via "
+        f"HERMES_INTERRUPTIBLE_API_POLL_SECONDS). If this test fails, "
+        f"someone has likely reverted or bumped the poll window — "
+        f"see issue #57903. Recorded poll joins: {poll_timeouts!r}"
+    )

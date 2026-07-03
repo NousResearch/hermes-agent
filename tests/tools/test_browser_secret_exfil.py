@@ -350,6 +350,7 @@ class TestBrowserSupervisorRedaction:
             ),),
             frame_tree={"top": {"frame_id": "f1", "url": "about:blank", "origin": "null", "is_oopif": False}},
             console_errors=(),
+            network_responses=(),
             active=True,
             cdp_url="ws://example.invalid/devtools/browser/mock",
             task_id="test",

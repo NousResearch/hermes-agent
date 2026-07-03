@@ -156,7 +156,10 @@ declare module '@hermes/ink' {
     readonly setSelectionBgColor: (color: string) => void
   }
   export function useHasSelection(): boolean
-  export function useStdout(): { readonly stdout?: NodeJS.WriteStream }
+  export function useStdout(): {
+    readonly stdout?: NodeJS.WriteStream
+    readonly write: (data: string) => boolean
+  }
   export function useTerminalFocus(): boolean
   export function useTerminalTitle(title: string | null): void
   export function useDeclaredCursor(args: {
@@ -164,6 +167,7 @@ declare module '@hermes/ink' {
     readonly column: number
     readonly active: boolean
   }): (el: unknown) => void
+  export function useCursorAdvance(): (dx: number, dy?: number) => void
   export function useStdin(): {
     readonly stdin: NodeJS.ReadStream
     readonly setRawMode: (value: boolean) => void

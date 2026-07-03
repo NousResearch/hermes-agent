@@ -10,13 +10,12 @@ for Nous Subscribers only.
 Available tools:
 - web_search_tool: Search the web for information
 - web_extract_tool: Extract content from specific web pages
-- web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
-- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
-- Tavily: https://tavily.com (search, extract, crawl)
+- Tavily: https://tavily.com (search, extract)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -57,21 +56,11 @@ import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_t
 if TYPE_CHECKING:
     from firecrawl import Firecrawl  # noqa: F401 — type hints only
 from plugins.web.firecrawl.provider import (
-    Firecrawl,
-    _FirecrawlProxy,
-    _FIRECRAWL_CLS_CACHE,
-    _extract_scrape_payload,
-    _extract_web_search_results,
+    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
     _firecrawl_backend_help_suffix,
-    _get_direct_firecrawl_config,
-    _get_firecrawl_client,
+    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
-    _has_direct_firecrawl_config,
     _is_tool_gateway_ready,
-    _load_firecrawl_cls,
-    _normalize_result_list,
-    _raise_web_backend_configuration_error,
-    _to_plain_object,
     check_firecrawl_api_key,
 )
 # Tavily helpers re-exported for backward-compat with existing unit tests
@@ -109,11 +98,16 @@ from tools.debug_helpers import DebugSession
 # tools.web_tools (the firecrawl plugin reads them via its own import chain).
 from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names for tests
     build_vendor_gateway_url,
+    peek_nous_access_token as _peek_nous_access_token,
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway  # noqa: F401
-from tools.url_safety import is_safe_url
+from tools.tool_backend_helpers import (  # noqa: F401
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    prefers_gateway,
+)
+from tools.url_safety import async_is_safe_url, is_safe_url, normalize_url_for_request, sensitive_query_param_name
 from tools.website_policy import check_website_access
 import sys
 
@@ -122,9 +116,28 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def _env_value(name: str) -> str:
+    """Resolve ``name`` via Hermes config-aware env, falling back to process env.
+
+    Mirrors the SearXNG provider's ``_searxng_url()`` so that values set
+    through Hermes' config/.env layer (``hermes config set``, ``hermes tools``)
+    are honored here too — not just raw process-env exports. Without this,
+    a config-only ``SEARXNG_URL`` (or any provider key) leaves the backend
+    auto-detect cascade and ``check_web_api_key()`` blind to it. See #34290.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:
+        val = None
+    if val is None:
+        val = os.getenv(name, "")
+    return (val or "").strip()
+
+
 def _has_env(name: str) -> bool:
-    val = os.getenv(name)
-    return bool(val and val.strip())
+    return bool(_env_value(name))
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -134,6 +147,71 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+# The built-in web backends whose availability is driven by hardcoded
+# env-var / package / OAuth probes below. Any name NOT in this set is a
+# candidate plugin-registered provider and must be resolved through the
+# web_search_registry (``is_available()``) instead. Kept as a single named
+# constant so the whitelist early-returns and the availability chokepoint
+# stay in sync.
+#
+# NOTE: this intentionally includes ``xai``, which the registry's
+# ``_LEGACY_PREFERENCE`` does NOT — xai availability is probed via
+# ``has_xai_credentials()`` (env var OR auth.json OAuth), not a registered
+# WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
+# a registered provider, drop it here so the registry path takes over.
+_LEGACY_WEB_BACKENDS = frozenset(
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+)
+
+
+def _registered_web_provider(backend: str):
+    """Return a plugin-registered web provider by name, or ``None``.
+
+    Consults ``agent.web_search_registry`` so backends contributed by the
+    plugin system (which are absent from :data:`_LEGACY_WEB_BACKENDS`) are
+    discoverable during availability/selection resolution. Returns ``None``
+    on any lookup failure so callers can fall through to legacy checks.
+    """
+    if not backend:
+        return None
+    try:
+        from agent.web_search_registry import get_provider
+
+        return get_provider(backend)
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry lookup failed for %r: %s", backend, exc)
+        return None
+
+
+def _registered_web_provider_available(backend: str):
+    """Availability of a *registered* web provider, or ``None`` if unregistered.
+
+    Returns ``True``/``False`` when *backend* names a registered provider
+    (calling its ``is_available()``), or ``None`` when it isn't registered —
+    letting the caller fall through to the legacy built-in probes.
+    """
+    provider = _registered_web_provider(backend)
+    if provider is None:
+        return None
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+        logger.debug("web provider %r.is_available() raised: %s", backend, exc)
+        return False
+
+
+def _list_registered_web_providers():
+    """Return all plugin-registered web providers (empty list on failure)."""
+    try:
+        from agent.web_search_registry import list_providers
+
+        return list_providers()
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry list failed: %s", exc)
+        return []
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -142,19 +220,22 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
+    # available backend. Explicit user credentials (TAVILY_API_KEY etc.)
+    # beat the managed-tool-gateway probe so a deliberate setup is not
+    # pre-empted by a Nous OAuth token whose subscription tier may not
+    # actually grant web-search access (the gateway then fails at runtime
+    # with "no subscription" and the tool returns an error to the agent
+    # without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("parallel", _has_env("PARALLEL_API_KEY")),
+        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
+        ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -162,6 +243,21 @@ def _get_backend() -> str:
     for backend, available in backend_candidates:
         if available:
             return backend
+
+    # Final fallback: walk plugin-registered providers so a custom backend
+    # (with no built-in creds present) still resolves. Built-in names are
+    # already covered above, so this only surfaces plugin-contributed
+    # providers via their own is_available() gate. We hold the provider
+    # object already, so probe it directly rather than round-tripping through
+    # _is_backend_available() (which would re-do the registry lookup).
+    for provider in _list_registered_web_providers():
+        if provider.name in _LEGACY_WEB_BACKENDS:
+            continue
+        try:
+            if provider.is_available():
+                return provider.name
+        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+            logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
 
     return "firecrawl"  # default (backward compat)
 
@@ -205,7 +301,22 @@ def _get_capability_backend(capability: str) -> str:
 
 
 def _is_backend_available(backend: str) -> bool:
-    """Return True when the selected backend is currently usable."""
+    """Return True when the selected backend is currently usable.
+
+    For plugin-registered backends (any name outside
+    :data:`_LEGACY_WEB_BACKENDS`), availability is delegated to the
+    provider's ``is_available()`` via the web_search_registry. This is the
+    single chokepoint through which ``_get_backend``,
+    ``_get_capability_backend``, and ``check_web_api_key`` all resolve
+    availability — fixing custom-provider discovery for every caller at once
+    (issues #28651, #31873, #32698). Built-in backends keep their cheap
+    hardcoded probes below.
+    """
+    backend = (backend or "").lower().strip()
+    if backend not in _LEGACY_WEB_BACKENDS:
+        registered = _registered_web_provider_available(backend)
+        if registered is not None:
+            return registered
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -220,6 +331,16 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "xai":
+        # Cheap probe — env var OR auth.json has OAuth tokens. Must not
+        # call resolve_xai_http_credentials() here because the OAuth path
+        # can trigger a network token refresh, and _is_backend_available
+        # runs on every web_search dispatch + every `hermes tools` repaint.
+        try:
+            from tools.xai_http import has_xai_credentials
+            return has_xai_credentials()
+        except Exception:
+            return False
     return False
 
 
@@ -623,6 +744,26 @@ async def _apply_web_extract_degradation_fallback(
 
     return updated, degradations
 
+
+# Default budget (characters) of clean page text sent to the model. Pages at
+# or under this size are returned whole; larger pages are head+tail truncated
+# and the full text is stored on disk (see _store_full_text). Spending context,
+# not API dollars — so this is generous relative to the old 5k summary cap.
+# Override via web.extract_char_limit in config.yaml.
+DEFAULT_EXTRACT_CHAR_LIMIT = 15000
+
+# Hard ceiling on the full-text file written to cache/web. The truncate-store
+# path otherwise calls path.write_text(content) with no upper bound, so a
+# multi-MB page (some backends return very large markdown) writes unbounded
+# bytes to disk on every extract. Cap the stored copy; the model only ever
+# sees char_limit anyway, and a 2MB page is already far more than any single
+# read_file paging session needs. Mirrors the pre-truncate-store era's 2MB
+# refusal ceiling, but stores (capped) instead of refusing.
+MAX_STORED_TEXT_CHARS = 2_000_000
+
+_debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
+
+
 def _is_nous_auxiliary_client(client: Any) -> bool:
     """Return True when the resolved auxiliary backend is Nous Portal."""
     from urllib.parse import urlparse
@@ -651,8 +792,6 @@ def _get_default_summarizer_model() -> Optional[str]:
     """Return the current default model for web extraction summarization."""
     _, model, _ = _resolve_web_extract_auxiliary()
     return model
-
-_debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
 async def process_content_with_llm(
@@ -1062,6 +1201,150 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+def _get_extract_char_limit() -> int:
+    """Resolve the per-page char budget from config, clamped to a sane range."""
+    try:
+        configured = _load_web_config().get("extract_char_limit")
+        if configured is not None:
+            value = int(configured)
+            # Floor at 2k (below that the footer dominates), no hard ceiling
+            # beyond a generous guard so a typo can't blow up context.
+            return max(2000, min(value, 500_000))
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_EXTRACT_CHAR_LIMIT
+
+
+def convert_base64_images_to_links(text: str) -> str:
+    """Replace inline base64 image blobs with labeled markdown links.
+
+    base64 image payloads are token bombs (a single inline PNG can be tens of
+    thousands of characters), so we never send the raw bytes to the model. But
+    we preserve the fact that an image was there, and its alt text, as an
+    inspectable placeholder. Real (http/https) markdown image links are left
+    untouched so the agent can ``web_extract`` / ``vision_analyze`` them.
+
+    Transformations:
+      ``![alt](data:image/png;base64,AAAA...)``  -> ``[IMAGE: alt](base64 image omitted)``
+      ``(data:image/png;base64,AAAA...)``        -> ``[IMAGE]``
+      bare ``data:image/...;base64,AAAA...``     -> ``[IMAGE]``
+    """
+    # 1. Markdown image with base64 source -> keep alt text, drop the blob.
+    def _md_repl(m: "re.Match[str]") -> str:
+        alt = (m.group("alt") or "").strip()
+        return f"[IMAGE: {alt}]" if alt else "[IMAGE]"
+
+    md_b64 = re.compile(
+        r"!\[(?P<alt>[^\]]*)\]\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)"
+    )
+    out = md_b64.sub(_md_repl, text)
+
+    # 2. Parenthesised base64 (non-markdown) and 3. bare base64 -> [IMAGE].
+    out = re.sub(r"\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)", "[IMAGE]", out)
+    out = re.sub(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", "[IMAGE]", out)
+    return out
+
+
+def _store_full_text(url: str, content: str) -> Optional[str]:
+    """Write the full extracted page to cache/web and return its absolute path.
+
+    The file is mounted read-only into remote backends (Docker/Modal/SSH) via
+    credential_files._CACHE_DIRS, so the agent's terminal/read_file tools can
+    page through the complete text on any backend. Returns None on failure
+    (storage is best-effort; truncated content is still returned to the model).
+    """
+    try:
+        import hashlib
+        from urllib.parse import urlparse
+        from hermes_constants import get_hermes_dir
+
+        cache_dir = get_hermes_dir("cache/web", "web_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        host = (urlparse(url).hostname or "page").replace(":", "_")
+        slug = re.sub(r"[^A-Za-z0-9._-]", "-", host)[:60].strip("-") or "page"
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
+        path = cache_dir / f"{slug}-{digest}.md"
+        # Bound the stored copy so a pathologically large page can't write
+        # unbounded bytes to disk. If capped, append a marker so a reader of
+        # the file knows it isn't the literal complete page.
+        if len(content) > MAX_STORED_TEXT_CHARS:
+            content = (
+                content[:MAX_STORED_TEXT_CHARS]
+                + f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
+                f"of {len(content):,}; re-extract a more specific URL for the rest ...]"
+            )
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to store full web_extract text for %s: %s", url, exc)
+        return None
+
+
+def _truncate_with_footer(
+    content: str,
+    url: str,
+    char_limit: int,
+) -> tuple[str, bool]:
+    """Return (model_text, was_truncated) for one page's clean content.
+
+    Pages at or under ``char_limit`` are returned whole. Larger pages get a
+    head+tail window (~75% head / ~25% tail) cut on a markdown line boundary
+    where possible, plus an explicit footer telling the model exactly how much
+    it is seeing, where the full text is stored, and which read_file call pages
+    in the omitted middle. Deterministic — no model involvement.
+    """
+    if len(content) <= char_limit:
+        return content, False
+
+    head_budget = int(char_limit * 0.75)
+    tail_budget = char_limit - head_budget
+
+    head = content[:head_budget]
+    tail = content[-tail_budget:]
+    # Snap the head cut back to the last newline so we don't slice mid-line.
+    nl = head.rfind("\n")
+    if nl > head_budget * 0.5:
+        head = head[:nl]
+    # Snap the tail cut forward to the next newline for the same reason.
+    nl = tail.find("\n")
+    if 0 <= nl < tail_budget * 0.5:
+        tail = tail[nl + 1:]
+
+    total = len(content)
+    stored_path = _store_full_text(url, content)
+    shown = len(head) + len(tail)
+
+    footer_lines = [
+        "",
+        "─" * 8 + " [TRUNCATED] " + "─" * 8,
+        f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
+        f"of {total:,} total clean characters.",
+    ]
+    if stored_path:
+        # The omitted middle begins right after the head we're showing. Give
+        # the model a concrete starting line (head line count + 1) so its first
+        # read_file lands in the gap instead of guessing <line>. read_file is
+        # 1-indexed; +1 moves past the last head line we already showed.
+        middle_start_line = head.count("\n") + 2
+        footer_lines.append(f"Full text saved to: {stored_path}")
+        footer_lines.append(
+            f'To read the omitted middle: read_file path="{stored_path}" '
+            f"offset={middle_start_line} limit=200  (the file is the complete page; "
+            f"raise/lower offset to page through it)."
+        )
+    else:
+        footer_lines.append(
+            "Full text could not be stored; re-run web_extract on a more "
+            "specific URL or use browser_navigate for the complete page."
+        )
+    footer_lines.append("─" * 29)
+
+    model_text = head + "\n\n[... middle omitted — see footer ...]\n\n" + tail
+    model_text += "\n" + "\n".join(footer_lines)
+    return model_text, True
+
+
 # ─── Exa / Parallel inline helpers — moved into plugins ──────────────────────
 # After PR #25182, the exa client + search/extract and parallel client +
 # search/extract helpers all live in their respective plugins:
@@ -1069,6 +1352,35 @@ def clean_base64_images(text: str) -> str:
 #   - plugins/web/parallel/provider.py
 # Both plugins register through agent.web_search_registry and the
 # dispatchers in this file resolve them via get_active_*_provider().
+
+
+def _ensure_web_plugins_loaded() -> None:
+    """Idempotently trigger plugin discovery so the web registry is populated.
+
+    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
+    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    during plugin discovery. Tool dispatch can be reached from contexts that
+    haven't already triggered discovery — subprocess agent runs, delegate
+    children, standalone scripts, certain test paths — and without it the
+    registry is empty and ``get_provider('firecrawl')`` returns ``None`` even
+    when the user has ``web.extract_backend: firecrawl`` configured and
+    ``FIRECRAWL_API_KEY`` set. The symptom is a misleading "No web extract
+    provider configured" error (issue #27580).
+
+    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` exactly:
+    the underlying discovery call is idempotent and cheap on subsequent
+    invocations.
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:  # noqa: BLE001
+        # Warning, not debug: if a plugin import is genuinely broken the
+        # user otherwise hits the misleading "No web extract provider
+        # configured" error this helper is meant to eliminate, with no
+        # clue in normal logs about the real cause.
+        logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
 def web_search_tool(query: str, limit: int = 5) -> str:
@@ -1131,6 +1443,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
+        _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
@@ -1783,28 +2096,31 @@ def web_search_matrix_tool(
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
-    use_llm_processing: bool = True,
-    model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    char_limit: Optional[int] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
 
-    This function provides a generic interface for web content extraction that
-    can work with multiple backends. Currently uses Firecrawl.
+    Returns clean page content (markdown/text) with NO LLM summarization. The
+    extract backends (Firecrawl, Tavily, Exa, Parallel) already return clean,
+    boilerplate-stripped content, so we return it directly and fast. Pages over
+    ``char_limit`` are head+tail truncated with an explicit footer; the full
+    text is stored under cache/web and the footer tells the model how to
+    read_file the omitted middle. Inline base64 images are replaced with
+    ``[IMAGE: alt]`` placeholders (real image URLs are preserved as links).
 
     Args:
         urls (List[str]): List of URLs to extract content from
         format (str): Desired output format ("markdown" or "html", optional)
-        use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
-        model (Optional[str]): The model to use for LLM processing (defaults to current auxiliary backend model)
-        min_length (int): Minimum content length to trigger LLM processing (default: 5000)
+        char_limit (Optional[int]): Per-page char budget sent to the model
+            (default: web.extract_char_limit or 15000). Larger pages truncate.
 
     Security: URLs are checked for embedded secrets before fetching.
 
     Returns:
-        str: JSON string containing extracted content. If LLM processing is enabled and successful,
-             the 'content' field will contain the processed markdown summary instead of raw content.
+        str: JSON string with a ``results`` list; each entry has
+             ``url``, ``title``, ``content``, ``error``. ``content`` is the
+             (possibly truncated) clean page text.
 
     Raises:
         Exception: If extraction fails or API key is not set
@@ -1813,39 +2129,56 @@ async def web_extract_tool(
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
+    normalized_urls: List[str] = []
     for _url in urls:
-        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
+        normalized_url = normalize_url_for_request(_url)
+        if (
+            _PREFIX_RE.search(_url)
+            or _PREFIX_RE.search(unquote(_url))
+            or _PREFIX_RE.search(normalized_url)
+            or _PREFIX_RE.search(unquote(normalized_url))
+        ):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
                          "Secrets must not be sent in URLs.",
             })
+        sensitive_query_key = sensitive_query_param_name(normalized_url)
+        if sensitive_query_key:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: URL contains a credential-like query parameter "
+                    f"({sensitive_query_key}). Web extract backends are third-party "
+                    "readers; remove the sensitive query parameter or use a local "
+                    "browser session when this access is explicitly required."
+                ),
+            })
+        normalized_urls.append(normalized_url)
 
     debug_call_data = {
         "parameters": {
-            "urls": urls,
+            "urls": normalized_urls,
             "format": format,
-            "use_llm_processing": use_llm_processing,
-            "model": model,
-            "min_length": min_length
+            "char_limit": char_limit,
         },
         "error": None,
         "pages_extracted": 0,
-        "pages_processed_with_llm": 0,
+        "pages_truncated": 0,
         "original_response_size": 0,
         "final_response_size": 0,
-        "compression_metrics": [],
+        "truncation_metrics": [],
         "processing_applied": []
     }
 
     try:
-        logger.info("Extracting content from %d URL(s)", len(urls))
+        logger.info("Extracting content from %d URL(s)", len(normalized_urls))
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
-        for url in urls:
-            if not is_safe_url(url):
+        for url in normalized_urls:
+            if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
@@ -1869,6 +2202,7 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -1945,90 +2279,38 @@ async def web_extract_tool(
 
         debug_call_data["pages_extracted"] = pages_extracted
         debug_call_data["original_response_size"] = len(json.dumps(response))
-        effective_model = model or _get_default_summarizer_model()
-        auxiliary_available = check_auxiliary_model()
 
-        # Process each result with LLM if enabled
-        if use_llm_processing and auxiliary_available:
-            logger.info("Processing extracted content with LLM (parallel)...")
-            debug_call_data["processing_applied"].append("llm_processing")
+        effective_char_limit = char_limit if char_limit is not None else _get_extract_char_limit()
+        try:
+            effective_char_limit = max(2000, min(int(effective_char_limit), 500_000))
+        except (TypeError, ValueError):
+            effective_char_limit = DEFAULT_EXTRACT_CHAR_LIMIT
 
-            # Prepare tasks for parallel processing
-            async def process_single_result(result):
-                """Process a single result with LLM and return updated result with metrics."""
-                url = result.get('url', 'Unknown URL')
-                title = result.get('title', '')
-                raw_content = result.get('raw_content', '') or result.get('content', '')
-
-                if not raw_content:
-                    return result, None, "no_content"
-
-                original_size = len(raw_content)
-
-                # Process content with LLM
-                processed = await process_content_with_llm(
-                    raw_content, url, title, effective_model, min_length
-                )
-
-                if processed:
-                    processed_size = len(processed)
-                    compression_ratio = processed_size / original_size if original_size > 0 else 1.0
-
-                    # Update result with processed content
-                    result['content'] = processed
-                    result['raw_content'] = raw_content
-
-                    metrics = {
-                        "url": url,
-                        "original_size": original_size,
-                        "processed_size": processed_size,
-                        "compression_ratio": compression_ratio,
-                        "model_used": effective_model
-                    }
-                    return result, metrics, "processed"
-                else:
-                    metrics = {
-                        "url": url,
-                        "original_size": original_size,
-                        "processed_size": original_size,
-                        "compression_ratio": 1.0,
-                        "model_used": None,
-                        "reason": "content_too_short"
-                    }
-                    return result, metrics, "too_short"
-
-            # Run all LLM processing in parallel
-            results_list = response.get('results', [])
-            tasks = [process_single_result(result) for result in results_list]
-            # Use return_exceptions=True so a single task failure does not
-            # discard all other successfully processed results.
-            processed_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Collect metrics and print results
-            for result_item in processed_results:
-                if isinstance(result_item, BaseException):
-                    logger.warning("Web result processing task failed: %s", result_item)
-                    continue
-                result, metrics, status = result_item
-                url = result.get('url', 'Unknown URL')
-                if status == "processed":
-                    debug_call_data["compression_metrics"].append(metrics)
-                    debug_call_data["pages_processed_with_llm"] += 1
-                    logger.info("%s (processed)", url)
-                elif status == "too_short":
-                    debug_call_data["compression_metrics"].append(metrics)
-                    logger.info("%s (no processing - content too short)", url)
-                else:
-                    logger.warning("%s (no content to process)", url)
-        else:
-            if use_llm_processing and not auxiliary_available:
-                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
-                debug_call_data["processing_applied"].append("llm_processing_unavailable")
-            # Print summary of extracted pages for debugging (original behavior)
-            for result in response.get('results', []):
-                url = result.get('url', 'Unknown URL')
-                content_length = len(result.get('raw_content', ''))
-                logger.info("%s (%d characters)", url, content_length)
+        # Truncate-and-store: no LLM. For each result, convert inline base64
+        # images to labeled placeholders (keeping alt text + real image URLs),
+        # then return the clean content directly if within budget, or a
+        # head+tail window plus a footer pointing at the stored full text.
+        debug_call_data["processing_applied"].append("truncate_and_store")
+        for result in response.get("results", []):
+            if result.get("error"):
+                continue
+            url = result.get("url", "")
+            raw_content = result.get("raw_content", "") or result.get("content", "")
+            if not raw_content:
+                continue
+            clean = convert_base64_images_to_links(raw_content)
+            model_text, truncated = _truncate_with_footer(clean, url, effective_char_limit)
+            result["content"] = model_text
+            if truncated:
+                debug_call_data["pages_truncated"] += 1
+                debug_call_data["truncation_metrics"].append({
+                    "url": url,
+                    "original_size": len(clean),
+                    "sent_size": len(model_text),
+                })
+                logger.info("%s (truncated %d -> %d chars)", url, len(clean), len(model_text))
+            else:
+                logger.info("%s (%d chars, whole)", url, len(clean))
 
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = []
@@ -2066,16 +2348,16 @@ async def web_extract_tool(
 
         if trimmed_response.get("results") == []:
             result_json = tool_error("Content was inaccessible or not found")
-
-            cleaned_result = clean_base64_images(result_json)
-
         else:
             result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
 
-            cleaned_result = clean_base64_images(result_json)
+        # base64 images were already converted to placeholders per-result above;
+        # this is a belt-and-suspenders sweep over the serialized JSON in case a
+        # provider tucked a blob somewhere unexpected (e.g. metadata).
+        cleaned_result = convert_base64_images_to_links(result_json)
 
         debug_call_data["final_response_size"] = len(cleaned_result)
-        debug_call_data["processing_applied"].append("base64_image_removal")
+        debug_call_data["processing_applied"].append("base64_image_conversion")
 
         # Log debug information
         _debug.log_call("web_extract_tool", debug_call_data)
@@ -2329,14 +2611,39 @@ async def web_crawl_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web backend is available.
+
+    Used as the ``check_fn`` gate for the ``web_search`` and ``web_extract``
+    tool registry entries — so a plugin-registered provider that reports
+    ``is_available()`` must light the tools up even when no built-in backend
+    has credentials (issues #28651, #31873). Resolution funnels through
+    :func:`_is_backend_available`, which delegates non-legacy names to the
+    registry.
+    """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
-        return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    if configured and _is_backend_available(configured):
+        return True
+    # Any built-in backend with credentials present. This is a boolean OR, so
+    # unlike _get_backend() the probe order is irrelevant.
+    if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
+        return True
+    # Any plugin-registered provider the registry considers active for either
+    # capability. Delegating to the registry's own availability-filtered
+    # resolvers keeps a single authority for "is a custom provider usable"
+    # rather than re-implementing the walk here.
+    try:
+        from agent.web_search_registry import (
+            get_active_search_provider,
+            get_active_extract_provider,
+        )
+
+        return (
+            get_active_search_provider() is not None
+            or get_active_extract_provider() is not None
+        )
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry availability check failed: %s", exc)
+        return False
 
 
 def check_auxiliary_model() -> bool:
@@ -2804,8 +3111,6 @@ def web_search_matrix(
     )
 
 
-
-
 if __name__ == "__main__":
     """
     Simple test/demo when run directly
@@ -2818,8 +3123,6 @@ if __name__ == "__main__":
     tool_gateway_available = _is_tool_gateway_ready()
     firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
     firecrawl_url_available = bool(os.getenv("FIRECRAWL_API_URL", "").strip())
-    nous_available = check_auxiliary_model()
-    default_summarizer_model = _get_default_summarizer_model()
 
     if web_available:
         backend = _get_backend()
@@ -2831,7 +3134,7 @@ if __name__ == "__main__":
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
+            print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
@@ -2851,21 +3154,12 @@ if __name__ == "__main__":
             f"{_firecrawl_backend_help_suffix()}"
         )
 
-    if not nous_available:
-        print("❌ No auxiliary model available for LLM content processing")
-        print("Set OPENROUTER_API_KEY, configure Nous Portal, or set OPENAI_BASE_URL + OPENAI_API_KEY")
-        print("⚠️  Without an auxiliary model, LLM content processing will be disabled")
-    else:
-        print(f"✅ Auxiliary model available: {default_summarizer_model}")
-
     if not web_available:
         sys.exit(1)
 
     print("🛠️  Web tools ready for use!")
-
-    if nous_available:
-        print(f"🧠 LLM content processing available with {default_summarizer_model}")
-        print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
+    print(f"   Extract char limit: {_get_extract_char_limit()} chars "
+          "(pages over this are truncated; full text stored in cache/web)")
 
     # Show debug mode status
     if _debug.active:
@@ -2875,45 +3169,22 @@ if __name__ == "__main__":
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
 
     print("\nBasic usage:")
-    print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
+    print("  from web_tools import web_search_tool, web_extract_tool")
     print("  import asyncio")
     print("")
     print("  # Search (synchronous)")
     print("  results = web_search_tool('Python tutorials')")
     print("")
-    print("  # Extract and crawl (asynchronous)")
+    print("  # Extract (asynchronous, no LLM — truncate-and-store)")
     print("  async def main():")
     print("      content = await web_extract_tool(['https://example.com'])")
-    print("      crawl_data = await web_crawl_tool('example.com', 'Find docs')")
+    print("      # bigger budget for one call:")
+    print("      content = await web_extract_tool(['https://docs.python.org'], char_limit=40000)")
     print("  asyncio.run(main())")
 
-    if nous_available:
-        print("\nLLM-enhanced usage:")
-        print("  # Content automatically processed for pages >5000 chars (default)")
-        print("  content = await web_extract_tool(['https://python.org/about/'])")
-        print("")
-        print("  # Customize processing parameters")
-        print("  crawl_data = await web_crawl_tool(")
-        print("      'docs.python.org',")
-        print("      'Find key concepts',")
-        print("      model='google/gemini-3-flash-preview',")
-        print("      min_length=3000")
-        print("  )")
-        print("")
-        print("  # Disable LLM processing")
-        print("  raw_content = await web_extract_tool(['https://example.com'], use_llm_processing=False)")
-
     print("\nDebug mode:")
-    print("  # Enable debug logging")
     print("  export WEB_TOOLS_DEBUG=true")
-    print("  # Debug logs capture:")
-    print("  # - All tool calls with parameters")
-    print("  # - Original API responses")
-    print("  # - LLM compression metrics")
-    print("  # - Final processed results")
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
-
-    print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
 
 
 # ---------------------------------------------------------------------------
@@ -2945,7 +3216,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2954,6 +3225,11 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "char_limit": {
+                "type": "integer",
+                "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
+                "minimum": 2000
             }
         },
         "required": ["urls"]
@@ -3111,7 +3387,10 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        char_limit=args.get("char_limit"),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

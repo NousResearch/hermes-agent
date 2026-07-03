@@ -51,6 +51,7 @@ import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
+from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -167,16 +168,16 @@ def _get_firecrawl_gateway_url() -> str:
 def _is_tool_gateway_ready() -> bool:
     """Return True when gateway URL + Nous Subscriber token are available.
 
-    Reads ``read_nous_access_token`` and ``resolve_managed_tool_gateway``
+    Reads ``peek_nous_access_token`` and ``resolve_managed_tool_gateway``
     via :mod:`tools.web_tools` rather than direct imports, so unit tests
-    that ``patch("tools.web_tools._read_nous_access_token", ...)`` see
+    that ``patch("tools.web_tools._peek_nous_access_token", ...)`` see
     their patches honored. The names are re-exported on
     :mod:`tools.web_tools` for exactly this reason.
     """
     import tools.web_tools as _wt
 
     return _wt.resolve_managed_tool_gateway(
-        "firecrawl", token_reader=_wt._read_nous_access_token
+        "firecrawl", token_reader=_wt._peek_nous_access_token
     ) is not None
 
 
@@ -217,8 +218,12 @@ def _raise_web_backend_configuration_error() -> None:
     )
     if _wt.managed_nous_tools_enabled():
         message += (
-            " With your Nous subscription you can also use the Tool Gateway — "
+            " With your Nous subscription you can also use the Tool Gateway. "
             "run `hermes tools` and select Nous Subscription as the web provider."
+        )
+    else:
+        message += " " + _wt.nous_tool_gateway_unavailable_message(
+            "managed Firecrawl web tools",
         )
     raise ValueError(message)
 
@@ -437,9 +442,6 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def supports_crawl(self) -> bool:
-        return True
-
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a Firecrawl search.
 
@@ -580,6 +582,26 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
                 title = metadata.get("title", "")
                 final_url = metadata.get("sourceURL", url)
+
+                # Re-check SSRF safety after any redirect reported by Firecrawl.
+                if not is_safe_url(final_url):
+                    logger.info(
+                        "Blocked redirected web_extract for unsafe final URL: %s",
+                        final_url,
+                    )
+                    results.append(
+                        {
+                            "url": final_url,
+                            "title": title,
+                            "content": "",
+                            "raw_content": "",
+                            "error": (
+                                "Blocked: URL targets a private or internal "
+                                "network address"
+                            ),
+                        }
+                    )
+                    continue
 
                 # Re-check website-access policy after any redirect
                 final_blocked = check_website_access(final_url)
@@ -825,7 +847,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             "name": "Firecrawl",
             "badge": "paid · optional gateway",
             "tag": (
-                "Full search + extract + crawl; supports direct API and "
+                "Full search + extract; supports direct API and "
                 "Nous tool-gateway routing."
             ),
             "env_vars": [

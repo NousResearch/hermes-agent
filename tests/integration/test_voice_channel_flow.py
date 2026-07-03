@@ -31,7 +31,6 @@ try:
         import ctypes.util
         opus_path = ctypes.util.find_library("opus")
         if not opus_path:
-            import sys
             for p in ("/opt/homebrew/lib/libopus.dylib", "/usr/local/lib/libopus.dylib"):
                 import os
                 if os.path.isfile(p):
@@ -45,8 +44,7 @@ except Exception:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-import gateway.platforms.discord as discord_platform
-from gateway.platforms.discord import VoiceReceiver
+from plugins.platforms.discord.adapter import VoiceReceiver
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +73,7 @@ def _ensure_voice_decoder():
     pipeline and downstream buffering/silence behavior, so they pin Decoder to
     a stable PCM stub here.
     """
-    discord_platform.discord.opus.Decoder = _DeterministicDecoder
+    discord.opus.Decoder = _DeterministicDecoder
 
 
 def _build_encrypted_rtp_packet(secret_key, opus_payload, ssrc=100, seq=1, timestamp=960):

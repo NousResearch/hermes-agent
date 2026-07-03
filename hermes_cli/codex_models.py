@@ -36,6 +36,18 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # https://developers.openai.com/codex/models and
     # https://github.com/openai/codex/discussions/17038.
     "gpt-5.3-codex-spark",
+    # NOTE: gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini were
+    # previously listed here but the chatgpt.com Codex backend returns
+    # HTTP 400 "The '<model>' model is not supported when using Codex with
+    # a ChatGPT account." for all three on every ChatGPT Pro account we've
+    # tested (verified live 2026-05-27). Keeping them in the fallback list
+    # leaked dead slugs into /model when live discovery was unavailable
+    # (transient API failure, first-run before refresh) and surfaced HTTP 400
+    # crashes on selection. The Codex CLI public catalog still references
+    # these slugs, which is why they survived previously — but those entries
+    # describe the public OpenAI API, not the OAuth-backed Codex backend
+    # Hermes uses. Removed here. If OpenAI re-enables them on Codex backend,
+    # live discovery will pick them up automatically via _fetch_models_from_api.
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [

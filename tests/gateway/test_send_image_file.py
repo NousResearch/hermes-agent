@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter
 
 
 def _run(coro):
@@ -82,7 +82,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramSendImageFile:
@@ -189,8 +189,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import discord as discord_mod_ref  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class TestDiscordSendImageFile:
@@ -230,7 +230,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_document(
                     chat_id="67890",
@@ -256,7 +256,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_video(
                     chat_id="67890",
@@ -313,7 +313,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackSendImageFile:

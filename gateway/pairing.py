@@ -18,6 +18,7 @@ Security features (based on OWASP + NIST SP 800-63-4 guidance):
 Storage: ~/.hermes/pairing/
 """
 
+import hashlib
 import json
 import os
 import secrets
@@ -27,6 +28,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from gateway.whatsapp_identity import (
+    expand_whatsapp_aliases,
+    normalize_whatsapp_identifier,
+)
 from hermes_constants import get_hermes_dir
 from utils import atomic_replace
 
@@ -45,6 +50,112 @@ MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
+
+
+# Platform value -> its per-platform allowlist env var. When an operator has
+# already configured an allowlist for a platform, approving a pairing code also
+# writes the user into that allowlist (and revoking removes them), so the
+# operator's own list stays the single visible/editable source of truth instead
+# of drifting from an opaque approved.json (#23778 consolidation, option i).
+# Platforms absent from this map (or with no allowlist configured) keep the
+# pairing store as the sole grant record, honored by the authz union.
+_PLATFORM_ALLOWLIST_ENV = {
+    "telegram": "TELEGRAM_ALLOWED_USERS",
+    "discord": "DISCORD_ALLOWED_USERS",
+    "whatsapp": "WHATSAPP_ALLOWED_USERS",
+    "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
+    "slack": "SLACK_ALLOWED_USERS",
+    "signal": "SIGNAL_ALLOWED_USERS",
+    "email": "EMAIL_ALLOWED_USERS",
+    "sms": "SMS_ALLOWED_USERS",
+    "mattermost": "MATTERMOST_ALLOWED_USERS",
+    "matrix": "MATRIX_ALLOWED_USERS",
+    "dingtalk": "DINGTALK_ALLOWED_USERS",
+    "feishu": "FEISHU_ALLOWED_USERS",
+    "wecom": "WECOM_ALLOWED_USERS",
+    "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
+    "weixin": "WEIXIN_ALLOWED_USERS",
+    "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
+    "qqbot": "QQ_ALLOWED_USERS",
+    "yuanbao": "YUANBAO_ALLOWED_USERS",
+}
+
+
+def _allowlist_env_for_platform(platform: str) -> Optional[str]:
+    """Return the per-platform allowlist env var name, or None.
+
+    Falls back to the platform registry for plugin platforms so a plugin's
+    own ``allowed_users_env`` is honored too.
+    """
+    platform = (platform or "").lower().strip()
+    env_var = _PLATFORM_ALLOWLIST_ENV.get(platform)
+    if env_var:
+        return env_var
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform)
+        if entry and entry.allowed_users_env:
+            return entry.allowed_users_env
+    except Exception:
+        pass
+    return None
+
+
+def _split_allowlist(raw: str) -> list:
+    return [uid.strip() for uid in raw.split(",") if uid.strip()]
+
+
+def _sync_allowlist_add(platform: str, user_id: str) -> None:
+    """Add ``user_id`` to the platform allowlist env var IF one is configured.
+
+    Option (i): only materialize the grant into the allowlist when the operator
+    already runs an allowlist for this platform. On an open gateway (no
+    allowlist) we do nothing — the pairing store remains the grant record and
+    the authz union honors it, so we never silently convert an open gateway into
+    a locked one on first pairing.
+    """
+    env_var = _allowlist_env_for_platform(platform)
+    if not env_var:
+        return
+    current = os.getenv(env_var, "").strip()
+    if not current:
+        return  # No allowlist configured — leave the gateway open (option i).
+    ids = _split_allowlist(current)
+    if "*" in ids or str(user_id) in ids:
+        return  # Already covered.
+    ids.append(str(user_id))
+    try:
+        from hermes_cli.config import save_env_value
+
+        save_env_value(env_var, ",".join(ids))
+    except Exception:
+        # Best-effort: the pairing store grant still authorizes via the union,
+        # so a failure here degrades to "grant recorded but not mirrored".
+        pass
+
+
+def _sync_allowlist_remove(platform: str, user_id: str) -> None:
+    """Remove ``user_id`` from the platform allowlist env var if present."""
+    env_var = _allowlist_env_for_platform(platform)
+    if not env_var:
+        return
+    current = os.getenv(env_var, "").strip()
+    if not current:
+        return
+    ids = _split_allowlist(current)
+    remaining = [i for i in ids if i != str(user_id)]
+    if len(remaining) == len(ids):
+        return  # Not present.
+    try:
+        from hermes_cli.config import save_env_value, remove_env_value
+
+        if remaining:
+            save_env_value(env_var, ",".join(remaining))
+        else:
+            remove_env_value(env_var)
+    except Exception:
+        pass
 
 
 def _secure_write(path: Path, data: str) -> None:
@@ -109,12 +220,40 @@ class PairingStore:
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
+    def _normalize_user_id(self, platform: str, user_id: str) -> str:
+        """Normalize platform-specific user IDs before persisting them."""
+        raw_user_id = str(user_id or "").strip()
+        if platform == "whatsapp":
+            return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
+        return raw_user_id
+
+    def _user_id_aliases(self, platform: str, user_id: str) -> set[str]:
+        """Return all known equivalent user IDs for auth/rate-limit checks."""
+        raw_user_id = str(user_id or "").strip()
+        if not raw_user_id:
+            return set()
+
+        aliases = {raw_user_id, self._normalize_user_id(platform, raw_user_id)}
+        if platform == "whatsapp":
+            aliases.update(expand_whatsapp_aliases(raw_user_id))
+        aliases.discard("")
+        return aliases
+
+    def _user_ids_match(self, platform: str, left: str, right: str) -> bool:
+        """Return True when two user IDs represent the same principal."""
+        left_aliases = self._user_id_aliases(platform, left)
+        right_aliases = self._user_id_aliases(platform, right)
+        return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
+
     # ----- Approved users -----
 
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
         approved = self._load_json(self._approved_path(platform))
-        return user_id in approved
+        for approved_user_id in approved:
+            if self._user_ids_match(platform, approved_user_id, user_id):
+                return True
+        return False
 
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""
@@ -129,24 +268,53 @@ class PairingStore:
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
         """Add a user to the approved list. Must be called under self._lock."""
         approved = self._load_json(self._approved_path(platform))
-        approved[user_id] = {
+        normalized_user_id = self._normalize_user_id(platform, user_id)
+        duplicate_ids = [
+            approved_user_id
+            for approved_user_id in approved
+            if self._user_ids_match(platform, approved_user_id, normalized_user_id)
+        ]
+        for approved_user_id in duplicate_ids:
+            del approved[approved_user_id]
+
+        approved[normalized_user_id] = {
             "user_name": user_name,
             "approved_at": time.time(),
         }
         self._save_json(self._approved_path(platform), approved)
+
+        # Mirror the grant into the operator's allowlist when one is configured
+        # (option i), so the pairing store and the allowlist stay a single
+        # visible source of truth. No-op on open gateways.
+        _sync_allowlist_add(platform, normalized_user_id)
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
         path = self._approved_path(platform)
         with self._lock:
             approved = self._load_json(path)
-            if user_id in approved:
-                del approved[user_id]
+            matching_ids = [
+                approved_user_id
+                for approved_user_id in approved
+                if self._user_ids_match(platform, approved_user_id, user_id)
+            ]
+            if matching_ids:
+                for approved_user_id in matching_ids:
+                    del approved[approved_user_id]
                 self._save_json(path, approved)
+                # Keep the allowlist mirror in sync: revoking a paired user
+                # also removes the entry the approval added (option i). No-op if
+                # the user was added to the allowlist by other means.
+                _sync_allowlist_remove(platform, user_id)
                 return True
         return False
 
     # ----- Pending codes -----
+
+    @staticmethod
+    def _hash_code(code: str, salt: bytes) -> str:
+        """Hash a pairing code with the given salt using SHA-256."""
+        return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
@@ -158,9 +326,13 @@ class PairingStore:
           - User is rate-limited (too recent request)
           - Max pending codes reached for this platform
           - User/platform is in lockout due to failed attempts
+
+        The code is NOT stored in plaintext.  Only a salted SHA-256 hash is
+        persisted so that reading the pending file does not reveal codes.
         """
         with self._lock:
             self._cleanup_expired(platform)
+            normalized_user_id = self._normalize_user_id(platform, user_id)
 
             # Check lockout
             if self._is_locked_out(platform):
@@ -178,9 +350,18 @@ class PairingStore:
             # Generate cryptographically random code
             code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
 
-            # Store pending request
-            pending[code] = {
-                "user_id": user_id,
+            # Hash the code with a random salt before storing
+            salt = os.urandom(16)
+            code_hash = self._hash_code(code, salt)
+
+            # Use a unique entry id as the key (not the code itself)
+            entry_id = secrets.token_hex(8)
+
+            # Store pending request with hashed code
+            pending[entry_id] = {
+                "hash": code_hash,
+                "salt": salt.hex(),
+                "user_id": normalized_user_id,
                 "user_name": user_name,
                 "created_at": time.time(),
             }
@@ -195,10 +376,16 @@ class PairingStore:
         """
         Approve a pairing code. Adds the user to the approved list.
 
-        Returns {user_id, user_name} on success, None if code is
+        Returns ``{user_id, user_name}`` on success, ``None`` if the code is
         invalid/expired OR the platform is currently locked out after
         ``MAX_FAILED_ATTEMPTS`` failed approvals (#10195). Callers can
         disambiguate with ``_is_locked_out(platform)``.
+
+        Verification: the user-provided code is hashed with each stored
+        entry's salt and compared to the stored hash using constant-time
+        comparison. Pre-hash entries (legacy plaintext-key format from
+        pre-upgrade pending.json files) are silently ignored — they get
+        pruned at TTL by ``_cleanup_expired``.
         """
         with self._lock:
             self._cleanup_expired(platform)
@@ -213,37 +400,77 @@ class PairingStore:
                 return None
 
             pending = self._load_json(self._pending_path(platform))
-            if code not in pending:
+
+            # Find the entry whose hash matches the provided code.
+            # Tolerate legacy plaintext-key entries (no salt/hash) and
+            # malformed entries — skip them rather than KeyError, so an
+            # in-place upgrade across an existing pending.json doesn't
+            # crash on the first approve call. Legacy entries get pruned
+            # at their TTL by _cleanup_expired.
+            matched_key = None
+            matched_entry = None
+            for entry_id, entry in pending.items():
+                if not isinstance(entry, dict):
+                    continue
+                if "salt" not in entry or "hash" not in entry:
+                    continue
+                try:
+                    salt = bytes.fromhex(entry["salt"])
+                except ValueError:
+                    continue
+                candidate_hash = self._hash_code(code, salt)
+                if secrets.compare_digest(candidate_hash, entry["hash"]):
+                    matched_key = entry_id
+                    matched_entry = entry
+                    break
+
+            if matched_key is None:
                 self._record_failed_attempt(platform)
                 return None
 
-            entry = pending.pop(code)
+            del pending[matched_key]
             self._save_json(self._pending_path(platform), pending)
 
             # Add to approved list
-            self._approve_user(platform, entry["user_id"], entry.get("user_name", ""))
+            self._approve_user(platform, matched_entry["user_id"],
+                               matched_entry.get("user_name", ""))
 
             return {
-                "user_id": entry["user_id"],
-                "user_name": entry.get("user_name", ""),
+                "user_id": matched_entry["user_id"],
+                "user_name": matched_entry.get("user_name", ""),
             }
 
     def list_pending(self, platform: str = None) -> list:
-        """List pending pairing requests, optionally filtered by platform."""
+        """List pending pairing requests, optionally filtered by platform.
+
+        Codes are stored hashed — the ``code`` field is replaced with the
+        first 8 hex characters of the hash so admins can distinguish entries
+        without revealing the original code. Legacy plaintext-key entries
+        (pre-hash format) are shown with a "legacy" placeholder so admins
+        can see them age out without crashing on a missing ``hash`` field.
+        """
         results = []
-        platforms = [platform] if platform else self._all_platforms("pending")
-        for p in platforms:
-            self._cleanup_expired(p)
-            pending = self._load_json(self._pending_path(p))
-            for code, info in pending.items():
-                age_min = int((time.time() - info["created_at"]) / 60)
-                results.append({
-                    "platform": p,
-                    "code": code,
-                    "user_id": info["user_id"],
-                    "user_name": info.get("user_name", ""),
-                    "age_minutes": age_min,
-                })
+        with self._lock:
+            platforms = [platform] if platform else self._all_platforms("pending")
+            for p in platforms:
+                self._cleanup_expired(p)
+                pending = self._load_json(self._pending_path(p))
+                for entry_id, info in pending.items():
+                    if not isinstance(info, dict):
+                        continue
+                    created_at = info.get("created_at")
+                    if not isinstance(created_at, (int, float)):
+                        continue
+                    age_min = int((time.time() - created_at) / 60)
+                    hash_val = info.get("hash")
+                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    results.append({
+                        "platform": p,
+                        "code": code_display,
+                        "user_id": info.get("user_id", ""),
+                        "user_name": info.get("user_name", ""),
+                        "age_minutes": age_min,
+                    })
         return results
 
     def clear_pending(self, platform: str = None) -> int:
@@ -262,15 +489,20 @@ class PairingStore:
     def _is_rate_limited(self, platform: str, user_id: str) -> bool:
         """Check if a user has requested a code too recently."""
         limits = self._load_json(self._rate_limit_path())
-        key = f"{platform}:{user_id}"
-        last_request = limits.get(key, 0)
-        return (time.time() - last_request) < RATE_LIMIT_SECONDS
+        for alias in self._user_id_aliases(platform, user_id):
+            key = f"{platform}:{alias}"
+            last_request = limits.get(key, 0)
+            if (time.time() - last_request) < RATE_LIMIT_SECONDS:
+                return True
+        return False
 
     def _record_rate_limit(self, platform: str, user_id: str) -> None:
         """Record the time of a pairing request for rate limiting."""
         limits = self._load_json(self._rate_limit_path())
-        key = f"{platform}:{user_id}"
-        limits[key] = time.time()
+        now = time.time()
+        for alias in self._user_id_aliases(platform, user_id):
+            key = f"{platform}:{alias}"
+            limits[key] = now
         self._save_json(self._rate_limit_path(), limits)
 
     def _is_locked_out(self, platform: str) -> bool:
@@ -297,17 +529,29 @@ class PairingStore:
     # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
-        """Remove expired pending codes."""
+        """Remove expired pending codes.
+
+        Tolerant of malformed / legacy entries — anything without a numeric
+        ``created_at`` is treated as expired (it's effectively unusable
+        with the new hash-keyed schema anyway).
+        """
         path = self._pending_path(platform)
         pending = self._load_json(path)
         now = time.time()
-        expired = [
-            code for code, info in pending.items()
-            if (now - info["created_at"]) > CODE_TTL_SECONDS
-        ]
+        expired = []
+        for entry_id, info in pending.items():
+            if not isinstance(info, dict):
+                expired.append(entry_id)
+                continue
+            created_at = info.get("created_at")
+            if not isinstance(created_at, (int, float)):
+                expired.append(entry_id)
+                continue
+            if (now - created_at) > CODE_TTL_SECONDS:
+                expired.append(entry_id)
         if expired:
-            for code in expired:
-                del pending[code]
+            for entry_id in expired:
+                del pending[entry_id]
             self._save_json(path, pending)
 
     def _all_platforms(self, suffix: str) -> list:

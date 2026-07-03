@@ -83,6 +83,30 @@ def test_private_page_blocks_camofox_reads(monkeypatch, _session, tool_call, act
     assert action_phrase in out["error"]
 
 
+@pytest.mark.parametrize(
+    ("tool_call", "action_phrase"),
+    [
+        (lambda: browser_camofox.camofox_click("e1", task_id="t1"), "click"),
+        (lambda: browser_camofox.camofox_type("e1", "hello", task_id="t1"), "type"),
+        (lambda: browser_camofox.camofox_press("Enter", task_id="t1"), "press"),
+    ],
+)
+def test_private_page_blocks_camofox_interactions(monkeypatch, _session, tool_call, action_phrase):
+    _block_active(monkeypatch)
+
+    def fail_post(*_args, **_kwargs):
+        raise AssertionError("Camofox interaction should not run on a private page")
+
+    monkeypatch.setattr(browser_camofox, "_post", fail_post)
+
+    out = json.loads(tool_call())
+
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert "private or internal address" in out["error"]
+    assert action_phrase in out["error"]
+
+
 def test_snapshot_still_runs_when_page_is_public(monkeypatch, _session):
     _public_page(monkeypatch)
 

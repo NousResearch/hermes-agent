@@ -364,3 +364,73 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+    # Rendered output artifacts (email bodies, message drafts) — no test suite
+    # exercises them; verification is delivery-side.
+    assert _is_non_code_path("reply_body.html") is True
+    assert _is_non_code_path("draft.htm") is True
+    assert _is_non_code_path("outbound.eml") is True
+
+
+# ---------------------------------------------------------------------------
+# Temp-dir artifacts are throwaway by construction: they belong to no project,
+# so no project verify command can exercise them. Editing one must never trip
+# the nudge — regardless of extension. (Real-world false positive: a support
+# agent wrote an HTML email body to /tmp and was nudged to run the nearest
+# repo's `npm run test`.)
+# ---------------------------------------------------------------------------
+
+def test_tempdir_path_is_exempt_regardless_of_extension():
+    from agent.verification_stop import _is_non_code_path
+
+    tmp = tempfile.gettempdir()
+    assert _is_non_code_path(f"{tmp}/reply_abc123.html") is True
+    assert _is_non_code_path(f"{tmp}/hermes-verify-scratch.py") is True
+    assert _is_non_code_path(f"{tmp}/staged_payload.json") is True
+    # Literal /tmp spelling must also match even where the OS temp dir
+    # resolves elsewhere (macOS: /tmp -> /private/tmp; TMPDIR is per-user).
+    assert _is_non_code_path("/tmp/reply_abc123.html") is True
+    assert _is_non_code_path("/tmp/scratch.sh") is True
+    # Non-temp code paths keep nudging.
+    assert _is_non_code_path("/Users/dev/project/src/app.ts") is False
+    # A path merely *containing* a tmp-like segment is not exempt.
+    assert _is_non_code_path("src/tmp_utils.py") is False
+
+
+def test_project_under_tempdir_is_not_exempt(tmp_path):
+    """A real project checked out under the temp dir keeps full verification.
+
+    The temp exemption is for LOOSE scratch files only; a project marker
+    (package.json, .git, ...) anywhere between the file and the temp root
+    disables it. This also keeps pytest tmp_path-based project fixtures
+    working.
+    """
+    from agent.verification_stop import _is_non_code_path
+
+    _node_project(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    code = src / "app.ts"
+    code.write_text("export {}\n")
+    assert _is_non_code_path(str(code)) is False
+
+
+def test_tempdir_only_edit_does_not_nudge(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(Path(tempfile.gettempdir()) / "reply_ticket123.html")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
+
+
+def test_mixed_tempdir_and_code_edit_still_nudges(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    scratch = str(Path(tempfile.gettempdir()) / "hermes-verify-scratch.py")
+    code = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[code])
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[scratch, code])
+    assert nudge is not None
+    assert code in nudge
+    assert scratch not in nudge

@@ -94,6 +94,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     branchSwitch: (repoPath, branch) => ipcRenderer.invoke('hermes:git:branchSwitch', repoPath, branch),
     branchList: repoPath => ipcRenderer.invoke('hermes:git:branchList', repoPath),
     repoStatus: repoPath => ipcRenderer.invoke('hermes:git:repoStatus', repoPath),
+    log: (repoPath, count) => ipcRenderer.invoke('hermes:git:log', repoPath, count),
+    show: (repoPath, hash) => ipcRenderer.invoke('hermes:git:show', repoPath, hash),
+    divergence: (repoPath) => ipcRenderer.invoke('hermes:git:divergence', repoPath),
     fileDiff: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:fileDiff', repoPath, filePath),
     scanRepos: (roots, options) => ipcRenderer.invoke('hermes:git:scanRepos', roots, options),
     review: {

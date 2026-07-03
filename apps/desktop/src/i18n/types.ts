@@ -1441,9 +1441,12 @@ export interface Translations {
       noChanges: string
       notRepo: string
       noDiff: string
+      copyHash: string
+      copyMessage: string
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string
+      graph: string
       commit: string
       commitAndPush: string
       commitPlaceholder: string

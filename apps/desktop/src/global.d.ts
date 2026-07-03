@@ -119,6 +119,12 @@ declare global {
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
         repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
+        // Commit history for the review pane graph view.
+        log: (repoPath: string, count?: number) => Promise<HermesGitLogEntry[]>
+        // Files changed in a specific commit (by hash).
+        show: (repoPath: string, hash: string) => Promise<HermesGitShowEntry[]>
+        // Ahead/behind count vs upstream. Null when no upstream is configured.
+        divergence: (repoPath: string) => Promise<HermesGitDivergence | null>
         // Working-tree-vs-HEAD unified diff for one file (the preview's diff
         // view). Empty string when the file is unchanged or not in a repo.
         fileDiff: (repoPath: string, filePath: string) => Promise<string>
@@ -128,7 +134,7 @@ declare global {
           list: (repoPath: string, scope: HermesReviewScope, baseRef?: null | string) => Promise<HermesReviewList>
           diff: (
             repoPath: string,
-            filePath: string,
+            filePath: null | string,
             scope: HermesReviewScope,
             baseRef?: null | string,
             staged?: boolean
@@ -620,7 +626,7 @@ export interface HermesRepoStatus {
 // Diff scope for the review pane, mirroring Codex: uncommitted working-tree
 // changes, all changes vs the branch base, or everything since the current
 // turn began.
-export type HermesReviewScope = 'branch' | 'lastTurn' | 'uncommitted'
+export type HermesReviewScope = 'branch' | 'lastTurn' | 'uncommitted' | 'commit'
 
 // One changed file in the review pane (status letter, +/- lines, staged flag).
 export interface HermesReviewFile {
@@ -637,6 +643,28 @@ export interface HermesReviewList {
   // The resolved base ref the scope diffed against (branch merge-base / turn
   // baseline), or null for the uncommitted scope.
   base: null | string
+}
+
+// One commit entry in the review pane graph view.
+export interface HermesGitLogEntry {
+  hash: string
+  message: string
+  author: string
+  date: string
+  parents: string[]
+  side?: 'local' | 'upstream'
+}
+
+// One file changed in a specific commit.
+export interface HermesGitShowEntry {
+  path: string
+  status: string
+}
+
+// Ahead/behind commit count vs the upstream tracking branch.
+export interface HermesGitDivergence {
+  ahead: number
+  behind: number
 }
 
 // The branch's PR (if any) as reported by `gh pr view`.

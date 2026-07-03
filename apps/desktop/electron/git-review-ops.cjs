@@ -64,7 +64,27 @@ function runGh(args, cwd, ghBin) {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // simple-git rejects Windows paths with spaces (C:\Program Files\Git\...).
+  // Fall back to PATH lookup — 'git' is on PATH on Windows regardless.
+  const binary = gitBin && !gitBin.includes(' ') ? gitBin : 'git'
+  return simpleGit({ baseDir: cwd, binary, maxConcurrentProcesses: 4, trimmed: false })
+}
+
+// simple-git returns paths relative to the git repo root, but the renderer
+// expects them relative to the requested cwd (which may be a subdirectory).
+// Resolve the repo root once, then re-base each path.
+async function repoRoot(cwd) {
+  const git = gitFor(cwd, null)
+  try {
+    return (await git.revparse(['--show-toplevel'])).trim()
+  } catch {
+    return cwd
+  }
+}
+
+function rebasePath(root, cwd, repoRelativePath) {
+  if (!root || !cwd) return repoRelativePath
+  return path.relative(cwd, path.join(root, repoRelativePath))
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -258,10 +278,11 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
         return { files: [], base: null }
       }
 
+      const root = await repoRoot(cwd)
       const range = scope === 'branch' ? `${base}...HEAD` : base
       const summary = await git.diffSummary([range])
       const files = summary.files.map(file => ({
-        path: resolveRenamePath(file.file),
+        path: rebasePath(root, cwd, resolveRenamePath(file.file)),
         added: file.binary ? 0 : file.insertions,
         removed: file.binary ? 0 : file.deletions,
         status: 'M',
@@ -272,9 +293,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       if (scope === 'lastTurn') {
         const status = await git.status()
 
-        for (const path of status.not_added) {
-          if (!files.some(f => f.path === path)) {
-            files.push({ path, added: 0, removed: 0, status: '?', staged: false })
+        for (const entry of status.not_added) {
+          const rp = rebasePath(root, cwd, entry)
+          if (!files.some(f => f.path === rp)) {
+            files.push({ path: rp, added: 0, removed: 0, status: '?', staged: false })
           }
         }
       }
@@ -286,6 +308,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     }
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
+    const root = await repoRoot(cwd)
     const [status, staged, unstaged] = await Promise.all([
       git.status(),
       git.diffSummary(['--cached']),
@@ -295,9 +318,9 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     const unstagedCounts = countsByPath(unstaged)
 
     const files = status.files.map(file => {
-      const filePath = resolveRenamePath(file.path)
-      const sc = stagedCounts.get(filePath) || { added: 0, removed: 0 }
-      const uc = unstagedCounts.get(filePath) || { added: 0, removed: 0 }
+      const filePath = rebasePath(root, cwd, resolveRenamePath(file.path))
+      const sc = stagedCounts.get(file.path) || { added: 0, removed: 0 }
+      const uc = unstagedCounts.get(file.path) || { added: 0, removed: 0 }
 
       return {
         path: filePath,
@@ -329,6 +352,9 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   const git = gitFor(cwd, gitBin)
   const safe = args => git.diff(args).catch(() => '')
 
+  // The renderer sends filePath relative to cwd. simple-git runs git with
+  // baseDir=cwd, so git diff expects cwd-relative paths — NOT repo-root-relative.
+  // No rebase needed: the renderer's path is already in the right form.
   if (scope === 'branch') {
     const base = await branchBase(git)
 
@@ -337,6 +363,14 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
 
   if (scope === 'lastTurn') {
     return baseRef ? safe([baseRef, '--', filePath]) : ''
+  }
+
+  if (scope === 'commit') {
+    // Full commit diff (no file) or single-file diff within a commit.
+    if (!baseRef) return ''
+    const args = [`${baseRef}~1`, baseRef]
+    if (filePath) args.push('--', filePath)
+    return safe(args)
   }
 
   if (staged) {
@@ -355,7 +389,7 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   return new Promise(resolve => {
     execFile(
       gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
+      ['diff', '--no-index', '--', '/dev/null', path.join(cwd, filePath)],
       { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
       (_err, stdout) => resolve(String(stdout || ''))
     )
@@ -376,6 +410,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
   }
 
   const git = gitFor(cwd, gitBin)
+  // filePath is cwd-relative; simple-git uses baseDir=cwd, so no rebase needed.
   const head = await git.diff(['HEAD', '--', filePath]).catch(() => '')
 
   if (head.trim()) {
@@ -393,13 +428,16 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
   return new Promise(resolve => {
     execFile(
       gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
+      ['diff', '--no-index', '--', '/dev/null', path.join(cwd, filePath)],
       { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
       (_err, stdout) => resolve(String(stdout || ''))
     )
   })
 }
 
+// simple-git runs git with baseDir=cwd, so git commands expect cwd-relative
+// paths — NOT repo-root-relative. The renderer already sends cwd-relative
+// paths, so no rebase is needed for stage/unstage/revert.
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
 

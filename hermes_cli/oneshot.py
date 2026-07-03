@@ -15,6 +15,19 @@ Model / provider selection mirrors `hermes chat`:
     - If only --model given, auto-detect the provider that serves it.
     - If only --provider given, error out (ambiguous — caller must pick a model).
 
+Session chaining (--resume / --continue):
+    - ``hermes --resume <id> -z "..."`` loads the session's prior transcript as
+      conversation history and appends this turn to the SAME session id — the
+      one-shot equivalent of resuming an interactive chat.
+    - If the id does not exist yet, it is created on first use ("create-on-
+      first-use"): callers that manage their own session keys (the Smith
+      Crafts OS gateway, cron workers, scripts) can mint a stable id up front
+      and pass it on every turn without parsing anything back out.
+    - ``--continue`` (optionally with a session name) resolves to the most
+      recent / named CLI session, exactly like interactive chat.
+    - Best-effort: if the SQLite session store is unavailable, the turn still
+      runs stateless rather than failing.
+
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
 """
@@ -127,6 +140,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +151,9 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        resume: Optional session id to chain this turn onto. Prior transcript
+            is loaded as conversation history and this turn is appended to the
+            same session. Ids that don't exist yet are created on first use.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -189,6 +206,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    resume=resume,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -247,12 +265,49 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _load_resume_history(session_db, resume: str) -> tuple[Optional[str], Optional[list]]:
+    """Resolve a --resume id and load its transcript for oneshot chaining.
+
+    Returns ``(session_id, conversation_history)``. Mirrors the interactive
+    resume path (cli_agent_setup_mixin): walk the compression chain via
+    ``resolve_resume_session_id``, load messages in conversation format, and
+    drop ``session_meta`` rows. Unlike interactive resume, an id with no
+    existing session is NOT an error — it is returned as-is with no history,
+    so the session is created on first use under the caller's chosen id.
+    Every step is best-effort: a broken store degrades to a stateless turn.
+    """
+    session_id = (resume or "").strip() or None
+    if not session_id or session_db is None:
+        return session_id, None
+    try:
+        resolved = session_db.resolve_resume_session_id(session_id)
+        if resolved:
+            session_id = resolved
+    except Exception as exc:
+        logging.debug("oneshot resume: id resolution failed for %s: %s", session_id, exc)
+    history: Optional[list] = None
+    try:
+        restored = session_db.get_messages_as_conversation(session_id)
+        restored = [m for m in restored if m.get("role") != "session_meta"]
+        history = restored or None
+    except Exception as exc:
+        logging.debug("oneshot resume: history load failed for %s: %s", session_id, exc)
+    # Ended sessions accept appends again once reopened; harmless if the
+    # session is new or already open.
+    try:
+        session_db.reopen_session(session_id)
+    except Exception:
+        pass
+    return session_id, history
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    resume: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -333,6 +388,9 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
+    # --resume chaining: load the prior transcript and pin the agent to the
+    # caller's session id so this turn appends to the SAME session.
+    resume_session_id, conversation_history = _load_resume_history(session_db, resume)
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
@@ -346,6 +404,7 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_id=resume_session_id,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
@@ -369,7 +428,7 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
+    result = agent.run_conversation(prompt, conversation_history=conversation_history)
     return (result.get("final_response") or "", result)
 
 

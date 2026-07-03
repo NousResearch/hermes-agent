@@ -175,6 +175,16 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # everything else stays on the main thread so ordering stays sane for the
 # fast path.  write_json is already _stdout_lock-guarded, so concurrent
 # response writes are safe.
+#
+# Dispatch policy contract:
+# - Add every frontend-polled RPC here unless it is proven in-memory-only.
+#   “Small” DB/file/network/process reads still starve the WS read loop under
+#   GIL pressure because handle_ws awaits dispatch() before reading the next
+#   frame on that socket (#50005).
+# - Keep truly trivial control responses inline so ordering stays predictable.
+# - Do not move live agent/session mutation into a ProcessPool without an
+#   explicit serialization boundary; use this thread pool or a dedicated
+#   subprocess instead.
 _LONG_HANDLERS = frozenset(
     {
         "billing.step_up",
@@ -202,6 +212,7 @@ _LONG_HANDLERS = frozenset(
         "pet.generate",
         "pet.hatch",
         "pet.info",
+        "pet.info.meta",
         "pet.select",
         "pet.thumb",
         "learning.frames",

@@ -393,9 +393,16 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
 # payload is data, not instructions — the architectural piece of the
 # promptware defense.  Skipped for short outputs (under 32 chars) where the
 # overhead of the wrapper outweighs any indirect-injection risk.
+#
+# ``session_search`` replays raw message content from past sessions — those
+# messages may themselves carry an injection payload (a poisoned web page
+# quoted earlier, a pasted phishing email, etc.) that was never scanned or
+# wrapped at write time. Wrapping the replayed result closes that gap the
+# same way it's closed for web_extract/web_search results.
 _UNTRUSTED_TOOL_NAMES = frozenset({
     "web_extract",
     "web_search",
+    "session_search",
 })
 
 _UNTRUSTED_TOOL_PREFIXES = (

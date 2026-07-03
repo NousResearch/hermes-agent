@@ -14,6 +14,12 @@ chmod +x "${SCRIPT}"
 mkdir -p "${BIN_DIR}" "${LOG_DIR}"
 ln -sf "${SCRIPT}" "${BIN_DIR}/violation-audit"
 
+PYTHON_BIN="$(command -v python3 || true)"
+if [ -z "${PYTHON_BIN}" ]; then
+  echo "ERROR: ไม่พบ python3 บนเครื่องนี้ — ติดตั้ง python3 ก่อนแล้วรันใหม่" >&2
+  exit 1
+fi
+
 if [ "$(uname -s)" = "Darwin" ]; then
   cat > "${PLIST}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,7 +29,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
   <key>Label</key><string>com.hermes.violation-audit</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
+    <string>${PYTHON_BIN}</string>
     <string>${SCRIPT}</string>
     <string>--notify</string>
   </array>

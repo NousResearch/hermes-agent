@@ -40,8 +40,7 @@ screen fast.
 2. Make it concrete for **their** account when they ask "what do I have?" — use `crwd_db`
    `get_user_gigs` with the authenticated `user_id` from the `[CRWD member]` context line
    (pass it straight through), and reflect their real active / completed gigs so it matches
-   what they see on Home. Only fall back to `get_user` (by email/phone) if that line isn't
-   present or you're looking up a **different** person.
+   what they see on Home.
 3. If they're stuck opening a gig or the screen looks wrong, walk them to it step by step. If
    something appears **broken** (won't load, button does nothing), switch to
    `crwd-troubleshooting`.

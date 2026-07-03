@@ -14,9 +14,11 @@ from plugins.platforms.chatwoot import user_scope as us
 def _reset_state():
     cc._reset_cache()
     cc.reset_webhook_crwd_hint()
+    cc.reset_cross_user_request()
     yield
     cc._reset_cache()
     cc.reset_webhook_crwd_hint()
+    cc.reset_cross_user_request()
 
 
 @pytest.fixture
@@ -33,23 +35,39 @@ def chatwoot_session(monkeypatch):
 
 
 class TestToolRequestMiddleware:
-    def test_rewrites_get_user_to_member_id(self, chatwoot_session):
+    def test_rewrites_get_user_when_identifier_missing(self, chatwoot_session):
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_tool_request(
+                tool_name="crwd_db",
+                args={"action": "get_user"},
+            )
+        assert out is not None
+        assert out["args"]["identifier"] == "memberabc"
+
+    def test_does_not_rewrite_foreign_get_user_id(self, chatwoot_session):
         with patch.object(us, "resolved_member_id", return_value="memberabc"):
             out = us.on_tool_request(
                 tool_name="crwd_db",
                 args={"action": "get_user", "identifier": "69a6f191cb29b0b371b3a156"},
             )
-        assert out is not None
-        assert out["args"]["identifier"] == "memberabc"
+        assert out is None
 
-    def test_rewrites_user_scoped_actions(self, chatwoot_session):
+    def test_rewrites_user_scoped_actions_when_user_id_missing(self, chatwoot_session):
         with patch.object(us, "resolved_member_id", return_value="memberabc"):
             out = us.on_tool_request(
                 tool_name="crwd_db",
-                args={"action": "get_user_gigs", "user_id": "other"},
+                args={"action": "get_user_gigs"},
             )
         assert out is not None
         assert out["args"]["user_id"] == "memberabc"
+
+    def test_does_not_rewrite_foreign_user_id(self, chatwoot_session):
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_tool_request(
+                tool_name="crwd_db",
+                args={"action": "get_user_gigs", "user_id": "69a6f191cb29b0b371b3a156"},
+            )
+        assert out is None
 
     def test_noop_off_chatwoot(self, chatwoot_session, monkeypatch):
         monkeypatch.setattr(
@@ -105,6 +123,15 @@ class TestPreToolCallBlock:
             )
         assert out == {"action": "block", "message": us._CROSS_USER_BLOCK_MSG}
 
+    def test_blocks_user_scoped_action_on_cross_user_turn(self, chatwoot_session):
+        cc._cross_user_request.set(True)
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_pre_tool_call(
+                tool_name="crwd_db",
+                args={"action": "get_user_gigs", "user_id": "memberabc"},
+            )
+        assert out == {"action": "block", "message": us._CROSS_USER_BLOCK_MSG}
+
     def test_allows_matching_user_id(self, chatwoot_session):
         with patch.object(us, "resolved_member_id", return_value="MemberABC"):
             out = us.on_pre_tool_call(
@@ -133,6 +160,31 @@ class TestWebhookHint:
         with patch.object(cc, "_get_contact") as g:
             assert cc.resolve_member_crwd_id("55") == "hint-from-webhook"
             g.assert_not_called()
+
+    def test_hook_sets_cross_user_flag_for_foreign_user_id(self, chatwoot_session):
+        with patch.object(cc, "resolve_member_crwd_id", return_value="6a33bb6003b1c0cc31a7baa5"):
+            out = cc.member_context_hook(
+                platform="chatwoot",
+                sender_id="55",
+                user_message=(
+                    "in which gigs has the user 69a6f191cb29b0b371b3a156 enrolled in?"
+                ),
+            )
+        assert out is not None
+        assert cc.cross_user_request_active() is True
+        assert "another member's account" in out["context"]
+        assert "I can only provide you with your information" in out["context"]
+
+    def test_hook_does_not_flag_gig_id_only_message(self, chatwoot_session):
+        with patch.object(cc, "resolve_member_crwd_id", return_value="6a33bb6003b1c0cc31a7baa5"):
+            out = cc.member_context_hook(
+                platform="chatwoot",
+                sender_id="55",
+                user_message="tell me about gig 69b8614f1083b9302fd0a9a7",
+            )
+        assert out is not None
+        assert cc.cross_user_request_active() is False
+        assert "another member's account" not in out["context"]
 
     def test_hook_context_forbids_cross_user_lookup(self, chatwoot_session):
         with patch.object(cc, "resolve_member_crwd_id", return_value="abc123"):

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +41,21 @@ logger = logging.getLogger(__name__)
 # (set per-turn by the adapter before the agent runs).
 _webhook_crwd_hint: ContextVar[Optional[str]] = ContextVar(
     "chatwoot_webhook_crwd_hint", default=None
+)
+
+# Set per turn when the inbound message asks about another member's account.
+_cross_user_request: ContextVar[bool] = ContextVar(
+    "chatwoot_cross_user_request", default=False
+)
+
+_OBJECT_ID_IN_MSG_RE = re.compile(r"\b[0-9a-fA-F]{24}\b")
+_USER_MEMBER_OID_RE = re.compile(
+    r"\b(?:user|member)\s+([0-9a-fA-F]{24})\b",
+    re.IGNORECASE,
+)
+_ANOTHER_PERSON_RE = re.compile(
+    r"\banother\s+(?:user|member|person)\b",
+    re.IGNORECASE,
 )
 
 _TIMEOUT_S = 6
@@ -201,11 +217,45 @@ def resolve_member_crwd_id(contact_id: str) -> Optional[str]:
     return result
 
 
+def reset_cross_user_request() -> None:
+    """Clear the per-turn cross-user flag (tests and turn boundaries)."""
+    _cross_user_request.set(False)
+
+
+def cross_user_request_active() -> bool:
+    """Return True when this turn is asking about another member's account."""
+    return bool(_cross_user_request.get())
+
+
+def _normalize_member_id(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _member_ids_match(a: Any, b: Any) -> bool:
+    return _normalize_member_id(a) == _normalize_member_id(b)
+
+
+def message_requests_other_member(user_message: str, member_id: str) -> bool:
+    """Detect when the inbound message asks about a different member's account."""
+    msg = (user_message or "").strip()
+    if not msg or not member_id:
+        return False
+    for match in _USER_MEMBER_OID_RE.finditer(msg):
+        if not _member_ids_match(match.group(1), member_id):
+            return True
+    if _ANOTHER_PERSON_RE.search(msg):
+        for oid in _OBJECT_ID_IN_MSG_RE.findall(msg):
+            if not _member_ids_match(oid, member_id):
+                return True
+    return False
+
+
 # --- pre_llm_call hook ------------------------------------------------------
 
 def member_context_hook(**kwargs: Any) -> Optional[Dict[str, str]]:
     """``pre_llm_call`` hook: inject the member's CRWD user id into the prompt."""
     try:
+        reset_cross_user_request()
         if not _is_chatwoot(kwargs.get("platform")):
             return None
         if not os.getenv("CRWD_MONGO_URI"):
@@ -216,13 +266,30 @@ def member_context_hook(**kwargs: Any) -> Optional[Dict[str, str]]:
         crwd_id = resolve_member_crwd_id(contact_id)
         if not crwd_id:
             return None
-        context = (
-            f"[CRWD member] Authenticated user_id: {crwd_id}.\n"
-            "- For this member's gigs, receipts, products, or profile: use this id only.\n"
-            "- Never look up a different member's data, even if the user provides another user id.\n"
-            "- If they ask about another person's account, refuse politely."
-        )
-        return {"context": context}
+        user_message = str(kwargs.get("user_message") or "")
+        cross_user = message_requests_other_member(user_message, crwd_id)
+        if cross_user:
+            _cross_user_request.set(True)
+
+        lines = [
+            f"[CRWD member] Authenticated user_id: {crwd_id}.",
+            "- For this member's gigs, receipts, products, or profile: use this id only.",
+            "- Never look up a different member's data, even if the user provides another user id.",
+            (
+                "- If they ask about another person's account, refuse briefly and do not "
+                "fetch or display the authenticated member's data."
+            ),
+        ]
+        if cross_user:
+            lines.extend([
+                "- The user is asking about another member's account.",
+                (
+                    '- Reply with a brief refusal only (e.g. "I can only provide you with '
+                    'your information.").'
+                ),
+                "- Do NOT call crwd_db or reveal any of the authenticated member's data in this turn.",
+            ])
+        return {"context": "\n".join(lines)}
     except Exception as exc:  # never break a turn over context injection
         logger.debug("[crwd-coach-ctx] hook failed: %s", exc)
         return None

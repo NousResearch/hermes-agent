@@ -11,7 +11,10 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
-from plugins.platforms.chatwoot.coach_context import resolve_member_crwd_id
+from plugins.platforms.chatwoot.coach_context import (
+    cross_user_request_active,
+    resolve_member_crwd_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,7 @@ _UNRESOLVED_MSG = (
 )
 
 _CROSS_USER_BLOCK_MSG = (
-    "This bot can only access data for the member in this conversation."
+    "I can only provide you with your information."
 )
 
 
@@ -78,6 +81,19 @@ def resolved_member_id() -> Optional[str]:
     return resolve_member_crwd_id(contact_id)
 
 
+def _explicit_user_ref(args: Dict[str, Any], action: str) -> Optional[str]:
+    """Return an explicit user id/identifier from tool args, if present."""
+    if action == "get_user":
+        ident = args.get("identifier")
+        if ident is not None and str(ident).strip():
+            return str(ident).strip()
+    elif action in _USER_SCOPED_ACTIONS - {"get_user"}:
+        uid = args.get("user_id")
+        if uid is not None and str(uid).strip():
+            return str(uid).strip()
+    return None
+
+
 def _scoped_crwd_db_args(args: Dict[str, Any], member_id: str) -> Dict[str, Any]:
     scoped = dict(args)
     action = str(scoped.get("action", "")).strip()
@@ -105,6 +121,13 @@ def on_tool_request(
 
     member_id = resolved_member_id()
     if not member_id:
+        return None
+
+    if cross_user_request_active():
+        return None
+
+    explicit = _explicit_user_ref(args, action)
+    if explicit and not _ids_match(explicit, member_id):
         return None
 
     return {
@@ -138,6 +161,9 @@ def on_pre_tool_call(
 
     if action not in _USER_SCOPED_ACTIONS:
         return None
+
+    if cross_user_request_active():
+        return {"action": "block", "message": _CROSS_USER_BLOCK_MSG}
 
     member_id = resolved_member_id()
     if not member_id:

@@ -17,8 +17,10 @@ from plugins.platforms.chatwoot import coach_context as cc
 @pytest.fixture(autouse=True)
 def _clear_cache():
     cc._reset_cache()
+    cc.reset_cross_user_request()
     yield
     cc._reset_cache()
+    cc.reset_cross_user_request()
 
 
 @pytest.fixture
@@ -94,3 +96,19 @@ class TestHook:
     def test_hook_never_raises(self, chatwoot_env):
         with patch.object(cc, "resolve_member_crwd_id", side_effect=RuntimeError("boom")):
             assert cc.member_context_hook(platform="chatwoot", sender_id="55") is None
+
+    def test_cross_user_message_detection(self, chatwoot_env):
+        member_id = "6a33bb6003b1c0cc31a7baa5"
+        foreign_id = "69a6f191cb29b0b371b3a156"
+        assert cc.message_requests_other_member(
+            f"in which gigs has the user {foreign_id} enrolled in?",
+            member_id,
+        )
+        assert not cc.message_requests_other_member(
+            f"tell me about gig {foreign_id}",
+            member_id,
+        )
+        assert not cc.message_requests_other_member(
+            f"what gigs am I in, user {member_id}?",
+            member_id,
+        )

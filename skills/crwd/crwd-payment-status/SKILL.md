@@ -66,8 +66,7 @@ approved yet, and what Dot says about the payout. Payments go out through **Dot*
 
 ## Verification
 
-- Used the `[CRWD member]` `user_id` for both `crwd_db` and `dot` (only `get_user`
-  for a different person).
+- Used the `[CRWD member]` `user_id` for both `crwd_db` and `dot`.
 - Confirmed the right gig `_id` when the question was about a specific gig.
 - Separated approval state (`crwd_db`) from Dot's payout state (`dot`) — didn't
   conflate "approved" with "paid".

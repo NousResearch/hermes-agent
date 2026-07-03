@@ -37,9 +37,7 @@ Find gigs and explain them against the member's **real** data — not in the abs
    elsewhere — if two candidates are close, ask which one they mean.
 3. **Their gigs / approval state:** `get_user_gigs`. The current member's CRWD `user_id` is
    provided to you in context (a `[CRWD member]` line) — pass it straight through as `user_id`.
-   Only fall back to `get_user` (by email/phone) if that line isn't present or you're looking
-   up a **different** person. This shows the campaigns they're an active member of and their
-   membership status.
+   This shows the campaigns they're an active member of and their membership status.
 4. **Include the product name + buy link by default.** `list_active_gigs` and
    `get_gig_details` already return each store's `products[]` with `name` and `product_url`.
    When you describe a gig, surface those links alongside payout/deadline/store — don't wait

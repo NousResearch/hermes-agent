@@ -210,6 +210,18 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Skill lifecycle hooks. Fired by skill_manage() before (pre) and after
+    # (post) a new SKILL.md is written to disk.  Plugins may influence the
+    # pre hook via return value:
+    #   None / {}                          → 默认 ~/.hermes/skills/
+    #   {"action": "redirect", "path": "..."}  → 写入指定目录
+    #   {"action": "handled"}              → plugin 自行处理，跳过 Hermes 写入
+    #   {"action": "block",  "reason": "..."}  → 阻止创建
+    # Kwargs: name, content, category (str or None)
+    # Post hook is observer-only (return value ignored).
+    # Kwargs: name, category, path (abs str), success (bool)
+    "pre_skill_create",
+    "post_skill_create",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

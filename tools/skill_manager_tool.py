@@ -801,8 +801,28 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # ── pre_skill_create hook (allow plugin redirect / block / handle) ──
+    from hermes_cli.plugins import invoke_hook as _invoke_skill_hook
+
+    _skill_dir_override: Optional[Path] = None
+    for _hr in _invoke_skill_hook("pre_skill_create", name=name, content=content, category=category):
+        if not isinstance(_hr, dict):
+            continue
+        _act = _hr.get("action")
+        if _act == "block":
+            return {"success": False, "error": _hr.get("reason", "Skill creation blocked by plugin")}
+        if _act == "redirect":
+            _skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(_hr["path"]))))
+            break
+        if _act == "handled":
+            result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
+            # Fire post hook too so observers see the event
+            _invoke_skill_hook("post_skill_create", name=name, category=category or "",
+                               path="", success=True)
+            return result
+
     # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
+    skill_dir = _resolve_skill_dir(name, category) if _skill_dir_override is None else _skill_dir_override
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
@@ -828,7 +848,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir.relative_to(SKILLS_DIR)) if _skill_dir_override is None else str(skill_dir),
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -838,6 +858,14 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+
+    # ── post_skill_create hook (observer only) ──
+    try:
+        _invoke_skill_hook("post_skill_create", name=name, category=category or "",
+                           path=str(skill_dir), success=True)
+    except Exception:
+        pass
+
     return result
 
 

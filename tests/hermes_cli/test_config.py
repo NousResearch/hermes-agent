@@ -89,6 +89,22 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == mixed
 
+    def test_existing_named_profile_still_bootstraps_subdirs(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            ensure_hermes_home()
+            assert (profile_home / "cron").is_dir()
+            assert (profile_home / "sessions").is_dir()
+            assert (profile_home / "memories").is_dir()
+
+    def test_missing_named_profile_is_not_recreated(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                ensure_hermes_home()
+        assert not profile_home.exists()
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
@@ -612,6 +628,23 @@ class TestSanitizeEnvLines:
         assert len(result) == 2
         assert result[0].startswith("GLM_API_KEY=")
         assert result[1].startswith("LM_API_KEY=")
+
+    def test_value_embedding_known_key_not_split(self):
+        """A single valid line whose value embeds a known KEY= (e.g. a URL with
+        a query parameter) must be preserved verbatim — not truncated into a
+        bogus pair."""
+        lines = [
+            "OPENAI_BASE_URL=https://proxy.example.com/v1?TAVILY_API_KEY=sk-embedded\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"embedded key in value corrupted the secret: {result}"
+
+    def test_leading_text_before_first_key_not_dropped(self):
+        """When the first known KEY= is not at the line start, the leading text
+        must not be silently dropped."""
+        lines = ["export OPENAI_API_KEY=sk1ANTHROPIC_API_KEY=sk2\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"leading text was dropped: {result}"
 
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
@@ -1510,6 +1543,61 @@ class TestVerifyOnStopMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
+
+class TestDelegationCapUnificationMigration:
+    """v32 → v33: fold deprecated max_async_children into max_concurrent_children."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_stale_default_key_removed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 3\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        # Default-valued (3) async cap must not shrink a raised children cap.
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_raised_async_cap_folded_into_children_cap(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 20\n"
+                "  max_concurrent_children: 5\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 20
+
+    def test_higher_children_cap_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 8\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_no_delegation_section_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        # Migration must not materialize a delegation section it never had.
+        assert "delegation" not in raw
+
+    def test_default_config_has_no_max_async_children(self):
+        assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
+
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""

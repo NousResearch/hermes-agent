@@ -1,6 +1,7 @@
 import base64
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,6 +43,36 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+
+
+def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypatch):
+    entry = SimpleNamespace(
+        provider="nous",
+        source="device_code",
+        runtime_api_key="pool-token",
+        agent_key="pool-token",
+        agent_key_expires_at="2099-01-01T00:00:00+00:00",
+        scope="inference:invoke",
+        runtime_base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return entry
+
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "_agent_key_is_usable", lambda *a, **k: True)
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "pool-token"
+    assert resolved["base_url"] == "https://ai.wildebeest-newton.ts.net/v1"
 
 
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
@@ -3138,3 +3169,154 @@ def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch
         f"Look-alike host must not be classified as Anthropic cloud: {resolved}"
     )
     assert resolved["base_url"] == lookalike
+
+
+# ---------------------------------------------------------------------------
+# extra_headers support for named custom providers (#3526 salvage)
+# ---------------------------------------------------------------------------
+
+
+def test_named_custom_provider_with_extra_headers(monkeypatch):
+    """Custom providers with extra_headers surface them in the resolved runtime."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "CustomHost",
+                    "base_url": "https://custom.host.ai/v1",
+                    "api_key": "custom-host-key",
+                    "extra_headers": {
+                        "X-Custom-Auth": "auth-123",
+                        "X-Client-Name": "hermes-agent",
+                    },
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="customhost")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://custom.host.ai/v1"
+    assert resolved["api_key"] == "custom-host-key"
+    assert resolved["extra_headers"] == {
+        "X-Custom-Auth": "auth-123",
+        "X-Client-Name": "hermes-agent",
+    }
+
+
+def test_named_custom_provider_without_extra_headers_omits_key(monkeypatch):
+    """No extra_headers configured → key absent from the resolved runtime."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "PlainHost",
+                    "base_url": "https://plain.host/v1",
+                    "api_key": "plain-key",
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="plainhost")
+
+    assert resolved["provider"] == "custom"
+    assert "extra_headers" not in resolved
+
+
+def test_named_custom_provider_non_dict_extra_headers_ignored(monkeypatch):
+    """Non-dict / empty extra_headers values are ignored, not propagated."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "BadHeaders",
+                    "base_url": "https://bad.host/v1",
+                    "api_key": "key",
+                    "extra_headers": "not-a-dict",
+                },
+                {
+                    "name": "EmptyHeaders",
+                    "base_url": "https://empty.host/v1",
+                    "api_key": "key",
+                    "extra_headers": {},
+                },
+            ]
+        },
+    )
+
+    assert "extra_headers" not in rp.resolve_runtime_provider(requested="badheaders")
+    assert "extra_headers" not in rp.resolve_runtime_provider(requested="emptyheaders")
+
+
+def test_providers_dict_entry_surfaces_extra_headers(monkeypatch):
+    """New-style providers: dict entries also surface extra_headers."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "my-proxy": {
+                    "base_url": "https://llm.internal.example.com/v1",
+                    "api_key": "proxy-key",
+                    "extra_headers": {"CF-Access-Client-Id": "xxxx.access"},
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["extra_headers"] == {"CF-Access-Client-Id": "xxxx.access"}
+
+
+def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):
+    """extra_headers must survive the credential-pool path too."""
+    pool_return_value = {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": "https://lmstudio.example.com/v1",
+        "api_key": "pooled-key",
+        "source": "pool:lmstudio-pool",
+        "credential_pool": "fake-pool",
+    }
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: pool_return_value)
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "lmstudio",
+            "base_url": "https://lmstudio.example.com/v1",
+            "api_key": "not-used-when-pooled",
+            "extra_headers": {
+                "CF-Access-Client-Id": "xxx.access",
+                "CF-Access-Client-Secret": "yyy",
+            },
+        },
+    )
+
+    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:lmstudio")
+
+    assert resolved is not None
+    assert resolved["extra_headers"] == {
+        "CF-Access-Client-Id": "xxx.access",
+        "CF-Access-Client-Secret": "yyy",
+    }
+    assert resolved["api_key"] == "pooled-key"
+    assert resolved["source"] == "pool:lmstudio-pool"

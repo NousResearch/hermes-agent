@@ -294,6 +294,43 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_journey_command(self, cmd_original: str) -> None:
+        """Handle /journey — the learning timeline (see `hermes journey`).
+
+        The read-only views (default + ``list``) render Rich color, which
+        patch_stdout would swallow as raw escapes; capture with forced ANSI and
+        re-emit through ``_cprint``. ``delete``/``edit`` are interactive
+        (confirm prompt / ``$EDITOR``) so they keep the real stdio.
+        """
+        import argparse
+        import io
+        import shlex
+        from contextlib import redirect_stdout
+
+        from cli import _cprint
+        from hermes_cli.journey import register_cli
+
+        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+        register_cli(parser)
+        rest = cmd_original.split(None, 1)
+        try:
+            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
+        except SystemExit:
+            return
+
+        interactive = getattr(args, "journey_action", None) in ("delete", "edit")
+        try:
+            if interactive:
+                args.func(args)
+                return
+            args.force_color = True
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                args.func(args)
+            _cprint(buf.getvalue().rstrip("\n"))
+        except Exception as exc:
+            _cprint(f"  /journey failed: {exc}")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -712,6 +749,14 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -850,6 +895,15 @@ class CLICommandsMixin:
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
 
         # End the old session
         try:
@@ -2593,7 +2647,12 @@ class CLICommandsMixin:
         words = {w.lower() for w in cmd_original.split()[1:]}
         local = "local" in words
         nous = "nous" in words and not local
-        args = SimpleNamespace(lines=200, expire=7, local=local, nous=nous)
+        # Typing the /debug slash command is itself the explicit consent to
+        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
+        # input() would hang inside prompt_toolkit's event loop anyway.
+        args = SimpleNamespace(
+            lines=200, expire=7, local=local, nous=nous, yes=True
+        )
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:

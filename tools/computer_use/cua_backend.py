@@ -909,6 +909,59 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return list_windows payloads across cua-driver result shapes."""
+    structured = out.get("structuredContent")
+    if isinstance(structured, dict):
+        windows = structured.get("windows")
+        if isinstance(windows, list):
+            return windows
+
+    data = out.get("data")
+    if isinstance(data, dict):
+        windows = data.get("windows")
+        if isinstance(windows, list):
+            return windows
+        legacy_windows = data.get("_legacy_windows")
+        if isinstance(legacy_windows, list):
+            return legacy_windows
+    return []
+
+
+def _window_summary(window: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        pid = int(window["pid"])
+        window_id = int(window.get("window_id", window.get("id")))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "app_name": window.get("app_name", ""),
+        "pid": pid,
+        "window_id": window_id,
+        "off_screen": not window.get("is_on_screen", True),
+        "title": window.get("title", ""),
+        "z_index": window.get("z_index", 0),
+    }
+
+
+def _apps_from_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    apps: List[Dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for window in windows:
+        summary = _window_summary(window)
+        if not summary:
+            continue
+        name = summary["app_name"]
+        if not name:
+            continue
+        key = (name, summary["pid"])
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({"name": name, "pid": summary["pid"]})
+    return apps
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1027,17 +1080,9 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
+            summary for w in _windows_from_tool_result(lw_out)
+            if (summary := _window_summary(w))
         ]
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
@@ -1401,10 +1446,23 @@ class CuaDriverBackend(ComputerUseBackend):
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
         data = out["data"]
+        structured = out.get("structuredContent")
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            return data.get("apps", [])
+            apps = data.get("apps")
+            if isinstance(apps, list):
+                return apps
+            if isinstance(structured, dict):
+                structured_apps = structured.get("apps")
+                if isinstance(structured_apps, list):
+                    return structured_apps
+            return _apps_from_windows(_windows_from_tool_result(out))
+        if isinstance(structured, dict):
+            apps = structured.get("apps")
+            if isinstance(apps, list):
+                return apps
+            return _apps_from_windows(_windows_from_tool_result(out))
         # list_apps returns plain text — parse app lines.
         if isinstance(data, str):
             apps = []
@@ -1432,15 +1490,9 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
+            summary for w in _windows_from_tool_result(lw_out)
+            if (summary := _window_summary(w))
         ]
         windows.sort(key=lambda w: w["z_index"])
 

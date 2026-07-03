@@ -273,9 +273,12 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             sid = s.get("id", "")
             if current_root and (sid == current_root or sid == current_session_id):
                 continue
-            # Skip child / delegation sessions
-            if s.get("parent_session_id"):
-                continue
+            # NOTE: child / delegation sessions are already excluded at
+            # SQL level by ``_LISTABLE_CHILD_SQL`` inside
+            # ``list_sessions_rich()``.  A Python-side
+            # ``parent_session_id`` filter here would incorrectly remove
+            # branch sessions that the SQL layer intentionally includes
+            # (branches have a parent_session_id but are listable).
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,

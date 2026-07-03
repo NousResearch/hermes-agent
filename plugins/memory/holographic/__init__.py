@@ -24,6 +24,7 @@ from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+from utils import is_truthy_value
 from .store import MemoryStore
 from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
@@ -235,7 +236,10 @@ class HolographicMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._config.get("auto_extract", False):
+        # is_truthy_value: the config schema declares auto_extract as a string
+        # enum ("false"/"true"), and a plain truthiness check treats the string
+        # "false" as enabled (#57682).
+        if not is_truthy_value(self._config.get("auto_extract", False)):
             return
         if not self._store or not messages:
             return
@@ -368,6 +372,10 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        # Local import (pattern used in initialize()): the compressor module is
+        # heavier than this plugin and is only needed when auto_extract is on.
+        from agent.context_compressor import is_compaction_summary_message
+
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
@@ -381,6 +389,12 @@ class HolographicMemoryProvider(MemoryProvider):
         extracted = 0
         for msg in messages:
             if msg.get("role") != "user":
+                continue
+            # Compaction handoff summaries can be inserted as role="user"
+            # messages; their prose reliably matches the decision patterns, so
+            # without this guard the compactor's own output is stored as a
+            # durable "fact" on every rollover (#57682).
+            if is_compaction_summary_message(msg):
                 continue
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 10:

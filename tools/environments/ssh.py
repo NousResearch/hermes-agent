@@ -17,6 +17,7 @@ from tools.environments.file_sync import (
     quoted_rm_command,
     unique_parent_dirs,
 )
+from tools.path_security import has_traversal_component
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,13 @@ class SSHEnvironment(BaseEnvironment):
                         f"remote path {remote_path!r} is not under sync base {base!r}"
                     ) from exc
 
-                if rel_remote == "." or rel_remote.startswith("../"):
+                # Reject any escape out of the sync base. ``startswith("../")``
+                # only catches POSIX separators — on Windows os.path.relpath
+                # returns ``..\\..\\`` and slips past it, letting the staged
+                # os.symlink/copy below write outside the staging dir.
+                # has_traversal_component checks path components, so it catches
+                # ``..`` regardless of separator.
+                if rel_remote == "." or has_traversal_component(rel_remote):
                     raise RuntimeError(
                         f"remote path {remote_path!r} escapes sync base {base!r}"
                     )

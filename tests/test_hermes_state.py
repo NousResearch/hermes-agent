@@ -1775,6 +1775,59 @@ class TestDeleteAndExport:
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
+    def test_delete_session_cascades_compression_continuations(self, db):
+        """Deleting a compression root must cascade-delete its continuations,
+        not merely orphan them — orphaned continuations pass the
+        ``_LISTABLE_CHILD_SQL`` filter and reappear in the session list (#9314).
+        """
+        # Create a compression chain: root → continuation
+        db.create_session(session_id="root", source="cli")
+        db.append_message("root", role="user", content="Hello")
+        db.end_session("root", end_reason="compression")
+
+        db.create_session(
+            session_id="cont",
+            source="cli",
+            parent_session_id="root",
+        )
+        db.append_message("cont", role="user", content="Continued")
+
+        assert db.delete_session("root") is True
+        # Both the root and the compression continuation must be gone.
+        assert db.get_session("root") is None
+        assert db.get_session("cont") is None
+        assert db.message_count(session_id="root") == 0
+        assert db.message_count(session_id="cont") == 0
+
+    def test_delete_session_preserves_branch_children(self, db):
+        """Branch children (not compression continuations) must be orphaned,
+        not cascade-deleted, when their parent is deleted.
+        """
+        db.create_session(session_id="parent", source="cli")
+        db.append_message("parent", role="user", content="Hello")
+        db.end_session("parent", end_reason="branched")
+
+        db.create_session(
+            session_id="branch",
+            source="cli",
+            parent_session_id="parent",
+        )
+        # Set started_at after parent.ended_at so the legacy branch heuristic
+        # (_BRANCH_CHILD_SQL) recognises this as a branch child.
+        parent_ended = db.get_session("parent")["ended_at"]
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (parent_ended + 1, "branch"),
+        )
+        db._conn.commit()
+        db.append_message("branch", role="user", content="Branch content")
+
+        assert db.delete_session("parent") is True
+        assert db.get_session("parent") is None
+        # Branch child survives, orphaned.
+        assert db.get_session("branch") is not None
+        assert db.get_session("branch")["parent_session_id"] is None
+
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
         assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
@@ -1792,6 +1845,28 @@ class TestDeleteAndExport:
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
         db.create_session(session_id="20260315X092437_c9a6ff", source="cli")
         assert db.resolve_session_id("20260315_092437") == "20260315_092437_c9a6ff"
+
+    def test_delete_sessions_cascades_compression_continuations(self, db):
+        """Bulk delete must also cascade-delete compression continuations."""
+        db.create_session(session_id="root1", source="cli")
+        db.append_message("root1", role="user", content="Hello")
+        db.end_session("root1", end_reason="compression")
+
+        db.create_session(
+            session_id="cont1",
+            source="cli",
+            parent_session_id="root1",
+        )
+        db.append_message("cont1", role="user", content="Continued")
+
+        db.create_session(session_id="root2", source="cli")
+        db.append_message("root2", role="user", content="World")
+
+        count = db.delete_sessions(["root1", "root2"])
+        assert count == 2
+        assert db.get_session("root1") is None
+        assert db.get_session("cont1") is None
+        assert db.get_session("root2") is None
 
     def test_export_session(self, db):
         db.create_session(session_id="s1", source="cli", model="test")

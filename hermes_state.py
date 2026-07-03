@@ -4728,6 +4728,25 @@ class SessionDB:
             if cursor.fetchone()[0] == 0:
                 return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
+            # Cascade-delete compression continuations — they are not
+            # independently meaningful and would reappear as listable root
+            # sessions if merely orphaned (#9314).
+            comp_rows = conn.execute(
+                "SELECT c.id FROM sessions c "
+                "JOIN sessions p ON p.id = c.parent_session_id "
+                "WHERE c.parent_session_id = ? AND p.end_reason = 'compression'",
+                (session_id,),
+            ).fetchall()
+            comp_ids = [r["id"] for r in comp_rows]
+            if comp_ids:
+                ph = ",".join("?" * len(comp_ids))
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({ph})", comp_ids
+                )
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({ph})", comp_ids
+                )
+                removed_delegate_ids.extend(comp_ids)
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
@@ -4842,6 +4861,27 @@ class SessionDB:
 
             existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
+            # Cascade-delete compression continuations — same rationale as
+            # delete_session(): orphaning them would reappear as listable
+            # root sessions (#9314).
+            ph_existing = ",".join("?" * len(existing))
+            comp_rows = conn.execute(
+                f"SELECT c.id FROM sessions c "
+                f"JOIN sessions p ON p.id = c.parent_session_id "
+                f"WHERE c.parent_session_id IN ({ph_existing}) "
+                f"AND p.end_reason = 'compression'",
+                existing,
+            ).fetchall()
+            comp_ids = [r["id"] for r in comp_rows]
+            if comp_ids:
+                ph_comp = ",".join("?" * len(comp_ids))
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({ph_comp})", comp_ids
+                )
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({ph_comp})", comp_ids
+                )
+                removed_delegate_ids.extend(comp_ids)
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents

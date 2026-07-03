@@ -214,6 +214,17 @@ def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
     assert by_label["fresh-repo"]["sessions"] == 0
 
 
+def test_discover_repos_repairs_utf8_gbk_mojibake_labels(tmp_path):
+    repo = tmp_path / "001-huijiu"
+    repo.mkdir()
+
+    _call("projects.record_repos", {"repos": [{"root": str(repo), "label": "001鍥炴棫"}]})
+
+    by_label = {r["label"]: r for r in _call("projects.discover_repos")["repos"]}
+    assert "001回旧" in by_label
+    assert by_label["001回旧"]["root"] == str(repo)
+
+
 def test_discover_repos_from_full_history(tmp_path):
     repo = tmp_path / "myrepo"
     (repo / "src").mkdir(parents=True)

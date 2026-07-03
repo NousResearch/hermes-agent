@@ -14,6 +14,7 @@ import {
 } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
@@ -299,7 +300,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   return (
     <ClarifyShell className="grid gap-2 px-2.5 py-2">
       <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
+        <CompactMarkdown className="flex-1 font-medium" text={question} />
         <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
       </div>
 

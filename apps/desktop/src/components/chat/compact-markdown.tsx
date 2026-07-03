@@ -1,8 +1,12 @@
 import type { ComponentProps, ElementType, FC } from 'react'
+import { useMemo } from 'react'
 import { Streamdown } from 'streamdown'
 
+import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { ExternalLink, ExternalLinkIcon } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
+
+const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // Compact markdown renderer for tool detail bodies. Same Streamdown pipeline
 // as the file preview pane, with tighter typography and external-link routing
@@ -103,9 +107,11 @@ const COMPONENTS = {
 }
 
 export function CompactMarkdown({ className, text }: { className?: string; text: string }) {
+  const plugins = useMemo(() => ({ math: mathPlugin }), [])
+
   return (
     <div className={cn('max-w-full text-xs leading-relaxed text-muted-foreground/90 wrap-anywhere', className)}>
-      <Streamdown components={COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
+      <Streamdown components={COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false} plugins={plugins}>
         {text}
       </Streamdown>
     </div>

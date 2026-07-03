@@ -976,7 +976,36 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
+    """Gate the legacy flat-file ``memory`` tool when an external memory provider
+    is configured.
+
+    When ``memory.provider`` is set in config (e.g., ``memory.provider: mnemosyne``),
+    the external provider handles all memory operations. Exposing the legacy
+    flat-file ``memory`` tool alongside causes agents to reflexively use the
+    legacy tool for durable facts (bypassing the configured provider), which
+    silently fills up the tiny flat-file store with data the provider is supposed
+    to capture.
+
+    Per the issue #57793 reproduction, agents read the system prompt instruction
+    to "use the configured provider, the legacy tool is deprecated" but reach
+    for the legacy tool out of training habit. The structural fix is to gate the
+    tool at the registry level via ``check_fn`` so it doesn't appear in the
+    agent's tool surface at all.
+
+    Returns ``False`` when an external provider is configured, ``True`` otherwise.
+    Falls back to ``True`` on any config-load error so a broken config never
+    disables the legacy tool entirely.
+    """
+    try:
+        from hermes_cli.plugins_cmd import _get_current_memory_provider
+        provider = _get_current_memory_provider()
+    except Exception:
+        # Config loader unavailable or broken — keep legacy tool available
+        # rather than disabling it on a transient error.
+        return True
+    if provider and provider.strip():
+        # External provider configured — gate the legacy tool.
+        return False
     return True
 
 

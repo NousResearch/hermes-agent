@@ -6747,11 +6747,15 @@ def _prompt_model_selection(
             return None
         return mid
 
-    # Reorder: current model first, then the rest (deduplicated)
+    # Reorder: current model first, then the rest sorted alphabetically
+    # (case-insensitive, deduplicated). Provider/catalog order is often
+    # non-deterministic (Ollama Cloud merges live + registry lists;
+    # OpenRouter's models.dev order isn't stable), so a stable alphabetical
+    # sort makes a 30+ model picker scannable. See #57578.
     ordered = []
     if current_model and current_model in model_ids:
         ordered.append(current_model)
-    for mid in model_ids:
+    for mid in sorted(model_ids, key=str.casefold):
         if mid not in ordered:
             ordered.append(mid)
 

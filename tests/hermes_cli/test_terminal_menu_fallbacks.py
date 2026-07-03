@@ -25,6 +25,44 @@ def test_prompt_model_selection_falls_back_on_menu_runtime_error(monkeypatch):
     assert selected == "model-b"
 
 
+def test_prompt_model_selection_sorts_models_alphabetically(monkeypatch):
+    """#57578: unsorted provider/catalog order is presented alphabetically.
+
+    The numbered fallback lists models in display order, so selecting "1"
+    must return the alphabetically-first model even though it was passed
+    last in the input list.
+    """
+    from hermes_cli.auth import _prompt_model_selection
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+    responses = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    # Deliberately reverse-alphabetical / mixed-case input order.
+    selected = _prompt_model_selection(["zeta", "Beta", "alpha"])
+
+    # Case-insensitive sort → alpha, Beta, zeta; choice "1" is the first.
+    assert selected == "alpha"
+
+
+def test_prompt_model_selection_keeps_current_first_then_sorted(monkeypatch):
+    """#57578: the current model stays pinned to the top; the rest sort."""
+    from hermes_cli.auth import _prompt_model_selection
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+    responses = iter(["2"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    # current_model "zeta" is pinned first; the remainder sort to
+    # alpha, Beta, so choice "2" is "alpha".
+    selected = _prompt_model_selection(
+        ["zeta", "Beta", "alpha"],
+        current_model="zeta",
+    )
+
+    assert selected == "alpha"
+
+
 def test_prompt_model_selection_requires_expensive_confirmation(monkeypatch, capsys):
     from hermes_cli.auth import _prompt_model_selection
 

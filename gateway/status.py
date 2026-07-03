@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import math
 import os
 import shlex
 import signal
@@ -430,6 +431,12 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "exit_reason": None,
         "restart_requested": False,
         "active_agents": 0,
+        "active_work_counts": {
+            "messaging": 0,
+            "cron": 0,
+            "api_server": 0,
+        },
+        "active_agent_details": [],
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -800,6 +807,8 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    active_work_counts: Any = _UNSET,
+    active_agent_details: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -824,7 +833,20 @@ def write_runtime_status(
     if restart_requested is not _UNSET:
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
-        payload["active_agents"] = parse_active_agents(active_agents)
+        active_count = parse_active_agents(active_agents)
+        payload["active_agents"] = active_count
+        if active_work_counts is _UNSET:
+            payload["active_work_counts"] = parse_active_work_counts(
+                {"messaging": active_count}
+            )
+        if active_agent_details is _UNSET and active_count == 0:
+            payload["active_agent_details"] = []
+    if active_work_counts is not _UNSET:
+        counts = parse_active_work_counts(active_work_counts)
+        payload["active_work_counts"] = counts
+        payload["active_agents"] = sum(counts.values())
+    if active_agent_details is not _UNSET:
+        payload["active_agent_details"] = parse_active_agent_details(active_agent_details)
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
         # for a single-profile gateway. Lets `hermes status` show per-profile
@@ -869,6 +891,78 @@ def parse_active_agents(raw: Any) -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return 0
+
+
+_ACTIVE_WORK_SOURCES = ("messaging", "cron", "api_server")
+
+
+def parse_active_work_counts(raw: Any) -> dict[str, int]:
+    """Normalize the fixed set of gateway-owned active-work source counts."""
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        name: parse_active_agents(source.get(name, 0))
+        for name in _ACTIVE_WORK_SOURCES
+    }
+
+
+_ACTIVE_AGENT_DETAIL_LIMIT = 32
+_ACTIVE_AGENT_DETAIL_STRING_FIELDS = {
+    "session_key": 256,
+    "session_id": 128,
+    "platform": 64,
+    "chat_id": 128,
+    "user_id": 128,
+    "state": 32,
+    "model": 160,
+    "current_tool": 128,
+    "last_activity_desc": 160,
+}
+_ACTIVE_AGENT_DETAIL_NUMBER_FIELDS = {
+    "elapsed_seconds",
+    "seconds_since_activity",
+    "api_call_count",
+    "max_iterations",
+}
+
+
+def _runtime_status_text(raw: Any, *, limit: int) -> str:
+    text = " ".join(str(raw).split())
+    return text[:limit]
+
+
+def _runtime_status_number(raw: Any) -> Optional[float]:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0.0, value)
+
+
+def parse_active_agent_details(raw: Any) -> list[dict[str, Any]]:
+    """Normalize bounded, content-free diagnostics for active gateway turns."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    details: list[dict[str, Any]] = []
+    for item in raw[:_ACTIVE_AGENT_DETAIL_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, Any] = {}
+        for field, limit in _ACTIVE_AGENT_DETAIL_STRING_FIELDS.items():
+            value = item.get(field)
+            if value in (None, ""):
+                continue
+            row[field] = _runtime_status_text(value, limit=limit)
+        for field in _ACTIVE_AGENT_DETAIL_NUMBER_FIELDS:
+            value = _runtime_status_number(item.get(field))
+            if value is None:
+                continue
+            row[field] = int(value) if value.is_integer() else value
+        if row:
+            details.append(row)
+    return details
 
 
 # States in which the gateway is alive and could be asked to drain.  Anything

@@ -1613,6 +1613,163 @@ class TestActiveAgentsTurnBoundaryWrite:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         status.write_runtime_status(gateway_state="running", active_agents=-5)
         assert status.read_runtime_status()["active_agents"] == 0
+
+    def test_active_work_counts_are_bounded_and_define_the_total(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            active_agents=99,
+            active_work_counts={
+                "messaging": "2",
+                "cron": -1,
+                "api_server": 3,
+                "unknown": 100,
+            },
+        )
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 5
+        assert rec["active_work_counts"] == {
+            "messaging": 2,
+            "cron": 0,
+            "api_server": 3,
+        }
+
+    def test_legacy_aggregate_write_is_reported_as_messaging_work(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="running", active_agents=2)
+
+        rec = status.read_runtime_status()
+        assert rec["active_work_counts"] == {
+            "messaging": 2,
+            "cron": 0,
+            "api_server": 0,
+        }
+
+    def test_active_agent_details_are_bounded_and_sanitized(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            active_agents=1,
+            active_agent_details=[
+                {
+                    "session_key": "agent:main:feishu:dm:c1:u1\nextra",
+                    "platform": "feishu",
+                    "chat_id": "c1",
+                    "state": "running",
+                    "current_tool": "web_search\nlatest",
+                    "last_activity_desc": "api_call",
+                    "seconds_since_activity": "367.5",
+                    "elapsed_seconds": -2,
+                    "ignored": "not persisted",
+                }
+            ],
+        )
+
+        details = status.read_runtime_status()["active_agent_details"]
+        assert details == [
+            {
+                "session_key": "agent:main:feishu:dm:c1:u1 extra",
+                "platform": "feishu",
+                "chat_id": "c1",
+                "state": "running",
+                "current_tool": "web_search latest",
+                "last_activity_desc": "api_call",
+                "seconds_since_activity": 367.5,
+                "elapsed_seconds": 0,
+            }
+        ]
+
+    def test_active_agent_details_clear_when_count_drops_to_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            active_agents=1,
+            active_agent_details=[{"session_key": "agent:main:feishu:dm:c1:u1"}],
+        )
+        status.write_runtime_status(active_agents=0)
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 0
+        assert rec["active_agent_details"] == []
+
+    def test_runner_persists_active_agent_details(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        session_key = "agent:main:feishu:dm:c1:u1"
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {
+            session_key: SimpleNamespace(
+                session_id="sess-1",
+                model="openrouter/test",
+                get_activity_summary=lambda: {
+                    "seconds_since_activity": 42.2,
+                    "last_activity_desc": "api_call",
+                    "current_tool": "web_search",
+                    "api_call_count": 3,
+                    "max_iterations": 90,
+                },
+            )
+        }
+        runner._running_agents_ts = {session_key: 100.0}
+        runner.session_store = SimpleNamespace(
+            _entries={
+                session_key: SimpleNamespace(
+                    origin=SessionSource(
+                        platform=Platform.FEISHU,
+                        chat_id="c1",
+                        user_id="u1",
+                        chat_type="dm",
+                    )
+                )
+            }
+        )
+        runner._active_cron_job_count = lambda: 1
+        runner._active_api_run_count = lambda: 2
+        monkeypatch.setattr("gateway.run.time.time", lambda: 150.0)
+
+        runner._persist_active_agents()
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 4
+        assert rec["active_work_counts"] == {
+            "messaging": 1,
+            "cron": 1,
+            "api_server": 2,
+        }
+        assert rec["active_agent_details"] == [
+            {
+                "session_key": session_key,
+                "session_id": "sess-1",
+                "platform": "feishu",
+                "chat_id": "c1",
+                "user_id": "u1",
+                "state": "running",
+                "model": "openrouter/test",
+                "current_tool": "web_search",
+                "last_activity_desc": "api_call",
+                "elapsed_seconds": 50,
+                "seconds_since_activity": 42.2,
+                "api_call_count": 3,
+                "max_iterations": 90,
+            }
+        ]
+
+
 class TestGatewayBusyDerivation:
     """Pure contract for derive_gateway_busy / derive_gateway_drainable — the
     single shared definition both /api/status and /health/detailed consume."""

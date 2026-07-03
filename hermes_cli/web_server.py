@@ -81,7 +81,9 @@ from gateway.status import (
     get_running_pid_cached,
     get_running_pid,
     get_runtime_status_running_pid,
+    parse_active_agent_details,
     parse_active_agents,
+    parse_active_work_counts,
     read_runtime_status,
 )
 from hermes_cli.memory_providers import (
@@ -2816,6 +2818,26 @@ async def get_status(profile: Optional[str] = None):
     finally:
         if status_scope is not None:
             status_scope.__exit__(*sys.exc_info())
+
+
+@app.get("/api/status/active-work")
+async def get_active_work_status(request: Request):
+    """Return authenticated, content-free diagnostics for live agent work."""
+    _require_token(request)
+    runtime = read_runtime_status() or {}
+    raw_counts = runtime.get("active_work_counts")
+    counts = parse_active_work_counts(raw_counts)
+    if not isinstance(raw_counts, dict):
+        counts["messaging"] = parse_active_agents(runtime.get("active_agents", 0))
+    return {
+        "active_agents": sum(counts.values()),
+        "active_work_counts": counts,
+        "active_agent_details": parse_active_agent_details(
+            runtime.get("active_agent_details", [])
+        ),
+        "gateway_state": runtime.get("gateway_state"),
+        "updated_at": runtime.get("updated_at"),
+    }
 
 
 _WINDOWS_11_MIN_BUILD = 22000

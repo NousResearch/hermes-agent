@@ -36,14 +36,14 @@ requires the external `himalaya` CLI.
 ### Installation
 
 ```bash
-# Pre-built binary (Linux/macOS — recommended)
-curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
-
-# macOS via Homebrew
+# macOS / Linuxbrew — recommended
 brew install himalaya
 
-# Or via cargo (any platform with Rust)
+# Any platform with Rust
 cargo install himalaya --locked
+
+# Fallback for platforms without brew or cargo (pre-built binary, Linux/macOS)
+curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
 ```
 
 ## Configuration Setup

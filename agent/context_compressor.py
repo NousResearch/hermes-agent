@@ -2463,6 +2463,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         return bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
 
     @classmethod
+    def _is_context_summary_message(cls, message: Any) -> bool:
+        """Return True for summary handoff messages by metadata or content."""
+        if not isinstance(message, dict):
+            return False
+        return cls._has_compressed_summary_metadata(
+            message
+        ) or cls._is_context_summary_content(message.get("content"))
+
+    @classmethod
     def _derive_auto_focus_topic(
         cls,
         messages: List[Dict[str, Any]],
@@ -2505,7 +2514,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         """Find the newest handoff summary inside a compression window."""
         for idx in range(end - 1, start - 1, -1):
             content = messages[idx].get("content")
-            if cls._is_context_summary_content(content):
+            if cls._is_context_summary_message(messages[idx]):
                 return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
         return None, ""
 
@@ -2632,8 +2641,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         if messages and self.protect_first_n > 0:
             first_non_system = 1 if messages[0].get("role") == "system" else 0
             if any(
-                self._has_compressed_summary_metadata(msg)
-                or self._is_context_summary_content(msg.get("content"))
+                self._is_context_summary_message(msg)
                 for msg in messages[first_non_system:]
             ):
                 return 0
@@ -3157,7 +3165,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
-            turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+            pre_summary_turns = [
+                msg for msg in messages[compress_start:summary_idx]
+                if not self._is_context_summary_message(msg)
+            ]
+            turns_to_summarize = (
+                pre_summary_turns + messages[summary_idx + 1:compress_end]
+            )
         elif self._previous_summary:
             # No handoff summary found in the current messages, but
             # _previous_summary is non-empty — it was set by a different

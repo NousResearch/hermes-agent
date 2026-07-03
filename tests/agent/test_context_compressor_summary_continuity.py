@@ -2,7 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+    SUMMARY_PREFIX,
+)
 
 
 def _compressor(protect_first_n: int = 1) -> ContextCompressor:
@@ -134,6 +138,9 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
     assert prompt.count(old_summary) == 1
+    assert "original task before first compaction" in prompt
+    assert "original answer before first compaction" in prompt
+    assert "original follow-up before first compaction" in prompt
     assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
     assert compressor._previous_summary == "fresh summary"
     assert all(
@@ -148,3 +155,66 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
         old_summary not in str(msg.get("content", ""))
         for msg in result
     )
+
+
+def test_restart_stacked_handoffs_fold_stray_head_and_collapse_to_single_summary():
+    """Stacked restart summaries should keep stray head turns as new input."""
+    compressor = _compressor(protect_first_n=3)
+    old_summary = "OLD-STACKED-SUMMARY earlier compacted facts"
+    newer_summary = "NEW-STACKED-SUMMARY already incorporates prior compacted facts"
+
+    msgs = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "FOSSIL-HEAD-TURN live detail before summary"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{newer_summary}"},
+        {"role": "assistant", "content": "work after restart"},
+        {"role": "user", "content": "more work after restart"},
+        {"role": "assistant", "content": "tail answer"},
+        {"role": "user", "content": "active tail request"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+        result = compressor.compress(msgs)
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert prompt.count(newer_summary) == 1
+    assert "FOSSIL-HEAD-TURN live detail before summary" in prompt
+    assert old_summary not in prompt
+    assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
+    assert f"[USER]: {SUMMARY_PREFIX}" not in prompt
+    summary_messages = [
+        msg for msg in result
+        if ContextCompressor._is_context_summary_message(msg)
+    ]
+    assert len(summary_messages) == 1
+    assert all(old_summary not in str(msg.get("content", "")) for msg in result)
+    assert all(newer_summary not in str(msg.get("content", "")) for msg in result)
+    assert all("FOSSIL-HEAD-TURN" not in str(msg.get("content", "")) for msg in result)
+
+
+def test_metadata_summary_decay_also_rehydrates_previous_summary():
+    """Metadata-only in-process summaries should decay and rehydrate together."""
+    compressor = _compressor(protect_first_n=3)
+
+    msgs = [
+        {"role": "system", "content": "system prompt"},
+        {
+            "role": "assistant",
+            "content": "metadata-only prior summary",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+        },
+        {"role": "user", "content": "new work"},
+        {"role": "assistant", "content": "new answer"},
+        {"role": "user", "content": "tail request"},
+        {"role": "assistant", "content": "tail answer"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+        compressor.compress(msgs)
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert "metadata-only prior summary" in prompt
+    assert compressor._previous_summary == "fresh summary"

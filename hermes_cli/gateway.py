@@ -35,6 +35,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from hermes_constants import get_real_home
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -2415,9 +2416,7 @@ def _launchd_user_home() -> Path:
     Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
     launchd user agents still live under the actual account home.
     """
-    import pwd
-
-    return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    return Path(get_real_home())
 
 
 def get_launchd_plist_path() -> Path:

@@ -2469,12 +2469,52 @@ class TestProfileArg:
 
         monkeypatch.setattr(Path, "home", lambda: profile_home)
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("HOME", raising=False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
 
         plist_path = gateway_cli.get_launchd_plist_path()
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+
+    def test_launchd_plist_path_falls_back_to_home_when_uid_lookup_fails(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(machine_home))
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+
+    def test_launchd_plist_path_uses_real_home_when_home_is_profile_home(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_home = profile_dir / "home"
+        real_home = tmp_path / "real-home"
+        profile_home.mkdir(parents=True)
+        real_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == real_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
 
 class TestRemapPathForUser:

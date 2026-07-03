@@ -9015,6 +9015,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
     if sys.platform == "win32" and git_dir.exists():
+        from hermes_cli import _subprocess_compat
         _subprocess_compat.run(
             [
                 "git",

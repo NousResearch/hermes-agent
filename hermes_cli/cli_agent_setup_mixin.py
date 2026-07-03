@@ -488,6 +488,35 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            # Build ephemeral system prompt, appending a resume note when
+            # the conversation history predates the current process — i.e.,
+            # the session was restored from a prior Hermes run.  Compare
+            # the last message's timestamp against process start time to
+            # detect this regardless of how the session was loaded
+            # (--resume flag, TUI auto-resume, or /resume in-session).
+            _ephemeral_sp = self.system_prompt if self.system_prompt else None
+            _last_message_ts = None
+            for msg in reversed(self.conversation_history):
+                ts = msg.get("timestamp")
+                if ts is not None:
+                    _last_message_ts = ts
+                    break
+            if (
+                _last_message_ts is not None
+                and _last_message_ts < self.session_start.timestamp()
+            ):
+                _resume_note = (
+                    "\n\n[Session resumed after a process restart. "
+                    "This conversation history was restored from a prior session. "
+                    "Tool calls shown in the history have already been executed — "
+                    "do NOT re-execute them. "
+                    "The previous session's work was already reported — "
+                    "continue without re-summarizing. "
+                    "Address the user's current message below. "
+                    "Unless the user explicitly asks for a recap, ignore the past work.]"
+                )
+                _ephemeral_sp = (_ephemeral_sp or "") + _resume_note
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -505,7 +534,6 @@ class CLIAgentSetupMixin:
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
@@ -519,6 +547,7 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
                 platform="cli",
+                ephemeral_system_prompt=_ephemeral_sp,
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),

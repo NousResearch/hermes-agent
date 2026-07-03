@@ -131,6 +131,11 @@ def _thread_panic_hook(args):
 
 threading.excepthook = _thread_panic_hook
 
+# Record process start time for session-resume detection.
+# Compared against the last message timestamp in a resumed session to
+# determine whether the conversation history predates this process run.
+_PROCESS_START: float = time.time()
+
 try:
     from hermes_cli.banner import prefetch_update_check
 
@@ -6901,6 +6906,32 @@ def _make_agent(
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
+
+    # Appends a resume note when the conversation history predates this
+    # process start, indicating the session was restored from a prior
+    # Hermes run.
+    if session_db is not None and session_id is not None:
+        try:
+            row = session_db._conn.execute(
+                "SELECT MAX(timestamp) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+            if row is not None and row[0] is not None and row[0] < _PROCESS_START:
+                _resume_note = (
+                    "\n\n[Session resumed after a process restart. "
+                    "This conversation history was restored from a prior session. "
+                    "Tool calls shown in the history have already been executed — "
+                    "do NOT re-execute them. "
+                    "The previous session's work was already reported — "
+                    "continue without re-summarizing. "
+                    "Address the user's current message below. "
+                    "Unless the user explicitly asks for a recap, ignore the past work.]"
+                )
+                system_prompt = (system_prompt + "\n\n" + _resume_note).strip()
+        except Exception:
+            pass
+
     # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. Resume-time stored sessions may
     # also pass scalar model/provider/runtime knobs from the persisted DB row.

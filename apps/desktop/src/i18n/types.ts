@@ -995,6 +995,8 @@ export interface Translations {
     copyPath: string
   }
 
+  kanban: Record<string, unknown>
+
   sidebar: {
     nav: Record<string, string>
     searchAria: string

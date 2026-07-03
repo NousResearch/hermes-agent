@@ -766,7 +766,7 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
-        "body{font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:14px;color:#1a1a1a;background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}"
+        "body{font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:12px;color:#1a1a1a;background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}"
         "table{border-collapse:collapse}"
         "th{background:#f0f4ff;font-weight:600;text-align:left;padding:7px 12px;border-bottom:2px solid #d0d7ff;white-space:nowrap}"
         "td{padding:7px 12px;border-bottom:1px solid #eee;white-space:nowrap}"

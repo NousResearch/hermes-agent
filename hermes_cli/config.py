@@ -4934,6 +4934,64 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_max_tokens(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``max_tokens`` override from ``custom_providers``.
+
+    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
+    insensitive) and returns ``custom_providers[i].models.<model>.max_tokens``
+    if present and valid.  Returns ``None`` when no override applies.
+
+    Mirrors :func:`get_custom_provider_context_length` for output-token caps
+    (see #28046).
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_mt = model_cfg.get("max_tokens")
+        if raw_mt is None:
+            continue
+        try:
+            if isinstance(raw_mt, bool):
+                continue
+            mt = int(raw_mt)
+        except (TypeError, ValueError):
+            continue
+        if mt > 0:
+            return mt
+    return None
+
+
 def _coerce_config_version(value: Any) -> int:
     """Return a safe integer config version, treating invalid values as legacy."""
     if isinstance(value, bool):

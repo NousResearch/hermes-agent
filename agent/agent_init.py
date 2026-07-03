@@ -1592,6 +1592,55 @@ def init_agent(
                                     )
                     break
 
+    # Check custom_providers per-model max_tokens (output cap)
+    if agent.max_tokens is None and _custom_providers:
+        try:
+            from hermes_cli.config import get_custom_provider_max_tokens
+            _cp_mt_resolved = get_custom_provider_max_tokens(
+                model=agent.model,
+                base_url=agent.base_url,
+                custom_providers=_custom_providers,
+            )
+            if _cp_mt_resolved:
+                agent.max_tokens = int(_cp_mt_resolved)
+                agent._session_init_model_config["max_tokens"] = agent.max_tokens
+        except Exception:
+            _cp_mt_resolved = None
+
+        if agent.max_tokens is None:
+            _target = agent.base_url.rstrip("/") if agent.base_url else ""
+            for _cp_entry in _custom_providers:
+                if not isinstance(_cp_entry, dict):
+                    continue
+                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                if _target and _cp_url == _target:
+                    _cp_models = _cp_entry.get("models", {})
+                    if isinstance(_cp_models, dict):
+                        _cp_model_cfg = _cp_models.get(agent.model, {})
+                        if isinstance(_cp_model_cfg, dict):
+                            _cp_mt = _cp_model_cfg.get("max_tokens")
+                            if _cp_mt is not None:
+                                try:
+                                    if isinstance(_cp_mt, bool):
+                                        raise ValueError
+                                    _parsed_mt = int(_cp_mt)
+                                    if _parsed_mt <= 0:
+                                        raise ValueError
+                                except (TypeError, ValueError):
+                                    _ra().logger.warning(
+                                        "Invalid max_tokens for model %r in "
+                                        "custom_providers: %r — must be a positive "
+                                        "integer. Falling back to provider default.",
+                                        agent.model, _cp_mt,
+                                    )
+                                    print(
+                                        f"\n⚠ Invalid max_tokens for model {agent.model!r} in custom_providers: {_cp_mt!r}\n"
+                                        f"  Must be a positive integer (e.g. 32000).\n"
+                                        f"  Falling back to provider default.\n",
+                                        file=sys.stderr,
+                                    )
+                    break
+
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length

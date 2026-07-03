@@ -89,14 +89,24 @@ def _cmd_list(_args) -> None:
                 entry = shell_hooks.allowlist_entry_for(spec.event, spec.command)
                 if entry and entry.get("approved_at"):
                     print(f"      approved_at: {entry['approved_at']}")
-                    mtime_now = shell_hooks.script_mtime_iso(spec.command)
-                    mtime_at = entry.get("script_mtime_at_approval")
-                    if mtime_now and mtime_at and mtime_now > mtime_at:
-                        print(
-                            f"      ⚠ script modified since approval "
-                            f"(was {mtime_at}, now {mtime_now}) — "
-                            f"run `hermes hooks doctor` to re-validate"
-                        )
+                    if entry.get("script_hash_at_approval"):
+                        current_hash = shell_hooks.script_content_hash(spec.command)
+                        stored_hash = entry["script_hash_at_approval"]
+                        if current_hash and current_hash != stored_hash:
+                            print(
+                                f"      ⚠ script content changed since approval "
+                                f"(hash mismatch) — will be re-prompted at "
+                                f"next run"
+                            )
+                    elif entry.get("script_mtime_at_approval"):
+                        mtime_now = shell_hooks.script_mtime_iso(spec.command)
+                        mtime_at = entry.get("script_mtime_at_approval")
+                        if mtime_now and mtime_at and mtime_now > mtime_at:
+                            print(
+                                f"      ⚠ script modified since approval "
+                                f"(was {mtime_at}, now {mtime_now}) — "
+                                f"run `hermes hooks doctor` to re-validate"
+                            )
         print()
 
 
@@ -343,8 +353,21 @@ def _doctor_one(spec, shell_hooks) -> int:
         print("      ✗ not allowlisted — hook will NOT fire at runtime "
               "(run with --accept-hooks once, or confirm at the TTY prompt)")
 
-    # 3. Mtime drift
-    if entry and entry.get("script_mtime_at_approval"):
+    # 3. Content hash and mtime drift
+    if entry and entry.get("script_hash_at_approval"):
+        current_hash = shell_hooks.script_content_hash(spec.command)
+        stored_hash = entry["script_hash_at_approval"]
+        if current_hash is None:
+            problems += 1
+            print("      ✗ script unreadable — hash cannot be verified")
+        elif current_hash != stored_hash:
+            problems += 1
+            print(f"      ✗ script content changed since approval "
+                  f"(hash mismatch) — hook will be blocked at runtime. "
+                  f"Re-approve with `hermes hooks revoke` + re-run")
+        else:
+            print("      ✓ script content unchanged since approval")
+    elif entry and entry.get("script_mtime_at_approval"):
         mtime_now = shell_hooks.script_mtime_iso(spec.command)
         mtime_at = entry["script_mtime_at_approval"]
         if mtime_now and mtime_at and mtime_now > mtime_at:

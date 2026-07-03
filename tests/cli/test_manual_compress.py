@@ -53,6 +53,9 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op compression: no split
     shell.agent._compress_context.return_value = (list(history), "")
+    # Explicitly signal this is NOT a lock-skip to avoid MagicMock
+    # getattr returning a truthy mock for unset attributes.
+    shell.agent._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         assert messages == history
@@ -108,6 +111,7 @@ def test_manual_compress_explains_when_token_estimate_rises(capsys):
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op: no split
     shell.agent._compress_context.return_value = (compressed, "")
+    shell.agent._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -152,6 +156,7 @@ def test_manual_compress_syncs_session_id_after_split():
         shell.agent.session_id = new_child_id
         return (compressed, "")
     shell.agent._compress_context.side_effect = _fake_compress
+    shell.agent._compression_skipped_due_to_lock = False
     shell.agent.session_id = old_id  # starts in sync
     shell._pending_title = "stale title"
 
@@ -194,6 +199,7 @@ def test_manual_compress_flushes_compressed_history_to_child_session_db():
         return (compressed, "")
 
     shell.agent._compress_context.side_effect = _fake_compress
+    shell.agent._compression_skipped_due_to_lock = False
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -210,6 +216,7 @@ def test_manual_compress_does_not_flush_full_history_when_session_id_unchanged()
     shell.agent._cached_system_prompt = ""
     shell.agent.session_id = shell.session_id
     shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent._compression_skipped_due_to_lock = False
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -264,6 +271,7 @@ def test_manual_compress_no_sync_when_session_id_unchanged():
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id
     shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent._compression_skipped_due_to_lock = False
     shell._pending_title = "keep me"
 
     with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
@@ -271,3 +279,61 @@ def test_manual_compress_no_sync_when_session_id_unchanged():
 
     # No split → pending title untouched.
     assert shell._pending_title == "keep me"
+
+
+def test_manual_compress_shows_lock_in_progress_when_skipped_due_to_lock(capsys):
+    """When _compress_context skips due to a concurrent compression lock,
+    _manual_compress must print a clear "already in progress" message,
+    NOT show the misleading "No changes from compression" no-op text."""
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+
+    # Simulate _compress_context setting the lock-skip signal and
+    # returning unchanged messages.
+    def _fake_compress(*args, **kwargs):
+        shell.agent._compression_skipped_due_to_lock = True
+        return (list(history), "")
+
+    shell.agent._compress_context.side_effect = _fake_compress
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    output = capsys.readouterr().out
+    assert "Compression already in progress" in output
+    assert "No changes from compression" not in output
+    # Signal should be cleared after use.
+    assert shell.agent._compression_skipped_due_to_lock is None
+
+
+def test_manual_compress_shows_lock_in_progress_with_holder(capsys):
+    """When the lock holder is a descriptive string, include it in the
+    status message so the user knows which process to investigate."""
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+
+    def _fake_compress(*args, **kwargs):
+        shell.agent._compression_skipped_due_to_lock = "pid=12345"
+        return (list(history), "")
+
+    shell.agent._compress_context.side_effect = _fake_compress
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    output = capsys.readouterr().out
+    assert "Compression already in progress" in output
+    assert "pid=12345" in output
+    assert "No changes from compression" not in output

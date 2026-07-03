@@ -345,10 +345,16 @@ def finalize_turn(
                 _is_partial_stream_recovery = (
                     str(_turn_exit_reason) == "partial_stream_recovery"
                 )
+                # Progress placeholder accepted after nudges ran out
+                # (#42503): keep the note, append why the turn ended.
+                _is_progress_placeholder = (
+                    str(_turn_exit_reason) == "post_tool_placeholder_response"
+                )
                 if (
                     _is_empty_terminal
                     or _is_partial_fragment
                     or _is_partial_stream_recovery
+                    or _is_progress_placeholder
                 ):
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason

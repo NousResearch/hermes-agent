@@ -2785,6 +2785,59 @@ def looks_like_codex_intermediate_ack(
     return user_targets_workspace or assistant_targets_workspace
 
 
+# Progress-style placeholder phrases that signal "still working", not a
+# final answer.  Matched with word boundaries so short markers ("hold on")
+# don't fire inside unrelated words.  Kept deliberately narrow: a false
+# positive costs one extra nudge round-trip, but a false negative silently
+# ends the turn with the task unfinished (#42503).
+_PROGRESS_PLACEHOLDER_RE = re.compile(
+    r"\b("
+    r"working on (?:it|that|this)|still working|work in progress|"
+    r"one (?:moment|second|sec)|just a (?:moment|minute|second|sec)|"
+    r"hold on|hang tight|please wait|bear with me|"
+    r"give me a (?:moment|minute|second|sec)|"
+    r"let me continue|i(?:['’]ll| will) (?:continue|keep going|keep working)|"
+    r"continuing now"
+    r")\b"
+)
+
+# Future-commitment openers ("I'll now update the file…").  Only meaningful
+# combined with an open ending — a completed sentence that happens to start
+# with "I'll" can be a legitimate final answer.
+_FUTURE_ACK_RE = re.compile(r"\b(i['’]ll|i will|let me|going to|about to)\b")
+
+
+def looks_like_post_tool_progress_placeholder(agent, assistant_content: str) -> bool:
+    """Detect a progress placeholder that ended a tool-using turn (#42503).
+
+    After executing tool calls, some models close the turn with a short
+    progress note ("Working on it...", "I'll now analyze the results…")
+    instead of continuing to the next step or delivering the result.  The
+    conversation loop treats any non-empty no-tool-call response as the
+    final answer, so without detection the task silently ends unfinished.
+
+    Callers must additionally verify that tool calls actually ran this
+    turn — a progress-style sentence in a purely conversational reply
+    (e.g. answering "how's the report going?") is not a placeholder.
+
+    Two signals, both requiring a short (≤240 chars) non-question reply:
+      * an explicit progress phrase ("working on it", "please wait", ...)
+      * a future commitment ("I'll", "let me") with an open ending
+        ("...", "…", ":") and therefore no delivered result
+    """
+    text = agent._strip_think_blocks(assistant_content or "").strip()
+    if not text or len(text) > 240:
+        return False
+    lowered = text.lower()
+    # A question is a legitimate turn end — the model needs user input.
+    if lowered.rstrip("*_`\"'").endswith(("?", "？")):
+        return False
+    if _PROGRESS_PLACEHOLDER_RE.search(lowered):
+        return True
+    ends_open = lowered.rstrip("*_`\"'").endswith(("...", "…", ":", "："))
+    return bool(ends_open and _FUTURE_ACK_RE.search(lowered))
+
+
 def intent_ack_continuation_mode(agent) -> str:
     """Classify the resolved intent-ack continuation mode for this turn.
 

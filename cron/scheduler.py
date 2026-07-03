@@ -2620,10 +2620,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config from config.yaml (raw value — a YAML boolean False
+        # means thinking disabled, see parse_reasoning_effort)
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        reasoning_config = parse_reasoning_effort(
+            _cfg.get("agent", {}).get("reasoning_effort", "")
+        )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -3112,7 +3114,26 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
-        success, output, final_response, error = run_job(job)
+        # Run the job under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is in play (multiple
+        # gateway profiles / room→profile multiplexing), and cron fires from
+        # the ticker thread where no per-turn scope is installed — so
+        # resolve_runtime_provider() raised UnscopedSecretError before model
+        # selection, breaking every cron job. Mirrors the per-turn pattern in
+        # gateway/run.py (_profile_runtime_scope).
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home())
+        )
+        try:
+            success, output, final_response, error = run_job(job)
+        finally:
+            reset_secret_scope(_scope_token)
 
         output_file = save_job_output(job["id"], output)
         if verbose:

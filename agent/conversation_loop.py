@@ -847,15 +847,16 @@ def run_conversation(
 
         if moa_config:
             try:
-                from agent.moa_loop import aggregate_moa_context
+                from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
                 _moa_context = aggregate_moa_context(
                     user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
                     api_messages=api_messages,
                     reference_models=moa_config.get("reference_models") or [],
                     aggregator=moa_config.get("aggregator") or {},
-                    temperature=float(moa_config.get("reference_temperature", 0.6) or 0.6),
-                    aggregator_temperature=float(moa_config.get("aggregator_temperature", 0.4) or 0.4),
+                    temperature=_preset_temperature(moa_config, "reference_temperature"),
+                    aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
+                    max_tokens=moa_config.get("reference_max_tokens"),
                 )
                 if _moa_context:
                     for _msg in reversed(api_messages):

@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile } from '@/hermes'
+import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -36,6 +36,13 @@ export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
+}
+
+export async function refreshProfiles(): Promise<ProfileInfo[]> {
+  const { profiles } = await getProfiles()
+  $profiles.set(profiles)
+
+  return profiles
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────
@@ -103,7 +110,10 @@ interface ActiveProfileResponse {
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
+    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
+      path: '/api/profiles/active',
+      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    })
 
     setActiveProfile(res.current || 'default')
   } catch {
@@ -111,8 +121,7 @@ export async function refreshActiveProfile(): Promise<void> {
   }
 
   try {
-    const { profiles } = await getProfiles()
-    $profiles.set(profiles)
+    await refreshProfiles()
   } catch {
     // Leave the cached list in place.
   }

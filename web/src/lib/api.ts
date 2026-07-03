@@ -473,7 +473,7 @@ export const api = {
     ),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[]; category_descriptions?: Record<string, string> }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: (profile?: string) =>
     fetchJSON<ModelOptionsResponse>(`/api/model/options${profileQuery(profile)}`),

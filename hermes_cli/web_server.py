@@ -706,6 +706,282 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Hand-written descriptions for fields whose DEFAULT_CONFIG entry carries no
+# inline comment of its own (the comment documents a sibling key or the whole
+# section).  Everything else is covered by the comment extraction below.
+# test_config_schema_every_field_has_description keeps this map honest: a new
+# config key needs either an inline comment in config.py or an entry here.
+_FIELD_DESCRIPTIONS: Dict[str, str] = {
+    "fallback_providers": "Ordered list of fallback providers tried when the primary model provider fails.",
+    "toolsets": "Toolsets enabled for the agent (tool groups like hermes-cli). Controls which tools are available.",
+    "agent.max_turns": "Maximum agent iterations (tool-call rounds) per user message before the agent stops.",
+    "agent.disabled_toolsets": "Toolsets to force-disable even when enabled via the toolsets list.",
+    "terminal.cwd": "Working directory for terminal sessions ('.' = the directory Hermes was launched from).",
+    "terminal.timeout": "Default timeout in seconds for a single terminal command.",
+    "terminal.container_memory": "Container memory limit in MB (docker/singularity/modal/daytona; default 5120).",
+    "terminal.container_disk": "Container disk limit in MB (docker/singularity/modal/daytona; default 51200).",
+    "terminal.docker_image": "Docker image used by the docker terminal backend.",
+    "terminal.docker_forward_env": "Host environment variable names forwarded into Docker containers (values read from the host process).",
+    "terminal.singularity_image": "Container image used by the singularity terminal backend (docker:// URI).",
+    "terminal.modal_image": "Container image used by the Modal sandbox backend.",
+    "terminal.daytona_image": "Container image used by the Daytona sandbox backend.",
+    "browser.inactivity_timeout": "Seconds of inactivity before the browser session is shut down.",
+    "browser.camofox.session_key": "Optional externally managed Camofox session key (pairs with user_id when another app owns the browser).",
+    "browser.camofox.loopback_host_alias": "Host alias substituted for localhost/127.0.0.1 page URLs when rewrite_loopback_urls is enabled (Docker Camofox).",
+    "checkpoints.enabled": "Enable workspace checkpoints for /rollback (opt-in; snapshots are taken before file edits).",
+    "checkpoints.retention_days": "Delete a project's checkpoints after this many days without activity.",
+    "checkpoints.delete_orphans": "Auto-delete checkpoint entries whose working directory no longer exists.",
+    "checkpoints.min_interval_hours": "Minimum hours between automatic checkpoint maintenance sweeps at startup.",
+    "tool_output.max_bytes": "terminal tool output cap in characters (default 50,000 ≈ 12-15K tokens).",
+    "tool_output.max_lines": "read_file pagination cap — the maximum lines a single read_file call can request.",
+    "tool_output.max_line_length": "Per-line character cap when read_file emits a line-numbered view.",
+    "tool_loop_guardrails.warnings_enabled": "Inject soft warnings when the model repeats failed or non-progressing tool calls.",
+    "tool_loop_guardrails.hard_stop_enabled": "Hard-stop the turn when repeated failing tool calls exceed the hard_stop_after thresholds (opt-in).",
+    "tool_loop_guardrails.warn_after.exact_failure": "Warn after this many identical failing tool calls.",
+    "tool_loop_guardrails.warn_after.same_tool_failure": "Warn after this many consecutive failures of the same tool.",
+    "tool_loop_guardrails.warn_after.idempotent_no_progress": "Warn after this many identical no-progress calls of a read-only tool.",
+    "tool_loop_guardrails.hard_stop_after.exact_failure": "Hard-stop after this many identical failing tool calls (requires hard_stop_enabled).",
+    "tool_loop_guardrails.hard_stop_after.same_tool_failure": "Hard-stop after this many consecutive failures of the same tool (requires hard_stop_enabled).",
+    "tool_loop_guardrails.hard_stop_after.idempotent_no_progress": "Hard-stop after this many identical no-progress calls of a read-only tool (requires hard_stop_enabled).",
+    "compression.enabled": "Enable automatic context compression when usage exceeds the threshold ratio.",
+    "prompt_caching.cache_ttl": 'Anthropic prompt cache TTL — "5m" or "1h" (other values are ignored).',
+    "openrouter.response_cache": "Enable OpenRouter response caching (identical requests return cached responses for free).",
+    "openrouter.response_cache_ttl": "How long cached OpenRouter responses remain valid, in seconds (1-86400).",
+    "openrouter.min_coding_score": "Coding-score floor for the openrouter/pareto-code router (0.0-1.0). Higher routes to stronger, pricier coders.",
+    "display.compact": "Compact CLI output mode (less vertical whitespace).",
+    "display.personality": "Active personality name from the personalities map (empty = default Hermes persona).",
+    "display.bell_on_complete": "Ring the terminal bell when the agent finishes a turn.",
+    "display.show_reasoning": "Show the model's reasoning/thinking output in the CLI.",
+    "display.streaming": "Stream assistant responses as they generate (master switch; per-platform overrides under display.platforms).",
+    "display.persistent_output_max_lines": "Max scrollback lines replayed by persistent output after a full-screen clear.",
+    "display.user_message_preview.first_lines": "Lines echoed from the start of a submitted multi-line user message.",
+    "display.user_message_preview.last_lines": "Lines echoed from the end of a submitted multi-line user message.",
+    "display.platforms.telegram.streaming": "Streaming override for Telegram (native draft streaming is smooth, so on by default).",
+    "display.platforms.discord.streaming": "Streaming override for Discord (edit-based streaming flickers, so off by default).",
+    "display.runtime_footer.enabled": "Append a runtime-metadata footer (e.g. model · context % · cwd) to the final gateway message of a turn.",
+    "tts.edge.voice": "Edge TTS voice name (e.g. en-US-AriaNeural, JennyNeural, AndrewNeural).",
+    "tts.elevenlabs.voice_id": "ElevenLabs voice ID (default: Adam).",
+    "tts.elevenlabs.model_id": "ElevenLabs TTS model (e.g. eleven_multilingual_v2).",
+    "tts.openai.model": "OpenAI TTS model (e.g. gpt-4o-mini-tts).",
+    "tts.openai.voice": "OpenAI TTS voice (alloy, echo, fable, onyx, nova, shimmer).",
+    "tts.gemini.model": "Gemini TTS model.",
+    "tts.gemini.voice": "Gemini TTS voice name (e.g. Kore).",
+    "tts.xai.voice_id": "xAI TTS voice (e.g. eve, or a custom voice ID).",
+    "tts.xai.language": "xAI TTS language code (e.g. en).",
+    "tts.xai.sample_rate": "xAI TTS output sample rate in Hz.",
+    "tts.xai.bit_rate": "xAI TTS output bit rate in bits per second.",
+    "tts.mistral.model": "Mistral TTS model (e.g. voxtral-mini-tts-2603).",
+    "tts.mistral.voice_id": "Mistral TTS voice ID (default: Paul — neutral).",
+    "stt.enabled": "Enable speech-to-text transcription for voice input.",
+    "stt.local.model": "Local faster-whisper model size (tiny, base, small, medium, large-v3).",
+    "stt.openai.model": "OpenAI transcription model (whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe).",
+    "stt.mistral.model": "Mistral transcription model (voxtral-mini-latest, voxtral-mini-2602).",
+    "stt.elevenlabs.tag_audio_events": "Tag non-speech audio events (laughter, music) in ElevenLabs transcripts.",
+    "stt.elevenlabs.diarize": "Annotate which speaker said what in ElevenLabs transcripts.",
+    "voice.record_key": "CLI key binding that starts/stops voice recording.",
+    "voice.max_recording_seconds": "Maximum length of a single voice recording, in seconds.",
+    "voice.auto_tts": "Automatically speak agent replies aloud after voice input.",
+    "human_delay.min_ms": "Minimum simulated typing delay in milliseconds (when human_delay.mode is active).",
+    "human_delay.max_ms": "Maximum simulated typing delay in milliseconds (when human_delay.mode is active).",
+    "memory.memory_enabled": "Master switch for persistent agent memory (curated MEMORY.md injected into the system prompt).",
+    "memory.user_profile_enabled": "Maintain and inject the persistent user profile (USER.md).",
+    "memory.memory_char_limit": "Character budget for curated agent memory injected into the system prompt (default ≈800 tokens).",
+    "memory.user_char_limit": "Character budget for the injected user profile (default ≈500 tokens).",
+    "discord.voice_fx.ack_phrases": "Short acknowledgement phrases spoken before the first tool call (picked at random; empty list disables).",
+    "curator.enabled": "Enable the periodic skills curator (marks stale skills, archives obsolete ones, consolidates overlaps).",
+    "curator.backup.enabled": "Snapshot ~/.hermes/skills/ before every real curator run (restore via hermes curator rollback).",
+    "approvals.timeout": "Seconds to wait for the user's answer to a dangerous-command approval prompt.",
+    "approvals.cron_mode": "What cron jobs do at a dangerous command: deny (block, let the agent adapt) or approve (auto-approve).",
+    "security.redact_secrets": "Redact detected secrets (API keys, tokens) from logs and error output.",
+    "security.tirith_enabled": "Enable pre-execution security scanning of shell commands via tirith.",
+    "security.tirith_path": "Path to the tirith binary.",
+    "security.tirith_timeout": "Tirith scan timeout in seconds.",
+    "security.tirith_fail_open": "When tirith fails or times out, allow the command (true) instead of blocking it (false).",
+    "security.website_blocklist.enabled": "Enable the website blocklist for browser and web tools.",
+    "security.website_blocklist.domains": "Domain patterns to block (e.g. example.com blocks the domain and its subdomains).",
+    "security.website_blocklist.shared_files": "Paths to shared blocklist files, one domain pattern per line (relative paths resolve under ~/.hermes).",
+    "kanban.worker_log_backup_count": "Rotated kanban worker log backups to keep per worker.",
+    "model_catalog.enabled": "Fetch the remotely-hosted curated model catalog (falls back to the in-repo snapshot on network failure).",
+    "model_catalog.url": "URL of the remote model-catalog manifest.",
+    "lsp.wait_timeout": "Seconds to wait for LSP diagnostics after a file write.",
+    "paste_collapse_threshold_fallback": "Paste-collapse line threshold for terminals without bracketed paste (heuristically gated; 0 disables).",
+    "paste_collapse_char_threshold": "Collapse pastes that reach this many characters even when under the line threshold (0 disables).",
+}
+
+# Every auxiliary.<task>.* block shares the same keys; describe them from one
+# template per key instead of hand-writing ~70 near-identical entries.
+_AUX_TASK_LABELS: Dict[str, str] = {
+    "vision": "image understanding (vision)",
+    "web_extract": "web page extraction and summarization",
+    "compression": "context compression summaries",
+    "skills_hub": "skills hub operations",
+    "approval": "smart command-approval triage",
+    "mcp": "MCP tool-output processing",
+    "title_generation": "session title generation",
+    "tts_audio_tags": "TTS audio-tag annotation",
+    "triage_specifier": "kanban triage spec expansion",
+    "kanban_decomposer": "kanban task decomposition",
+    "profile_describer": "profile description generation",
+    "curator": "the skills curator review",
+    "monitor": "monitor-automation urgency scoring",
+}
+
+_AUX_SUBFIELD_TEMPLATES: Dict[str, str] = {
+    "provider": "Provider for the {label} auxiliary model (auto = pick the best available).",
+    "model": "Model for {label} (empty = the provider's default auxiliary model).",
+    "base_url": "Direct OpenAI-compatible endpoint for {label} (takes precedence over provider).",
+    "api_key": "API key for the {label} base_url endpoint.",
+    "timeout": "LLM API call timeout in seconds for {label}.",
+    "extra_body": "Extra request-body fields forwarded verbatim on every {label} call.",
+}
+
+
+def _aux_pattern_description(full_key: str) -> str:
+    parts = full_key.split(".")
+    if len(parts) != 3 or parts[0] != "auxiliary":
+        return ""
+    label = _AUX_TASK_LABELS.get(parts[1])
+    template = _AUX_SUBFIELD_TEMPLATES.get(parts[2])
+    if not label or not template:
+        return ""
+    return template.format(label=label)
+
+
+def _summarize_comment(text: str, max_chars: int = 300) -> str:
+    """Compress a multi-line source comment into a short field description.
+
+    Keeps whole sentences from the start of the comment until the budget is
+    spent; a single over-budget sentence is word-trimmed with an ellipsis.
+    """
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_chars:
+        return text
+    out = ""
+    sentence_end = r"(?<!e\.g\.)(?<!i\.e\.)(?<!\setc\.)(?<!\svs\.)(?<=[.!?])\s+"
+    for sentence in re.split(sentence_end, text):
+        candidate = f"{out} {sentence}".strip()
+        if out and len(candidate) > max_chars:
+            break
+        out = candidate
+    if len(out) > max_chars:
+        out = out[: max_chars - 1].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return out
+
+
+# Matches commented-out config entries inside comment blocks, e.g.
+# `# "noise_scale": 0.667,` — those document a disabled key, not the next one.
+_COMMENTED_OUT_ENTRY_RE = re.compile(r'^"[^"]+"\s*:')
+
+
+def _extract_default_config_comments() -> Dict[str, str]:
+    """Map DEFAULT_CONFIG dot-paths to the inline comments documenting them.
+
+    Parses ``hermes_cli/config.py`` source: a leaf key's description is the
+    block of standalone comment lines immediately above it, or failing that
+    the trailing comment on its own line.  Returns {} if the source can't be
+    parsed (e.g. frozen distribution without source files) — the schema then
+    falls back to manual descriptions only.
+    """
+    try:
+        import ast
+        import io
+        import tokenize
+
+        source = (Path(__file__).parent / "config.py").read_text(encoding="utf-8")
+        default_node = None
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "DEFAULT_CONFIG":
+                        default_node = node.value
+        if not isinstance(default_node, ast.Dict):
+            return {}
+
+        source_lines = source.splitlines()
+        # lineno -> (comment text, True when code precedes it on the line, column)
+        comments: Dict[int, Tuple[str, bool, int]] = {}
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                trailing = bool(source_lines[tok.start[0] - 1][: tok.start[1]].strip())
+                comments[tok.start[0]] = (tok.string.lstrip("#").strip(), trailing, tok.start[1])
+
+        def block_before(lineno: int, key_col: int) -> str:
+            # Standalone comment lines directly above the key, at the key's own
+            # indentation.  Deeper-indented comment lines are wrapped
+            # continuations of the previous entry's trailing comment — stop.
+            parts: List[str] = []
+            line = lineno - 1
+            while line in comments:
+                text, trailing, col = comments[line]
+                if trailing or col != key_col:
+                    break
+                parts.append(text)
+                line -= 1
+            parts.reverse()
+            cleaned = [
+                p for p in parts
+                if p and not _COMMENTED_OUT_ENTRY_RE.match(p) and p.strip("-=# ")
+            ]
+            return " ".join(cleaned).strip()
+
+        def trailing_for(lineno: int, key_col: int) -> str:
+            # Trailing comment on the entry's line, plus any wrapped
+            # continuation lines below it (standalone comments indented past
+            # the key column).
+            entry = comments.get(lineno)
+            if not entry or not entry[1]:
+                return ""
+            parts = [entry[0]]
+            line = lineno + 1
+            while line in comments:
+                text, trailing, col = comments[line]
+                if trailing or col <= key_col:
+                    break
+                parts.append(text)
+                line += 1
+            return " ".join(p for p in parts if p).strip()
+
+        descriptions: Dict[str, str] = {}
+
+        def walk(node: "ast.Dict", prefix: str = "") -> None:
+            for key_node, value_node in zip(node.keys, node.values):
+                if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
+                    continue
+                full_key = f"{prefix}.{key_node.value}" if prefix else key_node.value
+                if isinstance(value_node, ast.Dict) and value_node.keys:
+                    walk(value_node, full_key)
+                    continue
+                key_col = key_node.col_offset
+                text = (
+                    trailing_for(key_node.lineno, key_col)
+                    or (
+                        trailing_for(value_node.end_lineno, key_col)
+                        if value_node.end_lineno != key_node.lineno
+                        else ""
+                    )
+                    or block_before(key_node.lineno, key_col)
+                )
+                if text:
+                    descriptions[full_key] = _summarize_comment(text)
+
+        walk(default_node)
+        return descriptions
+    except Exception:
+        return {}
+
+
+_CONFIG_COMMENT_DESCRIPTIONS = _extract_default_config_comments()
+
+
+def _field_description(full_key: str) -> str:
+    """Best description for a config field (curated map > source comment > aux template)."""
+    return (
+        _FIELD_DESCRIPTIONS.get(full_key)
+        or _CONFIG_COMMENT_DESCRIPTIONS.get(full_key)
+        or _aux_pattern_description(full_key)
+    )
+
+
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
 _CATEGORY_MERGE: Dict[str, str] = {
     "privacy": "security",
@@ -741,6 +1017,46 @@ _CATEGORY_ORDER = [
     "memory", "compression", "security", "browser", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
+
+# One-line description per section (category) shown in the dashboard's Config
+# page.  Keys are post-merge categories (see _CATEGORY_MERGE below).
+# test_every_category_has_description keeps this in sync with the schema.
+_CATEGORY_DESCRIPTIONS: Dict[str, str] = {
+    "general": "Core settings: default model, context length, toolsets, fallback providers, session caps, timezone, update behavior, and paste handling.",
+    "agent": "Agent runtime: turn limits, timeouts, retries, prompt features, image input, checkpoints, prompt caching, context engine, skills, cron, and code execution.",
+    "terminal": "Terminal execution: backend (local, docker, ssh, modal, ...), timeouts, container images and resources, and shell environment.",
+    "display": "Output and UI: streaming, themes, language, resume recaps, per-platform display overrides, runtime footer, and simulated typing delay.",
+    "delegation": "Subagent delegation: child model/provider, iteration and concurrency caps, timeouts, and orchestrator controls.",
+    "memory": "Persistent memory: MEMORY.md/USER.md injection, size budgets, write approval, and external memory providers.",
+    "compression": "Automatic context compression: trigger threshold, preserved head/tail messages, and failure handling.",
+    "security": "Security and privacy: dangerous-command approvals, secret redaction, tirith pre-exec scanning, website blocklist, advisories, and lazy installs.",
+    "browser": "Browser automation: engine, timeouts, session recording, private-URL policy, CDP attachment, dialogs, and Camofox identity.",
+    "voice": "CLI voice mode: record key, recording limits, auto-TTS, beeps, and silence detection.",
+    "tts": "Text-to-speech: provider and per-provider voices/models (Edge, ElevenLabs, OpenAI, xAI, Gemini, Mistral, local engines).",
+    "stt": "Speech-to-text: provider and per-provider transcription models and language options.",
+    "logging": "Logging: agent.log level, rotation size, and backup count.",
+    "discord": "Discord and Telegram platforms: mention rules, channel allowlists, threads, reactions, attachments, and Discord voice FX.",
+    "auxiliary": "Auxiliary models for side tasks (vision, web extract, compression, approval, titles, kanban, curator, monitor): provider, model, endpoint, and timeout per task.",
+    "bedrock": "AWS Bedrock provider: region, model discovery, and guardrail configuration.",
+    "curator": "Skills curator: run cadence, idle requirements, stale/archive thresholds, built-in pruning, and pre-run backups.",
+    "dashboard": "Web dashboard: theme, public URL, OAuth, and basic-auth settings.",
+    "gateway": "Messaging gateway: strict mode, media delivery directories, and recent-file trust window.",
+    "kanban": "Kanban multi-agent coordination: dispatcher cadence, concurrency caps, failure limits, decomposition, and worker logs.",
+    "lsp": "Language Server Protocol integration: master toggle, diagnostic wait mode, and server install policy.",
+    "matrix": "Matrix platform: mention requirements and room allowlists.",
+    "mattermost": "Mattermost platform: mention requirements and channel allowlists.",
+    "model_catalog": "Remote curated model catalog: enable, manifest URL, cache TTL, and per-provider overrides.",
+    "openrouter": "OpenRouter-specific settings: response caching and Pareto Code router score floor.",
+    "secrets": "Bitwarden Secrets Manager integration: access token, project, caching, and install policy.",
+    "sessions": "Session storage maintenance: auto-pruning, retention, vacuum, and JSON snapshots.",
+    "slack": "Slack platform: mention requirements and channel allowlists.",
+    "streaming": "Streaming delivery to messaging platforms: transport, edit interval, buffering, and cursor.",
+    "tool_loop_guardrails": "Repeated-failure guardrails: warning and hard-stop thresholds for non-progressing tool calls.",
+    "tool_output": "Tool output caps: terminal output bytes, read_file line limits, and per-line length.",
+    "tools": "Tool subsystem settings: tool_search activation and result limits.",
+    "web": "Web search/extract backends: shared default and per-capability overrides.",
+    "x_search": "X (Twitter) search via xAI: model, timeout, and retries.",
+}
 
 
 def _infer_type(value: Any) -> str:
@@ -786,7 +1102,7 @@ def _build_schema_from_config(
         else:
             entry: Dict[str, Any] = {
                 "type": _infer_type(value),
-                "description": full_key.replace(".", " → ").replace("_", " ").title(),
+                "description": _field_description(full_key),
                 "category": category,
             }
             # Apply manual overrides
@@ -4045,7 +4361,11 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema():
-    return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+    return {
+        "fields": CONFIG_SCHEMA,
+        "category_order": _CATEGORY_ORDER,
+        "category_descriptions": _CATEGORY_DESCRIPTIONS,
+    }
 
 
 _EMPTY_MODEL_INFO: dict = {

@@ -461,3 +461,35 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_build_gemini_request_injects_minimal_turn_when_contents_empty():
+    """System-only message lists must not produce an empty `contents` —
+    generateContent rejects that with a non-retryable HTTP 400."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "system", "content": "You are a helpful agent."}]
+    )
+    assert request["contents"], "contents must never be empty"
+    assert request["contents"][0]["role"] == "user"
+
+
+def test_build_gemini_request_injects_minimal_turn_for_empty_messages():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(messages=[])
+    assert request["contents"], "contents must never be empty"
+
+
+def test_build_gemini_request_keeps_normal_conversation_untouched():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    parts = request["contents"][0]["parts"]
+    assert any(p.get("text") == "hello" for p in parts)

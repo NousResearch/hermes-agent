@@ -791,7 +791,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # limit (issue #28557). Pass the whole message in one call; media attaches
     # after all text chunks.
     if platform == Platform.TELEGRAM:
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        _extra = getattr(pconfig, "extra", {}) or {}
+        disable_link_previews = bool(_extra.get("disable_link_previews"))
         return await _send_telegram(
             pconfig.token,
             chat_id,
@@ -800,6 +801,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            base_url=_extra.get("base_url"),
+            base_file_url=_extra.get("base_file_url"),
+            local_mode=bool(_extra.get("local_mode")),
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1014,7 +1018,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, base_url=None, base_file_url=None, local_mode=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1054,7 +1058,21 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
-        if _tg_proxy:
+        # A locally-hosted telegram-bot-api server (extra.base_url) is where
+        # Telegram private DM topic lanes live: the cloud Bot API rejects their
+        # thread ids ("message thread not found"), and the retry-without-thread
+        # fallback then lands the message in the chat root instead of the
+        # topic. Mirror the gateway adapter and use the configured
+        # base_url/base_file_url/local_mode. No proxy in this branch — the
+        # local server is on loopback.
+        if base_url:
+            bot = Bot(
+                token=token,
+                base_url=base_url,
+                base_file_url=base_file_url or base_url.replace("/bot", "/file/bot"),
+                local_mode=bool(local_mode),
+            )
+        elif _tg_proxy:
             try:
                 from telegram.request import HTTPXRequest
                 logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)

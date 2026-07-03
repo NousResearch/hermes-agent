@@ -1462,15 +1462,32 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 and _looks_like_int(str(thread_id))
             )
             if is_private_dm_topic:
-                # Routed via direct_messages_topic_id (mode 2), no bare thread_id.
+                # Locally-hosted Bot API servers ignore direct_messages_topic_id
+                # for private DM lanes: verified live 2026-07-03 on
+                # telegram-bot-api 10.1 — sendMessage with
+                # direct_messages_topic_id returns a Message WITHOUT the topic
+                # assigned (it lands in the chat root), while a bare
+                # message_thread_id routes correctly and echoes the thread back.
+                # When extra.base_url points at a local server, pass thread_id
+                # via metadata so DeliveryRouter skips its DM-topic anchor
+                # requirement and the adapter sends message_thread_id. Cloud
+                # Bot API targets keep the #22773 three-mode routing.
+                _local_bot_api = bool((getattr(pconfig, "extra", {}) or {}).get("base_url"))
                 route_thread_id = None
-                route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
-                    "job_id": job["id"],
-                }
-                # Media metadata mirrors the text routing so attachments land in
-                # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
+                if _local_bot_api:
+                    route_metadata = {
+                        "thread_id": str(thread_id),
+                        "job_id": job["id"],
+                    }
+                    media_metadata = {"thread_id": str(thread_id)}
+                else:
+                    route_metadata = {
+                        "direct_messages_topic_id": str(thread_id),
+                        "job_id": job["id"],
+                    }
+                    # Media metadata mirrors the text routing so attachments land in
+                    # the same DM topic instead of the General lane (#22773).
+                    media_metadata = {"direct_messages_topic_id": str(thread_id)}
             else:
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}

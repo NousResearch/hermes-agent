@@ -490,6 +490,47 @@ class TestEventBridge:
         r = EventBridge().respond_to_approval("nope", "deny")
         assert "error" in r
 
+    def test_eventbridge_poll_logs_warning_on_db_exception(self, tmp_path, monkeypatch, caplog):
+        # Regression: when SessionDB.get_messages() raises during _poll_once(),
+        # EventBridge must log a WARNING naming the session key and the
+        # exception text, then continue cleanly (no propagation). On main this
+        # was a bare `except Exception: continue` with no log record.
+        import logging
+        import mcp_serve
+
+        session_key = "agent:main:telegram:dm:999999"
+        session_id = "20260701_000000_broken"
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(json.dumps({
+            session_key: {"session_key": session_key, "session_id": session_id},
+        }))
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        class _BrokenDB:
+            def get_messages(self, sid):
+                raise RuntimeError("db down")
+
+        bridge = mcp_serve.EventBridge()
+        # Force the mtime short-circuit to miss so the per-session loop runs.
+        # sessions.json exists (non-zero mtime) but the cached sentinel differs,
+        # and state.db is absent (mtime 0.0) while the cached db mtime is -1.0.
+        bridge._sessions_json_mtime = -1.0
+        bridge._state_db_mtime = -1.0
+
+        with caplog.at_level(logging.WARNING, logger="hermes.mcp_serve"):
+            # Must not raise — polling must continue past the broken session.
+            bridge._poll_once(_BrokenDB())
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and r.name == "hermes.mcp_serve"
+        ]
+        assert warnings, "expected a WARNING log from EventBridge poll"
+        text = "\n".join(r.getMessage() for r in warnings)
+        assert session_key in text
+        assert "db down" in text
+
 
 # ---------------------------------------------------------------------------
 # 3. END-TO-END TESTS — call MCP tools through FastMCP server

@@ -2675,7 +2675,38 @@ def terminal_tool(
                     f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
                     f"out of {len(output)} total] ...\n\n"
                 )
-                output = output[:head_chars] + truncated_notice + output[-tail_chars:]
+                head_part = output[:head_chars]
+                tail_part = output[-tail_chars:]
+                # JSON-safe truncation: if the raw output looks like a JSON
+                # object/array, try to truncate at a structure boundary so the
+                # result stays parseable and the truncated content is clearly
+                # marked rather than silently injected into a mid-JSON position.
+                # Without this the truncated head often lands mid-string or
+                # mid-array, producing a tool result that downstream parsers
+                # (session resume, desktop GUI, MCP clients) may choke on.
+                _trimmed = output.strip()
+                if _trimmed.startswith(("{", "[")):
+                    # Walk the head backward from the cut point to find the
+                    # first safe JSON boundary (a complete value/entry
+                    # boundary).  Bail if we'd shrink the head below 20% of
+                    # the budget.
+                    _min_head = int(MAX_OUTPUT_CHARS * 0.2)
+                    _head_end = head_chars
+                    while _head_end > _min_head and _head_end < len(output):
+                        _ch = output[_head_end - 1]
+                        if _ch in ("}", "]", '"', "\n", "\r"):
+                            break
+                        _head_end -= 1
+                    if _head_end > _min_head:
+                        head_part = output[:_head_end]
+                        # Recompute omitted/notice with the adjusted split
+                        head_chars = _head_end
+                        omitted = len(output) - head_chars - tail_chars
+                        truncated_notice = (
+                            f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
+                            f"out of {len(output)} total — truncated at JSON boundary] ...\n\n"
+                        )
+                output = head_part + truncated_notice + tail_part
 
             # Strip ANSI escape sequences so the model never sees terminal
             # formatting — prevents it from copying escapes into file writes.

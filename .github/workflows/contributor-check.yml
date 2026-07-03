@@ -19,8 +19,12 @@ jobs:
           # Get the merge base between this PR and main
           MERGE_BASE=$(git merge-base origin/main HEAD)
 
-          # Find any new author emails in this PR's commits
-          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+          # Find any new author emails in this PR's commits. --first-parent
+          # keeps the walk on the FORK's own line of development: a bulk
+          # upstream sync merge otherwise floods the range with thousands of
+          # upstream contributors, who belong to upstream's attribution, not
+          # this fork's AUTHOR_MAP.
+          NEW_EMAILS=$(git log --first-parent ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
 
           if [ -z "$NEW_EMAILS" ]; then
             echo "No new commits to check."

@@ -909,6 +909,53 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _coerce_window_int(value: Any) -> Optional[int]:
+    """Best-effort int coercion for cua-driver ``list_windows`` id fields.
+
+    Returns ``None`` when *value* is ``None`` or can't be parsed as an int,
+    so callers can skip malformed window entries instead of raising
+    ``TypeError`` on ``int(None)``.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_window_entries(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize cua-driver ``list_windows`` entries into targetable window dicts.
+
+    cua-driver — notably the Linux/X11 alpha — surfaces non-application windows
+    (panels, docks, taskbars) with ``pid`` and/or ``window_id`` set to null.
+    Those can't be driven: ``get_window_state`` needs a pid and both it and
+    ``screenshot`` key off an integer window id. A single such entry used to
+    crash the whole enumeration via ``int(None)``, taking down capture of the
+    perfectly good application windows alongside it (NousResearch/hermes-agent#56704).
+
+    Coerce defensively and drop any entry missing a usable pid *and* window_id,
+    so one untargetable window can no longer poison the rest of the list.
+    """
+    windows: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        pid = _coerce_window_int(w.get("pid"))
+        window_id = _coerce_window_int(w.get("window_id"))
+        if pid is None or window_id is None:
+            continue
+        windows.append(
+            {
+                "app_name": w.get("app_name", ""),
+                "pid": pid,
+                "window_id": window_id,
+                "off_screen": not w.get("is_on_screen", True),
+                "title": w.get("title", ""),
+                "z_index": w.get("z_index", 0),
+            }
+        )
+    return windows
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1028,17 +1075,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _parse_window_entries(raw_windows)
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
 
@@ -1433,15 +1470,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _parse_window_entries(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

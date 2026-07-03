@@ -1133,6 +1133,49 @@ class TestElementLabelParsing:
         assert labels[15] == "Search"
 
 
+class TestParseWindowEntries:
+    """Regression for #56704: cua-driver ``list_windows`` may return non-application
+    windows (panels/docks/taskbars, common on the Linux/X11 alpha) with
+    ``pid``/``window_id`` set to null. ``_parse_window_entries`` must coerce
+    defensively and drop those untargetable entries instead of crashing the whole
+    enumeration on ``int(None)``.
+    """
+
+    def test_null_pid_or_window_id_entries_are_dropped_not_crashing(self):
+        from tools.computer_use.cua_backend import _parse_window_entries
+        raw = [
+            {"app_name": "Calculator", "pid": 4321, "window_id": 99, "z_index": 1},
+            {"app_name": "panel", "pid": None, "window_id": 12, "z_index": 0},   # X11 dock
+            {"app_name": "taskbar", "pid": 200, "window_id": None, "z_index": 0},
+        ]
+        windows = _parse_window_entries(raw)
+        # Only the fully-targetable application window survives; no TypeError.
+        assert len(windows) == 1
+        assert windows[0]["app_name"] == "Calculator"
+        assert windows[0]["pid"] == 4321
+        assert windows[0]["window_id"] == 99
+
+    def test_valid_entries_are_normalized_with_defaults(self):
+        from tools.computer_use.cua_backend import _parse_window_entries
+        # Stringified ids coerce; missing optional fields fall back to defaults.
+        raw = [{"pid": "17", "window_id": "42"}]
+        windows = _parse_window_entries(raw)
+        assert windows == [
+            {
+                "app_name": "",
+                "pid": 17,
+                "window_id": 42,
+                "off_screen": False,  # is_on_screen absent → defaults on-screen
+                "title": "",
+                "z_index": 0,
+            }
+        ]
+
+    def test_empty_input_returns_empty_list(self):
+        from tools.computer_use.cua_backend import _parse_window_entries
+        assert _parse_window_entries([]) == []
+
+
 class TestUpdateCheck:
     """cua_driver_update_check() / _nudge(): native `check-update --json`.
 

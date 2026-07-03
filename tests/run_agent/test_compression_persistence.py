@@ -191,6 +191,51 @@ class TestFlushAfterCompression:
                 "final answer",
             ]
 
+    def test_rotation_compression_drops_persisted_markers_before_child_flush(self):
+        from agent.context_compressor import ContextCompressor
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            original_messages = [
+                {"role": "system", "content": "system", "_db_persisted": True},
+                {"role": "user", "content": "head user", "_db_persisted": True},
+                {"role": "assistant", "content": "head assistant", "_db_persisted": True},
+                {"role": "user", "content": "middle user 1", "_db_persisted": True},
+                {"role": "assistant", "content": "middle assistant 1", "_db_persisted": True},
+                {"role": "user", "content": "middle user 2", "_db_persisted": True},
+                {"role": "assistant", "content": "middle assistant 2", "_db_persisted": True},
+                {"role": "user", "content": "middle user 3", "_db_persisted": True},
+                {"role": "assistant", "content": "tail assistant", "_db_persisted": True},
+                {"role": "user", "content": "tail user", "_db_persisted": True},
+            ]
+
+            compressor = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                protect_first_n=3,
+                protect_last_n=2,
+                config_context_length=100_000,
+            )
+            compressor._find_tail_cut_by_tokens = lambda messages, start: len(messages) - 2
+            compressor._generate_summary = lambda turns, focus_topic=None: "summary"
+
+            compressed = compressor.compress(original_messages, current_tokens=90_000)
+            assert compressed is not original_messages
+            assert all("_db_persisted" not in msg for msg in compressed)
+
+            agent.session_id = "compressed-child"
+            db.create_session(session_id="compressed-child", source="test")
+            agent._last_flushed_db_idx = 0
+            agent._flush_messages_to_session_db(compressed, None)
+
+            rows = db.get_messages("compressed-child")
+            assert len(rows) == len(compressed)
+            assert any("summary" in row["content"] for row in rows)
+
 
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split

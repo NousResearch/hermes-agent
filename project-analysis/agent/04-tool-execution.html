@@ -18,21 +18,130 @@
 </div>
 
 <h2 id="branch">分支:有工具就执行,没工具就收尾</h2>
-<pre><code>response = client.chat.completions.create(...)   # 第 3 篇
+<pre><code>response = client.chat.completions.create(...)   # 发请求的细节见「03 调用模型」
 if assistant_message.tool_calls:
-    agent._execute_tool_calls_concurrent(assistant_message, messages, ...)
-    # 或 _execute_tool_calls_sequential(...)
+    agent._execute_tool_calls(assistant_message, messages, ...)  # 内部再决定并发/串行(本篇)
     continue                          # 回到循环顶部,带着工具结果再问模型
 else:
-    final_response = assistant_message.content   # 纯文本 → 第 5 篇收尾
+    final_response = assistant_message.content   # 纯文本 → 见「05 收尾阶段」
 </code></pre>
-<div class="filehint">agent/conversation_loop.py → agent/tool_executor.py</div>
-<p>两个执行函数都是 <code>run_agent.py</code> 上的薄转发,真身在 <code>agent/tool_executor.py</code>:</p>
+<div class="filehint">agent/conversation_loop.py → run_agent._execute_tool_calls → agent/tool_executor.py</div>
+<p>注意:循环里调的是<strong>统一入口</strong> <code>_execute_tool_calls</code>(<code>run_agent.py</code> 上),它先判定这批调用能不能并发,再分发到 <code>tool_executor.py</code> 里的两个真身:</p>
 <ul>
 <li><code>execute_tool_calls_concurrent</code> —— 线程池并发执行,<strong>结果按原始顺序收集</strong>再 append。</li>
 <li><code>execute_tool_calls_sequential</code> —— 逐个串行执行。</li>
 </ul>
 <div class="box tip">为什么结果要「按原始顺序」?因为 API 要求 tool 结果的顺序对应 assistant 发出的 tool_calls 顺序。并发执行打乱了完成时间,但收集时必须还原成原序,否则破坏消息结构(角色交替铁律)。</div>
+
+<h2 id="repair">执行前(在循环里):工具名校验与修复</h2>
+<p class="where">agent/conversation_loop.py(校验+重试) · agent_runtime_helpers.repair_tool_call(修复)</p>
+<p>还没进 <code>_execute_tool_calls</code> 之前,循环先<strong>防幻觉</strong>:模型常把工具名写成变体——大小写不同、连字符/空格、驼峰、甚至给你加个 <code>_tool</code> 后缀(<code>TodoTool_tool</code>、<code>Patch_tool</code>、<code>BrowserClick_tool</code>,见 #14784)。直接判「未知工具」太浪费,所以先<strong>尽力纠正</strong>,纠不回才回错给模型。</p>
+
+<h3>① 修复:归一化 5 连招 + 模糊匹配</h3>
+<p><strong>先说人话:</strong>Hermes 内部真正的工具名是全小写+下划线(<code>todo</code>、<code>read_file</code>、<code>web_search</code>…),这个集合叫 <code>valid_tool_names</code>。但模型爱写<strong>花样变体</strong>:想调 <code>todo</code> 却写成 <code>Todo</code> / <code>todo-tool</code> / <code>TodoTool</code> / <code>TodoTool_tool</code>。「归一化」就是把这些花样<strong>掰回标准写法</strong>再去清单里查。</p>
+<p>「5 连招」是<strong>从最省事到最费劲</strong>依次试 5 种改法,<strong>任意一招改完能在清单里查到就用它、不再往下试</strong>(这就是「逐级尝试,命中即返回」)。以 <code>TodoTool_tool</code> → 目标 <code>todo</code> 为例:</p>
+<table>
+  <tr><th>招</th><th>做什么</th><th>例子变化</th></tr>
+  <tr><td>1. 小写直配</td><td>直接全小写去查</td><td><code>Todo</code> → <code>todo</code> ✅ 停</td></tr>
+  <tr><td>2. 连字符/空格→下划线</td><td>再把 <code>-</code>、空格换成 <code>_</code></td><td><code>web-search</code> → <code>web_search</code> ✅</td></tr>
+  <tr><td>3. 驼峰转蛇形</td><td>大写字母前插下划线再小写</td><td><code>TodoTool</code> → <code>todo_tool</code></td></tr>
+  <tr><td>4. 剥 <code>_tool</code>/<code>tool</code> 后缀</td><td>去掉模型爱加的尾巴,<strong>最多剥两层</strong></td><td><code>TodoTool_tool</code> → <code>TodoTool</code> → <code>Todo</code> → <code>todo</code> ✅</td></tr>
+  <tr><td>5. 模糊匹配(兜底)</td><td>前 4 招全不中,用 difflib 算「谁最像」,相似度 ≥ 0.7 取它</td><td><code>redfile</code> → <code>read_file</code></td></tr>
+</table>
+<p>还有个<strong>第 0 步</strong>:先剪垃圾——个别厂商(VolcEngine)会把 XML 碎片漏进工具名(<code>terminal" parameter="command" ...</code>),所以遇到第一个 <code>" ' &lt; &gt;</code> 就截断,只留 <code>terminal</code>;但<strong>故意不按空格切</strong>,否则合法的 <code>write file</code> 会被切成 <code>write</code> 丢掉后半截。</p>
+<p>对照源码看这 5 连招:</p>
+<pre><code>def repair_tool_call(agent, tool_name):
+    # 0. 先剪掉 VolcEngine 漏进来的 XML 碎片(#33007):
+    #    'terminal" parameter="command" ...' → 遇到第一个 " ' &lt; &gt; 就截断
+    for sep in ('"', "'", "&lt;", "&gt;"):
+        i = tool_name.find(sep)
+        if i &gt; 0: tool_name = tool_name[:i]
+    #    注意:不按空格切,'write file' 要能归一成 write_file
+
+    _norm  = lambda s: s.lower().replace("-", "_").replace(" ", "_")
+    _camel = lambda s: re.sub(r"(?&lt;!^)(?=[A-Z])", "_", s).lower()  # TodoTool → todo_tool
+
+    # 1. 小写直配        lowered in valid?           → 命中即返回
+    # 2. 小写+连字符/空格→下划线   _norm(name) in valid?
+    # 3. 驼峰转蛇形       _camel(name)
+    # 4. 剥尾缀 _tool/-tool/tool(最多剥两次,TodoTool_tool 一路剥到 todo)
+    #    每剥一层再各自 _norm / _camel 一遍,凑成候选集
+    cands = {name, lowered, _norm(name), _camel(name)}  # + 剥缀衍生
+    for c in cands:
+        if c in agent.valid_tool_names: return c
+
+    # 5. 都不中 → difflib 模糊匹配(cutoff=0.7),取最接近的一个
+    m = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
+    return m[0] if m else None
+</code></pre>
+<div class="box tip">几个要点:<strong>先走小写/归一的快路径</strong>(覆盖绝大多数),不行才展开完整候选集;<strong>剥后缀刻意做两次</strong>——<code>TodoTool_tool</code> 得剥两层才到 <code>todo</code>;<strong>不按空格切 XML 碎片</strong>,否则合法的 <code>write file</code> 会被切坏(有专门测试守着)。命中即在循环里把 <code>tc.function.name</code> 就地改成修复名并打印「🔧 Auto-repaired」。</div>
+
+<h3>② 校验 + 3 次自我纠正</h3>
+<p>修复后仍不在 <code>valid_tool_names</code> 里的,才算真幻觉:</p>
+<pre><code># 先对每个 tool_call 尝试修复
+for tc in assistant_message.tool_calls:
+    if tc.function.name not in agent.valid_tool_names:
+        repaired = agent._repair_tool_call(tc.function.name)
+        if repaired: tc.function.name = repaired      # 就地改名
+
+# 再挑出仍非法的
+invalid = [tc.function.name for tc in tool_calls
+           if tc.function.name not in agent.valid_tool_names]
+if invalid:
+    agent._invalid_tool_retries += 1
+    if agent._invalid_tool_retries &gt;= 3:              # 硬编码 3
+        agent._persist_session(...)                   # 落库
+        return {"partial": True, "completed": False,  # 收场,不空转
+                "error": f"Model generated invalid tool call: {invalid[0]}"}
+    # 未到 3 次:把「未知工具 + 可用工具清单」作为错误结果回给模型
+    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    messages.append(assistant_msg)                    # 让模型下一轮自我纠正
+</code></pre>
+<p>逻辑是<strong>「修得回就悄悄修,修不回就把可用工具清单摊给模型、让它自己改」</strong>:每失败一次记一笔 <code>_invalid_tool_retries</code>,回错给模型让它下一轮换对的工具;<strong>连错 3 次</strong>就落库、以 <code>partial=True</code> 收场,避免在幻觉工具名上无限打转。</p>
+
+<div class="box warn"><strong>全批原子否决:一个名字非法 → 整批都不执行。</strong>这是上面简化代码没体现的关键点。当这一批 tool_calls 里<strong>只要有一个</strong>名字非法,循环会给<strong>每一个</strong>调用都补一条 tool 结果,然后 <code>continue</code> 折返——<strong>一个工具都不真正执行</strong>:
+<pre><code>for tc in assistant_message.tool_calls:
+    if tc.function.name not in valid:
+        content = f"Tool '{name}' does not exist. Available tools: {available}"  # 非法的:报错
+    else:
+        content = "Skipped: another tool call in this turn used an invalid "
+                  "name. Please retry this tool call."                          # 合法的:也被跳过,请重发
+    messages.append({"role":"tool", "tool_call_id": tc.id, "content": content})
+continue   # ← 回循环顶,整批一个没跑,等模型重发
+</code></pre>
+为什么不「对的先跑、错的报错」?① <strong>消息结构硬约束</strong>:每个 tool_call 必须一一对应一条 tool 结果(角色交替铁律),对的先跑会让下一轮重发时配对/顺序错位;② <strong>可能有依赖</strong>:模型常把一批工具当一个计划(先 A 再 B),其中一个名字写错说明这批意图没成形,贸然执行对的那个可能做错事。所以设计成<strong>整批要么全合法一起跑、要么全打回</strong>。</div>
+
+<div class="box tip"><strong>「连错 3 次」是要<u>连续</u>的,且 partial 是体面退出。</strong><br>
+<strong>· 计数会归零:</strong><code>_invalid_tool_retries</code> 在<strong>任何一次校验通过后立刻清零</strong>,所以是「<strong>连续</strong> 3 轮都非法」才触发,中间成功一次就重新计——不会因整个会话里零星错几次攒到 3。<br>
+<strong>· partial=True 不是崩溃:</strong>它是诚实的「半途而止」——本轮不再要模型调工具,但<strong>已完成的部分(之前成功的工具、已产出文本)全部落库保留</strong>;上层(CLI / 网关 / kanban worker)据此能区分「被非法工具卡住没干完」和「正常完成」。具体每个上层怎么处理,见下面的框。<br>
+<strong>· 为什么要设上限:</strong>每打回一轮都是一次真实 API 调用(上下文越来越长、烧钱);更要防某些弱开源模型看到文件里的 <code>&lt;tool_call&gt;</code> XML 就<strong>不停模仿</strong>发空工具名的 priming 死循环(#47967)——越喂清单越糟,必须硬上限截断。</div>
+
+<div class="box warn"><strong>连错 3 次之后,具体怎么走?</strong> <code>run_conversation</code> 返回一个 partial 字典,<strong>本轮干净结束</strong>(不再有模型调用)、且返回前已 <code>_persist_session</code> 落库,<strong>什么都没丢</strong>:
+<pre><code>return {"final_response": "Model generated invalid tool call: Todo_xyz",  # 给人看的话
+        "completed": False, "partial": True, "error": ...}
+</code></pre>
+不同调用方各自处理这个返回:
+<table>
+  <tr><th>调用方</th><th>怎么处理</th></tr>
+  <tr><td><strong>CLI</strong></td><td><code>response = result.get("final_response")</code> → 把那句「非法工具调用」<strong>当本轮回复打印</strong>;因 <code>partial</code> 为真<strong>跳过自动起标题</strong>。会话还活着,<strong>直接再发一句就能继续</strong>。</td></tr>
+  <tr><td><strong>网关</strong>(TG/Discord…)</td><td>回一条 <strong>「⚠️ Processing stopped: … Try again.」</strong>,不会「已读不回」静默丢消息。</td></tr>
+  <tr><td><strong>cron / kanban</strong></td><td>看到 <code>completed=False</code> → <strong>重跑 / 改期 / 标记交人</strong>(这才是「换策略重派」的实义)。</td></tr>
+</table>
+一句话:<strong>停得干净 + 有反馈 + 存了档 + 能接着来</strong>——不是把会话搞死。而且计数已归零,下一条消息从头开始。</div>
+
+<h2 id="decision">并发还是串行:判定规则</h2>
+<p class="where">agent/tool_dispatch_helpers.py · _should_parallelize_tool_batch(tool_calls)</p>
+<p>并发不是「多个工具就一定并行」——要<strong>确认这批互不干扰</strong>才敢并行,否则老老实实串行。判定逐条走:</p>
+<table>
+<tr><th>条件</th><th>结果</th></tr>
+<tr><td>只有 1 个工具</td><td>→ <strong>串行</strong></td></tr>
+<tr><td>批里含 <code>clarify</code>(<code>_NEVER_PARALLEL_TOOLS</code>)</td><td>→ <strong>串行</strong>(要和用户交互,不能并发)</td></tr>
+<tr><td>某个工具参数不是合法 JSON / 非 dict</td><td>→ <strong>串行</strong>(保守)</td></tr>
+<tr><td>文件工具(<code>read_file</code>/<code>write_file</code>/<code>patch</code>)目标<strong>路径重叠</strong></td><td>→ <strong>串行</strong>(防写冲突)</td></tr>
+<tr><td>某工具既不在<strong>只读白名单</strong>、又不是路径独立的文件工具、也不是声明可并行的 MCP 工具</td><td>→ <strong>串行</strong></td></tr>
+<tr><td>以上全过</td><td>→ <strong>并发</strong></td></tr>
+</table>
+<div class="box tip"><strong>只读白名单 <code>_PARALLEL_SAFE_TOOLS</code></strong>(无共享可变状态,天然可并行):<code>read_file</code>、<code>search_files</code>、<code>web_search</code>、<code>web_extract</code>、<code>vision_analyze</code>、<code>session_search</code>、<code>skills_list</code>/<code>skill_view</code>、<code>ha_get_state</code> 等。<br><strong>文件工具靠路径判定</strong>:<code>read_file</code>/<code>write_file</code>/<code>patch</code> 各自抽出目标 path,只要两两<strong>前缀不重叠</strong>就能并行(<code>_paths_overlap</code> 比较路径分量);一旦可能指向同一子树,退回串行。MCP 工具默认不并行,除非其服务器显式声明安全。</div>
 
 <h2 id="preflight">执行前:一次性中断预检</h2>
 <pre><code>if agent._interrupt_requested:
@@ -46,83 +155,551 @@ else:
 </code></pre>
 <p>如果用户在模型返回后、工具执行前按了中断:<strong>不执行任何工具</strong>,而是给每个 tool_call 都补一条「已取消」结果消息(保持结构合法),落库后直接返回。</p>
 
-<h2 id="pipeline">每个工具调用过的关卡</h2>
-<p>对 <code>tool_calls</code> 里的每一个,执行前都要先解析参数、再依次过几道关卡。任意一关拦下,就用「拦截结果」代替真实执行:</p>
+<h2 id="parse">解析阶段(串行):每个调用过的关卡</h2>
+<p>并发路径也<strong>先串行走一遍解析与关卡</strong>,把每个调用处理成一个<strong>六元组</strong>存进 <code>parsed_calls</code>(按原始位置保留顺序),真正的并发只发生在后面「执行」那一步。之所以这段坚持串行,是为了让所有拦截判断<strong>确定性、可复现</strong>——不受线程调度影响。六元组长这样:</p>
+<pre><code># parsed_calls 里每个元素:
+(tool_call,            # 原始调用对象(name/arguments/id 原样保留)
+ function_name,        # 可能被 Tool Search 解包改写过的真实名
+ function_args,        # 解析+中间件处理后的参数 dict
+ middleware_trace,     # 中间件留下的痕迹
+ block_result,         # None=放行;非 None=被拦(直接当结果,不执行)
+ blocked_by_guardrail) # 是否被守卫拦(影响守卫的 after_call 计数)
+</code></pre>
+<p>逐条处理链:</p>
 <ol class="steps">
   <li>
-    <h4>解析参数 + 重置 nudge 计数</h4>
-    <p>取出 <code>function_name</code> 和参数。若调的是 <code>memory</code> 工具,把 <code>_turns_since_memory</code> 清零(刚复盘过,不必再提醒)。</p>
+    <h4>重置 nudge 计数</h4>
+    <p>「nudge」是系统提示里的<strong>温和提醒</strong>(比如「很久没记忆了,考虑调 memory」)。既然模型这轮真调了对应工具,提醒周期就该<strong>清零重算</strong>:</p>
+    <pre><code>if function_name == "memory":       agent._turns_since_memory = 0
+elif function_name == "skill_manage": agent._iters_since_skill  = 0
+</code></pre>
   </li>
   <li>
-    <h4>越权检查(out-of-scope)</h4>
-    <p>若这个工具不在本会话授予的工具集里(子 agent、kanban worker、受限网关会话),<strong>在任何钩子/守卫之前就拒绝</strong>,并发一条 post_tool_call 终态钩子记录。</p>
+    <h4>解析参数</h4>
+    <p>模型给的 <code>arguments</code> 是 JSON 字符串,解析成 dict;<strong>解析失败或结果非 dict → 退化成 <code>{}</code></strong>,不让一个脏参数炸掉整条流水线(后续工具自己再校验必填项)。</p>
+    <pre><code>try:    function_args = json.loads(tool_call.function.arguments)
+except json.JSONDecodeError: function_args = {}
+if not isinstance(function_args, dict): function_args = {}
+</code></pre>
   </li>
   <li>
-    <h4>pre_tool_call 插件钩子</h4>
-    <p class="where">hermes_cli.plugins · pre_tool_call</p>
-    <p>插件可在执行前拦截。被拦则取 <code>get_pre_tool_call_block_message()</code> 作为结果,不执行真实工具。</p>
+    <h4>Tool Search 解包 + 作用域门</h4>
+    <p class="where">tools.tool_search · resolve_underlying_call / _tool_search_scoped_names</p>
+    <div class="box warn"><strong>先说最关键的一点:Tool Search 默认<u>不是一直启用</u>的。</strong>只有当<strong>可延迟工具的 schema 加起来 ≥ 模型上下文窗口的 10%</strong> 时才触发;工具不多时它就是个 no-op,模型直接看到<strong>完整工具表</strong>,下面这套「搜/查/调」根本不会发生。判定在 <code>should_activate</code>:
+    <pre><code>if config.enabled == "off":  return False                 # 关了 → 永不
+if deferrable_tokens &lt;= 0:   return False                 # 没有可延迟工具 → 不触发
+if config.enabled == "on":   return True                  # 强制开 → 有就触发
+# auto(默认):
+if not context_length: return deferrable_tokens &gt;= 20_000 # 不知窗口 → 20K token 为界
+return deferrable_tokens &gt;= context_length * (threshold_pct/100)   # 默认 10%
+</code></pre>
+    三个要点:<strong>①只算「可延迟」工具</strong>——核心工具(<code>terminal</code>/<code>read_file</code>)永不计入、本来就一直全发,所以是「<strong>非核心/MCP/插件工具</strong>多到一定程度」才触发,不是「工具总数多」;<strong>②阈值是窗口的百分比</strong>(如 200K 窗口 ×10% ≈ 20K token 的 schema),盯的是「每轮重发这些 schema 贵不贵」,同一批工具大窗口可能不触发、小窗口就触发;<strong>③可手动改</strong>:<code>tools_search.enabled</code> = <code>auto</code>(默认按 10%)/ <code>on</code>(只要有就强制启用)/ <code>off</code>(永不,全部直发),阈值 <code>threshold_pct</code> 也可调。<br>
+    <strong>所以前面「会不会漏工具」的担心,大多数普通场景根本遇不到——工具不多时这整套机制压根没启用。</strong></div>
+    <p><strong>背景:为什么要有「桥」?</strong>模型每次 API 调用,<strong>所有工具的完整 JSON schema 都要随请求发过去</strong>。接了上百个 MCP 工具时,这上百份 schema <strong>每次请求都重复发一遍</strong>——又贵、又占满窗口、还分散注意力。所以 Hermes 用<strong>渐进式工具披露(tool search)</strong>:不把长尾工具全列出来,只放<strong>三个桥接工具</strong>,按需暴露。</p>
+    <table>
+      <tr><th>桥</th><th>作用</th></tr>
+      <tr><td><code>tool_search</code></td><td>按描述<strong>搜</strong>工具(「我想放音乐」→ 找到 <code>spotify_play</code>)</td></tr>
+      <tr><td><code>tool_describe</code></td><td><strong>查</strong>某工具的完整参数 schema</td></tr>
+      <tr><td><code>tool_call</code></td><td><strong>调</strong>——「帮我调名叫 <code>spotify_play</code> 的工具,参数是…」</td></tr>
+    </table>
+    <p>核心工具(<code>terminal</code>/<code>read_file</code> 等)<strong>永不藏</strong>,一直直接可见;只有长尾(MCP、非核心插件)躲桥后面;若这些可延迟工具本来就小(&lt; 窗口 10%),整个机制<strong>直接跳过</strong>、工具表原样放行。</p>
+    <h5>模型一开始并不知道名字——先搜后调的三步舞蹈</h5>
+    <p><strong>关键前提:</strong><code>spotify_play</code> 不在模型可见工具表里,所以模型<strong>一开始根本不知道有这个名字</strong>。它是「先搜、后调」逐步发现的:</p>
+    <ol class="steps substeps">
+      <li><strong>搜:</strong><code>tool_search(query="play music")</code> → 桥返回一份 JSON,里面列出匹配的工具<strong>名字 + 描述</strong>——模型<strong>到这里才学到</strong>有个工具叫 <code>spotify_play</code>。<pre><code>{"query":"play music", "total_available":87,
+ "matches":[{"name":"spotify_play","description":"Play a track on Spotify"}, ...]}</code></pre></li>
+      <li><strong>查(可选):</strong><code>tool_describe(name="spotify_play")</code> → 返回它的<strong>完整参数 schema</strong>,模型才知道 <code>arguments</code> 该怎么填。</li>
+      <li><strong>调:</strong><code>tool_call(name="spotify_play", arguments={...})</code> → 此时 <code>name</code> 是从第 1 步搜索结果里<strong>拄回来</strong>的。</li>
+    </ol>
+    <div class="box tip"><strong>所以那个 <code>name</code> 参数不是模型凭空写的</strong>——是它把 <code>tool_search</code> 结果里的名字照抄回来。这也是「省 token」的真正实现:不用的工具模型从头到尾不知道它的名字和 schema,自然一个字节都不占;只有真要用时才把<strong>那一个</strong>工具拉进上下文。</div>
+    <p><strong>谁在开车:是模型,不是 agent。</strong>agent(运行时)全程被动——模型调什么桥它就执行什么、把结果回灌;它<strong>不会</strong>替模型决定「该搜哪个工具」。而且搜/查/调是<strong>三次分开的模型 API 调用</strong>(主循环转三圈),不是一次搞定:</p>
+    <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant M as 大模型(开车)
+    participant A as agent 运行时<br/>(执行者)
+    Note over M,A: ① 搜(第 1 轮)
+    M->>A: tool_search("play music")
+    A->>A: BM25 搜 catalog
+    A-->>M: matches: [{name: spotify_play, description}, ...]
+    Note over M,A: ② 查(第 2 轮·可选)
+    M->>A: tool_describe("spotify_play")
+    A-->>M: spotify_play 的完整参数 schema
+    Note over M,A: ③ 调(第 3 轮)
+    M->>A: tool_call(name="spotify_play", arguments={...})
+    A->>A: 剥桥 → 作用域门 → 真正执行 spotify_play
+    A-->>M: 执行结果
+    M->>M: 继续推理 / 回答
+</pre>
+    </div>
+    <div class="box tip"><strong>代价:</strong>调一个冷门工具比直接调可见工具<strong>多花 2 轮</strong>(2 次额外 API 调用)。这正是渐进式披露的权衡——省了「每轮都发全部 schema」的钱,换来「用时多几轮往返」。若模型从描述已能猜到参数,第 ② 步 <code>tool_describe</code> 可跳过,省一轮。</div>
+    <h5>从 <code>tool_call</code> 里取出真实名(resolve_underlying_call 四步校验)</h5>
+    <p>桥 <code>tool_call</code> 的 schema 强制两个必填字段:<code>name</code>(被调工具名) + <code>arguments</code>(给它的参数)。所以真实名就躺在 <code>function_args["name"]</code> 里,<code>resolve_underlying_call</code> 只是读出来 + 校验四道:</p>
+    <table>
+      <tr><th>步</th><th>查什么</th><th>不过关</th></tr>
+      <tr><td>①</td><td><code>name</code> 非空</td><td>报「缺 name」</td></tr>
+      <tr><td>②</td><td><code>name</code> 不是桥自己(tool_search/describe/call)</td><td>报「不能拿桥调桥」</td></tr>
+      <tr><td>③</td><td><code>arguments</code> 能规整成 dict(容忍模型双重编码成 JSON 字符串)</td><td>报「arguments 必须是对象」</td></tr>
+      <tr><td>④</td><td><code>name</code> 确实是个<strong>可延迟</strong>工具(非核心、非桥)</td><td>报「它本就可见,直接调别绕桥」</td></tr>
+    </table>
+    <p><strong>这一步就是「剥桥」:</strong>把 <code>function_name</code> 从桥名 <code>tool_call</code> 变回真实的 <code>spotify_play</code>、把内层 <code>arguments</code> 提上来当真实参数,让后面每一道检查(检查点、守卫、pre 钩子、显示、后置回调)看到的都是真实工具。原始 <code>tool_call</code> 上的名字<strong>不动</strong>,好让转录和 <code>tool_call_id</code> 配对不乱。</p>
+    <pre><code>if function_name == tool_search.TOOL_CALL_NAME:
+    underlying, underlying_args, err = resolve_underlying_call(function_args)
+    if not err and underlying:
+        if underlying in _tool_search_scoped_names(agent):   # 作用域门
+            function_name, function_args = underlying, underlying_args   # 剥开
+        else:
+            block = "'%s' 不在本会话可用工具内" % underlying   # 越权 → 拦
+</code></pre>
+    <div class="box tip"><strong>为什么必须「剥桥」——两个 OpenClaw 教训。</strong>OpenClaw 是相关上游项目(<code>openclaw/openclaw</code>),踩过两个坑,Hermes 拿来当硬约束:<strong>① 观察者必须看到真实工具名</strong>(守卫/显示/轨迹不能只看到通用桥名);<strong>② 工具目录必须每轮从实时注册表重建</strong>,别按会话缓存(否则和真实工具漂移、静默丢工具)。下面分别展开。</div>
+
+    <h5>教训 ①:观察者必须看到真实工具名——不剥桥会坏掉什么</h5>
+    <p>剥桥发生在 <code>tool_executor</code> 里、<strong>在所有下游关卡之前</strong>。如果偷懒不剥,下游每一个「观察者」看到的都是同一个通用名 <code>tool_call</code>,一连串东西会失灵:</p>
+    <table>
+      <tr><th>观察者</th><th>不剥桥的后果</th></tr>
+      <tr><td><strong>工具守卫</strong>(before/after_call)</td><td>守卫按<strong>工具</strong>跟踪行为(如「同一工具连调 3 次没进展就拦」)。全叫 <code>tool_call</code> → 所有延迟工具<strong>塌成一个桶</strong>,守卫分不清 <code>spotify_play</code> 和 <code>delete_everything</code>,策略全废。</td></tr>
+      <tr><td><strong>审批 / 策略</strong></td><td>「某某工具需要人工批准」这类<strong>按工具名</strong>的规则,名字是通用桥就永远触发不了。</td></tr>
+      <tr><td><strong>用户显示 / 活动流</strong></td><td>CLI 里刷一串 <code>⚡ tool_call</code>,你根本看不出它到底在干嘛。</td></tr>
+      <tr><td><strong>轨迹(trajectory)</strong></td><td>为回放/训练保存的记录里,每个延迟调用都是 <code>tool_call</code> → 分析和训练时<strong>毫无信息量</strong>。</td></tr>
+      <tr><td><strong>post 钩子 / 插件</strong></td><td>观察到的是桥名,<strong>没法归因</strong>到具体工具。</td></tr>
+    </table>
+    <p>所以 Hermes 在两处都做还原:执行链在解析阶段就把 <code>function_name</code> 换成真实名;显示层与轨迹记录器也各自 unwrap 一遍——保证<strong>无论从哪个角度看,都是真实工具而非桥</strong>。</p>
+
+    <h5>教训 ②:catalog 每轮重建 vs 「安全的缓存」</h5>
+    <p><strong>坑:</strong>OpenClaw 的 cron 回归(<code>#84141</code>)把可搜索的工具目录<strong>按会话缓存</strong>。一个长会话里,实时工具注册表会变(MCP 服务器重连换了工具列表、插件动态加载/卸载),而缓存的目录还是旧的 → 两种故障:搜不到<strong>其实存在</strong>的新工具(静默消失),或搜到<strong>已经没了</strong>的旧工具、一调就失败。</p>
+    <p><strong>Hermes 的解法——目录无状态,每轮从当前工具表重算</strong>(<code>tools/tool_search.py</code>):</p>
+    <pre><code># 每次装配工具表都跑一遍,不跨轮缓存:
+tokens = estimate_tokens_from_schemas(deferrable)   # 估 schema 占多少 token
+if should_activate(config, tokens, context_len):    # 阈值门:≥10% 才启用
+    visible, deferrable = classify_tools(tool_defs)  # 从"当前"工具表分类
+    catalog = build_catalog(deferrable)              # 现建目录(工具数<500,很便宜)
+</code></pre>
+    <div class="box tip"><strong>但也不是完全不缓存——而是「安全的缓存」。</strong>作用域集 <code>_tool_search_scoped_names</code> 确实缓存在 agent 上,但<strong>缓存键绑定注册表的「代次」计数 <code>_registry._generation</code></strong>(外加 enabled/disabled 工具集):
+    <pre><code>cache_key = (registry._generation, frozenset(enabled), frozenset(disabled))
+if cached and cached_key == cache_key: return cached   # 命中
+# 否则重算并存回
+</code></pre>
+    注册表一变动(MCP 重连会<strong>递增 <code>_generation</code></strong>)→ 缓存键变了 → <strong>自动失效、下次重算</strong>。所以它是「<strong>随注册表变化自动作废的记忆化</strong>」,不是 OpenClaw 那种「会话生命周期内一直不变」的危险缓存。常态命中就一次字典查,几乎零成本;该刷新时一定刷新。这正是从教训 ② 提炼出的正确姿势:<strong>可以缓存,但必须能感知底层变化并作废。</strong></div>
+    <div class="box warn"><strong>为什么必须补一道作用域门:</strong>解包后是<strong>直接分发</strong>底层工具,绕过了 <code>handle_function_call</code> 里那道「这工具在本会话授权范围内吗」的检查。若不在这里补判,<strong>子 agent / kanban worker / 受限网关会话就能借桥调到根本没授权给它的工具</strong>。所以对照 <code>_tool_search_scoped_names(agent)</code>(该会话「延迟加载工具」的授权子集)校验:不在集内直接拦。这个集合<strong>缓存在 agent 上</strong>,仅当工具注册表「代次」变化(如 MCP 服务器重连)才刷新,常态是一次字典查。</div>
+    <h5>tool_search 怎么搜:BM25 关键词检索(不是模糊、不是语义)</h5>
+    <p>搜索<strong>不是</strong>字符级模糊匹配、也<strong>不是</strong>语义/向量检索,而是 <strong>BM25 关键词相关性排序</strong>(搜索引擎/Elasticsearch 那套)。</p>
+    <ul>
+      <li><strong>索引什么:</strong>每个可延迟工具拼成一个文本块 = <code>工具名(下划线/点/连字符拆成词) + 描述 + 顶层参数名</code>(schema 主体故意不索引,只加噪声)。分词是 <code>[A-Za-z0-9]+</code> 切词 + 小写。</li>
+      <li><strong>打分 BM25 三因子:</strong><strong>TF</strong>(查询词在某工具里出现越多→分越高)× <strong>IDF</strong>(词在所有工具里越罕见→权重越大,常见词几乎不加分)× <strong>长度归一</strong>(短文本命中更值钱,防长描述靠字多刷分)。取前 <code>limit</code>(默认 5)。</li>
+      <li><strong>子串兜底:</strong>若查询词在每个工具里都出现(IDF≈0,BM25 全 0,如 catalog 全是 <code>github_*</code> 时搜 "github"),回退到<strong>工具名子串匹配</strong>保底。</li>
+    </ul>
+    <div class="box tip"><strong>别和前面的「修复工具名」混了:</strong><code>_repair_tool_call</code> 用 <strong>difflib 字符级模糊</strong>(<code>redfile</code>→<code>read_file</code>)——名字<strong>已知</strong>、只是打错了,按「长得像」纠错;<code>tool_search</code> 用 <strong>BM25 关键词</strong>——工具<strong>未知</strong>,按「意图/描述的词」找相关工具。用途不同、算法不同。</div>
+    <h5>会不会漏掉真正想调的工具?</h5>
+    <p>会,原则上<strong>可能漏</strong>——这是渐进式披露天生的取舍(用召回率换 token)。但设计把风险压得很小,几道防线都有真实参数:</p>
+    <ol class="steps substeps">
+      <li><strong>阈值门(最关键):</strong>默认 <code>enabled="auto"</code> + <code>threshold_pct=10%</code>——<strong>只有当可延迟工具会吃掉上下文窗口 ≥10% 时才启用披露</strong>,否则整个工具表原样全发、一个都不藏。所以披露只在「工具多到全发很贵」时才登场;工具少 → 全可见 → 不可能漏。</li>
+      <li><strong>核心工具永不藏:</strong><code>terminal</code>/<code>read_file</code> 等永远直接可见,从不进搜索。</li>
+      <li><strong>能反复搜 + 告知总数:</strong>返回带 <code>total_available</code>、桥描述明写「还有 N 个工具」,模型可<strong>换关键词重搜</strong>或把 <code>limit</code> 从默认 5 调到最高 <code>max_search_limit=20</code>(上限 50)。</li>
+      <li><strong>BM25 + 子串兜底:</strong>尽量别返回空(见上)。</li>
+    </ol>
+    <div class="box warn"><strong>残留风险(诚实地说)仍在:</strong>
+    <ul>
+      <li><strong>词对不上:</strong>模型搜「放音乐」,工具描述只有英文「Play a track」——按词切分不跨语言,可能不命中。</li>
+      <li><strong>排在第 6 名开外:</strong>默认只回前 5,真想要的排第 6 就看不到,除非复搜或调大 <code>limit</code>。</li>
+      <li><strong>模型压根没想到去搜:</strong>若它不知道「可能有这么个工具」,可能干脆不搜、直接说做不了。</li>
+    </ul>
+    <strong>结论:能漏,但被框住了</strong>——只在工具多到「全发很贵」时才启用、核心永不藏、可反复搜且知道总数,用「小概率召回损失」换「不必每轮为几百个 schema 付费」。这是刻意的<strong>成本/召回权衡</strong>,不是 bug。<br>
+    在意「一个都不能漏」的话,可在 config 把 <code>tools_search.enabled</code> 设 <code>"off"</code>(全部直发),或调低 <code>threshold_pct</code>、调高 <code>search_default_limit</code> 更激进地披露。</div>
   </li>
   <li>
-    <h4>工具守卫(guardrail)</h4>
-    <p class="where">agent._tool_guardrails.before_call(name, args)</p>
-    <p>守卫策略判断是否放行。不放行则生成 <code>guardrail_block_result</code>,标记 <code>blocked_by_guardrail=True</code>,发终态钩子(error_type="guardrail_block")。</p>
+    <h4>工具请求中间件</h4>
+    <p class="where">_apply_tool_request_middleware_for_agent → hermes_cli.middleware.apply_tool_request_middleware</p>
+    <p><strong>是什么:</strong>给<strong>插件</strong>一个在工具真正执行前<strong>改写参数</strong>的机会。中间件是插件通过 <code>ctx.register_middleware("tool_request", cb)</code> 注册的回调链;每个回调拿到 <code>(tool_name, args)</code>,可以返回 <code>{"args": {...}}</code> 把参数<strong>替换掉</strong>,替换后的参数会被后面的钩子、守卫、审批、执行<strong>全部</strong>看到。典型用途:统一注入默认值、脱敏/重写路径、按策略改参数、纯记录。</p>
+    <p><strong>Hermes 的中间件是个对称的 2×2 家族</strong>([hermes_cli/middleware.py](hermes_cli/middleware.py#L20-L23)):</p>
+    <table>
+      <tr><th></th><th>request(改<strong>输入</strong>)</th><th>execution(包<strong>调用</strong>)</th></tr>
+      <tr><td><strong>工具侧</strong></td><td><code>tool_request</code> ← 本步</td><td><code>tool_execution</code>(在真正执行那步包一层)</td></tr>
+      <tr><td><strong>模型侧</strong></td><td><code>llm_request</code>(第 3 篇改 api_kwargs)</td><td><code>llm_execution</code>(第 3 篇包 API 调用)</td></tr>
+    </table>
+    <p>所以「和第 3 篇同源」是字面意义的对称——把 LLM 那两个换成工具版就是这里。<strong>request 型改的是「输入 payload」</strong>(声明式:返回新 args);<strong>execution 型包的是「调用本身」</strong>(拿到一个 <code>next_call</code>,可在其前后计时/观测/干预)。</p>
+    <p><strong>request 这一趟怎么跑</strong>(<code>apply_tool_request_middleware</code>):</p>
+    <pre><code># ① 没注册任何 tool_request 中间件 → 快路径:原样返回,changed=False,空 trace(零开销)
+if not _has_middleware("tool_request"):
+    return Result(payload=args, changed=False, trace=[])
+
+# ② 深拷贝一份(不可深拷贝的对象退化成浅拷贝),原件留底
+original = _safe_copy(args); current = _safe_copy(original); trace = []
+
+# ③ 逐个跑注册的中间件;谁返回 {"args": {...}} 就替换 current,并记一条 trace
+for result in _invoke_middleware("tool_request", tool_name=name,
+                                 args=current, original_args=original, **ctx):
+    if isinstance(result, dict) and isinstance(result.get("args"), dict):
+        current = _safe_copy(result["args"]);  trace.append(_trace_entry(result))
+
+return Result(payload=current, original_payload=original,
+              changed=bool(trace), trace=trace)
+</code></pre>
+    <div class="box tip">几个设计点:<strong>①快路径零开销</strong>——没插件注册就直接原样返回,常态不花一分钱;<strong>②深拷贝防污染</strong>——在拷贝上改,原始 args 留底,坏插件改不脏实参、还能对比出改了什么;<strong>③整段 try/except 兜底</strong>(在 <code>_apply_tool_request_middleware_for_agent</code> 里)——中间件抛错就退回原始 args + 空 trace,<strong>绝不因为一个插件出错而卡住工具调用</strong>;<strong>④trace 留痕</strong>——每步改动记进 <code>middleware_trace</code>,一路带到 post 钩子,便于审计「谁在什么时候把参数改成了什么」。</div>
+    <p><strong>举个真实例子(官方文档里的 <code>normalize_terminal_workdir</code>):</strong>把每个 <code>terminal</code> 调用约束到一个固定工作目录(除非模型自己指定了)——</p>
+    <pre><code>def register(ctx):
+    ctx.register_middleware("tool_request", normalize_terminal_workdir)
+
+def normalize_terminal_workdir(**kwargs):
+    if kwargs.get("tool_name") != "terminal":       # ← 只管 terminal
+        return None                                  # 返回 None = 不改,原样放行
+    args = dict(kwargs["args"])                       # 拷一份再动
+    args.setdefault("workdir", "/tmp/hermes-demo")    # 没指定 workdir 就补默认
+    return {"args": args,                             # 替换后的参数
+            "source": "middleware-demo",
+            "reason": "defaulted terminal workdir"}   # source/reason → 进 trace 供审计
+</code></pre>
+    <p>读懂这个例子的三个点:</p>
+    <ul>
+      <li><strong>自己挑要不要管:</strong>回调对<strong>每个</strong>工具都会被调,但它一看 <code>tool_name != "terminal"</code> 就 <code>return None</code>——<strong>返回 None(或不带 <code>{"args"}</code>)= 这个工具我不改</strong>,原样过。所以一个中间件只对它关心的工具生效。</li>
+      <li><strong>它是个策略执行点:</strong>因为跑在<strong>守卫/审批/执行之前</strong>,下游看到的都是被改写后的 <code>workdir</code>——于是「所有 <code>terminal</code> 都被关进 <code>/tmp/hermes-demo</code>」成了硬约束,模型绕不过。这就是<strong>沙箱收敛</strong>的一种落地方式。</li>
+      <li><strong>额外字段进 trace:</strong>返回里除了 <code>args</code>,<code>source</code>/<code>reason</code> 会被记成一条 trace,最后能在审计里看到「是 middleware-demo 把 workdir 默认成了 /tmp/hermes-demo」。</li>
+    </ul>
   </li>
   <li>
-    <h4>分发执行</h4>
-    <p class="where">model_tools.handle_function_call(name, args, ...) → tools/registry.py</p>
-    <p>过了前面所有关卡,才真正分发到工具注册表执行(终端、文件、网页…)。结果是 <strong>JSON 字符串</strong>。这一步的细节属于「工具系统」模块,本模块只需知道它是落点。</p>
+    <h4>拦截评估(短路链,任一拦下就不执行)</h4>
+    <p><strong>这一步在干嘛:</strong>在真正执行工具前,连过<strong>三道否决闸</strong>,任一道说「不行」,就用一个<strong>拦截结果 <code>block_result</code></strong> 顶替真实执行——工具<strong>根本不跑</strong>,那句「为什么被拦」直接作为 tool 结果回给模型,让它换个做法。三道闸<strong>短路</strong>:前一道拦下就不判后面的。</p>
+    <pre><code>if _ts_scope_block is not None:            # ① 越权(上一步作用域门判的)
+    block_result = _ts_scope_block                     # error_type="tool_scope_block"
+else:
+    block_message = get_pre_tool_call_block_message(...)   # ② 插件 pre 钩子
+    if block_message is not None:
+        block_result = {"error": block_message}            # error_type="plugin_block"
+    else:
+        decision = agent._tool_guardrails.before_call(name, args)  # ③ 工具守卫
+        if not decision.allows_execution:
+            block_result = agent._guardrail_block_result(decision) # error_type="guardrail_block"
+            blocked_by_guardrail = True
+</code></pre>
+    <p>三道闸各管一层,顺序从「最根本」到「最行为化」:</p>
+    <table>
+      <tr><th>闸</th><th>管什么</th><th>拦的依据</th></tr>
+      <tr><td><strong>① 越权</strong><br>(授权层)</td><td>这工具在本会话<strong>授权范围内吗</strong></td><td>Tool Search 作用域门已判:底层工具不在会话授权子集 → 拦(防受限会话借桥越权)</td></tr>
+      <tr><td><strong>② 插件 pre 钩子</strong><br>(第三方策略)</td><td>企业合规 / 限流 / 审批 / 自定义安全</td><td>插件的 <code>pre_tool_call</code> 回调返回 <code>{"action":"block","message":...}</code>;或线程白名单里没这工具 → 拦</td></tr>
+      <tr><td><strong>③ 工具守卫</strong><br>(行为策略·防打转)</td><td>模型是不是在<strong>原地空转</strong></td><td>见下(反复失败 / 只读无进展 / 同工具连败)</td></tr>
+    </table>
+    <h5>第 ③ 道「工具守卫」到底防什么(before_call)</h5>
+    <p class="where">agent/tool_guardrails.py · before_call</p>
+    <p>守卫是<strong>防死循环</strong>的——它按「工具名 + 参数」算一个<strong>签名</strong>,盯着模型有没有在同一个动作上反复空转,<code>hard_stop_enabled</code> 开启时才拦。两种拦法:</p>
+    <ul>
+      <li><strong>反复精确失败</strong>(<code>repeated_exact_failure_block</code>):<strong>完全相同的调用</strong>(名字 + 参数一字不差)已经失败了 N 次(<code>exact_failure_block_after</code>)→ 拦,告诉模型「别再原样重试了,换策略或说明卡点」。</li>
+      <li><strong>只读工具无进展</strong>(<code>idempotent_no_progress_block</code>):对<strong>幂等/只读</strong>工具,同一个调用<strong>连续返回同样结果</strong> N 次(<code>no_progress_block_after</code>)→ 拦,「结果都一样,别再重复搜了,用已有结果或换个查法」。</li>
+    </ul>
+    <p>(配套的 <code>after_call</code> 还会在「同一工具本轮失败 N 次」时升级为 <strong>halt</strong>,整轮停手——那是执行<strong>之后</strong>的事,见收尾篇的守卫。)</p>
+    <p><strong>怎么实现的(简化代码):</strong>守卫维护三本「账」,<code>before_call</code> 查账决定拦不拦,<code>after_call</code> 记账:</p>
+    <pre><code># ── 阈值(默认值)。注意 hard_stop 默认关,平时只警告不拦 ──
+hard_stop_enabled        = False   # ← 默认 False!需在 config 显式开
+exact_failure_block_after = 5      # 同一调用失败 5 次 → block
+no_progress_block_after   = 5      # 只读调用返回同结果 5 次 → block
+same_tool_failure_halt_after = 8   # 同一工具本轮失败 8 次 → halt(after_call)
+
+# 签名 = (工具名, sha256(规范化参数))——不可逆,不存原始参数
+sig = ToolCallSignature.from_call(name, args)
+
+def before_call(name, args):
+    if not hard_stop_enabled: return ALLOW            # 默认直接放行(只在 after_call 发警告)
+    if exact_failure_counts[sig] >= exact_failure_block_after:
+        return BLOCK("repeated_exact_failure_block")  # 反复精确失败
+    if is_idempotent(name):                           # read_file/web_search/... 才查这条
+        result_hash, repeat = no_progress[sig]
+        if repeat >= no_progress_block_after:
+            return BLOCK("idempotent_no_progress_block")  # 只读无进展
+    return ALLOW
+
+def after_call(name, args, result, failed):
+    if failed:
+        exact_failure_counts[sig] += 1                # 失败:精确签名计数 +1
+        same_tool_failure_counts[name] += 1           # 同工具计数 +1
+        if same_tool_failure_counts[name] >= same_tool_failure_halt_after:
+            return HALT("same_tool_failure_halt")     # 同工具连败 → 整轮停
+    else:
+        exact_failure_counts.pop(sig)                 # 成功:清掉失败账
+        same_tool_failure_counts.pop(name)
+        if is_idempotent(name):                       # 只读工具:记「同结果连续几次」
+            h = result_hash(result)
+            prev = no_progress[sig]
+            no_progress[sig] = (h, prev[1]+1 if prev and prev[0]==h else 1)
+</code></pre>
+    <div class="box warn"><strong>关键:默认<u>不拦</u>,只警告。</strong><code>hard_stop_enabled</code> 默认 <code>False</code>——交互式 CLI/TUI 下,守卫只在 <code>after_call</code> 发一条<strong>温和警告</strong>(「你好像在打转,看看错误换个法子」)塞进工具结果里<strong>提醒模型</strong>,但<strong>不阻止执行</strong>。真正的 block/halt 是<strong>显式 opt-in</strong>(在 config.yaml 的 <code>tool_loop_guardrails.hard_stop_enabled</code> 打开断路器)才生效,阈值也都可配。这样默认体验是「点一下、别硬来」,需要强约束(如无人值守的 cron/kanban)时再开硬停。</div>
+    <div class="box tip"><strong>被拦≠静默丢弃:</strong>三道闸不管哪道拦下,都会发一条<strong>终态 <code>post_tool_call</code> 钩子</strong>(<code>status="blocked"</code> + 对应 <code>error_type</code> + 原因),这样遥测、网关、轨迹<strong>都看得到「这次调用发生过、被拦了、为什么」</strong>,不会变成观测黑洞。而 <code>block_result</code> 本身会作为 tool 结果<strong>回灌给模型</strong>——模型读到「你越权了 / 被策略拦了 / 你在原地打转」,才能自我纠正。</div>
   </li>
   <li>
-    <h4>审批 / sudo 回调</h4>
-    <p>需要用户批准的工具(危险命令、写操作)在这里通过线程本地回调请求批准。</p>
+    <h4>检查点预检(只对「将会执行」的工具)</h4>
+    <p class="where">tools/checkpoint_manager.py · ensure_checkpoint / get_working_dir_for_path</p>
+    <p><strong>这一步在干嘛:</strong>在工具<strong>动手改文件系统之前</strong>,先把即将被改的目录<strong>快照一份存进影子 git 仓</strong>(和你项目里真正的 <code>.git</code> 完全隔离,见第 2 篇),这样万一改坏了能<strong>一键回滚</strong>到「动手前」的样子。「预检」= 必须在<strong>改动之前</strong>拍快照,拍晚了就没意义了。</p>
+    <pre><code>if block_result is None:                    # 只给"会真执行"的工具建点
+    if function_name in {"write_file","patch"} and ckpt.enabled:
+        ckpt.ensure_checkpoint(work_dir_of(path), f"before {name}")
+    if function_name == "terminal" and ckpt.enabled and _is_destructive_command(cmd):
+        ckpt.ensure_checkpoint(cwd, f"before terminal: {cmd[:60]}")   # rm/mv/dd/git reset...
+</code></pre>
+    <h5>什么工具才建点(不是所有)</h5>
+    <ul>
+      <li><strong><code>write_file</code> / <code>patch</code></strong>:一定改文件 → <strong>总是</strong>建点。工作目录由目标 <code>path</code> 推出来(见下)。</li>
+      <li><strong><code>terminal</code></strong>:只有命令命中<strong>破坏性正则</strong> <code>_is_destructive_command</code>(<code>rm</code>/<code>rmdir</code>/<code>cp</code>/<code>mv</code>/<code>sed -i</code>/<code>truncate</code>/<code>dd</code>/<code>shred</code>/<code>git reset|clean|checkout</code>)才建点——普通命令(<code>ls</code>/<code>cat</code>/<code>python x.py</code>)不建,免得噪声太大。</li>
+      <li><strong>其它(如 <code>execute_code</code>、只读工具)不建点。</strong></li>
+    </ul>
+    <h5>工作目录怎么定(get_working_dir_for_path)</h5>
+    <p>不是「文件所在的那个文件夹」,而是<strong>往上找项目根</strong>:从文件目录逐级向上,遇到<strong>项目标记</strong>(<code>.git</code>、<code>pyproject.toml</code>、<code>package.json</code>、<code>Cargo.toml</code>、<code>go.mod</code>、<code>Makefile</code>…)就停,把那个目录当工作目录来快照。找不到就用文件自己的目录。这样快照的粒度是<strong>整个项目</strong>,回滚时能一起还原相关文件。</p>
+    <h5>ensure_checkpoint 的几道闸(为什么不会拖慢/搞乱)</h5>
+    <ul>
+      <li><strong>每轮每目录只拍一次:</strong><code>_checkpointed_dirs</code> 集合去重——同一轮里 <code>write_file</code> + <code>patch</code> 都改同一个项目,<strong>只有第一次拍</strong>(「动手前」状态已经存下了),后面直接跳过。该集合每轮清空。</li>
+      <li><strong>太宽的目录不拍:</strong>是 <code>/</code> 或 <code>$HOME</code> → 跳过,绝不把整个家目录快照进去。</li>
+      <li><strong>太大的目录不拍:</strong>文件数超过上限 <code>_MAX_FILES</code> → 跳过(不为一次改动去快照一棵巨树)。</li>
+      <li><strong>没装 git 就跳过:</strong>影子仓靠 git,<code>git</code> 不在 PATH 就静默禁用。</li>
+      <li><strong>永不抛错:</strong>整个过程<strong>绝不因失败而中断工具调用</strong>——出错只静默记日志。检查点是「锦上添花的安全网」,不能反过来卡住正常工作。</li>
+    </ul>
+  </li>
+</ol>
+<div class="box warn">顺序有讲究:<strong>拦截评估必须在检查点预检之前</strong>——得先知道「这工具到底会不会执行」,才决定要不要为它建检查点。被拦的工具不建点、不占去重槽,省得白白污染检查点历史。</div>
+
+<h2 id="concurrent">并发执行的机制</h2>
+<p>解析完,把 <code>block_result is None</code>(即真要跑)的调用交给线程池。这里有几处很讲究的工程细节:</p>
+<ol class="steps">
+  <li>
+    <h4>线程池 + 上限 8</h4>
+    <p class="where">ThreadPoolExecutor(max_workers=min(n, _MAX_TOOL_WORKERS=8))</p>
+    <p>并发度是「工具数」和 <strong>8</strong> 的较小值。结果放进按原始索引开好的 <code>results[num_tools]</code> 槽位,被拦的槽位提前填好拦截结果。</p>
   </li>
   <li>
-    <h4>post_tool_call 钩子</h4>
-    <p>执行后发出后置钩子,供插件观察/记录,以及网关推送工具完成事件。</p>
+    <h4>线程上下文传播(安全关键)</h4>
+    <p class="where">tools/thread_context.py · propagate_context_to_thread</p>
+    <p><strong>要解决的问题:</strong>一个刚起的线程池 worker 是「白纸」——它带着<strong>空的 <code>contextvars.Context</code></strong>、也<strong>没有线程本地的审批/sudo 回调</strong>。工具一旦在这种线程里跑,会<strong>悄无声息地丢掉两样东西</strong>,各自对应一个真实的安全漏洞:</p>
+    <table>
+      <tr><th>丢了什么</th><th>后果</th></tr>
+      <tr><td>审批的<strong>会话/平台 ContextVars</strong>(<code>tools.approval</code> / <code>gateway.session_context</code>)</td><td>网关会话被误判成「非交互」→ 落进 <code>check_dangerous_command</code> 的<strong>自动批准</strong>分支 → <strong>危险命令不弹审批就跑了</strong>(#33057 / #30882)</td></tr>
+      <tr><td>线程本地的 <strong>CLI 审批/sudo 回调</strong>(<code>tools.terminal_tool</code>)</td><td><code>prompt_dangerous_approval</code> <strong>够不到用户</strong> → 审批框根本弹不出来(<code>GHSA-qg5c-hvr5-hjgr</code> / #15216)</td></tr>
+    </table>
+    <p>两者都意味着:worker 线程里的工具可能<strong>没经用户同意就执行危险命令</strong>。这个 helper 把「父线程捕获 → worker 安装 → 退出清除」的生命周期收成一处:</p>
+    <pre><code>def propagate_context_to_thread(target):
+    ctx = contextvars.copy_context()          # ① 父线程:快照全部 ContextVars
+    parent_approval_cb = get_approval()       #    捕获当前审批回调
+    parent_sudo_cb     = get_sudo()           #    捕获当前 sudo 回调
+
+    def _runner(*args, **kwargs):
+        def _inner():
+            set_approval(parent_approval_cb)  # ② worker:装回审批/sudo 回调
+            set_sudo(parent_sudo_cb)
+            try:
+                return target(*args, **kwargs) #    真正跑工具
+            finally:
+                set_approval(None)            # ③ 无论如何退出都清除
+                set_sudo(None)                #    (线程会被回收复用,不能留残留)
+        return ctx.run(_inner)                # 在"复制出的上下文"里跑 → ContextVars 都在
+    return _runner
+</code></pre>
+    <p>三个关键动作:</p>
+    <ul>
+      <li><strong>① 在父线程快照</strong>:<code>copy_context()</code> 抓下本轮所有 ContextVars(谁在问、哪个会话/平台);同时抓下当前审批/sudo 回调函数。<strong>必须在父线程调</strong>,这时上下文才是完整的。</li>
+      <li><strong>② 在 worker 里安装 + <code>ctx.run</code></strong>:worker 通过 <code>ctx.run(_inner)</code> 在<strong>复制出的上下文</strong>里执行——ContextVars 全都在;<code>_inner</code> 再把审批/sudo 回调装进这条线程的线程本地。两套机制缺一不可:<strong>ContextVars 带「会话身份」</strong>(审批弹给谁),<strong>回调是「真正弹框/入队的函数」</strong>。</li>
+      <li><strong>③ finally 里必清除</strong>:线程池会<strong>回收复用</strong>线程,不清的话下一个无关任务会继承一个<strong>指向已销毁 CLI 的陈旧回调</strong> → 弹错会话、甚至崩。所以无论正常/异常退出都 <code>set_approval(None)</code>。</li>
+    </ul>
+    <div class="box warn"><strong>fail-closed(失败即拒)是这段的安全底线:</strong>万一回调安装失败,就<strong>让回调保持 None</strong>——这恰恰是安全结果:交互场景下<strong>没有回调时 <code>prompt_dangerous_approval</code> 直接拒绝危险命令</strong>,网关审批队列<strong>没有 notify 回调时会阻塞等待</strong>。也就是说,传播出 bug 的方向永远是「拒绝/卡住」,<strong>绝不会是「静默放行」</strong>。安全代码的正确默认就该这样。</div>
   </li>
   <li>
-    <h4>按原序回灌结果</h4>
-    <p class="where">messages.append(make_tool_result_message(name, result, tool_call_id))</p>
-    <p>把结果包成 <code>{"role":"tool", "tool_call_id":..., "content":...}</code> append 进 messages,<strong>顺序对齐</strong>原始 tool_calls。</p>
+    <h4>worker 登记自己,好被中断</h4>
+    <p class="where">tools/interrupt.py(按线程记中断) · run_agent.interrupt(扇出) · tool_executor._run_tool(登记)</p>
+    <p><strong>背景:中断是「按线程」记的。</strong>Hermes 的中断信号存在一个<strong>线程 id 集合</strong> <code>_interrupted_threads</code> 里;工具靠 <code>is_interrupted()</code> 查<strong>当前线程</strong>的 id 在不在里面。问题来了:并发工具跑在<strong>线程池 worker 各自的 tid</strong> 上,不是 agent 主执行线程。所以 <code>/stop</code> 只把主线程标记为中断,<strong>够不到正在 worker 上跑的工具</strong>(比如一条卡在网络 I/O 上的 terminal 命令),它只能干等到自己超时。</p>
+    <p><strong>解法是「登记 + 扇出」两半配合:</strong></p>
+    <pre><code># 一半:worker 一进来就登记自己的 tid(tool_executor._run_tool)
+_worker_tid = threading.current_thread().ident
+with agent._tool_worker_threads_lock:
+    agent._tool_worker_threads.add(_worker_tid)          # ① 登记
+if agent._interrupt_requested:                            # ② 补漏:登记前就被中断了?立刻自我标记
+    _set_interrupt(True, _worker_tid)
+set_activity_callback(agent._touch_activity)              # ③ 线程本地活动回调(见下)
+try:
+    ... 真正执行工具 ...
+finally:
+    with agent._tool_worker_threads_lock:
+        agent._tool_worker_threads.discard(_worker_tid)  # ④ 摘除登记
+    _set_interrupt(False, _worker_tid)                    # ⑤ 清掉中断位(关键!)
+
+# 另一半:interrupt() 把中断扇出到每个登记在册的 worker(run_agent.interrupt)
+for wtid in list(agent._tool_worker_threads):
+    _set_interrupt(True, wtid)                            # 每个 worker tid 都置位
+</code></pre>
+    <ul>
+      <li><strong>① 登记 + ⑥ 扇出:</strong>worker 把 tid 记进 <code>_tool_worker_threads</code>;<code>agent.interrupt()</code> 遍历这个集合,给<strong>每个在跑的 worker</strong> 单独置中断位 → 工具下次 <code>is_interrupted()</code> 就返回 True,当场中止,不用等超时。</li>
+      <li><strong>② 补漏(竞态):</strong>如果中断发生在「扇出已经跑过、但本 worker 还没登记」的空档,扇出会漏掉它。所以 worker 登记后<strong>立刻自查</strong> <code>_interrupt_requested</code>,是就给自己补一刀。</li>
+      <li><strong>⑤ finally 必清中断位(最容易忽略的坑):</strong>线程池会<strong>回收复用</strong>线程。若不清,tid X 上留着中断位,下一个<strong>无关任务</strong>被调度到 X 上,一进来 <code>is_interrupted()</code> 就是 True → <strong>无缘无故被中止</strong>。所以必须在 <code>finally</code> 里 <code>_set_interrupt(False, tid)</code>(且必须是 finally——<code>KeyboardInterrupt</code>/<code>CancelledError</code> 这类会绕过 <code>except Exception</code>)。</li>
+    </ul>
+    <div class="box tip"><strong>③ 顺带装了个「活动回调」:</strong>worker 里 <code>set_activity_callback(agent._touch_activity)</code> 是<strong>线程本地</strong>的——主线程的回调 worker 看不见。长跑的 terminal 命令用它<strong>持续报活(心跳)</strong>,让网关的不活动监控知道「我还在干活、别杀我」。不装的话,worker 里一条几分钟的命令不报活,可能被误判成卡死而中止。</div>
   </li>
   <li>
-    <h4>工具进度落库</h4>
-    <p class="where">_flush_session_db_after_tool_progress(...)</p>
-    <p>每执行完一个工具就刷一次 SQLite,保证长工具链中途崩溃也能恢复到最近进度。</p>
+    <h4>真正执行 + 失败判定</h4>
+    <p class="where">agent._invoke_tool → model_tools.handle_function_call → tools/registry</p>
+    <p><strong>执行:</strong>worker 调 <code>_invoke_tool</code>,它进 <code>handle_function_call</code>——这是<strong>总分发器</strong>:先按 schema 把参数<strong>类型归一</strong>(<code>coerce_tool_args</code>,如字符串 <code>"42"</code>→数字 <code>42</code>),再<strong>路由到工具注册表</strong>(终端 / 文件 / 网页 / MCP…),拿回一个 <strong>JSON 结果字符串</strong>。所有工具的返回都统一成字符串,便于回灌进消息。</p>
+    <p><strong>异常怎么兜:</strong></p>
+    <ul>
+      <li><code>KeyboardInterrupt</code> → 触发 <code>agent.interrupt()</code>,把结果记成<strong>「已取消」</strong>(<code>status="cancelled"</code>),不当失败。</li>
+      <li>其它任何异常 → 包成 <code>Error executing tool '&lt;name&gt;': &lt;e&gt;</code> 字符串(带 <code>exc_info</code> 落日志),<strong>不让一个工具的崩溃掀翻整批</strong>。</li>
+    </ul>
+    <p><strong>失败判定 <code>_detect_tool_failure</code>:</strong>拿到结果后判定这次是成功还是失败,返回 <code>(is_failure, 后缀标签)</code>。它<strong>不是</strong>只看有没有抛异常——很多工具「正常返回」但内容是失败,得按工具语义看:</p>
+    <table>
+      <tr><th>工具</th><th>怎么算失败</th></tr>
+      <tr><td><code>terminal</code></td><td><code>exit_code != 0</code>(非零退出是规范失败信号)→ 标 <code>[exit 1]</code> 或 <code>[错误信息]</code></td></tr>
+      <tr><td><code>memory</code></td><td><code>success=false</code> 且含「exceed the limit」→ 标 <code>[full]</code>(区分「存满了」和真错误)</td></tr>
+      <tr><td>任意工具</td><td>JSON 里有 <code>{"error": ...}</code> / <code>success=false</code> → 失败 + 截断的错误信息</td></tr>
+      <tr><td>文件类</td><td>写入/patch 成功落地的结果 → 明确算<strong>成功</strong>(即使文本里有 "error" 字样也不误判)</td></tr>
+    </table>
+    <p>这个 <code>is_failure</code> 有两个去处:<strong>①日志</strong>(打印「tool X failed/completed」);<strong>②喂给守卫的 <code>after_call</code></strong>——失败就累加「精确失败/同工具失败」计数,正是上面第 ③ 道守卫防打转的数据来源。</p>
+  </li>
+  <li>
+    <h4>批超时 + 中断兜底</h4>
+    <p class="where">HERMES_CONCURRENT_TOOL_TIMEOUT_S(默认 420s) · concurrent.futures.wait 轮询</p>
+    <p>整批并发不能无限等——主线程用 <code>concurrent.futures.wait(futures, timeout=…)</code> <strong>轮询</strong>着等所有 future 完成,每圈最多等 5 秒,好在这些间隙里处理超时、中断、心跳三件事。</p>
+    <h5>① 批超时(默认 420 秒)</h5>
+    <p>截止时间来自 <code>HERMES_CONCURRENT_TOOL_TIMEOUT_S</code>(默认 <strong>420s</strong>;设 <strong>≤0 关闭</strong>,永不超时)。这个值刻意<strong>高于</strong>单个工具自己的超时(如 web_extract 360s),免得批级看门狗误杀一个「慢但正常」的工具。到点仍没跑完:</p>
+    <pre><code>if time.monotonic() &gt;= deadline:
+    for f in not_done: f.cancel()          # 取消还没开始的 future
+    for tid in worker_tids:
+        _set_interrupt(True, tid)           # 给还在跑的 worker 发中断信号
+    abandon_executor = True; break          # 放弃线程池,记下哪些超时了
+</code></pre>
+    <h5>② 用户 /stop(执行中中断)</h5>
+    <p>轮询间隙若发现 <code>agent._interrupt_requested</code>:取消尚未启动的 future,再给已在跑的工具 <strong>3 秒宽限</strong>——<code>concurrent.futures.wait(not_done, timeout=3.0)</code>,让它们察觉中断位(上一步的登记/扇出机制)后优雅退出,然后 break。有中断检查的工具(terminal/execute_code)会当场停;没有的(read_file/web_search)跑完这最后一下。</p>
+    <h5>③ 每 ~30 秒报活(心跳)</h5>
+    <p>长批可能跑好几分钟。等待循环里<strong>每约 30 秒</strong>(<code>_conc_elapsed % 30 &lt; 6</code>,6=5s 轮询的 6 圈)<code>_touch_activity</code> 一次,告诉网关的不活动监控「这批工具还在跑,别当我卡死」。</p>
   </li>
 </ol>
 
-<h2 id="order">并发执行如何保证顺序</h2>
-<p><code>execute_tool_calls_concurrent</code> 的做法是:先把所有调用<strong>解析 + 过关卡</strong>(<code>parsed_calls</code> 列表,保留原始索引),再用线程池并发跑真实执行,最后<strong>按原索引</strong>把结果 append。所以:</p>
+<h2 id="result">结果处理与回灌</h2>
+<p>不管并发还是串行,拿到每个工具的结果后,都要经过同样的「回灌」处理。其中最讲究的是<strong>预算裁剪 + 溢出落盘</strong>——单独拆出来讲。</p>
+
+<h3>三层工具输出预算</h3>
+<p class="where">tools/budget_config.py · tools/tool_result_storage.py</p>
+<p>工具结果可能极大(一个 <code>terminal</code> / <code>web_search</code> 能吐几十万字符),直接塞进上下文会<strong>撑爆窗口、烧钱、还挤掉真正有用的历史</strong>。Hermes 用<strong>三层</strong>把它压住:</p>
+<table>
+  <tr><th>层</th><th>粒度</th><th>做什么</th></tr>
+  <tr><td>第 1 层</td><td>注册表</td><td>每个工具注册时声明 <code>max_result_size_chars</code>(web/terminal 等注册 100K)</td></tr>
+  <tr><td>第 2 层</td><td>单条结果</td><td><code>maybe_persist_tool_result</code>:单条超阈值 → 全文<strong>落盘</strong>,消息只留「预览+文件路径」</td></tr>
+  <tr><td>第 3 层</td><td>整轮汇总</td><td><code>enforce_turn_budget</code>:一轮所有工具结果<strong>总和</strong>超预算 → 从最大的开始落盘,直到降到预算内</td></tr>
+</table>
+<p><strong>第 2 层(单条落盘):</strong></p>
+<pre><code>def maybe_persist_tool_result(content, tool_name, tool_use_id, env, config, threshold=None):
+    thr = threshold if threshold is not None else config.resolve_threshold(tool_name)
+    if thr == inf or len(content) &lt;= thr:
+        return content                       # 不超阈值,原样返回
+    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    # 通过 env.execute() 写文件 —— 任何后端都行(本地/Docker/SSH/Modal/Daytona)
+    if env and _write_to_sandbox(content, remote_path, env):
+        return _build_persisted_message(preview, has_more, len(content), remote_path)
+    # 写不了沙箱 → 兜底:内联截断,只留预览
+    return f"{preview}\n\n[Truncated: 原始 {len(content):,} 字符,未能落盘]"
+</code></pre>
+<p><strong>第 3 层(整轮控总量):</strong>把一轮里<strong>还没落盘</strong>的结果按大小排序,从最大的开始落盘,边落边扣总量,直到 <code>total ≤ turn_budget</code> 为止(已落盘的跳过,不重复处理)。</p>
+
+<div class="box tip"><strong>「落盘」不是不给模型返回——是返回「预览 + 全文路径 + 怎么读」。</strong>超阈值时,<strong>全文</strong>写进沙箱文件,<strong>返回给模型</strong>的是一个 <code>&lt;persisted-output&gt;</code> 说明块:
+<pre><code>&lt;persisted-output&gt;
+This tool result was too large (348,201 characters, 340.0 KB).
+Full output saved to: /sandbox/.hermes/tool_results/call_abc123.txt
+Use the read_file tool with offset and limit to access specific sections.
+
+Preview (first 2000 chars):
+&lt;开头一段预览……&gt;
+...
+&lt;/persisted-output&gt;
+</code></pre>
+所以模型这轮拿到的是<strong>开头预览 + 一个「全文在这里,自己按需去读」的指针</strong>,而不是把几百 KB 硬灌进上下文。它要细节就用 <code>read_file(path, offset, limit)</code> 精准取那一段——<strong>既不撑爆窗口、也不丢数据</strong>(全文一直在磁盘上)。这也是为什么落盘排在「内联截断」之前:截断会真丢掉后半,落盘是「预览 + 可回取」,只有连沙箱都写不了时才退回纯截断兜底。</div>
+
+<h4>预览怎么生成(generate_preview)</h4>
+<p>那段预览就是<strong>「取结果开头一段,再回退到最近的整行」</strong>——不是摘要、不是首尾抽样,纯粹是开头一瞥:</p>
+<pre><code>def generate_preview(content, max_chars):
+    if len(content) &lt;= max_chars: return content, False   # 没超 → 整个就是预览
+    truncated = content[:max_chars]        # ① 先硬取开头 max_chars 个字符(=preview_size)
+    last_nl = truncated.rfind("\n")        # ② 找这段里最后一个换行
+    if last_nl &gt; max_chars // 2:           # ③ 只要它不太靠前(过了一半)
+        truncated = truncated[:last_nl+1]  #    就切到整行结束,避免半句截断
+    return truncated, True                 # has_more=True → 块末尾那个 "..." 的来源
+</code></pre>
+<ul>
+  <li><strong>取头</strong>:预览是结果<strong>最前面</strong>那段,给模型一个「大概长啥样」的一瞥。</li>
+  <li><strong>整行回退</strong>:直接在第 <code>max_chars</code> 处切多半会把一行砍成半句(JSON/日志断行),所以回退到最近的换行、以完整一行结尾,读着干净。</li>
+  <li><strong>半行保护</strong>:只有换行<strong>过了一半</strong>才这么切;若开头是个超长无换行的单行,<code>rfind</code> 找到的换行太靠前,照切会把预览砍到只剩一点——这时宁可保留硬截断的 <code>max_chars</code>。</li>
+  <li><strong>两处共用</strong>:落盘和内联截断兜底都用它,保证「无论落盘还是截断,模型看到的开头一致」。</li>
+</ul>
+
+<h3>预算随模型上下文窗口缩放</h3>
+<p class="where">budget_for_context_window(context_length) · #23767</p>
+<p>阈值不是死数。大模型(200K+ token)沿用固定默认(单条 100K 字符 / 整轮 200K 字符);但中途切到<strong>小窗口模型</strong>(如 65K token)时,一条 100K 字符的结果、或 200K 字符的整轮预算(≈50K token)可能<strong>单独就把窗口撑爆</strong>。所以按窗口<strong>按比例缩</strong>:</p>
+<pre><code>window_chars = context_length × 4          # ~4 字符/token
+per_result   = window_chars × 0.15         # 单条最多占窗口 15%
+per_turn     = window_chars × 0.30         # 整轮最多占窗口 30%
+# 上钳到历史默认(大模型完全不变)、下floor(小模型也留得住可用预览)
+per_result = clamp(per_result, 8_000,  100_000)
+per_turn   = clamp(per_turn,  16_000,  200_000)
+</code></pre>
+<div class="box tip"><strong>为什么分子/分母都留余量</strong>(15% / 30% 而非 100%):工具输出不是窗口里唯一的东西——system prompt、工具 schema、对话历史、模型自己的回复都在抢空间,所以刻意压在远低于 1.0 的比例。<code>_budget_for_agent</code> 在每轮开头算一次这个预算,避免每条结果都重算。</div>
+
+<h3>其余回灌步骤</h3>
+<ul>
+<li><strong>多模态结果</strong>:像 <code>computer_use</code> 截图返回的是带 <code>_multimodal=True</code> 的信封(content parts + 文本摘要),按提供商能力决定发图还是发文本摘要。</li>
+<li><strong>按原序 append</strong>:<code>make_tool_result_message(name, result, tool_call_id)</code> 包成 <code>{"role":"tool", "tool_call_id":..., "content":...}</code>,<strong>严格按原始 tool_calls 顺序</strong>写回 <code>messages</code>。</li>
+<li><strong>post_tool_call 钩子</strong>:发后置钩子给插件观察/记录,网关据此推送「工具完成」事件。</li>
+<li><strong>增量落库</strong>:<code>_flush_session_db_after_tool_progress</code> 每完成一个工具就刷一次 SQLite——因为工具可能有副作用(重启/杀进程),得保证长工具链中途崩溃也能恢复到最近进度。</li>
+</ul>
+
+<h2 id="order">并发时哪些是并发、哪些是串行</h2>
 <table>
 <tr><th>阶段</th><th>是否并发</th></tr>
-<tr><td>解析参数 + 钩子/守卫前置检查</td><td>串行(保证确定性)</td></tr>
-<tr><td>真实工具执行</td><td>并发(线程池)</td></tr>
-<tr><td>结果回灌 messages</td><td>按原始顺序串行 append</td></tr>
+<tr><td>工具名校验/修复</td><td>串行(在循环里,进执行前)</td></tr>
+<tr><td>解析参数 + 解包/作用域 + 中间件 + 拦截评估 + 检查点预检</td><td>串行(保证确定性)</td></tr>
+<tr><td>真实工具执行(<code>_invoke_tool</code>)</td><td>并发(线程池,≤8)</td></tr>
+<tr><td>结果预算/落盘 + 回灌 messages</td><td>按原始顺序串行 append</td></tr>
 </table>
 
 <h2 id="loopback">回灌后:带着结果再问一次</h2>
 <p>所有工具结果 append 进 <code>messages</code> 后,执行函数返回,主循环 <code>continue</code> 回到顶部。下一圈第 3 篇的清洗会把这些新增的 tool 消息一起发给模型——于是模型「看到」了工具结果,继续推理。这就是多轮工具调用能连续进行的根本。</p>
+
+<h3>同一轮的多个工具:一起回,不分批</h3>
+<p>同一轮里发的 N 个工具,会<strong>全部执行完、按原序把 N 条 tool 结果一起塞进<u>下一次</u> API 调用</strong>——模型一次看全。<strong>「分批」只发生在跨轮</strong>(模型看完这批再发新一批),不在同一轮内部。</p>
 <div class="diagram">
 <pre class="mermaid">
-flowchart LR
-    A[模型返回 tool_calls] --> B[解析 + 过关卡<br/>串行]
-    B --> C[线程池并发执行]
-    C --> D[按原序回灌 messages]
-    D --> E[每个工具后落库]
-    E --> F[continue 回循环顶]
-    F --> G[下一圈带工具结果再问模型]
+sequenceDiagram
+    autonumber
+    participant M as 大模型
+    participant A as agent
+    Note over M,A: 第 N 轮:一次 assistant 发 3 个工具
+    M->>A: assistant + tool_calls[call_1, call_2, call_3]
+    Note over A: 并发/串行执行,等这 3 个全跑完
+    A->>A: append tool(call_1) / tool(call_2) / tool(call_3)  ← 3 条独立消息
+    A->>M: 一次 API 调用,带齐全部 3 条结果  ← 一起回,只发一次请求
+    Note over M,A: 第 N+1 轮(要不要再调工具,是"跨轮"的事)
+    M->>A: 继续推理:或再发新一批 tool_calls,或纯文本收尾
+</pre>
+</div>
+<div class="box tip"><strong>两个层面别混:</strong><strong>①消息结构</strong>——每个 <code>tool_call</code> 必须有一条 <code>tool_call_id</code> 对应的结果,所以 3 个工具 = <strong>3 条独立 tool 消息</strong>(不合并);<strong>②网络层面</strong>——这 3 条在<strong>同一次 <code>create()</code> 请求</strong>里一起发。所以并发省的是「3 个工具的执行时间」,<strong>不是</strong>「3 次 API 往返」——API 往返永远每轮一次。这也是为什么哪怕并发,也要<strong>等整批齐了</strong>才发下一次请求:API 契约要求 assistant 的 tool_calls 后面必须紧跟它<strong>所有</strong>结果,不能只回一部分。</div>
+
+<h3>整体流程图</h3>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A[模型返回 tool_calls] --> R{工具名合法?}
+    R -- 否 --> R2[修复/回错给模型<br/>3 次仍错→partial]
+    R -- 是 --> M{_should_parallelize<br/>这批能并发?}
+    M -- 否 --> SEQ[串行执行]
+    M -- 是 --> P[串行:解析+解包+作用域<br/>+中间件+拦截+检查点]
+    P --> POOL[线程池并发执行 ≤8<br/>上下文传播·worker 可中断·420s 超时]
+    SEQ --> RES
+    POOL --> RES[结果:失败判定→预算裁剪/落盘<br/>→按原序回灌 messages]
+    RES --> FLUSH[每个工具后增量落库]
+    FLUSH --> CONT[continue 回循环顶]
+    CONT --> AGAIN[下一圈带工具结果再问模型]
 </pre>
 </div>
 
 <h2 id="takeaway">本篇要点</h2>
 <div class="box">
 <ul>
-<li>有 tool_calls 就执行并 <code>continue</code>;纯文本则进收尾。</li>
-<li>真实执行可<strong>并发</strong>,但结果必须<strong>按原序回灌</strong>,守住角色交替铁律。</li>
-<li>每个调用执行前过四道关:<strong>越权 → pre 钩子 → 守卫 → 分发</strong>。</li>
-<li>真正的执行落点是 <code>handle_function_call → registry</code>(属工具系统模块)。</li>
-<li>每个工具执行后<strong>立即落库</strong>,长工具链也能崩溃恢复。</li>
+<li>有 tool_calls 就执行并 <code>continue</code>;纯文本则进收尾。进执行前先<strong>校验/修复工具名</strong>(归一化 5 连招 + 模糊匹配;整批原子否决;连错 3 次→partial)。</li>
+<li>并发不是无脑并行:<code>_should_parallelize_tool_batch</code> 要求<strong>&gt;1 个、无 clarify、只读或路径不重叠</strong>才并发,否则串行。</li>
+<li>解析与所有关卡<strong>串行且确定性</strong>,只有真正执行才并发(线程池 ≤8);同一轮多个工具<strong>等齐后一次请求一起回</strong>(N 条 tool 消息),分批只发生在跨轮。</li>
+<li>关卡链:<strong>Tool Search 解包+作用域门 → 中间件 → 拦截评估(越权/插件/守卫) → 改文件系统前打检查点</strong>。</li>
+<li><strong>Tool Search 默认不启用</strong>——只有可延迟工具 schema ≥ 窗口 10% 才触发;核心工具永不藏。用 BM25 关键词搜、模型「先搜后调」三次往返发现工具。</li>
+<li>并发的安全命脉是 <code>propagate_context_to_thread</code>——把<strong>审批回调 + ContextVars</strong> 带进 worker(GHSA-qg5c-hvr5-hjgr),失败即拒(fail-closed);worker 登记 tid 才能被中断扇出。</li>
+<li>工具守卫<strong>默认只警告不拦</strong>(<code>hard_stop_enabled</code> opt-in),按「名字+参数签名」防反复失败/只读无进展的死循环。</li>
+<li>结果<strong>按原序回灌</strong>守角色交替;超大结果<strong>三层预算 + 落盘</strong>(返回「预览+全文路径+用 read_file 读」,非截断、可回取);每个工具后<strong>增量落库</strong>可崩溃恢复。</li>
 </ul>
 </div>
 

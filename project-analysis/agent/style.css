@@ -38,6 +38,9 @@ h2 { font-size:23px; font-weight:700; margin:46px 0 16px; letter-spacing:-.3px;
 h2::before { content:""; width:5px; height:22px; border-radius:3px; background:linear-gradient(180deg,var(--accent),#e7c869); }
 h3 { font-size:17.5px; font-weight:700; margin-top:30px; scroll-margin-top:20px; }
 h4 { font-size:14.5px; font-weight:700; margin-top:22px; color:var(--accent2); }
+h5 { font-size:14px; font-weight:700; margin:26px 0 10px; color:var(--fg);
+     padding:2px 0 2px 11px; border-left:3px solid var(--accent);
+     letter-spacing:.1px; }
 p { margin:14px 0; }
 a { color:var(--accent2); }
 strong { font-weight:700; }
@@ -69,6 +72,7 @@ blockquote { border:none; margin:0 0 18px; padding:16px 20px; background:var(--p
 .steps > li::before { counter-increment:step; content:counter(step); position:absolute; left:18px; top:18px;
                       width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#e7c869);
                       color:#1a1505; font-weight:800; display:flex; align-items:center; justify-content:center; font-size:14px; }
+.steps.substeps > li::before { background:linear-gradient(135deg,#10b981,#34d399); color:#ffffff; }
 .steps > li h4 { margin:0 0 6px; font-size:16px; color:var(--fg); }
 .steps > li p { margin:6px 0 0; font-size:14px; color:var(--muted); }
 .steps .where { font-size:12px; color:var(--accent2); font-weight:600; }

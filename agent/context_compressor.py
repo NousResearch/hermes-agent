@@ -2505,6 +2505,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         return focus
 
     @classmethod
+    def _find_context_summaries(
+        cls,
+        messages: List[Dict[str, Any]],
+        start: int,
+        end: int,
+    ) -> list[tuple[int, str]]:
+        """Find handoff summaries inside a compression window."""
+        summaries: list[tuple[int, str]] = []
+        for idx in range(start, end):
+            content = messages[idx].get("content")
+            if cls._is_context_summary_message(messages[idx]):
+                summaries.append((
+                    idx,
+                    cls._strip_summary_prefix(_content_text_for_contains(content)),
+                ))
+        return summaries
+
+    @classmethod
     def _find_latest_context_summary(
         cls,
         messages: List[Dict[str, Any]],
@@ -2512,10 +2530,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> tuple[Optional[int], str]:
         """Find the newest handoff summary inside a compression window."""
-        for idx in range(end - 1, start - 1, -1):
-            content = messages[idx].get("content")
-            if cls._is_context_summary_message(messages[idx]):
-                return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
+        summaries = cls._find_context_summaries(messages, start, end)
+        if summaries:
+            return summaries[-1]
         return None, ""
 
     # ------------------------------------------------------------------
@@ -3157,17 +3174,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         # so only summarize messages that are both after the handoff and inside
         # the current compression window.
         summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
-        summary_idx, summary_body = self._find_latest_context_summary(
+        summary_hits = self._find_context_summaries(
             messages,
             summary_search_start,
             compress_end,
         )
-        if summary_idx is not None:
-            if summary_body and not self._previous_summary:
-                self._previous_summary = summary_body
+        if summary_hits:
+            summary_idx = summary_hits[-1][0]
+            if not self._previous_summary:
+                summary_bodies = [body for _, body in summary_hits if body]
+                if summary_bodies:
+                    self._previous_summary = "\n\n".join(summary_bodies)
+            summary_indices = {idx for idx, _ in summary_hits}
             pre_summary_turns = [
-                msg for msg in messages[compress_start:summary_idx]
-                if not self._is_context_summary_message(msg)
+                msg for idx, msg in enumerate(
+                    messages[compress_start:summary_idx],
+                    start=compress_start,
+                )
+                if idx not in summary_indices
             ]
             turns_to_summarize = (
                 pre_summary_turns + messages[summary_idx + 1:compress_end]

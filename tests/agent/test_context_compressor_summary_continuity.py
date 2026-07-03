@@ -160,8 +160,8 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
 def test_restart_stacked_handoffs_fold_stray_head_and_collapse_to_single_summary():
     """Stacked restart summaries should keep stray head turns as new input."""
     compressor = _compressor(protect_first_n=3)
-    old_summary = "OLD-STACKED-SUMMARY earlier compacted facts"
-    newer_summary = "NEW-STACKED-SUMMARY already incorporates prior compacted facts"
+    old_summary = "OLD-ONLY facts from the first compaction"
+    newer_summary = "NEW-ONLY facts from work after restart"
 
     msgs = [
         {"role": "system", "content": "system prompt"},
@@ -179,9 +179,9 @@ def test_restart_stacked_handoffs_fold_stray_head_and_collapse_to_single_summary
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
+    assert prompt.count(old_summary) == 1
     assert prompt.count(newer_summary) == 1
     assert "FOSSIL-HEAD-TURN live detail before summary" in prompt
-    assert old_summary not in prompt
     assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
     assert f"[USER]: {SUMMARY_PREFIX}" not in prompt
     summary_messages = [

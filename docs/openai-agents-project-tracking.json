@@ -325,9 +325,9 @@
     "workflow_id": "OASDK-GIT-001",
     "tracking_mode": "native_git_local_first",
     "repo_remote": "https://github.com/NousResearch/hermes-agent.git",
-    "working_branch": "main",
+    "working_branch": "scott/openai-agents-sdk-governance",
     "upstream_ref": "origin/main",
-    "branch_strategy": "local commits first; create issue-scoped branch before push/PR when external scope is authorized",
+    "branch_strategy": "issue-scoped PR branch from origin/main; cherry-picked local governed SDK commits after upstream sync scope was authorized",
     "commit_message_policy": "conventional_commits_with_verification_body",
     "pre_commit_required_commands": [
       "python scripts/check_openai_agents_quality.py",
@@ -352,20 +352,25 @@
       "manual-test/"
     ],
     "tracked_local_commit_refs": [
-      "da6b37213",
-      "3a78ac5ce",
-      "e3401f585",
-      "a36a79845",
-      "060bc1648",
-      "0efd2c44a",
+      "74bd1aeed",
+      "0aad2ba8b",
+      "482260721",
+      "68ec1663c",
+      "7ec5a0656",
+      "71890443b",
       "HEAD",
-      "00ad3ffa3",
-      "94978ff40",
-      "98f7c3bb8"
+      "a1bb06a09",
+      "cb2a8ac7e",
+      "3c7a5fbe9",
+      "6660dc1fe",
+      "6f9bc3c5f",
+      "da0218a91",
+      "de799a6ad",
+      "133e88ac0"
     ],
     "integration_targets": {
-      "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",
-      "hermes_kanban": "blocked_waiting_for_explicit_external_tracking_scope",
+      "github_issues": "blocked_origin_permission_read; PR branch prepared for fork remote",
+      "hermes_kanban": "blocked_projectmanager_profile_missing_model",
       "cron_digest": "blocked_waiting_for_explicit_recurring_spend_scope"
     },
     "current_tip_ref": "HEAD",

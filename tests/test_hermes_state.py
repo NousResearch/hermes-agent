@@ -2856,3 +2856,88 @@ class TestGatewayRoutingPkHeal:
         cur = db._conn.cursor()
         db._heal_gateway_routing_pk(cur)
         assert db.load_gateway_routing_entries(scope="s") == {"k1": "{}"}
+
+
+class TestApplyDatabasePragmas:
+    """Config-driven WAL-sizing pragma application (database: section)."""
+
+    @staticmethod
+    def _patch_cfg(monkeypatch, cfg):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: cfg,
+        )
+
+    def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"wal_autocheckpoint": 250}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 250
+        finally:
+            conn.close()
+
+    def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(
+                monkeypatch, {"database": {"journal_size_limit": 10485760}}
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            assert (
+                conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
+            )
+        finally:
+            conn.close()
+
+    def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            self._patch_cfg(monkeypatch, {})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        finally:
+            conn.close()
+
+    def test_never_touches_journal_mode(self, tmp_path, monkeypatch):
+        """journal_mode is owned by apply_wal_with_fallback — a database:
+        journal_mode entry must NOT cause a second, unguarded mode switch."""
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"journal_mode": "delete"}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+
+    def test_ignores_non_integer_values(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            before = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+            self._patch_cfg(
+                monkeypatch, {"database": {"wal_autocheckpoint": "lots"}}
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == before
+        finally:
+            conn.close()

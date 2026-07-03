@@ -818,6 +818,57 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         exc,
     )
 
+
+# ---------------------------------------------------------------------------
+# Config-driven database pragmas
+# ---------------------------------------------------------------------------
+def apply_database_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str = "state.db",
+) -> None:
+    """Apply optional WAL-sizing PRAGMAs from ``config.yaml``.
+
+    Reads the ``database:`` section and applies ``wal_autocheckpoint``
+    and ``journal_size_limit`` when set to integer values.  The journal
+    mode itself is NOT handled here — ``database.journal_mode`` is owned
+    by :func:`resolve_journal_mode` inside :func:`apply_wal_with_fallback`,
+    which layers the operator setting under all the safety guards
+    (never live-downgrading an on-disk WAL DB, filesystem fallback,
+    WAL-reset-bug gating).  Keeping a single owner prevents a second,
+    unguarded journal-mode switch path.
+
+    Best-effort: config load or pragma failures are ignored so DB init
+    never breaks on a malformed ``database:`` section.
+    """
+    try:
+        # Local import avoids a circular import with hermes_cli.config.
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return
+
+    for pragma_name in ("wal_autocheckpoint", "journal_size_limit"):
+        raw_value = cfg_get(cfg, "database", pragma_name, default=None)
+        if raw_value is None:
+            continue
+        try:
+            value = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s: ignoring non-integer database.%s=%r",
+                db_label,
+                pragma_name,
+                raw_value,
+            )
+            continue
+        try:
+            conn.execute(f"PRAGMA {pragma_name}={value}")
+        except sqlite3.OperationalError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Malformed-schema recovery
 # ---------------------------------------------------------------------------
@@ -1837,6 +1888,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
+                apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()

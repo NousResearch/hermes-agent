@@ -2712,6 +2712,15 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        search_query: str = None,
+        user_id: str = None,
+        user_ids: List[str] = None,
+        chat_id: str = None,
+        chat_id_allow_empty: bool = False,
+        chat_types: List[str] = None,
+        thread_id: str = None,
+        thread_id_allow_empty: bool = False,
+        search_message_content: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -2764,6 +2773,42 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if user_ids is not None:
+            normalized_user_ids = []
+            seen_user_ids = set()
+            for value in user_ids:
+                text = str(value or "")
+                if not text or text in seen_user_ids:
+                    continue
+                normalized_user_ids.append(text)
+                seen_user_ids.add(text)
+            if normalized_user_ids:
+                placeholders = ",".join("?" for _ in normalized_user_ids)
+                where_clauses.append(f"COALESCE(s.user_id, '') IN ({placeholders})")
+                params.extend(normalized_user_ids)
+            else:
+                where_clauses.append("0")
+        elif user_id is not None:
+            where_clauses.append("COALESCE(s.user_id, '') = ?")
+            params.append(str(user_id or ""))
+        if chat_id is not None:
+            if chat_id_allow_empty and str(chat_id or ""):
+                where_clauses.append("COALESCE(s.chat_id, '') IN (?, '')")
+                params.append(str(chat_id or ""))
+            else:
+                where_clauses.append("COALESCE(s.chat_id, '') = ?")
+                params.append(str(chat_id or ""))
+        if chat_types:
+            placeholders = ",".join("?" for _ in chat_types)
+            where_clauses.append(f"COALESCE(s.chat_type, '') IN ({placeholders})")
+            params.extend(str(chat_type or "") for chat_type in chat_types)
+        if thread_id is not None:
+            if thread_id_allow_empty and str(thread_id or ""):
+                where_clauses.append("COALESCE(s.thread_id, '') IN (?, '')")
+                params.append(str(thread_id or ""))
+            else:
+                where_clauses.append("COALESCE(s.thread_id, '') = ?")
+                params.append(str(thread_id or ""))
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -2775,6 +2820,49 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        search_needle = (search_query or "").strip().lower()
+        search_compact = re.sub(r"[\W_]+", "", search_needle)
+        content_search_query = ""
+        if search_message_content and search_needle and self._fts_enabled:
+            content_search_query = self._sanitize_fts5_query(search_needle)
+
+        def _like_pattern(value: str) -> str:
+            escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return f"%{escaped}%"
+
+        def _compact_sql(expr: str) -> str:
+            return (
+                "REPLACE(REPLACE(REPLACE(REPLACE("
+                f"LOWER(COALESCE({expr}, '')), '-', ''), '_', ''), '.', ''), ' ', '')"
+            )
+
+        if search_needle and not order_by_last_active:
+            search_clause = (
+                "(LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\' "
+                "OR LOWER(s.id) LIKE ? ESCAPE '\\'"
+            )
+            like_pattern = _like_pattern(search_needle)
+            params.extend([like_pattern, like_pattern])
+            if search_compact:
+                search_clause += (
+                    f" OR {_compact_sql('s.title')} LIKE ? ESCAPE '\\'"
+                    f" OR {_compact_sql('s.id')} LIKE ? ESCAPE '\\'"
+                )
+                compact_pattern = _like_pattern(search_compact)
+                params.extend([compact_pattern, compact_pattern])
+            if content_search_query:
+                search_clause += (
+                    " OR EXISTS ("
+                    "SELECT 1 FROM messages_fts "
+                    "JOIN messages sm ON sm.id = messages_fts.rowid "
+                    "WHERE sm.session_id = s.id "
+                    "AND (sm.active = 1 OR sm.compacted = 1) "
+                    "AND messages_fts MATCH ?"
+                    ")"
+                )
+                params.append(content_search_query)
+            where_clauses.append(search_clause + ")")
+
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:
@@ -2806,26 +2894,55 @@ class SessionDB:
             # ended_at is written, while stale websocket siblings may satisfy
             # the timestamp test and hijack resume/list projection.
             outer_where = where_sql
-            id_params: List[Any] = []
+            filter_clauses: List[str] = []
+            filter_params: List[Any] = []
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
                 # compression chain matches the needle. LIKE with a leading
                 # wildcard can't use an index, but the chain membership and
                 # the small result set keep this bounded — far cheaper than
                 # fetching every session and scanning in Python.
-                id_clause = (
+                filter_clauses.append(
                     "EXISTS (SELECT 1 FROM chain cq"
                     "        WHERE cq.root_id = s.id"
                     "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
                 )
-                like_pattern = (
-                    "%"
-                    + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    + "%"
+                filter_params.append(_like_pattern(id_needle))
+            if search_needle:
+                search_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    "        JOIN sessions cs ON cs.id = cq.cur_id"
+                    "           WHERE cq.root_id = s.id"
+                    "             AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                    "                  OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
                 )
-                id_params = [like_pattern]
+                like_pattern = _like_pattern(search_needle)
+                filter_params.extend([like_pattern, like_pattern])
+                if search_compact:
+                    search_clause += (
+                        f" OR {_compact_sql('cs.title')} LIKE ? ESCAPE '\\'"
+                        f" OR {_compact_sql('cq.cur_id')} LIKE ? ESCAPE '\\'"
+                    )
+                    compact_pattern = _like_pattern(search_compact)
+                    filter_params.extend([compact_pattern, compact_pattern])
+                if content_search_query:
+                    search_clause += (
+                        " OR EXISTS ("
+                        "SELECT 1 FROM chain cm "
+                        "JOIN messages sm ON sm.session_id = cm.cur_id "
+                        "JOIN messages_fts ON messages_fts.rowid = sm.id "
+                        "WHERE cm.root_id = s.id "
+                        "AND (sm.active = 1 OR sm.compacted = 1) "
+                        "AND messages_fts MATCH ?"
+                        ")"
+                    )
+                    filter_params.append(content_search_query)
+                filter_clauses.append(search_clause + "))")
+            if filter_clauses:
+                combined_filter = " AND ".join(filter_clauses)
                 outer_where = (
-                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                    f"{where_sql} AND {combined_filter}"
+                    if where_sql else f"WHERE {combined_filter}"
                 )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
@@ -2871,7 +2988,7 @@ class SessionDB:
             """
             # WHERE params apply twice (CTE seed + outer select); the id filter
             # only applies to the outer select.
-            params = params + params + id_params + [limit, offset]
+            params = params + params + filter_params + [limit, offset]
         else:
             query = f"""
                 SELECT s.*,

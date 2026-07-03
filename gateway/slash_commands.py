@@ -53,6 +53,10 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+_SESSION_LIST_DISPLAY_LIMIT = 10
+_SESSION_SEARCH_PAGE_SIZE = 100
+_SESSION_SEARCH_MAX_CANDIDATES = 1000
+_RESUME_NUMBERED_PICK_TTL_S = 30 * 60
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -86,6 +90,214 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
+
+    def _resume_numbered_picks(self) -> dict:
+        picks = getattr(self, "_resume_numbered_pick_store", None)
+        if not isinstance(picks, dict):
+            picks = {}
+            setattr(self, "_resume_numbered_pick_store", picks)
+        return picks
+
+    def _store_resume_numbered_picks(
+        self,
+        source: SessionSource,
+        rows: list[dict],
+        *,
+        allow_all: bool = False,
+    ) -> None:
+        session_key = self._session_key_for_source(source)
+        ids = [str(row.get("id") or "") for row in rows if row.get("id")]
+        picks = self._resume_numbered_picks()
+        if ids:
+            picks[session_key] = {
+                "ids": ids,
+                "allow_all": bool(allow_all),
+                "created_at": time.time(),
+            }
+        else:
+            picks.pop(session_key, None)
+
+    def _get_resume_numbered_pick_ids(self, source: SessionSource) -> Optional[dict]:
+        session_key = self._session_key_for_source(source)
+        picks = self._resume_numbered_picks()
+        record = picks.get(session_key)
+        if not isinstance(record, dict):
+            return None
+        created_at = float(record.get("created_at") or 0.0)
+        if created_at <= 0 or time.time() - created_at > _RESUME_NUMBERED_PICK_TTL_S:
+            picks.pop(session_key, None)
+            return None
+        ids = [str(sid) for sid in record.get("ids") or [] if sid]
+        if not ids:
+            picks.pop(session_key, None)
+            return None
+        return {"ids": ids, "allow_all": bool(record.get("allow_all"))}
+
+    def _session_listing_origin_filters(self, source: SessionSource) -> dict[str, Any]:
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        filters: dict[str, Any] = {"thread_id": thread_id}
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if chat_id:
+            filters["chat_id"] = chat_id
+        if source.platform == Platform.MATRIX:
+            return filters
+
+        chat_type = (getattr(source, "chat_type", "") or "").lower()
+        user_id = str(getattr(source, "user_id", "") or "")
+        if chat_type in {"dm", "direct", "private", ""}:
+            filters["chat_id_allow_empty"] = True
+            filters["thread_id_allow_empty"] = True
+            filters["chat_types"] = ["", "dm", "direct", "private"]
+            owner_ids = []
+            if user_id:
+                owner_ids.append(user_id)
+            if source.platform == Platform.WHATSAPP and chat_id and chat_id not in owner_ids:
+                owner_ids.append(chat_id)
+            if len(owner_ids) == 1:
+                filters["user_id"] = owner_ids[0]
+            elif owner_ids:
+                filters["user_ids"] = owner_ids
+            return filters
+
+        shared = is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+        )
+        if user_id and not shared:
+            filters["user_id"] = user_id
+            filters["chat_id_allow_empty"] = True
+            filters["thread_id_allow_empty"] = True
+        return filters
+
+    def _session_listing_legacy_origin_filters(self, source: SessionSource) -> Optional[dict[str, Any]]:
+        if source.platform == Platform.MATRIX:
+            return None
+        chat_type = (getattr(source, "chat_type", "") or "").lower()
+        if chat_type in {"dm", "direct", "private", ""}:
+            return None
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        user_id = str(getattr(source, "user_id", "") or "")
+        if not thread_id or not user_id or str(getattr(source, "user_id_alt", "") or ""):
+            return None
+        return {
+            "user_id": user_id,
+            "chat_id": "",
+            "thread_id": "",
+        }
+
+    @staticmethod
+    def _compact_session_search_text(value: str) -> str:
+        return re.sub(r"[\W_]+", "", str(value or "").lower())
+
+    def _session_search_content_counts(
+        self,
+        db_obj: Any,
+        rows: list[dict],
+        query: str,
+    ) -> dict[str, tuple[int, int]]:
+        conn = getattr(db_obj, "_conn", None)
+        if conn is None or not rows:
+            return {}
+        sanitizer = getattr(db_obj, "_sanitize_fts5_query", None)
+        if not callable(sanitizer):
+            return {}
+        fts_query = sanitizer(query or "")
+        if not fts_query:
+            return {}
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            for key in ("id", "_lineage_root_id"):
+                sid = str(row.get(key) or "")
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    session_ids.append(sid)
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" for _ in session_ids)
+        sql = f"""
+            SELECT
+                m.session_id,
+                SUM(CASE WHEN m.role IN ('user', 'assistant') THEN 1 ELSE 0 END) AS owned_hits,
+                COUNT(*) AS total_hits
+            FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
+            WHERE m.session_id IN ({placeholders})
+              AND (m.active = 1 OR m.compacted = 1)
+              AND messages_fts MATCH ?
+            GROUP BY m.session_id
+        """
+        lock = getattr(db_obj, "_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    result_rows = conn.execute(sql, [*session_ids, fts_query]).fetchall()
+            else:
+                result_rows = conn.execute(sql, [*session_ids, fts_query]).fetchall()
+        except Exception:
+            return {}
+        counts: dict[str, tuple[int, int]] = {}
+        for result in result_rows:
+            sid = str(result["session_id"] if hasattr(result, "keys") else result[0])
+            owned_value = result["owned_hits"] if hasattr(result, "keys") else result[1]
+            total_value = result["total_hits"] if hasattr(result, "keys") else result[2]
+            owned_hits = int(owned_value or 0)
+            total_hits = int(total_value or 0)
+            counts[sid] = (owned_hits, total_hits)
+        return counts
+
+    def _rank_session_search_rows(
+        self,
+        db_obj: Any,
+        rows: list[dict],
+        query: str,
+    ) -> list[dict]:
+        needle = (query or "").strip().lower()
+        compact_needle = self._compact_session_search_text(needle)
+        content_counts = self._session_search_content_counts(db_obj, rows, query)
+
+        def _title_id_score(row: dict) -> int:
+            values = [
+                str(row.get("title") or ""),
+                str(row.get("id") or ""),
+                str(row.get("_lineage_root_id") or ""),
+            ]
+            score = 0
+            for value in values:
+                lower = value.lower()
+                compact = self._compact_session_search_text(value)
+                tokens = set(re.findall(r"[a-z0-9]+", lower))
+                if needle and lower == needle:
+                    score = max(score, 3000)
+                if compact_needle and compact == compact_needle:
+                    score = max(score, 2800)
+                if compact_needle and compact_needle in compact:
+                    # Short fragments like "cod" inside "codex" are weak title
+                    # matches; exact token or punctuation-normalized matches
+                    # remain strong.
+                    score = max(score, 80 if len(compact_needle) <= 3 and compact_needle not in tokens else 2400)
+                if needle and needle in lower:
+                    score = max(score, 80 if len(needle) <= 3 and needle not in tokens else 2200)
+            return score
+
+        def _content_score(row: dict) -> int:
+            owned_hits = 0
+            total_hits = 0
+            for key in ("id", "_lineage_root_id"):
+                sid = str(row.get(key) or "")
+                hits = content_counts.get(sid)
+                if hits:
+                    owned_hits += hits[0]
+                    total_hits += hits[1]
+            return min(owned_hits, 30) * 30 + min(max(total_hits - owned_hits, 0), 30)
+
+        def _sort_key(row: dict) -> tuple[int, float, str]:
+            rank = _title_id_score(row) + _content_score(row)
+            last_active = float(row.get("last_active") or row.get("started_at") or 0.0)
+            return rank, last_active, str(row.get("id") or "")
+
+        return sorted(rows, key=_sort_key, reverse=True)
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -770,10 +982,10 @@ class GatewaySlashCommandsMixin:
         Generalizes the Matrix-only room guard to every adapter so a caller
         cannot bind their gateway session to another user's/room's persisted
         session id (IDOR). Uses the live origin when the target is active;
-        otherwise falls back to the DB row's source + user_id (the sessions
-        table has no chat_id). An identity-bearing caller is allowed only when
-        the row PROVES the same owner; a row that lacks enough ownership data
-        fails closed. An explicit admin ``--all`` override bypasses scoping.
+        otherwise falls back to the DB row's persisted origin fields. An
+        identity-bearing caller is allowed only when the row PROVES the same
+        owner; a row that lacks enough ownership data fails closed. An explicit
+        admin ``--all`` override bypasses scoping.
         """
         if allow_override and self._resume_caller_is_admin(source):
             return True
@@ -791,6 +1003,35 @@ class GatewaySlashCommandsMixin:
             row = await self._session_db.get_session(target_id) or {}
         except Exception:
             return False
+        parent_id = str(row.get("parent_session_id") or "")
+        if parent_id and (
+            not row.get("user_id")
+            or not row.get("chat_id")
+            or not row.get("thread_id")
+        ):
+            row_source = str(row.get("source") or "")
+            merged_row = dict(row)
+            seen_parent_ids: set[str] = set()
+            for _ in range(20):
+                if not parent_id or parent_id in seen_parent_ids:
+                    break
+                seen_parent_ids.add(parent_id)
+                try:
+                    parent_row = await self._session_db.get_session(parent_id) or {}
+                except Exception:
+                    break
+                if (
+                    parent_row.get("end_reason") != "compression"
+                    or str(parent_row.get("source") or "") != row_source
+                ):
+                    break
+                for key in ("user_id", "chat_id", "chat_type", "thread_id"):
+                    if not merged_row.get(key) and parent_row.get(key):
+                        merged_row[key] = parent_row[key]
+                if all(merged_row.get(key) for key in ("user_id", "chat_id", "thread_id")):
+                    break
+                parent_id = str(parent_row.get("parent_session_id") or "")
+            row = merged_row
         caller_src = source.platform.value if source.platform else None
         row_src = row.get("source")
         if row_src and caller_src and str(row_src) != str(caller_src):
@@ -800,16 +1041,18 @@ class GatewaySlashCommandsMixin:
         # Chat/thread origin recorded at session creation (see
         # SessionDB._insert_session_row). The sessions table historically stored
         # only source + user_id, so a same-user row could belong to a DIFFERENT
-        # chat; comparing the persisted origin closes that gap. Legacy rows
-        # created before origin capture have NULL here and therefore fail closed
-        # (they cannot prove the caller's chat) — resume them via a live session
-        # or an admin override.
+        # chat; comparing the persisted origin closes that gap. The one legacy
+        # fallback below is intentionally narrower: a threaded non-DM caller may
+        # resume a same-user row whose chat/thread fields are both blank. That
+        # keeps old topic handoff sessions reachable without allowing unthreaded
+        # group callers to bind arbitrary same-user rows by title/id.
         caller_chat = str(getattr(source, "chat_id", "") or "")
         row_chat = str(row.get("chat_id") or "")
         caller_thread = str(getattr(source, "thread_id", "") or "")
         row_thread = str(row.get("thread_id") or "")
         chat_type = (getattr(source, "chat_type", "") or "").lower()
         caller_is_dm = chat_type in {"dm", "direct", "private", ""}
+        legacy_thread_origin = bool(caller_thread) and not row_chat and not row_thread
         # build_session_key keys the participant on ``user_id_alt or user_id``
         # (Signal/Feishu carry the canonical participant in user_id_alt), but the
         # sessions table only ever stored user_id — it has no user_id_alt column.
@@ -825,6 +1068,9 @@ class GatewaySlashCommandsMixin:
         # an admin --all override still bypasses this above.
         caller_keys_on_alt = bool(str(getattr(source, "user_id_alt", "") or ""))
         if caller_uid:
+            owner_ids = {caller_uid}
+            if source.platform == Platform.WHATSAPP and caller_chat:
+                owner_ids.add(caller_chat)
             # Identity-bearing caller: allow only when the row PROVES the same
             # owner AND the same platform/origin AND the same chat/thread. A row
             # with no/blank user_id cannot be proven to belong to this caller; a
@@ -845,7 +1091,7 @@ class GatewaySlashCommandsMixin:
             origin_ok = (
                 bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
+                and (row_thread == caller_thread or legacy_thread_origin)
             )
             if not origin_ok:
                 return False
@@ -863,17 +1109,17 @@ class GatewaySlashCommandsMixin:
                 # apply there.
                 if caller_keys_on_alt and not (bool(row_chat) and bool(caller_chat)):
                     return False
-                return (
-                    bool(row_uid) and row_uid == caller_uid
-                    and row_chat == caller_chat
-                )
+                if not (bool(row_uid) and row_uid in owner_ids):
+                    return False
+                if row_chat:
+                    return row_chat in {caller_chat, caller_uid}
+                # Legacy gateway rows created before chat_id capture can still
+                # prove a DM owner through source + user_id + thread equality.
+                return True
             # Non-DM (group/channel/forum/thread): build_session_key includes
-            # chat_id, so a row (or caller) with NO chat provenance cannot prove
-            # same-chat. Require both sides non-blank and equal — a legacy
-            # NULL-chat row (or a caller missing its chat_id) fails closed even
-            # when both normalize to "". (CWE-639)
-            if not (bool(row_chat) and bool(caller_chat) and row_chat == caller_chat):
-                return False
+            # chat_id, so a row (or caller) with NO chat provenance usually
+            # cannot prove same-chat. Require both sides non-blank and equal,
+            # except for the same-user threaded legacy fallback above.
             # Within the same non-DM chat/thread, mirror build_session_key's
             # participant scoping: a SHARED group/thread session
             # (group_sessions_per_user=False, or a shared thread) is one session
@@ -886,6 +1132,10 @@ class GatewaySlashCommandsMixin:
                 group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
                 thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             )
+            if legacy_thread_origin:
+                return bool(row_uid) and row_uid == caller_uid and not caller_keys_on_alt
+            if not (bool(row_chat) and bool(caller_chat) and row_chat == caller_chat):
+                return False
             if shared:
                 return True
             # Per-user non-DM: the session key includes the participant
@@ -3523,11 +3773,17 @@ class GatewaySlashCommandsMixin:
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
                 if not titled:
+                    self._store_resume_numbered_picks(source, [], allow_all=allow_all)
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
+                self._store_resume_numbered_picks(
+                    source,
+                    titled[:_SESSION_LIST_DISPLAY_LIMIT],
+                    allow_all=allow_all,
+                )
                 lines = [t("gateway.resume.list_header")]
-                for idx, s in enumerate(titled[:10], start=1):
+                for idx, s in enumerate(titled[:_SESSION_LIST_DISPLAY_LIMIT], start=1):
                     title = s["title"]
                     if source.platform == Platform.MATRIX and allow_all:
                         origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
@@ -3544,21 +3800,33 @@ class GatewaySlashCommandsMixin:
 
         # Resolve a numbered choice or a title to a session ID.
         if name.isdigit():
-            try:
-                titled = await _list_titled_sessions()
-                titled = [
-                    s for s in titled
-                    if await self._resume_row_visible(source, s, allow_all)
-                ]
-            except Exception as e:
-                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
-                return t("gateway.resume.list_failed", error=e)
             index = int(name)
-            if index < 1 or index > len(titled):
-                return t("gateway.resume.out_of_range", index=index)
-            target = titled[index - 1]
-            target_id = target.get("id")
-            name = target.get("title") or name
+            pick_record = self._get_resume_numbered_pick_ids(source)
+            if pick_record is not None:
+                pick_ids = pick_record["ids"]
+                if index < 1 or index > len(pick_ids):
+                    return t("gateway.resume.out_of_range", index=index)
+                if pick_record.get("allow_all") and self._resume_caller_is_admin(source):
+                    allow_all = True
+                    if source.platform == Platform.MATRIX:
+                        allow_cross_room = True
+                target_id = pick_ids[index - 1]
+                name = target_id
+            else:
+                try:
+                    titled = await _list_titled_sessions()
+                    titled = [
+                        s for s in titled
+                        if await self._resume_row_visible(source, s, allow_all)
+                    ]
+                except Exception as e:
+                    logger.debug("Failed to list titled sessions for numeric resume: %s", e)
+                    return t("gateway.resume.list_failed", error=e)
+                if index < 1 or index > len(titled):
+                    return t("gateway.resume.out_of_range", index=index)
+                target = titled[index - 1]
+                target_id = target.get("id")
+                name = target.get("title") or name
         else:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
@@ -3659,19 +3927,22 @@ class GatewaySlashCommandsMixin:
 
         from hermes_cli.session_listing import (
             format_gateway_session_listing,
-            parse_session_listing_args,
+            parse_session_listing_request,
             query_session_listing,
         )
 
         source = event.source
         raw_args = event.get_command_args().strip()
         try:
-            include_all, include_unnamed, target = parse_session_listing_args(raw_args)
+            parsed = parse_session_listing_request(raw_args)
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
 
-        if target:
-            resume_event = dataclasses.replace(event, text=f"/resume {target}")
+        if parsed.search_requested and not parsed.search_query:
+            return "Usage: `/sessions search <query>`"
+
+        if parsed.target:
+            resume_event = dataclasses.replace(event, text=f"/resume {parsed.target}")
             return await self._handle_resume_command(resume_event)
 
         # A cross-origin listing (`/sessions all`) is honored only for an
@@ -3679,29 +3950,111 @@ class GatewaySlashCommandsMixin:
         # user argument, so without this gate any caller could run
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
-        cross_origin = include_all and self._resume_caller_is_admin(source)
+        cross_origin = parsed.include_all_sources and self._resume_caller_is_admin(source)
         current_entry = self.session_store.get_or_create_session(source)
-        rows = await asyncio.to_thread(
-            query_session_listing,
-            getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
-            current_session_id=current_entry.session_id,
-            include_all_sources=cross_origin,
-            include_unnamed=include_unnamed,
-            limit=10,
-            exclude_sources=["tool"],
-        )
-        if not cross_origin:
+        db_obj = getattr(self._session_db, "_db", self._session_db)
+
+        async def _visible_rows(candidate_rows: list[dict]) -> list[dict]:
+            if cross_origin:
+                return candidate_rows
             # Scope the listing to the caller's own origin on every adapter so
             # session ids/previews from other users/rooms aren't enumerable.
-            rows = [
-                row for row in rows
+            return [
+                row for row in candidate_rows
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
+
+        query_kwargs = {
+            "source": source.platform.value if source.platform else None,
+            "current_session_id": current_entry.session_id,
+            "include_all_sources": cross_origin,
+            "include_unnamed": parsed.include_unnamed,
+            "search_query": parsed.search_query or None,
+            "search_message_content": parsed.search_requested and not cross_origin,
+            "exclude_sources": ["tool"],
+        }
+        query_scopes = [query_kwargs]
+        if not cross_origin:
+            scoped_query_kwargs = dict(query_kwargs)
+            scoped_query_kwargs.update(self._session_listing_origin_filters(source))
+            query_scopes = [scoped_query_kwargs]
+            legacy_filters = self._session_listing_legacy_origin_filters(source)
+            if parsed.search_requested and legacy_filters:
+                legacy_query_kwargs = dict(query_kwargs)
+                legacy_query_kwargs.update(legacy_filters)
+                query_scopes.append(legacy_query_kwargs)
+        if parsed.search_requested:
+            rows = []
+            seen_ids: set[str] = set()
+            offset = 0
+            collect_for_ranking = bool(query_kwargs.get("search_message_content"))
+            while (
+                (collect_for_ranking or len(rows) < _SESSION_LIST_DISPLAY_LIMIT)
+                and offset < _SESSION_SEARCH_MAX_CANDIDATES
+            ):
+                page_size = min(
+                    _SESSION_SEARCH_PAGE_SIZE,
+                    _SESSION_SEARCH_MAX_CANDIDATES - offset,
+                )
+                page_candidates: list[dict] = []
+                any_full_page = False
+                for scope_kwargs in query_scopes:
+                    candidates = await asyncio.to_thread(
+                        query_session_listing,
+                        db_obj,
+                        limit=page_size,
+                        offset=offset,
+                        **scope_kwargs,
+                    )
+                    page_candidates.extend(candidates)
+                    if len(candidates) >= page_size:
+                        any_full_page = True
+                if not page_candidates:
+                    break
+                page_candidates.sort(
+                    key=lambda row: (
+                        float(row.get("_effective_last_active") or row.get("last_active") or 0.0),
+                        float(row.get("started_at") or 0.0),
+                        str(row.get("id") or ""),
+                    ),
+                    reverse=True,
+                )
+                for row in await _visible_rows(page_candidates):
+                    row_id = str(row.get("id") or "")
+                    if not row_id or row_id in seen_ids:
+                        continue
+                    seen_ids.add(row_id)
+                    rows.append(row)
+                    if len(rows) >= _SESSION_LIST_DISPLAY_LIMIT and not collect_for_ranking:
+                        break
+                if not any_full_page:
+                    break
+                offset += page_size
+                if collect_for_ranking:
+                    continue
+                if len(rows) >= _SESSION_LIST_DISPLAY_LIMIT:
+                    break
+            if collect_for_ranking:
+                rows = self._rank_session_search_rows(db_obj, rows, parsed.search_query)
+            rows = rows[:_SESSION_LIST_DISPLAY_LIMIT]
+        else:
+            candidates = await asyncio.to_thread(
+                query_session_listing,
+                db_obj,
+                limit=_SESSION_LIST_DISPLAY_LIMIT,
+                **query_scopes[0],
+            )
+            rows = await _visible_rows(candidates)
+        self._store_resume_numbered_picks(source, rows, allow_all=cross_origin)
+        title = "Named Sessions"
+        if parsed.search_requested:
+            title = f"Sessions matching `{parsed.search_query}`"
+        elif parsed.include_unnamed:
+            title = "Sessions"
         return format_gateway_session_listing(
             rows,
             include_source=cross_origin,
-            title="Sessions" if include_unnamed else "Named Sessions",
+            title=title,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:

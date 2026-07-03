@@ -3273,6 +3273,120 @@ class TestListSessionsRich:
         assert len(sessions) == 1
         assert sessions[0]["id"] == "s1"
 
+    def test_rich_list_gateway_origin_filters(self, db):
+        db.create_session("same", "telegram", user_id="u1", chat_id="c1", thread_id="t1")
+        db.create_session("other-user", "telegram", user_id="u2", chat_id="c1", thread_id="t1")
+        db.create_session("other-chat", "telegram", user_id="u1", chat_id="c2", thread_id="t1")
+        db.create_session("other-thread", "telegram", user_id="u1", chat_id="c1", thread_id="t2")
+
+        sessions = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            chat_id="c1",
+            thread_id="t1",
+        )
+
+        assert [session["id"] for session in sessions] == ["same"]
+
+    def test_rich_list_gateway_dm_filters_can_include_legacy_blank_chat(self, db):
+        db.create_session("same-chat", "telegram", user_id="u1", chat_id="c1", chat_type="dm")
+        db.create_session("legacy-same-user", "telegram", user_id="u1")
+        db.create_session("other-user", "telegram", user_id="u2")
+        db.create_session("group-chat", "telegram", user_id="u1", chat_id="c1", chat_type="group")
+
+        sessions = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            chat_id="c1",
+            chat_id_allow_empty=True,
+            chat_types=["", "dm", "direct", "private"],
+        )
+
+        assert [session["id"] for session in sessions] == [
+            "legacy-same-user",
+            "same-chat",
+        ]
+
+    def test_rich_list_gateway_filters_can_match_alternate_user_ids(self, db):
+        db.create_session(
+            "current-whatsapp",
+            "whatsapp",
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+            chat_type="dm",
+        )
+        db.create_session("legacy-whatsapp", "whatsapp", user_id="219842296701033@lid")
+        db.create_session("other-whatsapp", "whatsapp", user_id="other@lid")
+
+        sessions = db.list_sessions_rich(
+            source="whatsapp",
+            user_ids=["27618000020@s.whatsapp.net", "219842296701033@lid"],
+            chat_id="219842296701033@lid",
+            chat_id_allow_empty=True,
+            chat_types=["", "dm", "direct", "private"],
+        )
+
+        assert [session["id"] for session in sessions] == [
+            "legacy-whatsapp",
+            "current-whatsapp",
+        ]
+
+    def test_rich_list_gateway_thread_filters_can_include_legacy_blank_thread(self, db):
+        db.create_session("same-thread", "telegram", user_id="u1", chat_id="c1", thread_id="t1")
+        db.create_session("legacy-thread", "telegram", user_id="u1")
+        db.create_session("other-thread", "telegram", user_id="u1", chat_id="c1", thread_id="t2")
+
+        sessions = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            chat_id="c1",
+            chat_id_allow_empty=True,
+            thread_id="t1",
+            thread_id_allow_empty=True,
+        )
+
+        assert [session["id"] for session in sessions] == [
+            "legacy-thread",
+            "same-thread",
+        ]
+
+    def test_rich_list_search_can_match_message_content_when_requested(self, db):
+        db.create_session("title-miss", "telegram", user_id="u1")
+        db.set_session_title("title-miss", "AN-94 Prestige Barrel Build")
+        db.append_message("title-miss", role="user", content="best cod loadout")
+        db.create_session("title-only", "telegram", user_id="u1")
+        db.set_session_title("title-only", "Codex Usage Tracker")
+
+        title_only = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            order_by_last_active=True,
+            search_query="cod",
+        )
+        with_content = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            order_by_last_active=True,
+            search_query="cod",
+            search_message_content=True,
+        )
+
+        assert [session["id"] for session in title_only] == ["title-only"]
+        assert {session["id"] for session in with_content} == {"title-miss", "title-only"}
+
+    def test_rich_list_search_matches_punctuation_normalized_title(self, db):
+        db.create_session("title-match", "telegram", user_id="u1")
+        db.set_session_title("title-match", "AN-94 Prestige Barrel Build")
+
+        matches = db.list_sessions_rich(
+            source="telegram",
+            user_id="u1",
+            order_by_last_active=True,
+            search_query="an94",
+        )
+
+        assert [session["id"] for session in matches] == ["title-match"]
+
     def test_rich_list_cwd_prefix_filter(self, db):
         db.create_session("s1", "cli", cwd="/repo")
         db.create_session("s2", "cli", cwd="/repo/subdir")
@@ -4660,6 +4774,27 @@ class TestSessionIdSearch:
         matches = db.search_sessions_by_id("root99")
 
         assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["_lineage_root_id"] == root
+
+    def test_list_sessions_rich_search_matches_projected_tip_title(self, db):
+        root = "20260602_235959_root_title"
+        tip = "20260603_010000_tip_title"
+        db.create_session(session_id=root, source="cli")
+        db.set_session_title(root, "Original Topic")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=root)
+        db.set_session_title(tip, "Billing Followup")
+        db.append_message(tip, role="user", content="continued conversation")
+
+        matches = db.list_sessions_rich(
+            source="cli",
+            order_by_last_active=True,
+            search_query="followup",
+        )
+
+        assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["title"] == "Billing Followup"
         assert matches[0]["_lineage_root_id"] == root
 
 

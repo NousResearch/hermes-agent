@@ -452,6 +452,490 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_sessions_search_lists_same_origin_title_matches(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("billing_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("billing_session", "Billing Audit")
+        db.create_session("release_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("release_session", "Release Planning")
+
+        event = _make_event(text="/sessions search bill")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Sessions matching" in result
+        assert "Billing Audit" in result
+        assert "billing_session" in result
+        assert "Release Planning" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_lists_same_origin_id_matches(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("abc123_release", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("other_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("other_session", "Other Work")
+
+        event = _make_event(text="/sessions search 123")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "abc123_release" in result
+        assert "Other Work" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_does_not_leak_cross_user_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("owned_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("owned_match", "Billing Mine")
+        db.create_session("victim_match", "telegram", user_id="99999", chat_id="67890")
+        db.set_session_title("victim_match", "Billing Theirs")
+
+        event = _make_event(text="/sessions search billing")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Billing Mine" in result
+        assert "victim_match" not in result
+        assert "Billing Theirs" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_lists_legacy_same_user_dm_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("legacy_google", "telegram", user_id="12345")
+        db.set_session_title("legacy_google", "Google Ads Legacy")
+        db.create_session("other_user_legacy_google", "telegram", user_id="99999")
+        db.set_session_title("other_user_legacy_google", "Google Ads Other")
+
+        event = _make_event(text="/sessions search google")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Google Ads Legacy" in result
+        assert "legacy_google" in result
+        assert "Google Ads Other" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_uses_legacy_same_user_dm_search_result(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("legacy_google", "telegram", user_id="12345")
+        db.set_session_title("legacy_google", "Google Ads Legacy")
+        db.append_message("legacy_google", "user", "old legacy prompt")
+
+        search_event = _make_event(text="/sessions search google")
+        runner = _make_runner(session_db=db, event=search_event)
+
+        search_result = await runner._handle_sessions_command(search_event)
+        resume_result = await runner._handle_resume_command(_make_event(text="/resume 1"))
+
+        assert "Google Ads Legacy" in search_result
+        assert "Google Ads Legacy" in resume_result
+        runner.session_store.switch_session.assert_called_with(
+            _session_key_for_event(search_event),
+            "legacy_google",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_lists_whatsapp_legacy_lid_owner_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "whatsapp",
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+            chat_type="dm",
+        )
+        db.create_session("legacy_winton", "whatsapp", user_id="219842296701033@lid")
+        db.set_session_title("legacy_winton", "Winton Email Sheet Update")
+        db.create_session("other_winton", "whatsapp", user_id="other@lid")
+        db.set_session_title("other_winton", "Winton Other User")
+
+        event = _make_event(
+            text="/sessions search winton",
+            platform=Platform.WHATSAPP,
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+        )
+        event.source.chat_type = "dm"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Winton Email Sheet Update" in result
+        assert "legacy_winton" in result
+        assert "Winton Other User" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_uses_whatsapp_legacy_lid_owner_search_result(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "whatsapp",
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+            chat_type="dm",
+        )
+        db.create_session("legacy_winton", "whatsapp", user_id="219842296701033@lid")
+        db.set_session_title("legacy_winton", "Winton Email Sheet Update")
+        db.append_message("legacy_winton", "user", "old WhatsApp prompt")
+        search_event = _make_event(
+            text="/sessions search winton",
+            platform=Platform.WHATSAPP,
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+        )
+        search_event.source.chat_type = "dm"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+
+        search_result = await runner._handle_sessions_command(search_event)
+        resume_result = await runner._handle_resume_command(
+            _make_event(
+                text="/resume 1",
+                platform=Platform.WHATSAPP,
+                user_id="27618000020@s.whatsapp.net",
+                chat_id="219842296701033@lid",
+            )
+        )
+
+        assert "Winton Email Sheet Update" in search_result
+        assert "Winton Email Sheet Update" in resume_result
+        runner.session_store.switch_session.assert_called_with(
+            _session_key_for_event(search_event),
+            "legacy_winton",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_lists_whatsapp_compressed_legacy_owner_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "whatsapp",
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+            chat_type="dm",
+        )
+        db.create_session("winton_root", "whatsapp", user_id="219842296701033@lid")
+        db.set_session_title("winton_root", "Winton Email Sheet Update")
+        db.end_session("winton_root", "compression")
+        db.create_session("winton_mid", "whatsapp", parent_session_id="winton_root")
+        db.set_session_title("winton_mid", "Winton Email Sheet Update #2")
+        db.end_session("winton_mid", "compression")
+        db.create_session("winton_tip", "whatsapp", parent_session_id="winton_mid")
+        db.set_session_title("winton_tip", "Winton Email Sheet Update #3")
+        db.append_message("winton_tip", "user", "continued prompt")
+        search_event = _make_event(
+            text="/sessions search winton",
+            platform=Platform.WHATSAPP,
+            user_id="27618000020@s.whatsapp.net",
+            chat_id="219842296701033@lid",
+        )
+        search_event.source.chat_type = "dm"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+
+        search_result = await runner._handle_sessions_command(search_event)
+        resume_result = await runner._handle_resume_command(
+            _make_event(
+                text="/resume 1",
+                platform=Platform.WHATSAPP,
+                user_id="27618000020@s.whatsapp.net",
+                chat_id="219842296701033@lid",
+            )
+        )
+
+        assert "Winton Email Sheet Update #3" in search_result
+        assert "Winton Email Sheet Update #3" in resume_result
+        runner.session_store.switch_session.assert_called_with(
+            _session_key_for_event(search_event),
+            "winton_tip",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_lists_thread_legacy_content_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "telegram",
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+        db.create_session("legacy_cod", "telegram", user_id="12345")
+        db.set_session_title("legacy_cod", "AN-94 Prestige Barrel Build")
+        db.append_message("legacy_cod", "user", "best cod loadout")
+        db.create_session("other_legacy_cod", "telegram", user_id="99999")
+        db.set_session_title("other_legacy_cod", "Other AN-94")
+        db.append_message("other_legacy_cod", "user", "best cod loadout")
+
+        event = _make_event(text="/sessions search cod", user_id="12345", chat_id="group-a")
+        event.source.chat_type = "group"
+        event.source.thread_id = "18"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "AN-94 Prestige Barrel Build" in result
+        assert "legacy_cod" in result
+        assert "other_legacy_cod" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_ranks_relevant_content_above_weak_title_match(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "telegram",
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+        db.create_session("legacy_loadout", "telegram", user_id="12345")
+        db.set_session_title("legacy_loadout", "AN-94 Prestige Barrel Build")
+        for _ in range(5):
+            db.append_message("legacy_loadout", "user", "cod loadout attachments")
+        db.create_session(
+            "recent_codex",
+            "telegram",
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+        db.set_session_title("recent_codex", "Codex Usage Status")
+
+        event = _make_event(text="/sessions search cod", user_id="12345", chat_id="group-a")
+        event.source.chat_type = "group"
+        event.source.thread_id = "18"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert result.index("AN-94 Prestige Barrel Build") < result.index("Codex Usage Status")
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_matches_punctuation_normalized_title(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "telegram",
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+        db.create_session("legacy_an94", "telegram", user_id="12345")
+        db.set_session_title("legacy_an94", "AN-94 Prestige Barrel Build")
+
+        event = _make_event(text="/sessions search an94", user_id="12345", chat_id="group-a")
+        event.source.chat_type = "group"
+        event.source.thread_id = "18"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "AN-94 Prestige Barrel Build" in result
+        assert "legacy_an94" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_uses_thread_legacy_content_search_result(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "current_session_001",
+            "telegram",
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+        db.create_session("legacy_cod", "telegram", user_id="12345")
+        db.set_session_title("legacy_cod", "AN-94 Prestige Barrel Build")
+        db.append_message("legacy_cod", "user", "best cod loadout")
+        search_event = _make_event(text="/sessions search cod", user_id="12345", chat_id="group-a")
+        search_event.source.chat_type = "group"
+        search_event.source.thread_id = "18"
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+
+        search_result = await runner._handle_sessions_command(search_event)
+        resume_event = _make_event(text="/resume 1", user_id="12345", chat_id="group-a")
+        resume_event.source.chat_type = "group"
+        resume_event.source.thread_id = "18"
+        resume_result = await runner._handle_resume_command(resume_event)
+
+        assert "AN-94 Prestige Barrel Build" in search_result
+        assert "AN-94 Prestige Barrel Build" in resume_result
+        runner.session_store.switch_session.assert_called_with(
+            _session_key_for_event(search_event),
+            "legacy_cod",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_allows_compression_tip_when_parent_proves_legacy_thread_owner(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("root_an94", "telegram", user_id="12345")
+        db.set_session_title("root_an94", "AN-94 Prestige Barrel Build")
+        db.end_session("root_an94", "compression")
+        db.create_session("tip_an94", "telegram", parent_session_id="root_an94")
+        db.set_session_title("tip_an94", "AN-94 Prestige Barrel Build #2")
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None
+        caller = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="group-a",
+            chat_type="group",
+            thread_id="18",
+        )
+
+        assert await runner._resume_target_allowed(caller, "tip_an94", allow_override=False) is True
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_finds_old_visible_match_after_hidden_matches(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("owned_old_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("owned_old_match", "Billing Mine")
+        db.append_message("owned_old_match", "user", "old visible prompt")
+        for idx in range(45):
+            session_id = f"victim_match_{idx:02d}"
+            db.create_session(session_id, "telegram", user_id="99999", chat_id="other-chat")
+            db.set_session_title(session_id, f"Billing Hidden {idx:02d}")
+            db.append_message(session_id, "user", "newer hidden prompt")
+
+        event = _make_event(text="/sessions search billing")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Billing Mine" in result
+        assert "owned_old_match" in result
+        assert "Billing Hidden" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_uses_latest_sessions_search_results(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("owned_old_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("owned_old_match", "Billing Mine")
+        db.append_message("owned_old_match", "user", "old visible prompt")
+        for idx in range(45):
+            session_id = f"victim_match_{idx:02d}"
+            db.create_session(session_id, "telegram", user_id="99999", chat_id="other-chat")
+            db.set_session_title(session_id, f"Billing Hidden {idx:02d}")
+            db.append_message(session_id, "user", "newer hidden prompt")
+
+        search_event = _make_event(text="/sessions search billing")
+        runner = _make_runner(session_db=db, event=search_event)
+
+        search_result = await runner._handle_sessions_command(search_event)
+        resume_result = await runner._handle_resume_command(_make_event(text="/resume 1"))
+
+        assert "Billing Mine" in search_result
+        assert "Billing Mine" in resume_result
+        runner.session_store.switch_session.assert_called_with(
+            _session_key_for_event(search_event),
+            "owned_old_match",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_all_search_admin_uses_cross_origin_scope(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("owned_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("owned_match", "Billing Mine")
+        db.create_session("discord_match", "discord")
+        db.set_session_title("discord_match", "Billing Discord")
+        db.create_session("tool_match", "tool")
+        db.set_session_title("tool_match", "Billing Tool")
+
+        event = _make_event(text="/sessions all search billing")
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Billing Mine" in result
+        assert "Billing Discord" in result
+        assert "discord_match" in result
+        assert "`telegram`" in result
+        assert "`discord`" in result
+        assert "tool_match" not in result
+        assert "Billing Tool" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_requires_query(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+
+        event = _make_event(text="/sessions search")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "/sessions search <query>" in result
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_blocks_cross_user_and_unowned_rows(self, tmp_path):
         """An identity-bearing caller cannot resume a session it can't prove it
         owns: a row owned by a different user, or a same-platform row with no

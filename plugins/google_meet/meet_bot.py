@@ -37,6 +37,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # Match ``https://meet.google.com/abc-defg-hij`` or ``.../lookup/...`` — the
 # short three-segment code or a lookup URL. Anything else is rejected.
@@ -59,6 +60,19 @@ def _is_safe_meet_url(url: str) -> bool:
     if not isinstance(url, str):
         return False
     return bool(MEET_URL_RE.match(url.strip()))
+
+
+def _force_english_ui(url: str) -> str:
+    """Pin the Meet page to English via the standard ``hl`` param.
+
+    Every selector in this file (join buttons, leave button, denial text,
+    caption region) matches English UI labels; without ``hl=en`` a non-English
+    account/browser locale renders localized labels and the bot goes blind.
+    """
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    query["hl"] = "en"
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def _meeting_id_from_url(url: str) -> str:
@@ -511,6 +525,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 rt["enabled"] = False
 
     try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
         from playwright.sync_api import sync_playwright
     except ImportError as e:
         state.set(error=f"playwright not installed: {e}", exited=True)
@@ -560,10 +575,22 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             page = context.new_page()
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                page.goto(_force_english_ui(url), wait_until="domcontentloaded", timeout=30_000)
             except Exception as e:
                 state.set(error=f"navigate failed: {e}", exited=True)
                 return 4
+
+            # Meet renders the pre-join controls well after DOMContentLoaded;
+            # wait for them so the name fill / join click below don't race the
+            # UI. On timeout we fall through — a missed join surfaces later as
+            # lobby timeout rather than aborting here.
+            try:
+                page.locator(
+                    'input[aria-label*="name" i], button:has-text("Join now"), '
+                    'button:has-text("Ask to join"), button:has-text("Join here too")'
+                ).first.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                pass
 
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
@@ -825,7 +852,9 @@ def _click_join(page, state: _BotState) -> None:
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
-    for label in ("Join now", "Ask to join"):
+    # "Join here too" is the primary action on the "Switch here?" dialog Meet
+    # shows when the same account is already in the call on another device.
+    for label in ("Join now", "Ask to join", "Join here too"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first
             if btn.count() and btn.is_visible():

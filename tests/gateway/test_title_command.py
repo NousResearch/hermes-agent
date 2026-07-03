@@ -4,6 +4,7 @@ Tests the _handle_title_command handler (set/show session titles)
 across all gateway messenger platforms.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,14 +15,22 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+def _make_event(
+    text="/title",
+    platform=Platform.TELEGRAM,
+    user_id="12345",
+    chat_id="67890",
+    chat_type="dm",
+    thread_id=None,
+):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        chat_type=chat_type,
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -30,6 +39,12 @@ def _make_runner(session_db=None):
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+        }
+    )
     runner.adapters = {}
     runner._voice_mode = {}
     # Gateway holds the async facade; the slash handlers await it.
@@ -203,6 +218,170 @@ class TestHandleTitleCommand:
         await runner._handle_title_command(event)
 
         runner._schedule_telegram_topic_title_rename.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_syncs_discord_thread_when_enabled(self, tmp_path):
+        """/title <name> renames the visible Discord thread when sync is enabled."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        runner = _make_runner(session_db=db)
+        runner.config.platforms[Platform.DISCORD].extra["auto_rename_threads"] = {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": True,
+            "max_length": 100,
+        }
+        runner._schedule_discord_thread_title_rename = MagicMock()
+
+        event = _make_event(
+            text="/title My Discord Thread",
+            platform=Platform.DISCORD,
+            chat_id="800",
+            chat_type="thread",
+            thread_id="999",
+        )
+        result = await runner._handle_title_command(event)
+
+        assert "My Discord Thread" in result
+        runner._schedule_discord_thread_title_rename.assert_called_once_with(
+            event.source,
+            "My Discord Thread",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_syncs_discord_thread_through_real_scheduler(self, tmp_path):
+        """/title <name> exercises the real Discord scheduler body from the gateway loop."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        runner = _make_runner(session_db=db)
+        runner.config.platforms[Platform.DISCORD].extra["auto_rename_threads"] = {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": True,
+            "max_length": 100,
+        }
+        adapter = MagicMock()
+        adapter.rename_thread = AsyncMock()
+        runner.adapters = {Platform.DISCORD: adapter}
+
+        event = _make_event(
+            text="/title Real Scheduler Discord Thread",
+            platform=Platform.DISCORD,
+            chat_id="800",
+            chat_type="thread",
+            thread_id="999",
+        )
+        result = await runner._handle_title_command(event)
+        for _ in range(10):
+            if adapter.rename_thread.await_count:
+                break
+            await asyncio.sleep(0)
+
+        assert "Real Scheduler Discord Thread" in result
+        adapter.rename_thread.assert_awaited_once_with(
+            thread_id="999",
+            name="Real Scheduler Discord Thread",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_swallow_discord_thread_sync_failure(self, tmp_path):
+        """/title still updates the DB when Discord visible rename scheduling fails."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        runner = _make_runner(session_db=db)
+        runner.config.platforms[Platform.DISCORD].extra["auto_rename_threads"] = {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": True,
+            "max_length": 100,
+        }
+        runner._schedule_discord_thread_title_rename = MagicMock(
+            side_effect=RuntimeError("loop closed")
+        )
+
+        event = _make_event(
+            text="/title My Resilient Discord Thread",
+            platform=Platform.DISCORD,
+            chat_id="800",
+            chat_type="thread",
+            thread_id="999",
+        )
+        result = await runner._handle_title_command(event)
+
+        assert "My Resilient Discord Thread" in result
+        assert db.get_session_title("test_session_123") == "My Resilient Discord Thread"
+        runner._schedule_discord_thread_title_rename.assert_called_once_with(
+            event.source,
+            "My Resilient Discord Thread",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_does_not_sync_discord_thread_when_command_sync_disabled(self, tmp_path):
+        """/title <name> only renames Discord when sync_title_command is true."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        runner = _make_runner(session_db=db)
+        runner.config.platforms[Platform.DISCORD].extra["auto_rename_threads"] = {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": False,
+            "max_length": 100,
+        }
+        runner._schedule_discord_thread_title_rename = MagicMock()
+
+        event = _make_event(
+            text="/title My Discord Thread",
+            platform=Platform.DISCORD,
+            chat_id="800",
+            chat_type="thread",
+            thread_id="999",
+        )
+        result = await runner._handle_title_command(event)
+
+        assert "My Discord Thread" in result
+        runner._schedule_discord_thread_title_rename.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_show_title_does_not_sync_discord_thread(self, tmp_path):
+        """/title with no args is read-only and must not rename Discord."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+        db.set_session_title("test_session_123", "Existing Discord Title")
+
+        runner = _make_runner(session_db=db)
+        runner.config.platforms[Platform.DISCORD].extra["auto_rename_threads"] = {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": True,
+            "max_length": 100,
+        }
+        runner._schedule_discord_thread_title_rename = MagicMock()
+
+        event = _make_event(
+            text="/title",
+            platform=Platform.DISCORD,
+            chat_id="800",
+            chat_type="thread",
+            thread_id="999",
+        )
+        await runner._handle_title_command(event)
+
+        runner._schedule_discord_thread_title_rename.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio

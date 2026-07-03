@@ -844,6 +844,11 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   auto_rename_threads:             # Visible thread names follow Hermes session titles (default: disabled)
+#     enabled: false
+#     mode: session_title
+#     sync_title_command: false      # /title <name> sync; requires enabled=true and mode=session_title
+#     max_length: 100                # Discord thread-name cap; values above 100 are clamped
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

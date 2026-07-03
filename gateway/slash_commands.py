@@ -3469,6 +3469,20 @@ class GatewaySlashCommandsMixin:
                                 "Failed to rename Telegram topic from /title",
                                 exc_info=True,
                             )
+                    if self._discord_thread_title_command_sync_enabled(source):
+                        schedule_discord_rename = getattr(
+                            self,
+                            "_schedule_discord_thread_title_rename",
+                            None,
+                        )
+                        if callable(schedule_discord_rename):
+                            try:
+                                schedule_discord_rename(source, sanitized)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to rename Discord thread from /title",
+                                    exc_info=True,
+                                )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
@@ -3481,6 +3495,20 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)
             else:
                 return t("gateway.title.current_no_title", session_id=session_id)
+
+    def _discord_thread_title_command_sync_enabled(self, source: SessionSource) -> bool:
+        """Return True when /title should also sync the visible Discord thread name."""
+        is_discord_thread = getattr(self, "_is_discord_thread_lane", None)
+        if not callable(is_discord_thread) or not is_discord_thread(source):
+            return False
+        auto_rename_enabled = getattr(self, "_discord_thread_auto_rename_enabled", None)
+        if not callable(auto_rename_enabled) or not auto_rename_enabled(source):
+            return False
+        settings_for_source = getattr(self, "_discord_auto_rename_thread_settings", None)
+        settings = settings_for_source(source) if callable(settings_for_source) else {}
+        if not isinstance(settings, dict):
+            return False
+        return is_truthy_value(settings.get("sync_title_command"))
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""

@@ -748,6 +748,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
+    MAX_THREAD_NAME_LENGTH = 100
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -1890,6 +1891,81 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+
+    @classmethod
+    def _sanitize_thread_name(cls, name: str) -> str:
+        """Return a Discord-safe thread name using Discord's hard cap."""
+        cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not cleaned:
+            cleaned = "Hermes Chat"
+        if len(cleaned) > cls.MAX_THREAD_NAME_LENGTH:
+            cleaned = cleaned[: cls.MAX_THREAD_NAME_LENGTH].rstrip()
+        return cleaned or "Hermes Chat"[: cls.MAX_THREAD_NAME_LENGTH]
+
+    @staticmethod
+    def _is_thread_rename_expected_failure(exc: BaseException) -> bool:
+        if DISCORD_AVAILABLE and discord is not None:
+            for attr_name in ("Forbidden", "HTTPException"):
+                cls = getattr(discord, attr_name, None)
+                if isinstance(cls, type) and isinstance(exc, cls):
+                    return True
+        message = str(exc).lower()
+        return any(token in message for token in ("forbidden", "permission", "archived", "locked"))
+
+    async def rename_thread(self, thread_id: str, name: str) -> None:
+        """Best-effort rename of an existing Discord thread.
+
+        Discord permits thread name edits only with MANAGE_THREADS or when the
+        bot created the thread, and archived threads cannot be edited. This is
+        intentionally non-fatal so visible title sync cannot interrupt normal
+        message delivery.
+        """
+        if not DISCORD_AVAILABLE or discord is None:
+            logger.debug("[%s] Cannot rename Discord thread: discord.py unavailable", self.name)
+            return
+        if not self._client:
+            logger.debug("[%s] Cannot rename Discord thread %s: client unavailable", self.name, thread_id)
+            return
+
+        try:
+            snowflake = int(str(thread_id).strip())
+        except (TypeError, ValueError):
+            logger.debug("[%s] Cannot rename Discord thread with invalid id %r", self.name, thread_id)
+            return
+
+        cleaned = self._sanitize_thread_name(name)
+        try:
+            thread = None
+            get_channel = getattr(self._client, "get_channel", None)
+            if callable(get_channel):
+                thread = get_channel(snowflake)
+            if thread is None:
+                fetch_channel = getattr(self._client, "fetch_channel", None)
+                if callable(fetch_channel):
+                    thread = await fetch_channel(snowflake)
+            if thread is None:
+                logger.debug("[%s] Discord thread %s not found for rename", self.name, snowflake)
+                return
+            edit = getattr(thread, "edit", None)
+            if not callable(edit):
+                logger.debug("[%s] Discord channel %s cannot be renamed as a thread", self.name, snowflake)
+                return
+            await edit(name=cleaned)
+        except Exception as exc:
+            if self._is_thread_rename_expected_failure(exc):
+                logger.warning(
+                    "[%s] Discord thread %s rename skipped: %s",
+                    self.name,
+                    snowflake,
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "[%s] Failed to rename Discord thread %s",
+                    self.name,
+                    snowflake,
+                    exc_info=True,
+                )
 
     async def send(
         self,

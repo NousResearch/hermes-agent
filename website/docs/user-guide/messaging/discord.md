@@ -322,6 +322,11 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  auto_rename_threads:            # Visible thread names follow Hermes session titles
+    enabled: false                # Disabled by default for existing servers
+    mode: session_title
+    sync_title_command: false     # /title <name> sync; requires enabled=true and mode=session_title
+    max_length: 100               # Discord thread-name cap; values above 100 are clamped
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -331,6 +336,12 @@ discord:
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
 ```
+
+`discord.auto_rename_threads.sync_title_command` only has an effect when
+`enabled: true` and `mode: session_title` are also set. Values above Discord's
+100-character thread-name cap are clamped to 100. Discord rate-limits thread
+name edits, so repeated generated-title or `/title` renames may be delayed by
+discord.py while it waits on the rate-limit bucket.
 
 #### `discord.require_mention`
 

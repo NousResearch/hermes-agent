@@ -41,3 +41,38 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+class TestDiscordAutoRenameThreadsConfig:
+    def test_default_config_keeps_discord_thread_rename_disabled(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["discord"]["auto_rename_threads"] == {
+            "enabled": False,
+            "mode": "session_title",
+            "sync_title_command": False,
+            "max_length": 100,
+        }
+
+    def test_top_level_discord_auto_rename_threads_bridges_to_platform_extra(self):
+        from gateway.config import Platform
+
+        cfg = _load_with_yaml_dict(
+            {
+                "discord": {
+                    "auto_rename_threads": {
+                        "enabled": True,
+                        "mode": "session_title",
+                        "sync_title_command": True,
+                        "max_length": 80,
+                    }
+                }
+            }
+        )
+
+        assert cfg.platforms[Platform.DISCORD].extra["auto_rename_threads"] == {
+            "enabled": True,
+            "mode": "session_title",
+            "sync_title_command": True,
+            "max_length": 80,
+        }

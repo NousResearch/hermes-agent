@@ -3434,6 +3434,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         return True
 
+    def _is_discord_thread_lane(self, source: SessionSource) -> bool:
+        """True for a Discord thread-backed conversation lane."""
+        if _gateway_platform_value(getattr(source, "platform", None)) != "discord":
+            return False
+        if getattr(source, "chat_type", None) != "thread":
+            return False
+        return bool(str(getattr(source, "thread_id", None) or "").strip())
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
@@ -13157,6 +13165,112 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _discord_auto_rename_thread_settings(self, source: SessionSource) -> dict:
+        """Return Discord thread auto-rename settings for enum or raw-string platform keys."""
+        if _gateway_platform_value(getattr(source, "platform", None)) != "discord":
+            return {}
+        platforms = getattr(getattr(self, "config", None), "platforms", None) or {}
+        platform_cfg = None
+        for key, cfg in platforms.items():
+            if _gateway_platform_value(key) == "discord":
+                platform_cfg = cfg
+                break
+        if platform_cfg is None:
+            return {}
+        extra = getattr(platform_cfg, "extra", None) or {}
+        settings = extra.get("auto_rename_threads")
+        return settings if isinstance(settings, dict) else {}
+
+    def _discord_thread_auto_rename_enabled(self, source: SessionSource) -> bool:
+        """Return True when Discord thread auto-rename is explicitly enabled for session titles."""
+        settings = self._discord_auto_rename_thread_settings(source)
+        enabled = settings.get("enabled")
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if not bool(enabled):
+            return False
+        return str(settings.get("mode") or "").strip().lower() == "session_title"
+
+    def _sanitize_discord_thread_title(self, title: str, max_length: Any = 100) -> str:
+        """Return a Discord-safe thread name from a generated session title."""
+        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not cleaned:
+            cleaned = "Hermes Chat"
+        try:
+            limit = int(max_length)
+        except (TypeError, ValueError):
+            limit = 100
+        limit = max(1, min(limit, 100))
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit].rstrip() or "Hermes Chat"[:limit]
+        return cleaned
+
+    async def _rename_discord_thread_for_session_title(
+        self,
+        source: SessionSource,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Discord thread when Hermes auto-titles a session."""
+        if not self._is_discord_thread_lane(source):
+            return
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = None
+        for key, candidate in adapters.items():
+            if _gateway_platform_value(key) == "discord":
+                adapter = candidate
+                break
+        if adapter is None:
+            return
+        rename_thread = getattr(adapter, "rename_thread", None)
+        if rename_thread is None:
+            return
+        settings = self._discord_auto_rename_thread_settings(source)
+        thread_name = self._sanitize_discord_thread_title(
+            title,
+            settings.get("max_length", 100),
+        )
+        try:
+            await rename_thread(thread_id=str(source.thread_id), name=thread_name)
+        except Exception:
+            logger.debug("Failed to rename Discord thread for auto-generated title", exc_info=True)
+
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if not title or not self._is_discord_thread_lane(source):
+            return
+        if not self._discord_thread_auto_rename_enabled(source):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_discord_thread_for_session_title(copied_source, title),
+            loop,
+            logger=logger,
+            log_message="Discord thread title rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
     def _schedule_telegram_topic_title_rename(
         self,
         source: SessionSource,
@@ -18360,6 +18474,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,
+                            title,
+                        )
+                    elif self._is_discord_thread_lane(source) and self._discord_thread_auto_rename_enabled(source):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
+                            source,
                             title,
                         )
                     maybe_auto_title(

@@ -1139,6 +1139,18 @@ class TestPaneHash:
         assert isinstance(h, str)
         assert len(h) == 16
 
+    def test_animation_only_churn_hashes_stably(self):
+        # Spinner glyph + elapsed timer + cost + context% change every render;
+        # nothing else does. The hash must stay stable so idle_ticks accrues.
+        a = "⟨task⟩ Review 11m22s\n⠴ Polling review more\n92.5%/272K  $14.51"
+        b = "⟨task⟩ Review 12m28s\n⠏ Polling review more\n93.2%/272K  $14.84"
+        assert _pane_hash(a) == _pane_hash(b)
+
+    def test_real_output_change_still_changes_hash(self):
+        a = "Reading foo.rs\n⠴ Running tool 3s"
+        b = "Compiled bar crate\n⠏ Running tool 5s"
+        assert _pane_hash(a) != _pane_hash(b)
+
 
 class TestIdleTickIncrement:
     """idle_ticks increments when pane text is unchanged."""
@@ -1301,6 +1313,73 @@ class TestStaleFrozenGuards:
             adapter=adapter,
             hang_idle_ticks=3,
             hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_active_regex_still_vetoes_before_busy_stale_seconds(self):
+        # A spinner that has only been frozen a short while is legit work.
+        now = time.time()
+        pane_text = "⠴ Polling review more"
+        pane_hash = _pane_hash(pane_text)
+        row = {"idle_ticks": 3, "last_output_ts": now - 400, "nudge_count": 0}
+        adapter = FakeAdapter(
+            SessionLifecycle.RUNNING,
+            idle_indicator_regex=re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Polling"),
+        )
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=adapter,
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            busy_stale_seconds=900,
+            now=now,
+        )
+
+    def test_active_regex_veto_lifts_after_busy_stale_seconds(self):
+        # A spinner still turning with zero real output past busy_stale_seconds
+        # is a stuck busy-loop — the veto lifts and the hang becomes eligible.
+        now = time.time()
+        pane_text = "⠴ Polling review more"
+        pane_hash = _pane_hash(pane_text)
+        row = {"idle_ticks": 3, "last_output_ts": now - 901, "nudge_count": 0}
+        adapter = FakeAdapter(
+            SessionLifecycle.RUNNING,
+            idle_indicator_regex=re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Polling"),
+        )
+        assert _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=adapter,
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            busy_stale_seconds=900,
+            now=now,
+        )
+
+    def test_busy_stale_none_preserves_always_veto(self):
+        # Legacy behaviour: with no busy_stale_seconds, a spinner always vetoes.
+        now = time.time()
+        pane_text = "⠴ Polling review more"
+        pane_hash = _pane_hash(pane_text)
+        row = {"idle_ticks": 3, "last_output_ts": now - 5000, "nudge_count": 0}
+        adapter = FakeAdapter(
+            SessionLifecycle.RUNNING,
+            idle_indicator_regex=re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Polling"),
+        )
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=adapter,
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            busy_stale_seconds=None,
             now=now,
         )
 

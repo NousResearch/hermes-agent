@@ -45,6 +45,8 @@ _DEFAULT_GC_AFTER_SECONDS: int = 86400  # 24 h retention for terminal rows
 _DEFAULT_RENUDGE_AFTER_SECONDS: int = 1800  # 30 min before re-surfacing an unacted attention item
 _DEFAULT_DRIVE_QUEUE_TTL_SECONDS: int = 600  # 10 min before a queued busy-session reply is dropped
 _DEFAULT_AUTO_CHECKPOINT_RESUME: bool = True  # auto /clear+resume on a z-harness handoff_continue marker
+_DEFAULT_BUSY_LOOP_STALE_SECONDS: int = 900  # 15 min: spinner-still-turning with zero real output ⇒ stuck busy-loop
+_DEFAULT_BUSY_LOOP_AUTO_ESCAPE: bool = True   # send a recovery Escape to break a confirmed stuck busy-loop
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,15 @@ class SessionOrchestrationConfig:
     # When False, it announces the pending checkpoint and leaves the session
     # paused instead of resuming.
     auto_checkpoint_resume: bool = _DEFAULT_AUTO_CHECKPOINT_RESUME
+    # Seconds a pane may stay frozen (animation-normalized) with an active-work
+    # spinner still turning before the watcher stops trusting the spinner and
+    # treats it as a stuck busy-loop (e.g. omp re-polling an already-yielded
+    # subagent). Gates the activity-regex veto in the stale/frozen guard.
+    busy_loop_stale_seconds: int = _DEFAULT_BUSY_LOOP_STALE_SECONDS
+    # When True (default), a confirmed stuck busy-loop gets one recovery Escape
+    # (via the adapter's interrupt()) to cancel the in-flight poll before the
+    # nudge. Set False to only surface it to the feed without keystroking.
+    busy_loop_auto_escape: bool = _DEFAULT_BUSY_LOOP_AUTO_ESCAPE
     # Manual repo alias overrides for the repo registry (alias → path or dict).
     # Stored as the raw config dict so repo_registry.build_repo_registry() can
     # parse it without the config module importing the registry module.
@@ -126,6 +137,12 @@ class SessionOrchestrationConfig:
         auto_checkpoint_resume = _coerce_bool(
             data.get("auto_checkpoint_resume"), _DEFAULT_AUTO_CHECKPOINT_RESUME
         )
+        busy_loop_stale_seconds = _coerce_positive_int(
+            data.get("busy_loop_stale_seconds"), _DEFAULT_BUSY_LOOP_STALE_SECONDS
+        )
+        busy_loop_auto_escape = _coerce_bool(
+            data.get("busy_loop_auto_escape"), _DEFAULT_BUSY_LOOP_AUTO_ESCAPE
+        )
         repos = data.get("repos")
         repos = repos if isinstance(repos, dict) else {}
 
@@ -140,6 +157,8 @@ class SessionOrchestrationConfig:
             renudge_after_seconds=renudge_after_seconds,
             drive_queue_ttl_seconds=drive_queue_ttl_seconds,
             auto_checkpoint_resume=auto_checkpoint_resume,
+            busy_loop_stale_seconds=busy_loop_stale_seconds,
+            busy_loop_auto_escape=busy_loop_auto_escape,
             repos=repos,
         )
 

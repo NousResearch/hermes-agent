@@ -629,12 +629,24 @@ class TestDrive:
                 with pytest.raises(TimeoutError):
                     adapter.drive(handle, "hi")
 
+
     def test_load_buffer_called_with_message(self):
         with patch.object(self.adapter, "_load_buffer") as mock_lb:
             self.adapter.drive(self.handle, "specific omp message")
         mock_lb.assert_called_once()
         args = mock_lb.call_args[0]
         assert "specific omp message" in args
+
+
+class TestOmpInterrupt:
+    """interrupt() sends a single Escape to break a stuck busy-loop."""
+
+    def test_interrupt_sends_single_escape_to_pane(self):
+        tmux = FakeTmuxRunner()
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=tmux)
+        handle = _make_handle(pane="%68")
+        adapter.interrupt(handle)
+        assert tmux.calls == [["send-keys", "-t", "%68", "Escape"]]
 
 
 # ---------------------------------------------------------------------------

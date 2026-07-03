@@ -54,6 +54,8 @@ def test_defaults_from_empty_dict() -> None:
     assert cfg.hang_idle_ticks == 3
     assert cfg.drive_queue_ttl_seconds == 600
     assert cfg.auto_checkpoint_resume is True
+    assert cfg.busy_loop_stale_seconds == 900
+    assert cfg.busy_loop_auto_escape is True
 
 
 def test_auto_checkpoint_resume_knob_parses() -> None:
@@ -63,6 +65,15 @@ def test_auto_checkpoint_resume_knob_parses() -> None:
     )
     assert cfg.auto_checkpoint_resume is False
     assert cfg.drive_queue_ttl_seconds == 3600
+
+
+def test_busy_loop_knobs_parse() -> None:
+    """busy_loop_stale_seconds + busy_loop_auto_escape round-trip from the dict."""
+    cfg = SessionOrchestrationConfig.from_dict(
+        {"busy_loop_stale_seconds": 1200, "busy_loop_auto_escape": False}
+    )
+    assert cfg.busy_loop_stale_seconds == 1200
+    assert cfg.busy_loop_auto_escape is False
 
 
 def test_defaults_from_missing_section() -> None:

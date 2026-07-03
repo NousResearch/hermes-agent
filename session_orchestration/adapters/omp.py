@@ -813,6 +813,16 @@ class OmpAdapter(AgentAdapter):
         self._tmux.run(["paste-buffer", "-d", "-b", buf_name, "-t", handle.pane])
         self._tmux.run(["send-keys", "-t", handle.pane, "", "Enter"])
 
+    def interrupt(self, handle: SessionHandle) -> None:
+        """Send a single Escape to the pane to cancel an in-flight action.
+
+        Used by the watcher to break a stuck subagent poll-loop (the omp
+        harness re-polling an already-yielded review) without killing the
+        session — Escape drops omp back to its prompt with the in-flight job
+        cancelled. A no-op-safe single keystroke; the caller wraps it.
+        """
+        self._tmux.run(["send-keys", "-t", handle.pane, "Escape"])
+
     # ------------------------------------------------------------------
     # detect()  [testable with stubbed TmuxRunner]
     # ------------------------------------------------------------------

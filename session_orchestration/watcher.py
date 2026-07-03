@@ -51,6 +51,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -659,6 +660,34 @@ def _load_hang_thresholds() -> tuple[int, int]:
         return 3, 300
 
 
+def _load_busy_stale_seconds() -> int:
+    """Return ``busy_loop_stale_seconds`` (spinner-still-turning override).
+
+    After this many seconds of a frozen (animation-normalized) pane, an
+    active-work spinner stops vetoing stale/frozen detection — a spinner that
+    has produced no real output for this long is a stuck busy-loop.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+
+        return load_session_orchestration_config().busy_loop_stale_seconds
+    except Exception as exc:
+        logger.debug("watcher: could not read busy_loop_stale_seconds, using default: %s", exc)
+        return 900
+
+
+def _load_busy_loop_auto_escape() -> bool:
+    """Return whether the watcher may send a recovery Escape to break a stuck
+    busy-loop (works around omp re-polling an already-yielded subagent)."""
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+
+        return load_session_orchestration_config().busy_loop_auto_escape
+    except Exception as exc:
+        logger.debug("watcher: could not read busy_loop_auto_escape, using default: %s", exc)
+        return True
+
+
 def _coerce_optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -703,13 +732,22 @@ def _is_stale_frozen_eligible(
     adapter: Optional["AgentAdapter"],
     hang_idle_ticks: int,
     hang_stale_seconds: int,
+    busy_stale_seconds: Optional[int] = None,
     now: Optional[float] = None,
 ) -> bool:
     """Return True only when deterministic stale/frozen evidence is present.
 
     The guard is intentionally conservative: a stale/frozen episode requires
-    an unchanged pane hash, enough idle ticks, a stale ``last_output_ts``, and
-    no adapter-declared active-work regex match in the current pane.
+    an unchanged (animation-normalized) pane hash, enough idle ticks, and a
+    stale ``last_output_ts``.
+
+    An adapter-declared active-work regex match (a spinner) normally proves
+    live work and vetoes the call — EXCEPT once the normalized pane has been
+    frozen for ``busy_stale_seconds``. A spinner still turning after that long
+    with zero real output is a stuck busy-loop, not progress (e.g. an omp
+    subagent poll-loop re-polling an already-yielded review), and must be
+    surfaced/recovered rather than trusted. ``busy_stale_seconds=None`` keeps
+    the original always-veto behaviour.
     """
     if not current_pane_hash or previous_pane_hash != current_pane_hash:
         return False
@@ -726,7 +764,9 @@ def _is_stale_frozen_eligible(
         return False
 
     if _adapter_activity_regex_matches(adapter, pane_text):
-        return False
+        frozen_for = observed_now - last_output_ts
+        if busy_stale_seconds is None or frozen_for < busy_stale_seconds:
+            return False
 
     return True
 
@@ -745,6 +785,7 @@ def _is_omp_nudge_checkin_eligible(
     adapter: Optional["AgentAdapter"],
     hang_idle_ticks: int,
     hang_stale_seconds: int,
+    busy_stale_seconds: Optional[int] = None,
     now: Optional[float] = None,
 ) -> bool:
     """Return True when the OMP stale nudge/check-in may fire this tick."""
@@ -756,6 +797,7 @@ def _is_omp_nudge_checkin_eligible(
         adapter=adapter,
         hang_idle_ticks=hang_idle_ticks,
         hang_stale_seconds=hang_stale_seconds,
+        busy_stale_seconds=busy_stale_seconds,
         now=now,
     ) and _is_stale_episode_action_eligible(row)
 
@@ -991,6 +1033,12 @@ def _on_hang(
             exc,
         )
 
+    # Workaround for omp's subagent poll-loop (#3): if the pane is still
+    # animating a spinner at hang time, the agent is wedged re-polling an
+    # already-yielded job. Send one Escape to cancel the in-flight poll and
+    # drop it back to its prompt BEFORE the nudge lands.
+    _maybe_break_busy_loop(task_id, row, adapter=adapter, pane_text=pane_text)
+
     _send_auto_nudge(task_id, row, registry=registry, adapter=adapter)
 
     # Increment nudge_count so later ticks in this episode do not act again.
@@ -1008,6 +1056,48 @@ def _on_hang(
         task_id=task_id,
         context="_on_hang",
     )
+
+def _maybe_break_busy_loop(
+    task_id: str,
+    row: Dict[str, Any],
+    *,
+    adapter: Optional["AgentAdapter"],
+    pane_text: str,
+) -> None:
+    """Send one recovery Escape when a hang fires with a spinner still up.
+
+    A confirmed hang (idle_ticks + normalized-frozen pane past
+    ``busy_loop_stale_seconds``) whose pane STILL matches the active-work regex
+    is a stuck busy-loop — the omp harness re-polling a subagent that already
+    yielded. Escape cancels the in-flight poll so the agent falls back to its
+    prompt. Best-effort and non-fatal: gated by ``busy_loop_auto_escape`` and
+    only fires when the adapter exposes ``interrupt()``.
+    """
+    if not _load_busy_loop_auto_escape():
+        return
+    if not _adapter_activity_regex_matches(adapter, pane_text):
+        return
+    interrupt = getattr(adapter, "interrupt", None)
+    if not callable(interrupt):
+        logger.debug(
+            "watcher._maybe_break_busy_loop: adapter has no interrupt() task_id=%s",
+            task_id,
+        )
+        return
+    try:
+        interrupt(_build_handle_from_row(row))
+        logger.info(
+            "watcher._maybe_break_busy_loop: sent recovery Escape to break "
+            "stuck busy-loop task_id=%s",
+            task_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "watcher._maybe_break_busy_loop: Escape failed for task_id=%s: %s",
+            task_id,
+            exc,
+        )
+
 
 def _send_auto_nudge(
     task_id: str,
@@ -1765,9 +1855,7 @@ class SessionWatcher:
         if new_lifecycle == SessionLifecycle.RUNNING and pane_text:
             _idle_fn = getattr(adapter, "idle_waiting", None)
             if callable(_idle_fn):
-                _cur_hash = hashlib.sha256(
-                    pane_text.encode(errors="replace")
-                ).hexdigest()[:16]
+                _cur_hash = _pane_hash(pane_text)
                 _prev_hash = row.get("last_pane_hash")
                 try:
                     _is_idle = bool(_idle_fn(pane_text))
@@ -1798,11 +1886,10 @@ class SessionWatcher:
             and new_state in _ATTENTION_STATES
         )
 
-        # Compute pane hash for hang-detection (T009 consumes this)
-        if pane_text:
-            pane_hash = hashlib.sha256(pane_text.encode(errors="replace")).hexdigest()[:16]
-        else:
-            pane_hash = None
+        # Compute pane hash for hang-detection (T009 consumes this).
+        # Animation-normalized via _pane_hash so a pane that only redraws its
+        # spinner/timer/cost does not read as fresh output.
+        pane_hash = _pane_hash(pane_text) if pane_text else None
 
         previous_pane_hash = row.get("last_pane_hash")
         captured_pane_hash = pane_hash is not None
@@ -1901,6 +1988,7 @@ class SessionWatcher:
         fresh_row = self._registry.get(task_id) or row
         current_last_output_ts = _coerce_optional_float(fresh_row.get("last_output_ts"))
         hang_idle_ticks, hang_stale_seconds = _load_hang_thresholds()
+        busy_stale_seconds = _load_busy_stale_seconds()
         stale_frozen_eligible = (
             new_state == SessionLifecycle.RUNNING.value
             # Marker recency proves liveness even if the pane hash is frozen —
@@ -1915,6 +2003,7 @@ class SessionWatcher:
                 adapter=adapter,
                 hang_idle_ticks=hang_idle_ticks,
                 hang_stale_seconds=hang_stale_seconds,
+                busy_stale_seconds=busy_stale_seconds,
             )
         )
         stale_frozen_actionable, attention_digest_dirty = _sync_attention_lifecycle(
@@ -2227,6 +2316,44 @@ def _is_session_orchestration_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Internal utility
+# ---------------------------------------------------------------------------
+
+
+#: Volatile pane tokens that redraw every render even when no real work
+#: progresses: an animated spinner glyph, an elapsed-time counter, a running
+#: cost meter, a context-usage percent. Stripping these before hashing lets the
+#: watcher tell "the agent produced new output" apart from "only the animation
+#: ticked" — so a busy-but-stuck loop (e.g. an omp subagent poll-loop that keeps
+#: re-polling an already-yielded review) still accrues idle_ticks instead of
+#: masquerading as fresh output. See ``_pane_hash`` and ``_is_stale_frozen_eligible``.
+_VOLATILE_PANE_TOKENS: re.Pattern[str] = re.compile(
+    r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠛⠟⠿⢿⣻⣽⣾⣷⣯⣟]"              # braille/tui spinner frames
+    r"|\b\d+h\d+m\d+s\b|\b\d+m\d+s\b|\b\d+(?:\.\d+)?s\b"  # elapsed timers (12m28s, 4.3s)
+    r"|\$\s?\d[\d,]*(?:\.\d+)?"                          # running cost meter ($14.51)
+    r"|\d+(?:\.\d+)?\s*%\s*/\s*\d+[KkMm]"                # context usage (92.5%/272K)
+)
+
+
+def _normalize_pane_for_hash(text: str) -> str:
+    """Strip volatile animation tokens so change-detection ignores redraws."""
+    return _VOLATILE_PANE_TOKENS.sub("", text)
+
+
+def _pane_hash(text: str) -> str:
+    """Return a short SHA-256 hex prefix of pane text for change detection.
+
+    The text is animation-normalized first (``_normalize_pane_for_hash``) so a
+    pane whose only per-tick delta is spinner/timer/cost churn hashes stably —
+    the watcher must not read animation as fresh agent output, or a stuck
+    busy-loop looks perpetually alive.
+    """
+    return hashlib.sha256(
+        _normalize_pane_for_hash(text).encode(errors="replace")
+    ).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
 # __main__ entry-point (used by the cron shell script)
 # ---------------------------------------------------------------------------
 
@@ -2256,13 +2383,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# ---------------------------------------------------------------------------
-# Internal utility
-# ---------------------------------------------------------------------------
-
-
-def _pane_hash(text: str) -> str:
-    """Return a short SHA-256 hex prefix of pane text for change detection."""
-    return hashlib.sha256(text.encode(errors="replace")).hexdigest()[:16]

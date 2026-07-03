@@ -124,6 +124,18 @@ class TestModelResolution:
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
+class TestSourceImageLoading:
+    def test_load_image_bytes_blocks_credential_store(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="credential store"):
+            openai_plugin._load_image_bytes(str(auth_json))
+
+
 class TestGenerate:
     def test_empty_prompt_rejected(self, provider):
         result = provider.generate("", aspect_ratio="square")

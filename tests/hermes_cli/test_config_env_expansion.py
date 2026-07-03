@@ -93,6 +93,17 @@ class TestLoadConfigExpansion:
 
         assert config["model"]["api_key"] == "${NOT_SET_XYZ_123}"
 
+    def test_load_config_re_expands_env_refs_after_env_changes(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("model:\n  api_key: ${ROTATING_TEST_KEY}\n")
+
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+        monkeypatch.setenv("ROTATING_TEST_KEY", "first")
+        assert load_config()["model"]["api_key"] == "first"
+
+        monkeypatch.setenv("ROTATING_TEST_KEY", "second")
+        assert load_config()["model"]["api_key"] == "second"
+
 
 class TestLoadCliConfigExpansion:
     """Verify that load_cli_config() also expands ${VAR} references."""

@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, cast
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -6627,7 +6627,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
         if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
-            return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+            # Cache the raw merged config, not the ${ENV}-expanded value.  Env
+            # refs can rotate via /reload or process env changes without
+            # touching config.yaml, so expansion must happen on every return.
+            expanded_cached = cast(Dict[str, Any], _expand_env_vars(copy.deepcopy(cached[4])))
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded_cached)
+            return copy.deepcopy(expanded_cached) if want_deepcopy else expanded_cached
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -6648,30 +6653,29 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 _warn_config_parse_failure(config_path, e)
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-        expanded = _expand_env_vars(normalized)
-        # Managed scope wins at the leaf. Applied AFTER user expansion so a user
-        # ${VAR} cannot shadow a managed literal: managed values are expanded only
-        # against the process environment, never against user-config-defined refs.
-        # This deliberately inverts the usual env-over-config precedence for the
-        # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
+        raw_merged: Dict[str, Any] = copy.deepcopy(normalized)
+        # Managed scope wins at the leaf. Keep the cache raw and expand after
+        # merging so env-var rotations are reflected without touching config.yaml.
+        # Managed values are expanded only against the process environment, never
+        # against user-config-defined refs. This deliberately inverts the usual
+        # env-over-config precedence for the keys the managed layer pins — see
+        # docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
         if managed_config:
-            managed_expanded = _expand_env_vars(managed_config)
-            expanded = _deep_merge(expanded, managed_expanded)
+            raw_merged = _deep_merge(raw_merged, managed_config)
+        expanded = cast(Dict[str, Any], _expand_env_vars(raw_merged))
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
-            # Cache stores a separate deepcopy so subsequent ``load_config()``
-            # (deepcopy=True) callers can mutate freely without affecting the
-            # cached value, and ``load_config_readonly()`` (deepcopy=False)
-            # callers all see the same stable cached object. The cached tuple is
-            # (user_mtime, user_size, managed_mtime, managed_size, value).
-            cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy)
-            # On the readonly path return the same cached object subsequent
-            # calls will see — keeps "two readonly calls return the same
-            # object" invariant that callers may rely on for identity checks.
+            # Cache stores the raw merged value so future reads can re-expand
+            # against the current environment while keeping config-file parsing
+            # cached. The cached tuple is
+            # (user_mtime, user_size, managed_mtime, managed_size, raw_value).
+            cached_copy = copy.deepcopy(raw_merged)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                cache_sig[0], cache_sig[1], cache_sig[2], cache_sig[3], cached_copy
+            )
             if not want_deepcopy:
-                return cached_copy
+                return expanded
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe

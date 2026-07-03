@@ -36,7 +36,11 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
-const { createLinkTitleWindow, guardLinkTitleSession } = require('./link-title-window.cjs')
+const {
+  createLinkTitleWindow,
+  guardLinkTitleSession,
+  readLinkTitleWindowTitle
+} = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -3557,13 +3561,13 @@ function runRenderTitleJob(rawUrl) {
       return finish('')
     }
 
-    const readTitle = () => window?.webContents?.getTitle?.() || ''
+    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
     const scheduleGrace = () => {
       if (graceTimer) clearTimeout(graceTimer)
-      graceTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_GRACE_MS)
+      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
-    hardTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_TIMEOUT_MS)
+    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
 
     window.webContents.setUserAgent(TITLE_USER_AGENT)
     window.webContents.on('page-title-updated', scheduleGrace)

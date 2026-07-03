@@ -8394,6 +8394,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        # Start platform typing/presence immediately after the session is
+        # claimed, before slower pre-agent work such as voice transcription,
+        # image analysis, or history hygiene. Telegram typing indicators expire
+        # after a few seconds; a one-shot send at agent start leaves voice-note
+        # turns looking dead while STT runs. Keep refreshing until this whole
+        # gateway turn exits (normal response, interruption, or error).
+        _typing_adapter = self.adapters.get(source.platform)
+        _typing_task: Optional[asyncio.Task] = None
+        _typing_stop_event: Optional[asyncio.Event] = None
+        _typing_metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        )
+        if _typing_adapter:
+            try:
+                await _typing_adapter.send_typing(source.chat_id, metadata=_typing_metadata)
+            except Exception:
+                pass
+            if hasattr(_typing_adapter, "_keep_typing"):
+                try:
+                    _typing_stop_event = asyncio.Event()
+                    _typing_task = asyncio.create_task(
+                        _typing_adapter._keep_typing(
+                            source.chat_id,
+                            metadata=_typing_metadata,
+                            stop_event=_typing_stop_event,
+                        )
+                    )
+                except Exception:
+                    _typing_task = None
+                    _typing_stop_event = None
+
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
@@ -8426,6 +8458,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
+            # Stop the early typing refresh started before pre-agent work.
+            if _typing_stop_event is not None:
+                try:
+                    _typing_stop_event.set()
+                except Exception:
+                    pass
+            if _typing_adapter and _typing_task is not None:
+                try:
+                    if hasattr(_typing_adapter, "_stop_typing_refresh"):
+                        await _typing_adapter._stop_typing_refresh(
+                            source.chat_id,
+                            _typing_task,
+                            timeout=0.5,
+                        )
+                    else:
+                        _typing_task.cancel()
+                        await asyncio.wait_for(asyncio.shield(_typing_task), timeout=0.5)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                except Exception:
+                    pass
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which

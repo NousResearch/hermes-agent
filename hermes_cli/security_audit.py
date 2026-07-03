@@ -279,7 +279,43 @@ def _discover_mcp() -> list[Component]:
     return out
 
 
-# ─── OSV client ───────────────────────────────────────────────────────────────
+# ─── OSV client ────────────────────────────────────────────────────────────────
+
+# Hard cap on bytes read from any single OSV HTTP response. The OSV batch
+# API documents a 1000-package ceiling per request and a typical vuln
+# detail record is well under 50 KB, so 64 MiB is a generous, safe cap
+# that still catches a runaway proxy or test endpoint that returns a
+# body far larger than any legitimate response (#54794).
+_OSV_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
+class _OSVResponseTooLarge(RuntimeError):
+    """Raised when an OSV response body exceeds the configured cap."""
+
+
+def _read_bounded_json(resp) -> dict:
+    """Read an OSV JSON response body, bounded by ``_OSV_MAX_RESPONSE_BYTES``.
+
+    Bounded reads are critical: a malicious or misbehaving proxy can
+    return a body far larger than the documented OSV response shape, and
+    the previous implementation called ``resp.read()`` with no cap,
+    loading the entire body into memory before any size check could
+    run (#54794). We read in fixed-size chunks and abort as soon as the
+    cap is exceeded, surfacing a ``_OSVResponseTooLarge`` so the caller
+    can treat the response like any other transport failure.
+    """
+    buf = bytearray()
+    chunk_size = 64 * 1024  # 64 KiB chunks
+    while True:
+        chunk = resp.read(chunk_size)
+        if not chunk:
+            break
+        if len(buf) + len(chunk) > _OSV_MAX_RESPONSE_BYTES:
+            raise _OSVResponseTooLarge(
+                f"OSV response body exceeds {_OSV_MAX_RESPONSE_BYTES} bytes"
+            )
+        buf.extend(chunk)
+    return json.loads(buf.decode("utf-8"))
 
 
 def _http_post_json(url: str, payload: dict) -> dict:
@@ -288,13 +324,13 @@ def _http_post_json(url: str, payload: dict) -> dict:
         url, data=data, headers={"Content-Type": "application/json"}, method="POST"
     )
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return _read_bounded_json(resp)
 
 
 def _http_get_json(url: str) -> dict:
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return _read_bounded_json(resp)
 
 
 def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:

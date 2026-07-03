@@ -44,6 +44,7 @@ class TurnRetryState:
     anthropic_auth_retry_attempted: bool = False
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
+    openrouter_free_tier_selfheal_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
     vertex_auth_retry_attempted: bool = False
 

@@ -1346,6 +1346,58 @@ def get_removed_openrouter_models() -> frozenset[str]:
     return frozenset(_openrouter_removed_models)
 
 
+def find_free_openrouter_model(*, force_refresh: bool = True) -> str | None:
+    """Return the best free OpenRouter model ID from the live curated catalog.
+
+    Fetches the current OpenRouter model list (defaults to ``force_refresh``
+    so the caller gets a fresh view, not a stale cache).  Returns the first
+    curated model that:
+      - Has a ``:free`` suffix or is labelled free by OpenRouter's pricing
+      - Passes the tool-support filter (required by the agent loop)
+      - Exists in the live /v1/models response (no stale entries)
+    Returns ``None`` when no free model is available.
+
+    Designed for the self-heal path: when a paid/free-tier model fails with
+    a 404, the agent calls this to find a working free replacement.
+    """
+    try:
+        models = fetch_openrouter_models(force_refresh=force_refresh)
+    except Exception:
+        logger.debug("Failed to fetch OpenRouter models for free-model discovery")
+        return None
+    if not models:
+        return None
+    # Prefer :free-suffixed models; fall back to any model labelled free
+    free_suffixed = [mid for mid, desc in models if mid.endswith(":free")]
+    if free_suffixed:
+        return free_suffixed[0]
+    free_labelled = [mid for mid, desc in models if desc == "free"]
+    if free_labelled:
+        return free_labelled[0]
+    # Last resort: the default/recommended model (usually free)
+    first_id, first_desc = models[0]
+    return first_id
+
+
+def parse_openrouter_slug_suggestion(error_body: str) -> str | None:
+    """Extract a model-slug suggestion from OpenRouter's error message.
+
+    OpenRouter sometimes returns errors like::
+
+        404 - This model is unavailable for free. The paid version is
+        available now - use this slug instead: deepseek/deepseek-v4-flash
+
+    Returns the suggested slug, or ``None`` when no suggestion is present.
+    """
+    marker = "use this slug instead:"
+    idx = error_body.lower().find(marker)
+    if idx < 0:
+        return None
+    start = idx + len(marker)
+    slug = error_body[start:].strip().rstrip(".,!;")
+    return slug if slug else None
+
+
 def _openrouter_model_supports_tools(item: Any) -> bool:
     """Return True when the model's ``supported_parameters`` advertise tool calling.
 

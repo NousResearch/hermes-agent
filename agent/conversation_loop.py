@@ -34,6 +34,10 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
+from hermes_cli.models import (
+    find_free_openrouter_model,
+    parse_openrouter_slug_suggestion,
+)
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -2511,6 +2515,78 @@ def run_conversation(
                             force=True,
                         )
                         continue
+
+                # ── OpenRouter free-tier self-heal ─────────────────────────
+                # OpenRouter may return a 404 with "This model is unavailable
+                # for free. The paid version is available now - use this slug
+                # instead: <slug>".  The error_classifier now classifies this
+                # as billing.  When it occurs on OpenRouter (or via Nous
+                # Portal's OpenRouter route), try to find a free model from
+                # the live curated catalog and retry once.
+                agent_provider = (getattr(agent, "provider", "") or "").strip().lower()
+                if (
+                    classified.reason == FailoverReason.billing
+                    and agent_provider in ("openrouter", "nous")
+                    and status_code in (404, None)
+                    and not _retry.openrouter_free_tier_selfheal_attempted
+                ):
+                    _retry.openrouter_free_tier_selfheal_attempted = True
+                    selfheal_model: str | None = None
+                    # First: try to parse the suggested slug from the error
+                    try:
+                        selfheal_model = parse_openrouter_slug_suggestion(
+                            str(api_error or "")
+                        )
+                    except Exception:
+                        pass
+                    # Second: fall back to discovering the best free model
+                    if not selfheal_model:
+                        try:
+                            selfheal_model = find_free_openrouter_model(
+                                force_refresh=True
+                            )
+                        except Exception:
+                            pass
+                    current_model = (getattr(agent, "model", "") or "").strip()
+                    if (
+                        selfheal_model
+                        and selfheal_model != current_model
+                    ):
+                        logger.warning(
+                            "OpenRouter model %r unavailable on free tier — "
+                            "auto-switching to %r and retrying",
+                            current_model,
+                            selfheal_model,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🔄 Model {current_model} unavailable "
+                            f"on free tier — switching to {selfheal_model}...",
+                            force=True,
+                        )
+                        # Update the agent's model in-place.
+                        # resolve_provider_client will build the right client.
+                        from agent.auxiliary_client import resolve_provider_client
+
+                        agent.model = selfheal_model
+                        try:
+                            fb_client, _ = resolve_provider_client(
+                                agent_provider,
+                                model=selfheal_model,
+                                raw_codex=True,
+                            )
+                            if fb_client is not None:
+                                agent.client = fb_client
+                                agent._vprint(
+                                    f"{agent.log_prefix}✅ Switched to "
+                                    f"{selfheal_model}, retrying...",
+                                    force=True,
+                                )
+                                continue
+                        except Exception:
+                            logger.debug(
+                                "Failed to build client for self-heal model %s",
+                                selfheal_model,
+                            )
 
                 recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,

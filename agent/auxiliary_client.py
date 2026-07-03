@@ -2633,6 +2633,9 @@ def _is_payment_error(exc: Exception) -> bool:
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",
             "not available on the free tier",
+            "unavailable for free",
+            "paid version",
+            "use this slug instead",
             "requires a subscription", "upgrade for access",
             "upgrade for higher limits", "reached your session usage limit",
             # Daily / monthly / weekly quota exhaustion keywords

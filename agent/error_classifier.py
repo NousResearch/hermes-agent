@@ -114,8 +114,11 @@ _BILLING_PATTERNS = [
     "out of funds",
     "run out of funds",
     "balance_depleted",
-    "model_not_supported_on_free_tier",
-    "not available on the free tier",
+    'model_not_supported_on_free_tier',
+    'not available on the free tier',
+    'unavailable for free',
+    'paid version',
+    'use this slug instead',
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)

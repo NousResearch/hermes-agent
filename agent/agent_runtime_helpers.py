@@ -1463,14 +1463,18 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
-    if agent.provider == "custom":
-        # Local Ollama is configured as provider "custom" (the "ollama"/"vllm"/
-        # "llamacpp" aliases all normalize to "custom" in providers.py). Route it
-        # through Ollama's NATIVE /api/chat — which honors per-request num_ctx and
-        # returns correct streaming tool_calls, unlike the OpenAI-compat /v1 path —
-        # but ONLY when the endpoint is positively identified as Ollama, so a
-        # non-Ollama "custom" server (vLLM / llama.cpp / LM Studio) is never
-        # mis-routed. Gated on HERMES_OLLAMA_NATIVE: when unset,
+    if agent.provider == "custom" or str(agent.provider).startswith("custom:"):
+        # Local Ollama is configured as provider "custom" — either bare ("custom")
+        # or as a named instance ("custom:<name>") when several custom providers are
+        # set up (providers.py forms these as "custom:" + normalized-name; the
+        # "ollama"/"vllm"/"llamacpp" aliases all normalize to "custom"). Match the
+        # provider *type* (before the colon) so a second Ollama instance such as
+        # "custom:ollama-2" still gets the native path instead of silently falling
+        # back to /v1. Route it through Ollama's NATIVE /api/chat — which honors
+        # per-request num_ctx and returns correct streaming tool_calls, unlike the
+        # OpenAI-compat /v1 path — but ONLY when the endpoint is positively
+        # identified as Ollama, so a non-Ollama "custom" server (vLLM / llama.cpp /
+        # LM Studio) is never mis-routed. Gated on HERMES_OLLAMA_NATIVE: when unset,
         # is_native_ollama_base_url() returns False immediately (no probe), so
         # behavior is byte-identical to the existing /v1 path.
         from agent.ollama_native_adapter import OllamaNativeClient, is_native_ollama_base_url

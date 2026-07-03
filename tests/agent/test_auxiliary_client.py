@@ -110,6 +110,48 @@ class TestAuxiliaryMaxTokensParam:
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
+class TestAnthropicCredentialFallback:
+    def test_unavailable_pool_falls_back_to_resolver(self, monkeypatch):
+        """An exhausted Anthropic pool row must not shadow fresh fallback credentials."""
+        from agent import auxiliary_client as aux
+
+        built_client = MagicMock(name="anthropic-client")
+        monkeypatch.setattr(aux, "_select_pool_entry", lambda provider: (True, None))
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            lambda: "resolver-token",
+        )
+        build = MagicMock(return_value=built_client)
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", build)
+        monkeypatch.setattr(aux, "_get_aux_model_for_provider", lambda provider: "claude-test")
+
+        client, model = aux._try_anthropic()
+
+        assert client is not None
+        assert model == "claude-test"
+        build.assert_called_once_with("resolver-token", aux._ANTHROPIC_DEFAULT_BASE_URL)
+
+    def test_unavailable_pool_preserves_explicit_api_key_fallback(self, monkeypatch):
+        """API-key users should still work when an old OAuth pool entry is exhausted."""
+        from agent import auxiliary_client as aux
+
+        built_client = MagicMock(name="anthropic-client")
+        monkeypatch.setattr(aux, "_select_pool_entry", lambda provider: (True, None))
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            lambda: None,
+        )
+        build = MagicMock(return_value=built_client)
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", build)
+        monkeypatch.setattr(aux, "_get_aux_model_for_provider", lambda provider: "claude-test")
+
+        client, model = aux._try_anthropic(explicit_api_key="explicit-api-key")
+
+        assert client is not None
+        assert model == "claude-test"
+        build.assert_called_once_with("explicit-api-key", aux._ANTHROPIC_DEFAULT_BASE_URL)
+
+
 class TestResolveTaskProviderModel:
     @pytest.mark.parametrize(
         "provider",

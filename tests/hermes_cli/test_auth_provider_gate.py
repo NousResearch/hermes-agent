@@ -77,8 +77,47 @@ def test_returns_true_when_anthropic_env_var_set(tmp_path, monkeypatch):
 def test_claude_code_oauth_token_does_not_count_as_explicit(tmp_path, monkeypatch):
     """CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code, not the user — must not gate."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-auto-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "«redacted:sk-…»")
     (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("anthropic") is False
+
+
+def test_returns_true_when_moa_reference_slot_uses_provider(tmp_path, monkeypatch):
+    """MoA advisor slots are explicit provider selections for auth gating."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        "moa": {
+            "presets": {
+                "default": {
+                    "reference_models": [
+                        {"provider": "anthropic", "model": "claude-opus-4-8"},
+                        {"provider": "opencode-go", "model": "glm-5.2"},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.5"},
+                }
+            }
+        },
+    })
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": "openai-codex"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
+def test_returns_true_when_moa_aggregator_uses_provider(tmp_path, monkeypatch):
+    """MoA aggregator slots are explicit provider selections for auth gating."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        "moa": {
+            "reference_models": [{"provider": "opencode-go", "model": "glm-5.2"}],
+            "aggregator": {"provider": "anthropic", "model": "claude-opus-4-8"},
+        },
+    })
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": "openai-codex"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True

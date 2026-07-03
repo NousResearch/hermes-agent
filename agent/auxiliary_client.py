@@ -2392,12 +2392,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return None, None
 
     pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present:
-        if entry is None:
-            return None, None
+    if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         entry = None
+        # A configured-but-unavailable pool entry must not shadow other valid
+        # Anthropic credential sources.  This happens when a stale/exhausted
+        # claude_code pool row exists while the user has a fresh env/API-key or
+        # refreshable Claude Code credential available.  Mirror the canonical
+        # runtime resolver: try the pool first, then fall through to the normal
+        # Anthropic token chain.
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
         return None, None

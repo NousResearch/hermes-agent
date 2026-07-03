@@ -3239,6 +3239,46 @@ def test_sync_anthropic_entry_tokens_unchanged_no_op(tmp_path, monkeypatch):
     assert synced is entry, "no-op sync must return the original entry object"
 
 
+def test_select_syncs_exhausted_anthropic_entry_from_fresh_credentials_file(tmp_path, monkeypatch):
+    """Selecting should recover an exhausted claude_code entry when the file is fresh."""
+    from dataclasses import replace as dc_replace
+    from agent.credential_pool import STATUS_EXHAUSTED
+
+    pool, entry = _make_anthropic_claude_code_pool(
+        tmp_path, monkeypatch,
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=401,
+        last_error_reason="token_expired",
+        last_error_message="Access token has expired",
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "fresh-access",
+            "refreshToken": "fresh-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.access_token == "fresh-access"
+    assert selected.refresh_token == "fresh-refresh"
+    assert selected.last_status is None
+
+
 def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     """Syncing fresh tokens must clear all six error/status fields on the entry.
 

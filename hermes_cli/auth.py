@@ -1466,7 +1466,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider
+    # 2. Check config.yaml model.provider and other explicit provider slots.
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1475,6 +1475,37 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
                 return True
+
+        # MoA presets are explicit model selections too.  A user who configured
+        # ``provider: anthropic`` as a MoA advisor/aggregator has opted Hermes
+        # into using Anthropic credentials for that slot even when the main
+        # session model is another provider.  Without this, Claude Code OAuth
+        # entries are pruned/ignored by credential_pool.load_pool("anthropic"),
+        # so MoA Anthropic advisors fail with "no ANTHROPIC_API_KEY" while the
+        # normal model picker says Anthropic is logged in.
+        def _slot_matches_provider(slot):
+            return (
+                isinstance(slot, dict)
+                and (slot.get("provider") or "").strip().lower() == normalized
+            )
+
+        moa_cfg = cfg.get("moa")
+        if isinstance(moa_cfg, dict):
+            for slot in moa_cfg.get("reference_models") or []:
+                if _slot_matches_provider(slot):
+                    return True
+            if _slot_matches_provider(moa_cfg.get("aggregator")):
+                return True
+            presets = moa_cfg.get("presets")
+            if isinstance(presets, dict):
+                for preset in presets.values():
+                    if not isinstance(preset, dict):
+                        continue
+                    for slot in preset.get("reference_models") or []:
+                        if _slot_matches_provider(slot):
+                            return True
+                    if _slot_matches_provider(preset.get("aggregator")):
+                        return True
     except Exception:
         pass
 

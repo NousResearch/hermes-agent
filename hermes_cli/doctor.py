@@ -1906,6 +1906,12 @@ def run_doctor(args):
         try:
             import httpx
             base = os.getenv(base_env, "") if base_env else ""
+            try:
+                from hermes_cli.auth import _normalize_api_key_provider_base_url
+
+                base = _normalize_api_key_provider_base_url(pname.lower(), base)
+            except Exception:
+                pass
             # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
             # (OpenAI-compat surface, which exposes /models for health check).
             if not base and key.startswith("sk-kimi-"):

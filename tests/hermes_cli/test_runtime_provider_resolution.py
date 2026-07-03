@@ -2882,6 +2882,46 @@ def test_host_derived_key_picked_up_for_deepseek(monkeypatch):
     assert resolved["api_key"] == "sk-deepseek-secret"
 
 
+def test_deepseek_runtime_upgrades_persisted_canonical_http_base_url(monkeypatch):
+    """DeepSeek's public API should never be called over plain HTTP (#39765)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "deepseek",
+            "base_url": "http://api.deepseek.com/v1",
+            "default": "deepseek-chat",
+        },
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-secret")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+def test_deepseek_runtime_preserves_custom_http_proxy(monkeypatch):
+    """DeepSeek provider overrides may still point at an HTTP local/proxy URL."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "deepseek",
+            "base_url": "http://deepseek-proxy.local/v1",
+            "default": "deepseek-chat",
+        },
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-secret")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["base_url"] == "http://deepseek-proxy.local/v1"
+
+
 def test_host_derived_key_picked_up_for_groq(monkeypatch):
     """GROQ_API_KEY env var must be forwarded to api.groq.com."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

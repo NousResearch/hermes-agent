@@ -108,6 +108,8 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
 | Distribute via pip | `[project.entry-points."hermes_agent.plugins"]` |
 | Register a gateway platform (Discord, Telegram, IRC, …) | `ctx.register_platform(name, label, adapter_factory, check_fn, ...)` — see [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
+| Handle Slack interactive components | `ctx.register_slack_action_handler(action_id, callback)` — dispatches Block Kit button/menu/etc. actions to plugin code |
+| Handle Telegram inline buttons | `ctx.register_telegram_callback_handler(matcher, callback)` — dispatches matching inline-keyboard `callback_data` to plugin code |
 | Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
 | Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
 | Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](/developer-guide/context-engine-plugin) |
@@ -224,6 +226,7 @@ The table above shows the four plugin categories, but within "General plugins" t
 | A **tool** the LLM can call | Python plugin — `ctx.register_tool()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Adding Tools](/developer-guide/adding-tools) |
 | A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](/user-guide/features/hooks) · [Build a Hermes Plugin](/guides/build-a-hermes-plugin) |
 | A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Extending the CLI](/developer-guide/extending-the-cli) |
+| Gateway **interactive button/menu handlers** | Python plugin — `ctx.register_slack_action_handler()` for Slack Block Kit, `ctx.register_telegram_callback_handler()` for Telegram inline keyboards | [Build a Hermes Plugin](/guides/build-a-hermes-plugin#handle-slack-block-kit-button-clicks) |
 | A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](/developer-guide/extending-the-cli) |
 | A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](/developer-guide/creating-skills) |
 | An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |

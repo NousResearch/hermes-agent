@@ -887,6 +887,33 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### Handle Telegram inline keyboard button clicks
+
+Plugins that send Telegram messages with inline keyboards can register callback-query handlers directly with the Telegram adapter. This is the right surface for card-like flows where a button should do deterministic work without routing the click back through the LLM as text.
+
+```python
+def register(ctx):
+    async def _on_idea_action(query, data: str):
+        # data is the button callback_data, e.g. "idea:love:abc123"
+        await query.answer(text="Saved")
+        action, idea_id = data.split(":", 2)[1:]
+        # query.message.chat_id, query.from_user.id, query.message.message_id
+        # ...do deterministic work, then edit/reply as needed.
+
+    ctx.register_telegram_callback_handler("idea:", _on_idea_action)
+```
+
+**Signature:** `ctx.register_telegram_callback_handler(matcher, callback) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `matcher` | `str \| re.Pattern` | A literal `callback_data` prefix string (`data.startswith(matcher)`) or compiled regex whose `match(data)` succeeds |
+| `callback` | async callable | Receives `(query, data)` where `query` is the python-telegram-bot `CallbackQuery` object |
+
+**Collision rules:** Built-in Hermes Telegram callbacks keep priority. Custom plugins should namespace their `callback_data` prefixes (for example `"idea:"`, `"gift:"`, `"team_digest:"`) and avoid built-in prefixes like `ea:`, `cl:`, `sc:`, `gt:`, `mp:` and `update_prompt:`.
+
+**Runtime behavior:** The handler is queued at plugin-load time and consulted from the Telegram adapter's `CallbackQueryHandler` path. If a matching plugin handler raises, Hermes logs the exception and best-effort-answers the callback query so Telegram stops showing the loading spinner.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

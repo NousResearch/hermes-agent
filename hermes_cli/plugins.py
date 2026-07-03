@@ -926,6 +926,55 @@ class PluginContext:
             action_id,
         )
 
+    # -- telegram callback handler registration -----------------------------
+
+    def register_telegram_callback_handler(
+        self,
+        matcher: Any,
+        callback: Callable,
+    ) -> None:
+        """Register a Telegram inline-keyboard callback handler from a plugin.
+
+        Hermes' Telegram adapter dispatches plugin handlers from its
+        ``CallbackQueryHandler`` path when a button's ``callback_data`` matches
+        the registered matcher.
+
+        Callback signature::
+
+            async def handler(query, data) -> None:
+                await query.answer()  # acknowledge the button click
+                ...
+
+        Args:
+            matcher: A literal string prefix (``data.startswith(matcher)``) or
+                a compiled regular expression with a ``match(data)`` method.
+                Prefix strings should be namespaced (e.g. ``"idea:"``) to
+                avoid collisions with built-in Telegram callback prefixes.
+            callback: Async callable receiving ``(query, data)``.
+
+        Raises:
+            ValueError: if ``callback`` is not callable, or ``matcher`` is
+                empty/None.
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with a non-callable callback."
+            )
+        if matcher is None or (isinstance(matcher, str) and not matcher.strip()):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with an empty matcher."
+            )
+        self._manager._telegram_callback_handlers.append(
+            (matcher, callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Telegram callback handler: %s",
+            self.manifest.name,
+            matcher,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -1157,6 +1206,12 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Telegram inline-keyboard callback handlers registered by plugins.
+        # Each entry is (matcher, callback, plugin_name); ``matcher`` is a
+        # literal callback-data prefix string or compiled regex with match().
+        # The Telegram adapter invokes ``callback(query, data)`` from its
+        # CallbackQueryHandler path.
+        self._telegram_callback_handlers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1190,6 +1245,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._telegram_callback_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1785,6 +1841,21 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    # -----------------------------------------------------------------------
+    # Telegram callback handler accessor
+    # -----------------------------------------------------------------------
+
+    def get_telegram_callback_handlers(self) -> List[tuple]:
+        """Return the list of plugin-registered Telegram callback handlers.
+
+        Each entry is a ``(matcher, callback, plugin_name)`` tuple. Consumed by
+        the Telegram adapter from its ``CallbackQueryHandler`` path.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_telegram_callback_handler`.
+        """
+        return list(self._telegram_callback_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection

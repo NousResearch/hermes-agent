@@ -4170,6 +4170,58 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    @staticmethod
+    def _plugin_callback_matches(matcher: Any, data: str) -> bool:
+        """Return True when a plugin Telegram callback matcher accepts data."""
+        if isinstance(matcher, str):
+            return data.startswith(matcher)
+        match = getattr(matcher, "match", None)
+        if callable(match):
+            try:
+                return bool(match(data))
+            except Exception:
+                logger.debug(
+                    "[Telegram] Plugin callback matcher raised for %r",
+                    data,
+                    exc_info=True,
+                )
+                return False
+        return False
+
+    async def _dispatch_plugin_callback_query(self, query: Any, data: str) -> bool:
+        """Dispatch a Telegram callback query to a plugin handler if matched.
+
+        Returns True when a plugin matcher handled the callback (including the
+        defensive-error path), so built-in fallback routing should stop.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            handlers = get_plugin_manager().get_telegram_callback_handlers()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "[Telegram] Could not load plugin callback handlers: %s", exc,
+            )
+            return False
+
+        for matcher, callback, plugin_name in handlers:
+            if not self._plugin_callback_matches(matcher, data):
+                continue
+            try:
+                await callback(query, data)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error(
+                    "[Telegram] Plugin '%s' callback handler raised: %s",
+                    plugin_name,
+                    exc,
+                    exc_info=True,
+                )
+                try:
+                    await query.answer(text="Plugin callback failed.")
+                except Exception:
+                    pass
+            return True
+        return False
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4480,9 +4532,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
-        # --- Update prompt callbacks ---
+        # --- Plugin callbacks (custom plugin prefixes / regexes) ---
+        # Built-in callback prefixes above keep priority; update_prompt remains
+        # reserved below. Plugin authors should namespace callback_data such as
+        # "idea:" or "gift:" to avoid collisions.
         if not data.startswith("update_prompt:"):
+            if await self._dispatch_plugin_callback_query(query, data):
+                return
             return
+
+        # --- Update prompt callbacks ---
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))
         if not self._is_callback_user_authorized(

@@ -1697,10 +1697,15 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     if tui_dir.is_dir():
         return
 
-    # Managed installs (Homebrew, NixOS) ship the TUI prebuilt in
-    # ``hermes_cli/tui_dist/`` — there is no ``ui-tui/`` source tree to
-    # restore.  Let the caller fall through to ``_find_bundled_tui()``.
+    # Managed installs (Homebrew, NixOS) and pip-installed wheels ship the
+    # TUI prebuilt in ``hermes_cli/tui_dist/`` — there is no ``ui-tui/``
+    # source tree to restore.  Let the caller fall through to
+    # ``_find_bundled_tui()``.  We check for the bundled entry point
+    # directly so that package-shaped installs without ``HERMES_MANAGED``
+    # set also skip the git-restore gate (#57031).
     if os.environ.get("HERMES_MANAGED", "").strip():
+        return
+    if _find_bundled_tui() is not None:
         return
 
     if _restore_tui_workspace(tui_dir):

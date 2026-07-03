@@ -376,6 +376,29 @@ def test_make_tui_argv_skips_workspace_check_for_managed_install(
     assert "TUI workspace is missing" not in err
 
 
+def test_make_tui_argv_skips_workspace_check_for_bundled_wheel(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """Pip-installed wheels with bundled TUI skip workspace check without HERMES_MANAGED."""
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    # Simulate a bundled tui_dist/entry.js (pip wheel layout).
+    bundled = tmp_path / "bundled_tui_dist"
+    (bundled / "entry.js").parent.mkdir(parents=True)
+    (bundled / "entry.js").write_text("console.log('tui')")
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled / "entry.js")
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    # Should NOT raise SystemExit — bundled fallback is checked before git-restore.
+    argv, cwd = main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=False)
+    assert "node" in argv[0]
+    assert str(bundled / "entry.js") in argv
+    err = capsys.readouterr().err
+    assert "TUI workspace is missing" not in err
+
+
 def test_make_tui_argv_restores_missing_workspace_from_git(
     tmp_path: Path, main_mod, monkeypatch, capsys
 ) -> None:

@@ -2305,17 +2305,53 @@ def run_doctor(args):
         try:
             from plugins.memory.mem0 import _load_config as _load_mem0_config
             mem0_cfg = _load_mem0_config()
-            mem0_key = mem0_cfg.get("api_key", "")
-            if mem0_key:
-                check_ok("Mem0 API key configured")
-                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            mem0_mode = mem0_cfg.get("mode", "platform")
+            if mem0_mode == "oss":
+                # OSS mode: no top-level api_key; credentials are nested in
+                # oss.llm / oss.embedder / oss.vector_store configs.
+                oss_cfg = mem0_cfg.get("oss", {})
+                llm_cfg = oss_cfg.get("llm", {}).get("config", {})
+                embedder_cfg = oss_cfg.get("embedder", {}).get("config", {})
+                vector_cfg = oss_cfg.get("vector_store", {}).get("config", {})
+                llm_key = llm_cfg.get("api_key", "")
+                embedder_key = embedder_cfg.get("api_key", "")
+                vector_provider = oss_cfg.get("vector_store", {}).get("provider", "")
+                if llm_key and embedder_key and vector_provider:
+                    check_ok("Mem0 OSS configured")
+                    check_info(
+                        f"mode=oss  user_id={mem0_cfg.get('user_id', '?')}  "
+                        f"agent_id={mem0_cfg.get('agent_id', '?')}  "
+                        f"llm={llm_cfg.get('model', '?')}  "
+                        f"embedder={embedder_cfg.get('model', '?')}  "
+                        f"vector_store={vector_provider}"
+                    )
+                else:
+                    missing_parts = []
+                    if not llm_key:
+                        missing_parts.append("oss.llm.config.api_key")
+                    if not embedder_key:
+                        missing_parts.append("oss.embedder.config.api_key")
+                    if not vector_provider:
+                        missing_parts.append("oss.vector_store.provider")
+                    _fail_and_issue(
+                        "Mem0 OSS config incomplete",
+                        f"missing: {', '.join(missing_parts)} in ~/.hermes/mem0.json",
+                        "Mem0 is set to OSS mode but config is incomplete",
+                        issues,
+                    )
             else:
-                _fail_and_issue(
-                    "Mem0 API key not set",
-                    "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                    "Mem0 is set as memory provider but API key is missing",
-                    issues,
-                )
+                # Platform mode: requires top-level api_key.
+                mem0_key = mem0_cfg.get("api_key", "")
+                if mem0_key:
+                    check_ok("Mem0 API key configured")
+                    check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+                else:
+                    _fail_and_issue(
+                        "Mem0 API key not set",
+                        "(set MEM0_API_KEY in .env or run hermes memory setup)",
+                        "Mem0 is set as memory provider but API key is missing",
+                        issues,
+                    )
         except ImportError:
             _fail_and_issue(
                 "Mem0 plugin not loadable",

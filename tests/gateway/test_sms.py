@@ -108,6 +108,24 @@ class TestSmsFormatAndTruncate:
         assert result == "a\n\nb"
 
 
+class TestSmsStandaloneStripMarkdown:
+    """Regression for the standalone-send markdown stripper.
+
+    ``_strip_markdown_for_sms`` (used by ``_standalone_send`` — the path
+    ``send_message_tool``/cron take for agent-initiated SMS) calls ``re.sub``,
+    but the module was missing ``import re``. Sending any markdown over SMS
+    therefore raised ``NameError: name 're' is not defined`` and crashed the
+    send. This exercises the real path so the missing import can't regress.
+    """
+
+    def test_strip_markdown_for_sms_does_not_crash(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        out = _strip_markdown_for_sms("**bold** _it_ `code`\n\n\n\ndone")
+        assert "**" not in out and "`" not in out
+        assert "bold" in out and "code" in out and "done" in out
+
+
 # ── Echo prevention ────────────────────────────────────────────────
 
 class TestSmsEchoPrevention:

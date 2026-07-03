@@ -1049,10 +1049,26 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    # Resolve the session model's explicit context_length (config-only lookup,
+    # no endpoint probing) so the tool-search auto-gate scales its deferral
+    # threshold to THIS session's model. Without the hint the gate falls back
+    # to the global default model's window (_resolve_active_context_length),
+    # which mis-sizes the threshold whenever the session runs a different
+    # model — e.g. a 98K local model gated against a 256K cloud default.
+    _ts_context_length = None
+    try:
+        from hermes_cli.config import get_custom_provider_context_length
+        _ts_context_length = get_custom_provider_context_length(
+            model=agent.model,
+            base_url=agent.base_url,
+        )
+    except Exception:
+        _ts_context_length = None
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        context_length=_ts_context_length,
     )
     
     # Show tool configuration and store valid tool names for validation

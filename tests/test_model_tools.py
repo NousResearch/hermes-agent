@@ -536,3 +536,74 @@ class TestDisabledToolsetsPlatformBundle:
         from toolsets import bundle_non_core_tools
         # A non-existent bundle resolves to an empty set (no tools), not a crash.
         assert bundle_non_core_tools("hermes-does-not-exist") == set()
+
+
+# =========================================================================
+# Tool-search gate: context_length threading (active-model scaling)
+# =========================================================================
+
+class TestToolSearchGateContextLength:
+    """The tool-search auto-gate must be scaled to the ACTIVE session model's
+    context window, not the configured default model's. get_tool_definitions
+    accepts an explicit context_length for this; when omitted it falls back
+    to the legacy default-model heuristic. Regression guard for the case
+    where a small-context local-model session inherited a large default
+    model's threshold and never deferred its MCP schemas."""
+
+    def _capture_assembly(self, monkeypatch):
+        """Route assemble_tool_defs through a spy that records the
+        context_length the gate receives, without changing behavior."""
+        import model_tools
+        from tools import tool_search as ts
+
+        captured = []
+
+        def fake_assemble(tool_defs, *, context_length=None, config=None):
+            captured.append(context_length)
+            return ts.AssemblyResult(tool_defs=list(tool_defs), activated=False)
+
+        monkeypatch.setattr(ts, "assemble_tool_defs", fake_assemble)
+        # Force the gate to run regardless of user config.
+        monkeypatch.setattr(
+            ts, "load_config",
+            lambda: ts.ToolSearchConfig.from_raw({"enabled": "auto"}),
+        )
+        # Deterministic legacy fallback value.
+        monkeypatch.setattr(model_tools, "_resolve_active_context_length", lambda: 256_000)
+        model_tools._clear_tool_defs_cache()
+        return captured
+
+    def test_explicit_context_length_reaches_gate(self, monkeypatch):
+        import model_tools
+        captured = self._capture_assembly(monkeypatch)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=98_304)
+        assert captured == [98_304]
+
+    def test_omitted_context_length_falls_back_to_legacy_resolver(self, monkeypatch):
+        import model_tools
+        captured = self._capture_assembly(monkeypatch)
+        model_tools.get_tool_definitions(quiet_mode=True)
+        assert captured == [256_000]
+
+    def test_non_positive_context_length_falls_back(self, monkeypatch):
+        import model_tools
+        captured = self._capture_assembly(monkeypatch)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=0)
+        assert captured == [256_000]
+
+    def test_memo_cache_distinguishes_context_lengths(self, monkeypatch):
+        """Two sessions with different context lengths in one process must not
+        share a memoized assembly — a small-context session could otherwise
+        be served the large-context session's un-deferred tool list."""
+        import model_tools
+        captured = self._capture_assembly(monkeypatch)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=98_304)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=200_000)
+        assert captured == [98_304, 200_000]
+
+    def test_memo_cache_hits_for_same_context_length(self, monkeypatch):
+        import model_tools
+        captured = self._capture_assembly(monkeypatch)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=98_304)
+        model_tools.get_tool_definitions(quiet_mode=True, context_length=98_304)
+        assert captured == [98_304], "second call should be served from the memo cache"

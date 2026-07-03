@@ -4750,6 +4750,76 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     _atexit.register(_atexit_hook)
 
+    # Finalize-hang watchdog. `Py_FinalizeEx` runs `wait_for_thread_shutdown`
+    # BEFORE atexit handlers — if a leaked non-daemon thread (typically a
+    # stdlib ThreadPoolExecutor worker stuck in work_queue.get(block=True))
+    # never gets woken, the interpreter hangs there forever, launchd/systemd
+    # KeepAlive can't respawn (PID lives but holds locks + sockets), and
+    # diagnostic atexit hooks never fire. Arm a daemon-thread watchdog at
+    # exit time that hard-exits the process after a grace period.
+    # Off via HERMES_GATEWAY_EXIT_WATCHDOG=0; tune grace via env (default 30s).
+    def _arm_finalize_watchdog() -> None:
+        if os.environ.get("HERMES_GATEWAY_EXIT_WATCHDOG", "1") != "1":
+            return
+        try:
+            _grace = float(os.environ.get("HERMES_GATEWAY_EXIT_WATCHDOG_SECONDS", "30"))
+        except (ValueError, TypeError):
+            _grace = 30.0
+        if _grace <= 0:
+            return
+        import threading as _threading
+        import time as _time
+        import faulthandler as _faulthandler
+
+        # Dump tracebacks of all Python threads at this fraction of the grace
+        # period — gives us a snapshot of which thread is preventing finalize
+        # from completing, before we hard-exit. Default 1/3 (= 10s of a 30s
+        # grace). Set HERMES_GATEWAY_EXIT_WATCHDOG_DUMP_AT=0 to disable dump.
+        try:
+            _dump_at = float(os.environ.get(
+                "HERMES_GATEWAY_EXIT_WATCHDOG_DUMP_AT", str(_grace / 3.0)
+            ))
+        except (ValueError, TypeError):
+            _dump_at = _grace / 3.0
+
+        def _watchdog():
+            if _dump_at > 0 and _dump_at < _grace:
+                _time.sleep(_dump_at)
+                # Dump every thread's Python stack to a dedicated log so
+                # post-mortem analysis identifies the leaked non-daemon
+                # thread. faulthandler.dump_traceback is signal-safe and
+                # doesn't acquire the GIL, so it runs even when the main
+                # thread is blocked in C-level Py_FinalizeEx waits.
+                try:
+                    from hermes_constants import get_hermes_home as _ghh
+                    _dump_path = _ghh() / "logs" / "gateway-finalize-hang.log"
+                    _dump_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_dump_path, "a", encoding="utf-8") as _f:
+                        _f.write(
+                            f"\n===== finalize-hang dump pid={os.getpid()} "
+                            f"at +{_dump_at:.0f}s of {_grace:.0f}s grace, "
+                            f"ts={_dt.now(_tz.utc).isoformat()} =====\n"
+                        )
+                        _faulthandler.dump_traceback(file=_f, all_threads=True)
+                    _exit_diag(
+                        "finalize_hang_dump",
+                        dump_path=str(_dump_path),
+                        elapsed_seconds=_dump_at,
+                    )
+                except Exception as _dump_exc:
+                    _exit_diag(
+                        "finalize_hang_dump_failed",
+                        error=repr(_dump_exc),
+                    )
+                _time.sleep(_grace - _dump_at)
+            else:
+                _time.sleep(_grace)
+            _exit_diag("force_exit", reason="finalize_timeout", grace_seconds=_grace)
+            os._exit(1)
+
+        t = _threading.Thread(target=_watchdog, daemon=True, name="exit-watchdog")
+        t.start()
+
     success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
@@ -4769,6 +4839,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             code=getattr(e, "code", None),
             traceback=_traceback.format_exc(),
         )
+        _arm_finalize_watchdog()
         raise
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,
@@ -4782,8 +4853,10 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         raise
     if not success:
         _exit_diag("gateway.exit_nonzero")
+        _arm_finalize_watchdog()
         sys.exit(1)
     _exit_diag("gateway.exit_clean")
+    _arm_finalize_watchdog()
 
 
 # =============================================================================

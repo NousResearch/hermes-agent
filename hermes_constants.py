@@ -791,7 +791,7 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
         env["HOME"] = home
 
 
-VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def parse_reasoning_effort(effort) -> dict | None:

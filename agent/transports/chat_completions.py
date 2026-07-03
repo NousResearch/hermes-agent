@@ -377,6 +377,22 @@ class ChatCompletionsTransport(ProviderTransport):
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
 
+        # Custom provider (e.g. GLM-5.2 on ARK): send top-level reasoning_effort
+        # string so the upstream API receives its native parameter format.
+        if params.get("is_custom_provider", False):
+            _custom_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _custom_thinking_off:
+                _custom_effort = "medium"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _custom_effort = (
+                        reasoning_config.get("effort", "medium") or "medium"
+                    )
+                api_kwargs["reasoning_effort"] = _custom_effort
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 
@@ -423,7 +439,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                _effort = "medium"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _effort = reasoning_config.get("effort", "medium") or "medium"
+                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

@@ -229,15 +229,15 @@ gateway:
 
   resume:
     db_unavailable:        "База данных сеансов недоступна."
-    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
-Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room.
-Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
-    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
+    parse_error:           "⚠️ Не удалось разобрать аргументы `/resume`: {error}.
+Заключайте названия с пробелами в кавычки, например: `/resume \"План проекта A\"`."
+    matrix_no_named_sessions: "Для этой комнаты Matrix именованных сеансов не найдено.
+Используйте `/title Мой сеанс`, чтобы назвать текущий сеанс комнаты, `/resume --all`, чтобы вывести все сеансы Matrix, или `/resume --cross-room <название сеанса>`, чтобы явно выйти за границы комнаты."
+    matrix_blocked_no_origin: "⚠️ /resume в Matrix заблокирован: у этого именованного сеанса нет записанной комнаты-источника, поэтому по умолчанию Hermes не возобновит его в текущей комнате. Используйте `/resume --cross-room {name}`, если вы намеренно хотите выйти за границы комнаты."
+    matrix_blocked_other_room: "⚠️ /resume в Matrix заблокирован: этот сеанс принадлежит другой комнате Matrix ({room}). Используйте `/resume --cross-room {name}`, если вы намеренно хотите возобновить его здесь."
+    matrix_cross_room_success: "⚠️ Межкомнатное возобновление: сеанс **{title}** возобновлён в комнате Matrix **{room}**.
+Последующие сообщения в этой комнате будут использовать этот транскрипт до `/reset` или следующего `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume заблокирован: '**{name}**' принадлежит другому пользователю или чату. Возобновлять можно только сеансы из этого чата."
     no_named_sessions:     "Именованных сеансов не найдено.\nИспользуйте `/title Мой сеанс`, чтобы назвать текущий сеанс, затем `/resume Мой сеанс`, чтобы вернуться к нему позже."
     list_header:           "📋 **Именованные сеансы**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -270,7 +270,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   status:
     header:                "📊 **Состояние Hermes Gateway**"
-    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_header:   "**Область Matrix:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
     matrix_scope_thread:   "  thread_id: {thread_id}"
@@ -280,10 +280,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     title:                 "**Название:** {title}"
     created:               "**Создано:** {timestamp}"
     last_activity:         "**Последняя активность:** {timestamp}"
-    model:                 "**Model:** `{model}`"
-    model_provider:        "**Model:** `{model}` ({provider})"
-    context:               "**Context:** {used} / {total} ({pct}%)"
-    context_used:          "**Context:** ~{used} tokens"
+    model:                 "**Модель:** `{model}`"
+    model_provider:        "**Модель:** `{model}` ({provider})"
+    context:               "**Контекст:** {used} / {total} ({pct}%)"
+    context_used:          "**Контекст:** ~{used} токенов"
     tokens:                "**Токены:** {tokens}"
     agent_running:         "**Агент активен:** {state}"
     state_yes:             "Да ⚡"

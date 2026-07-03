@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+from collections.abc import Iterator
 
 
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
@@ -29,7 +30,7 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """An IMMEDIATE write transaction: at most one concurrent writer wins.
 
     The explicit ROLLBACK is guarded so a SQLite auto-rollback (no active

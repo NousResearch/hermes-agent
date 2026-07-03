@@ -389,7 +389,7 @@ TIPS = [
     # --- Env Vars & Config Gates ---
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
     'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
-    'HERMES_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.',
+    'HERMES_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
     'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
     'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
@@ -420,7 +420,6 @@ TIPS = [
     '/platforms shows gateway and messaging-platform connection status right from inside chat.',
     '/commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.',
     '/toolsets lists every available toolset so you know what -t/--toolsets accepts.',
-    '/gquota shows Google Gemini Code Assist quota usage with progress bars when that provider is active.',
     '/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.',
     '/reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session.',
     '/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.',

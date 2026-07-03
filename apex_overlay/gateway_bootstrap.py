@@ -28,6 +28,12 @@ original sequential loop** (behavior-identical to stock Hermes — Feishu would
 block ready). ``apply()`` monkey-patches that method with the background-connect
 version below, and binds eight small helper methods the loop needs.
 
+v0.18 contract update: upstream's loop can now abort startup mid-way when a
+shutdown/restart request arrives (``_abort_startup_if_shutdown_requested``),
+and wires a per-adapter authorization check (``set_authorization_check``).
+Both are mirrored here; the method's return grew from 5 counters to a 6-tuple
+``(aborted, connected, background, enabled, nonretryable, retryable)``.
+
 That gives us the cleanest possible seam tier (monkey-patch, zero behavioral
 debt left in the hot file): ``start()`` keeps calling one method; whether that
 method blocks-or-backgrounds is decided entirely here. The matching seam-test
@@ -109,12 +115,17 @@ def _platform_creation_connects_in_background(self, platform: Any) -> bool:
 
 
 def _prepare_adapter(self, adapter: Any) -> None:
-    """Wire gateway callbacks into an adapter before connect."""
+    """Wire gateway callbacks into an adapter before connect.
+
+    Mirrors upstream's inline wiring block, including the v0.18 fail-closed
+    per-adapter authorization check (upstream bb304b4914).
+    """
     adapter.set_message_handler(self._handle_message)
     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
     adapter.set_session_store(self.session_store)
     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+    adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
     adapter._busy_text_mode = self._busy_text_mode
 
 
@@ -293,18 +304,20 @@ async def _create_and_connect_adapter_in_background(
 # ---------------------------------------------------------------------------
 # The overlaid per-platform connect loop. This REPLACES the upstream-faithful
 # body of GatewayRunner._connect_configured_platforms (which run.py keeps as
-# stock Hermes' sequential, blocking loop). Same return contract: the 5
-# counters start() consumes.
+# stock Hermes' sequential, blocking loop). Same return contract: the 6-tuple
+# start() unpacks.
 # ---------------------------------------------------------------------------
 
 async def _connect_configured_platforms(self):
     """Background-connect aware per-platform startup loop (hc-384/385).
 
-    Returns ``(connected_count, background_connect_count,
+    Returns ``(aborted, connected_count, background_connect_count,
     enabled_platform_count, startup_nonretryable_errors,
-    startup_retryable_errors)`` — the exact tuple ``start()`` unpacks. Feishu
-    (and any ``CONNECT_IN_BACKGROUND`` adapter) is scheduled off the critical
-    path so the API conversation surface declares ready first.
+    startup_retryable_errors)`` — the exact tuple ``start()`` unpacks
+    (``aborted`` mirrors upstream's v0.18 shutdown-during-startup early
+    return). Feishu (and any ``CONNECT_IN_BACKGROUND`` adapter) is scheduled
+    off the critical path so the API conversation surface declares ready
+    first.
     """
     from gateway.config import Platform
 
@@ -314,8 +327,20 @@ async def _connect_configured_platforms(self):
     startup_nonretryable_errors: list[str] = []
     startup_retryable_errors: list[str] = []
 
+    def _result(aborted: bool):
+        return (
+            aborted,
+            connected_count,
+            background_connect_count,
+            enabled_platform_count,
+            startup_nonretryable_errors,
+            startup_retryable_errors,
+        )
+
     # Initialize and connect each configured platform
     for platform, platform_config in self.config.platforms.items():
+        if await self._abort_startup_if_shutdown_requested():
+            return _result(True)
         if not platform_config.enabled:
             continue
         enabled_platform_count += 1
@@ -391,6 +416,8 @@ async def _connect_configured_platforms(self):
             continue
         try:
             success = await self._connect_adapter_with_timeout(adapter, platform)
+            if await self._abort_startup_if_shutdown_requested(adapter, platform):
+                return _result(True)
             if success:
                 self._register_connected_adapter(platform, adapter)
                 connected_count += 1
@@ -446,14 +473,10 @@ async def _connect_configured_platforms(self):
                 error_message=str(e),
             )
             startup_retryable_errors.append(f"{platform.value}: {e}")
+        if await self._abort_startup_if_shutdown_requested():
+            return _result(True)
 
-    return (
-        connected_count,
-        background_connect_count,
-        enabled_platform_count,
-        startup_nonretryable_errors,
-        startup_retryable_errors,
-    )
+    return _result(False)
 
 
 # ---------------------------------------------------------------------------

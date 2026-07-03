@@ -6,8 +6,8 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.wecom_callback import WecomCallbackAdapter
-from gateway.platforms.wecom_crypto import WXBizMsgCrypt
+from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
 
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
@@ -49,7 +49,7 @@ class TestWecomCrypto:
         crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
         encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
         root = ET.fromstring(encrypted_xml)
-        from gateway.platforms.wecom_crypto import SignatureError
+        from plugins.platforms.wecom.wecom_crypto import SignatureError
         with pytest.raises(SignatureError):
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
 
@@ -307,3 +307,43 @@ class TestWecomCallbackPollLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert calls == ["test"]
+
+
+class TestWecomCallbackBodySizeLimit:
+    """Pre-auth oversized-body rejection (DoS hardening, PR #10192)."""
+
+    def _request(self, body_bytes):
+        from unittest.mock import Mock
+
+        from aiohttp import StreamReader
+        from aiohttp.test_utils import make_mocked_request
+
+        protocol = Mock(_reading_paused=False)
+        reader = StreamReader(protocol=protocol, limit=2 ** 20)
+        reader.feed_data(body_bytes)
+        reader.feed_eof()
+        return make_mocked_request(
+            "POST", "/wecom/callback?msg_signature=s&timestamp=1&nonce=n",
+            payload=reader,
+        )
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_rejected_with_413(self):
+        from plugins.platforms.wecom.callback_adapter import _MAX_BODY
+
+        adapter = WecomCallbackAdapter(_config())
+        oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"
+        response = await adapter._handle_callback(self._request(oversized))
+        assert response.status == 413
+
+    @pytest.mark.asyncio
+    async def test_normal_sized_body_not_rejected_for_size(self):
+        adapter = WecomCallbackAdapter(_config())
+        # A small body passes the size guard and proceeds to decrypt, which
+        # fails signature verification (400), NOT 413 — proving the guard
+        # doesn't reject legitimate-sized payloads.
+        small = b"<xml><Encrypt>not-real</Encrypt></xml>"
+        response = await adapter._handle_callback(self._request(small))
+        assert response.status != 413
+
+

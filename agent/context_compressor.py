@@ -189,6 +189,12 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "config, etc.) may reflect work described here — avoid repeating it:",
 )
 
+# Restart handoff detection should be early and bounded: it needs to catch the
+# restored protected head plus a small cluster of already-stacked handoff/ack
+# turns, but it must not treat arbitrary summary-looking live-tail messages as
+# proof that this is a resumed compacted session.
+_RESTART_HANDOFF_PROBE_EXTRA_MESSAGES = 4
+
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
@@ -2662,7 +2668,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # semantics and not decay the initial first-compaction protection.
             restart_probe_end = min(
                 len(messages),
-                first_non_system + self.protect_first_n + 4,
+                first_non_system
+                + self.protect_first_n
+                + _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES,
             )
             if any(
                 self._is_context_summary_message(msg)

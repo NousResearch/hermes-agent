@@ -6,6 +6,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
     SUMMARY_PREFIX,
+    _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES,
 )
 
 
@@ -53,6 +54,20 @@ def _messages_with_default_handoff(summary_body: str):
         {"role": "assistant", "content": "latest tail response"},
         {"role": "user", "content": "final active request stays in protected tail"},
     ]
+
+
+def _messages_with_summary_at_index(summary_index: int):
+    msgs = [{"role": "system", "content": "system prompt"}]
+    for idx in range(1, summary_index):
+        role = "user" if idx % 2 else "assistant"
+        msgs.append({"role": role, "content": f"probe filler {idx}"})
+    role = "user" if summary_index % 2 else "assistant"
+    msgs.append({"role": role, "content": f"{SUMMARY_PREFIX}\nboundary summary"})
+    msgs.extend([
+        {"role": "assistant", "content": "new answer"},
+        {"role": "user", "content": "tail request"},
+    ])
+    return msgs
 
 
 def test_existing_previous_summary_is_not_serialized_again_as_new_turn():
@@ -184,6 +199,43 @@ def test_tail_summary_marker_does_not_decay_first_compaction_head():
     assert "HEAD-TWO original answer" in result_text
     assert "HEAD-THREE original follow-up" in result_text
     assert tail_summary in result_text
+
+
+def test_restart_probe_boundary_summary_just_inside_window_decays():
+    """A summary at the last restart-probe index should still decay."""
+    compressor = _compressor(protect_first_n=3)
+    first_non_system = 1
+    last_probe_idx = (
+        first_non_system
+        + compressor.protect_first_n
+        + _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
+        - 1
+    )
+
+    assert (
+        compressor._effective_protect_first_n(
+            _messages_with_summary_at_index(last_probe_idx)
+        )
+        == 0
+    )
+
+
+def test_restart_probe_boundary_summary_just_outside_window_does_not_decay():
+    """A summary past the restart-probe window should not decay."""
+    compressor = _compressor(protect_first_n=3)
+    first_non_system = 1
+    first_outside_probe_idx = (
+        first_non_system
+        + compressor.protect_first_n
+        + _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
+    )
+
+    assert (
+        compressor._effective_protect_first_n(
+            _messages_with_summary_at_index(first_outside_probe_idx)
+        )
+        == compressor.protect_first_n
+    )
 
 
 def test_restart_stacked_handoffs_fold_stray_head_and_collapse_to_single_summary():

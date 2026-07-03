@@ -723,11 +723,39 @@ class GatewaySlashCommandsMixin:
         """
         if origin is None or current is None:
             return False
+        chat_type = (getattr(current, "chat_type", "") or "").lower()
         if origin.platform != current.platform:
             return False
         if origin.chat_id != current.chat_id:
             return False
-        # thread_id is part of the session key for every chat type when present
+        # DM-like chats are always per-user.
+        if chat_type in {"dm", "direct", "private", ""}:
+            # chat_id was already required equal above and, when present, IS the
+            # DM session key — so an equal non-empty chat_id is sufficient.
+            #
+            # Telegram Direct Messages topics are modeled as DM ``thread_id``
+            # lanes under the same private chat. Users intentionally use
+            # ``/resume`` to move their own transcript between those lanes; that
+            # is same-user/same-DM access, not the cross-room/group IDOR this
+            # guard prevents. Therefore DM-like chats do NOT require thread
+            # equality when chat_id is present. Non-DM threads remain scoped
+            # below before any sharing logic.
+            # build_session_key only falls back to the participant id
+            # (``user_id_alt or user_id`` — Signal/Feishu key on user_id_alt)
+            # when there is NO chat_id; mirror that and fail closed on a
+            # missing/different participant so two no-chat_id DM origins are
+            # never conflated (was: compared user_id only and allowed when
+            # either side was missing).
+            if str(getattr(current, "chat_id", "") or ""):
+                return True
+            if str(getattr(current, "thread_id", "") or "") != str(
+                getattr(origin, "thread_id", "") or ""
+            ):
+                return False
+            cur_pid = str(current.user_id_alt or current.user_id or "")
+            org_pid = str(origin.user_id_alt or origin.user_id or "")
+            return bool(cur_pid) and cur_pid == org_pid
+        # thread_id is part of the session key for non-DM chats when present
         # (build_session_key appends it unconditionally), so a session in one
         # thread is a DIFFERENT session from another thread of the same parent
         # chat. is_shared_multi_user_session only decides participant sharing
@@ -738,22 +766,6 @@ class GatewaySlashCommandsMixin:
             getattr(origin, "thread_id", "") or ""
         ):
             return False
-        chat_type = (getattr(current, "chat_type", "") or "").lower()
-        # DM-like chats are always per-user.
-        if chat_type in {"dm", "direct", "private", ""}:
-            # chat_id was already required equal above and, when present, IS the
-            # DM session key — so an equal non-empty chat_id is sufficient.
-            # build_session_key only falls back to the participant id
-            # (``user_id_alt or user_id`` — Signal/Feishu key on user_id_alt)
-            # when there is NO chat_id; mirror that and fail closed on a
-            # missing/different participant so two no-chat_id DM origins are
-            # never conflated (was: compared user_id only and allowed when
-            # either side was missing).
-            if str(getattr(current, "chat_id", "") or ""):
-                return True
-            cur_pid = str(current.user_id_alt or current.user_id or "")
-            org_pid = str(origin.user_id_alt or origin.user_id or "")
-            return bool(cur_pid) and cur_pid == org_pid
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
@@ -870,13 +882,15 @@ class GatewaySlashCommandsMixin:
             # NULL-chat rows are intentionally not resumable this way; use a
             # live session or an explicit admin override.)
             # Common origin proof for any identity-bearing caller: a non-blank
-            # source that matches the caller's platform, and the same thread. A
-            # blank/legacy source can't prove the platform; a different thread is
-            # a different session (build_session_key appends thread_id).
+            # source that matches the caller's platform. A blank/legacy source
+            # can't prove the platform. For non-DM chats, a different thread is
+            # a different origin and is checked below. DM-like chats (notably
+            # Telegram Direct Messages topics) may intentionally resume the same
+            # user's transcript across thread lanes in the same private chat.
             origin_ok = (
-                bool(row_src) and bool(caller_src)
+                bool(row_src)
+                and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
             )
             if not origin_ok:
                 return False
@@ -894,10 +908,18 @@ class GatewaySlashCommandsMixin:
                 # apply there.
                 if caller_keys_on_alt and not (bool(row_chat) and bool(caller_chat)):
                     return False
+                # With a real DM chat_id (Telegram private chat), thread lanes
+                # are user-visible topics that may resume each other. Without a
+                # chat_id, build_session_key falls back to participant+thread, so
+                # the thread remains part of the provenance proof.
+                if not (bool(row_chat) and bool(caller_chat)) and row_thread != caller_thread:
+                    return False
                 return (
                     bool(row_uid) and row_uid == caller_uid
                     and row_chat == caller_chat
                 )
+            if row_thread != caller_thread:
+                return False
             # Non-DM (group/channel/forum/thread): build_session_key includes
             # chat_id, so a row (or caller) with NO chat provenance cannot prove
             # same-chat. Require both sides non-blank and equal — a legacy

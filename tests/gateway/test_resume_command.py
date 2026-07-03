@@ -178,6 +178,33 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_by_name_across_telegram_dm_topics(self, tmp_path):
+        """User-visible regression: a Telegram private-chat topic may resume the
+        same user's session from a neighboring DM topic/thread."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("topic_a_session", "telegram", user_id="12345",
+                          chat_id="67890", chat_type="dm", thread_id="topic-a")
+        db.set_session_title("topic_a_session", "Topic A Work")
+        db.create_session("current_session_001", "telegram", user_id="12345",
+                          chat_id="67890", chat_type="dm", thread_id="topic-b")
+
+        event = _make_event(text="/resume Topic A Work", user_id="12345", chat_id="67890")
+        event.source.chat_type = "dm"
+        event.source.thread_id = "topic-b"
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        assert "Topic A Work" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "topic_a_session"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
         """Resume must not carry a previous session's /model override into the
         restored conversation, while leaving other chats' overrides intact (#10702)."""
@@ -692,6 +719,29 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_target_allowed_telegram_dm_topic_cross_thread(self, tmp_path):
+        """Telegram DM topics are private lanes under one user-owned chat. The
+        same user may resume a transcript from another DM topic/thread in that
+        same private chat, while a different private chat stays blocked."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("topic_a", "telegram", user_id="12345",
+                          chat_id="67890", chat_type="dm", thread_id="topic-a")
+        db.create_session("other_dm_chat", "telegram", user_id="12345",
+                          chat_id="99999", chat_type="dm", thread_id="topic-a")
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+
+        caller_topic_b = SessionSource(platform=Platform.TELEGRAM, chat_id="67890",
+                                       chat_type="dm", user_id="12345",
+                                       thread_id="topic-b")
+        assert await runner._resume_target_allowed(caller_topic_b, "topic_a",
+                                                   allow_override=False) is True
+        assert await runner._resume_target_allowed(caller_topic_b, "other_dm_chat",
+                                                   allow_override=False) is False
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_target_allowed_shared_group_no_user_match(self, tmp_path):
         """egilewski probe: with group_sessions_per_user=False a non-DM group
         session is shared, so a co-member (different user_id) in the SAME chat
@@ -853,6 +903,23 @@ class TestSameOriginChatGroupScoping:
         a = self._src("alice", chat_type="dm", chat_id="dm-1")
         b = self._src("alice", chat_type="dm", chat_id="dm-1")
         assert runner._same_origin_chat(a, b) is True
+
+    def test_dm_same_chat_id_cross_thread_is_same_origin(self):
+        # Telegram DM topics carry thread_id, but still belong to the same
+        # private chat/user. /resume is allowed to move the user's own transcript
+        # between those private lanes.
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="topic-a")
+        b = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="topic-b")
+        assert runner._same_origin_chat(a, b) is True
+
+    def test_dm_no_chat_id_cross_thread_blocked(self):
+        # Without chat_id, a DM key falls back to participant+thread, so the
+        # thread is still part of the origin proof.
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id=None, thread_id="topic-a")
+        b = self._src("alice", chat_type="dm", chat_id=None, thread_id="topic-b")
+        assert runner._same_origin_chat(a, b) is False
 
     @pytest.mark.asyncio
     async def test_resume_target_allowed_blocks_cross_user_live_group(self):

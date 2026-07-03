@@ -136,6 +136,99 @@ def test_route_back_terminal_modes_return_terminal_outcome(monkeypatch, mode, kw
     assert "final_answer_guard" not in data["route_back"]
 
 
+def test_route_back_execute_owner_target_sends_then_records_sent(monkeypatch):
+    fake = _FakeHelper()
+    sent = {}
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    def fake_post(channel_id, content, *, timeout=15):
+        sent["channel_id"] = channel_id
+        sent["content"] = content
+        return {"id": "discord-msg-1", "channel_id": channel_id}
+
+    monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
+
+    out = cbt.route_back_execute_tool(
+        case_id="case:promo-product-api-1522505332318932992",
+        target_ref={"id": "1279454038731264061", "mention": "<@1279454038731264061>"},
+        message="<@1279454038731264061> Алекс предава: product id 95435.",
+        message_summary="Alex route-back to Emil with promo product API id",
+        source_refs={"platform": "discord", "thread_id": "1522505332318932992", "message_id": "1522505336614027304"},
+        idempotency_key="routeback:promo-product-api:1522505336614027304:emo:v2",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT"
+    assert sent == {
+        "channel_id": "1504852355588423801",
+        "content": "<@1279454038731264061> Алекс предава: product id 95435.",
+    }
+    assert data["receipt"]["message_id"] == "discord-msg-1"
+    assert data["receipt"]["channel_id"] == "1504852355588423801"
+    assert data["route_back_record"]["route_back"]["mode"] == "record_sent_receipt"
+    sql = "\n".join(fake.queries)
+    assert "route_back.sent" in sql
+    assert "discord-msg-1" in sql
+    assert '"channel_type":"public_channel"' in sql
+
+
+def test_route_back_execute_send_failure_records_blocked(monkeypatch):
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    def fail_post(channel_id, content, *, timeout=15):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(cbt, "_discord_post_message", fail_post)
+
+    out = cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"lane": "emil_lomliev"},
+        message="<@1279454038731264061> route-back message",
+        message_summary="route-back to owner",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        idempotency_key="idem-route-back-execute-blocked",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["blocker_reason"] == "discord_send_failed:RuntimeError"
+    assert data["route_back_record"]["route_back"]["mode"] == "record_blocked"
+    sql = "\n".join(fake.queries)
+    assert "route_back.blocked" in sql
+    assert "discord_send_failed:RuntimeError" in sql
+
+
+def test_route_back_execute_unknown_public_target_records_blocked_without_send(monkeypatch):
+    fake = _FakeHelper()
+    called = {"send": False}
+
+    def fake_post(channel_id, content, *, timeout=15):
+        called["send"] = True
+        raise AssertionError("must not send to unresolved targets")
+
+    monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    out = cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"id": "1282940511962791959"},
+        message="forward this",
+        message_summary="unknown route-back target",
+        source_refs={"platform": "discord", "message_id": "m1"},
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["blocker_reason"] == "target_not_approved_or_unresolved:ValueError"
+    assert data["route_back_record"]["route_back"]["mode"] == "record_blocked"
+    assert called == {"send": False}
+    assert "route_back.blocked" in "\n".join(fake.queries)
+
+
 def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
     out = cbt.canonical_event_append_tool(
         event_type="case.note",

@@ -12,7 +12,10 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
+import urllib.error
+import urllib.request
 import uuid
 from typing import Any, Dict, Optional
 
@@ -23,9 +26,21 @@ except Exception:  # pragma: no cover - import-safe for tool discovery
 
 from tools.registry import registry, tool_error
 
+from gateway.support_ops_routing import (
+    lint_and_resolve_discord_content,
+    lint_discord_target_for_content,
+)
+from gateway.support_ops_team_registry import (
+    SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    TeamMember,
+    resolve_team_member,
+)
+
 CANONICAL_BRAIN_ROOT = pathlib.Path("/opt/adventico-ai-platform/canonical-brain")
 CLOUD_SQL_HELPER = CANONICAL_BRAIN_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
 EVENT_TABLE = "canonical_event_log"
+DISCORD_API_BASE = "https://discord.com/api/v10"
+MAX_ROUTE_BACK_MESSAGE_CHARS = 1900
 ALLOWED_EVENT_TYPES = {
     "case.note",
     "handoff.created",
@@ -527,6 +542,301 @@ def route_back_tool(
         return tool_error(f"ROUTE_BACK_STATE_FAIL: {exc}")
 
 
+def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve an exact approved public route-back target.
+
+    This intentionally uses the team/channel registry, not business-keyword
+    routing.  The first supported executor target is the owner lane: references
+    to Emil/owner resolve to the public control-tower channel, never a DM.
+    """
+    candidate_values = []
+    for key in ("id", "mention", "lane", "person", "target_person", "key"):
+        value = str(target_ref.get(key) or "").strip()
+        if value:
+            candidate_values.append(value)
+
+    channel_id = str(target_ref.get("channel_id") or target_ref.get("thread_id") or "").strip()
+    raw_id = str(target_ref.get("id") or "").strip()
+    if raw_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        channel_id = SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+    resolved_member: TeamMember | None = None
+    for value in candidate_values:
+        resolution = resolve_team_member(value)
+        if resolution.status == "resolved":
+            resolved_member = resolution.member
+            break
+        if resolution.status == "ambiguous":
+            raise ValueError("route_back_execute target_ref ambiguous; ask requester to clarify the public target")
+
+    if resolved_member is not None and resolved_member.key == "emil_lomliev":
+        return {
+            "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+            "channel_type": "public_channel",
+            "target_kind": "owner_public_channel",
+            "target_member_key": resolved_member.key,
+            "target_member_id": resolved_member.discord_user_id,
+            "target_mention": resolved_member.mention,
+        }
+
+    if channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        return {
+            "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+            "channel_type": "public_channel",
+            "target_kind": "owner_public_channel",
+            "target_member_key": "emil_lomliev",
+            "target_member_id": "1279454038731264061",
+            "target_mention": "<@1279454038731264061>",
+        }
+
+    raise ValueError(
+        "route_back_execute currently supports only exact approved public owner targets; "
+        "record route_back.blocked and ask for clarification for any other target"
+    )
+
+
+def _discord_post_message(channel_id: str, content: str, *, timeout: int = 15) -> Dict[str, Any]:
+    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("discord_bot_token_not_configured")
+
+    url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+    data = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"discord_send_http_error:{exc.code}") from exc
+
+
+def _route_back_record_blocked(
+    *,
+    case_id: str,
+    target_ref: Dict[str, Any],
+    message_summary: str,
+    source_refs: Dict[str, Any],
+    blocker_reason: str,
+    idempotency_key: Optional[str],
+) -> Dict[str, Any]:
+    result = route_back_tool(
+        case_id=case_id,
+        target_ref=target_ref,
+        message_summary=message_summary,
+        source_refs=source_refs,
+        mode="record_blocked",
+        blocker_reason=blocker_reason,
+        idempotency_key=idempotency_key,
+    )
+    try:
+        data = json.loads(result)
+    except Exception:
+        data = {"raw": result}
+    return data if isinstance(data, dict) else {"raw": result}
+
+
+def route_back_execute_tool(
+    case_id: str,
+    target_ref: Dict[str, Any],
+    message: str,
+    message_summary: str,
+    source_refs: Dict[str, Any],
+    idempotency_key: Optional[str] = None,
+) -> str:
+    """Deliver an exact public route-back and record the terminal outcome.
+
+    This is the send+receipt executor counterpart to ``route_back_state``. It
+    never sends DMs. If it cannot send to an approved public target, it records
+    ``route_back.blocked`` instead of leaving the case in a pending state.
+    """
+    try:
+        target_ref = _normalize_dict(target_ref, "target_ref")
+        source_refs = _normalize_dict(source_refs, "source_refs")
+        message = str(message or "").strip()
+        message_summary = str(message_summary or "").strip() or message[:200]
+        if not message:
+            raise ValueError("message is required")
+        if len(message) > MAX_ROUTE_BACK_MESSAGE_CHARS:
+            blocked_target = {**target_ref, "id": target_ref.get("id") or "route_back_target"}
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=blocked_target,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=f"message_too_long:{len(message)}>{MAX_ROUTE_BACK_MESSAGE_CHARS}",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": f"message_too_long:{len(message)}>{MAX_ROUTE_BACK_MESSAGE_CHARS}",
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        try:
+            public_target = _resolve_route_back_public_target(target_ref)
+        except Exception as exc:
+            blocked_target = {
+                **target_ref,
+                "id": target_ref.get("id") or target_ref.get("mention") or target_ref.get("lane") or "unresolved_public_route_back_target",
+            }
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=blocked_target,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=f"target_not_approved_or_unresolved:{type(exc).__name__}",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": f"target_not_approved_or_unresolved:{type(exc).__name__}",
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        resolved_target_ref = {
+            **target_ref,
+            "id": target_ref.get("id") or public_target["target_member_id"],
+            "mention": target_ref.get("mention") or public_target["target_mention"],
+            "channel_id": public_target["channel_id"],
+            "channel_type": public_target["channel_type"],
+            "target_kind": public_target["target_kind"],
+        }
+
+        content_lint = lint_and_resolve_discord_content(message)
+        if not content_lint.ok:
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=f"content_guard:{content_lint.blocked_reason}",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": f"content_guard:{content_lint.blocked_reason}",
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        target_lint = lint_discord_target_for_content(
+            content_lint.content,
+            chat_id=public_target["channel_id"],
+            parent_chat_id=public_target["channel_id"],
+        )
+        if not target_lint.ok:
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=f"target_guard:{target_lint.blocked_reason}",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": f"target_guard:{target_lint.blocked_reason}",
+                "expected_channel_id": target_lint.expected_channel_id,
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        _block_secret_like_fields(
+            target_ref=resolved_target_ref,
+            message=content_lint.content,
+            message_summary=message_summary,
+            source_refs=source_refs,
+        )
+
+        try:
+            delivery = _discord_post_message(public_target["channel_id"], content_lint.content)
+        except Exception as exc:
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=f"discord_send_failed:{type(exc).__name__}",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": f"discord_send_failed:{type(exc).__name__}",
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        message_id = str(delivery.get("id") or "").strip() if isinstance(delivery, dict) else ""
+        if not message_id:
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason="discord_send_missing_message_id_receipt",
+                idempotency_key=idempotency_key,
+            )
+            return json.dumps({
+                "success": True,
+                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
+                "blocker_reason": "discord_send_missing_message_id_receipt",
+                "route_back_record": blocked,
+            }, ensure_ascii=False, sort_keys=True)
+
+        receipt = {
+            "platform": "discord",
+            "message_id": message_id,
+            "channel_id": public_target["channel_id"],
+            "chat_id": public_target["channel_id"],
+            "channel_type": public_target["channel_type"],
+            "target_kind": public_target["target_kind"],
+        }
+        result = route_back_tool(
+            case_id=case_id,
+            target_ref=resolved_target_ref,
+            message_summary=message_summary,
+            source_refs=source_refs,
+            mode="record_sent_receipt",
+            receipt=receipt,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            record_data = json.loads(result)
+        except Exception:
+            record_data = {"raw": result}
+        if not isinstance(record_data, dict) or not record_data.get("success"):
+            return json.dumps({
+                "success": False,
+                "status": "ROUTE_BACK_EXECUTE_SENT_BUT_RECEIPT_RECORD_FAILED",
+                "receipt": receipt,
+                "route_back_record": record_data,
+                "final_answer_guard": (
+                    "The public message was sent, but durable route_back.sent recording failed. "
+                    "Do not resend. Report the receipt and the recording failure."
+                ),
+            }, ensure_ascii=False, sort_keys=True)
+
+        return json.dumps({
+            "success": True,
+            "status": "ROUTE_BACK_EXECUTE_SENT",
+            "receipt": receipt,
+            "route_back_record": record_data,
+        }, ensure_ascii=False, sort_keys=True)
+    except Exception as exc:
+        return tool_error(f"ROUTE_BACK_EXECUTE_FAIL: {exc}")
+
+
 def check_canonical_brain_requirements() -> bool:
     """Expose Canonical Brain tools only for explicit private/runtime installs.
 
@@ -597,6 +907,30 @@ ROUTE_BACK_SCHEMA = {
     },
 }
 
+ROUTE_BACK_EXECUTE_SCHEMA = {
+    "name": "route_back_execute",
+    "description": (
+        "Execute an exact approved public route-back for private/runtime Canonical Brain cases. "
+        "Use this when the route-back target is already known and public, especially owner/Emil "
+        "route-backs that must go to the approved public control-tower channel, not DM and not the "
+        "requester's current thread. The tool sends first, then records route_back.sent with the real "
+        "Discord receipt/message_id. If it cannot send safely, it records route_back.blocked and returns "
+        "that terminal outcome instead of leaving route_back.required pending."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "case_id": {"type": "string"},
+            "target_ref": {"type": "object", "description": "Exact public target/member/lane/channel refs; no DM refs"},
+            "message": {"type": "string", "description": "The public route-back message to send"},
+            "message_summary": {"type": "string", "description": "Short durable summary of the route-back"},
+            "source_refs": {"type": "object", "description": "Exact source refs: platform + message/thread/event/manual ref"},
+            "idempotency_key": {"type": "string", "description": "Optional stable lifecycle idempotency key"},
+        },
+        "required": ["case_id", "target_ref", "message", "message_summary", "source_refs"],
+    },
+}
+
 registry.register(
     name="canonical_event_append",
     toolset="canonical_brain",
@@ -627,6 +961,22 @@ registry.register(
         mode=args.get("mode", "record_required_only"),
         receipt=args.get("receipt"),
         blocker_reason=args.get("blocker_reason"),
+        idempotency_key=args.get("idempotency_key"),
+    ),
+    check_fn=check_canonical_brain_requirements,
+    emoji="📨",
+)
+
+registry.register(
+    name="route_back_execute",
+    toolset="canonical_brain",
+    schema=ROUTE_BACK_EXECUTE_SCHEMA,
+    handler=lambda args, **kw: route_back_execute_tool(
+        case_id=args.get("case_id", ""),
+        target_ref=args.get("target_ref") or {},
+        message=args.get("message", ""),
+        message_summary=args.get("message_summary", ""),
+        source_refs=args.get("source_refs") or {},
         idempotency_key=args.get("idempotency_key"),
     ),
     check_fn=check_canonical_brain_requirements,

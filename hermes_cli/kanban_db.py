@@ -6755,6 +6755,23 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _has_handoff_after(conn: sqlite3.Connection, task_id: str, created_at: int) -> bool:
+    """Return True if an operator/automation handed off ``task_id`` after ``created_at``.
+
+    The active-PR respawn guard prevents duplicate implementation workers after
+    a worker opens a PR. A later assignment or explicit unblock is an intentional
+    routing/recovery action (for example Archer → CASEE/default review, or CASEE
+    changes-requested → Archer rework), so the PR guard must not keep the task
+    stranded in ready forever.
+    """
+    return conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind IN ('assigned', 'unblocked') AND created_at > ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id, int(created_at)),
+    ).fetchone() is not None
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -6793,8 +6810,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) and no later assignment/recovery
+        event exists.  A prior worker already opened a PR; re-spawning the same
+        lane risks a duplicate PR on the same task, but a later reassignment is
+        an explicit handoff/review action and must be allowed to spawn.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -6861,12 +6880,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    If the task was assigned after the PR comment, treat that as an
+    #    explicit handoff/recovery action (for example implementation worker →
+    #    reviewer) and allow dispatch instead of stranding review in ready.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            if _has_handoff_after(conn, task_id, int(c["created_at"] or 0)):
+                continue
             return "active_pr"
 
     return None

@@ -1905,6 +1905,50 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_active_pr_allows_later_reassignment(kanban_home, monkeypatch):
+    """A PR handoff should not strand a task once it is reassigned for review.
+
+    The active_pr guard is meant to prevent duplicate implementation workers,
+    not block a later Archer → CASEE/default review handoff.
+    """
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr-for-review", assignee="archer")
+        monkeypatch.setattr(kb.time, "time", lambda: now)
+        kb.add_comment(
+            conn, t, "archer",
+            "review-required: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+        monkeypatch.setattr(kb.time, "time", lambda: now + 10)
+        assert kb.assign_task(conn, t, "default")
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_active_pr_allows_later_unblock(kanban_home, monkeypatch):
+    """Changes-requested unblocks should not remain stranded by active_pr.
+
+    CASEE commonly blocks a PR-bearing task for review/change criteria, then
+    unblocks it for the same implementer to rework the existing PR. That explicit
+    unblock is a recovery handoff, not a duplicate-spawn hazard.
+    """
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr-for-rework", assignee="archer")
+        monkeypatch.setattr(kb.time, "time", lambda: now)
+        kb.add_comment(
+            conn, t, "archer",
+            "review-required: https://github.com/totemx-AI/subsidysmart/pull/43",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+        kb.block_task(conn, t, reason="changes requested")
+        monkeypatch.setattr(kb.time, "time", lambda: now + 10)
+        assert kb.unblock_task(conn, t)
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:
@@ -2013,6 +2057,35 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_active_pr_allows_later_reassignment(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """A reassigned PR handoff is spawnable for the reviewer lane."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr-review", assignee="archer")
+        monkeypatch.setattr(kb.time, "time", lambda: now)
+        kb.add_comment(
+            conn, t, "archer",
+            "review-required: https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        monkeypatch.setattr(kb.time, "time", lambda: now + 10)
+        assert kb.assign_task(conn, t, "default")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert not res.respawn_guarded
+    assert t in spawned_ids
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "running"
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

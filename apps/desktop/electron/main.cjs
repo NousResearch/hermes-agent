@@ -606,7 +606,7 @@ const SEED_MOA_BLOCK =
   '      reference_models:\n' +
   '      - model: deepseek-v4-pro\n' +
   '        provider: custom\n' +
-  '      - model: kimi-k2.6\n' +
+  '      - model: kimi-k2.7-code\n' +
   '        provider: custom\n' +
   '      - model: glm-5.2\n' +
   '        provider: custom\n' +

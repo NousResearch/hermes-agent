@@ -1537,6 +1537,12 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+            if "gateway_wall_timeout" in _agent_cfg:
+                os.environ["HERMES_AGENT_WALL_TIMEOUT"] = str(_agent_cfg["gateway_wall_timeout"])
+            if "gateway_wall_timeout_groups_only" in _agent_cfg:
+                os.environ["HERMES_AGENT_WALL_TIMEOUT_GROUPS_ONLY"] = str(
+                    _agent_cfg["gateway_wall_timeout_groups_only"]
+                ).lower()
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "restart_drain_timeout" in _agent_cfg:
@@ -18648,6 +18654,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            # Wall-clock watchdog config is bridged from agent.gateway_wall_timeout.
+            # The full watchdog behavior may be disabled on older bases, but the
+            # gateway must still surface the config/env contract consistently.
+            _wall_limit_raw = _float_env("HERMES_AGENT_WALL_TIMEOUT", 900)
+            _wall_limit = _wall_limit_raw if _wall_limit_raw > 0 else None
+            _wall_groups_only = os.getenv(
+                "HERMES_AGENT_WALL_TIMEOUT_GROUPS_ONLY", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"}
             _warning_fired = False
             _executor_task = asyncio.ensure_future(
                 self._run_in_executor_with_context(run_sync)

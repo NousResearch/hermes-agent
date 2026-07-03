@@ -194,6 +194,59 @@ def test_non_ws_endpoint_returns_error(monkeypatch):
     assert "WebSocket" in result["error"]
 
 
+_TOKEN_URL = "ws://127.0.0.1:9222/devtools/browser/mock?token=SUPER-SECRET-TOKEN-12345"
+
+
+def test_non_ws_endpoint_error_redacts_token(monkeypatch):
+    """A CDP endpoint carrying a ?token= credential must never appear verbatim
+    in the tool_error returned to the model, even when it's merely malformed
+    (missing ws:// scheme) rather than unreachable."""
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "http://127.0.0.1:9222/devtools/browser/mock?token=SUPER-SECRET-TOKEN-12345",
+    )
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
+    assert "SUPER-SECRET-TOKEN-12345" not in result["error"]
+    assert "***" in result["error"]
+
+
+def test_websocket_exception_redacts_token_in_endpoint_and_message(monkeypatch):
+    """A WebSocketException's own text can embed the raw CDP URL (the
+    ``websockets`` library bakes it into connect/handshake errors) — both the
+    directly-interpolated endpoint and the exception's message must be
+    redacted."""
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _TOKEN_URL
+    )
+
+    async def fake_call(*args, **kwargs):
+        raise browser_cdp_tool.WebSocketException(f"connection failed to {_TOKEN_URL}")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
+    assert "SUPER-SECRET-TOKEN-12345" not in result["error"]
+    assert result["error"].count("***") == 2
+
+
+def test_generic_exception_redacts_token_in_message(monkeypatch):
+    """Non-WebSocketException failures (e.g. a TLS error) fall through to the
+    generic handler — its exception text must also be redacted."""
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _TOKEN_URL
+    )
+
+    async def fake_call(*args, **kwargs):
+        raise ValueError(f"unexpected failure connecting to {_TOKEN_URL}")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
+    assert "SUPER-SECRET-TOKEN-12345" not in result["error"]
+    assert "***" in result["error"]
+
+
 def test_websockets_missing_returns_error(monkeypatch):
     monkeypatch.setattr(browser_cdp_tool, "_WS_AVAILABLE", False)
     result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))

@@ -459,8 +459,10 @@ def browser_cdp(
         )
 
     if not endpoint.startswith(("ws://", "wss://")):
+        from agent.redact import redact_cdp_url
+
         return tool_error(
-            f"CDP endpoint is not a WebSocket URL: {endpoint!r}. "
+            f"CDP endpoint is not a WebSocket URL: {redact_cdp_url(endpoint)!r}. "
             "Expected ws://... or wss://... — the /browser connect "
             "resolver should have rewritten this. Check that a Chromium-family "
             "browser is actually listening on the debug port."
@@ -500,15 +502,21 @@ def browser_cdp(
     except RuntimeError as exc:
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:
+        from agent.redact import redact_cdp_url
+        from tools.browser_supervisor import _redact_cdp_error_text
+
         return tool_error(
-            f"WebSocket error talking to CDP at {endpoint}: {exc}. The "
-            "browser may have disconnected — try '/browser connect' again.",
+            f"WebSocket error talking to CDP at {redact_cdp_url(endpoint)}: "
+            f"{_redact_cdp_error_text(exc)}. The browser may have "
+            "disconnected — try '/browser connect' again.",
             method=method,
         )
     except Exception as exc:  # pragma: no cover — unexpected
+        from tools.browser_supervisor import _redact_cdp_error_text
+
         logger.exception("browser_cdp unexpected error")
         return tool_error(
-            f"Unexpected error: {type(exc).__name__}: {exc}",
+            f"Unexpected error: {type(exc).__name__}: {_redact_cdp_error_text(exc)}",
             method=method,
         )
 

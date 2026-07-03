@@ -1,0 +1,14 @@
+name: kv-memory
+version: 0.1.0
+kind: exclusive
+description: >-
+  Model-native semantic memory via Q4-quantized KV-cache and hidden-state
+  embeddings. Retrieval operates in the model's internal concept space
+  instead of surface tokens. Mode A (KV-cache) requires local GPU; Mode B
+  (hidden-state) works with any backend.
+hooks:
+  - on_session_end
+  - on_session_switch
+provides_tools:
+  - kv_memory_search
+  - kv_memory_status

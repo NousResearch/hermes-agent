@@ -127,6 +127,19 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
     }
 
 
+def _raise_if_blocked_local_input(ref: str) -> None:
+    try:
+        from agent.file_safety import get_read_block_error
+
+        blocked = get_read_block_error(ref)
+        if blocked:
+            raise ValueError(blocked)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.debug("xAI media input read guard unavailable: %s", exc)
+
+
 def _image_ref_to_xai_url(value: str) -> str:
     """Return a URL/data URI accepted by xAI for image inputs."""
     ref = (value or "").strip()
@@ -139,6 +152,8 @@ def _image_ref_to_xai_url(value: str) -> str:
     path = Path(ref).expanduser()
     if not path.is_file():
         return ref
+
+    _raise_if_blocked_local_input(ref)
 
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     if not mime.startswith("image/"):
@@ -194,6 +209,8 @@ def _video_ref_to_xai_url(value: str) -> str:
     path = Path(ref).expanduser()
     if not path.is_file():
         return ref
+
+    _raise_if_blocked_local_input(ref)
 
     mime = mimetypes.guess_type(path.name)[0] or "video/mp4"
     if not mime.startswith("video/"):

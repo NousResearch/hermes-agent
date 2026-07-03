@@ -137,6 +137,17 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     import base64
     import os as _os
 
+    try:
+        from agent.file_safety import get_read_block_error
+
+        blocked = get_read_block_error(source)
+        if blocked:
+            raise ValueError(blocked)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.debug("xAI image input read guard unavailable: %s", exc)
+
     with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
         raw = fh.read()
     ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()

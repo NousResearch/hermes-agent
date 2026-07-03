@@ -57,4 +57,6 @@ fi
 # ตั้งค่ารุ่น AI ผ่านตัวแปรระบบ (ช่องทางมาตรฐานของ PR-Agent · override ได้ด้วย PR_REVIEW_MODEL)
 export CONFIG__MODEL="${PR_REVIEW_MODEL:-gemini/gemini-2.5-flash}"
 export CONFIG__FALLBACK_MODELS='["openrouter/anthropic/claude-haiku-4.5"]'
+# รุ่น AI ใหม่ที่ pr-agent ยังไม่รู้จักเพดาน token — บอกค่าให้ตรงนี้
+export CONFIG__CUSTOM_MODEL_MAX_TOKENS="${PR_REVIEW_MAX_TOKENS:-128000}"
 exec "${VENV}/bin/pr-agent" --pr_url "${PR_URL}" "${CMD}"

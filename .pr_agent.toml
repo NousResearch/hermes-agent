@@ -13,6 +13,7 @@ require_tests_review = true
 require_security_review = true
 persistent_comment = true
 extra_instructions = """
+IMPORTANT: Write every field, heading, and bullet of your answer in THAI language only.
 ตอบเป็นภาษาไทยแบบภาษาคน อ่านง่ายสำหรับเจ้าของงานที่ไม่ใช่ dev
 เข้มเป็นพิเศษกับ: ความลับ/รหัสหลุดในโค้ด · logic เดา (หยิบค่าแรกที่เจอ) ·
 การแก้ไฟล์นอกขอบเขตงาน · โค้ดที่อ้างว่า test แล้วแต่ไม่มี test จริง

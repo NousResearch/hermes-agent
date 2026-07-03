@@ -2351,7 +2351,18 @@ class MatrixAdapter(BasePlatformAdapter):
         if inspect.isawaitable(tasks):
             tasks = await tasks
         if tasks:
-            await asyncio.gather(*tasks)
+            # return_exceptions=True so one failing event handler doesn't abort
+            # the whole gather and silently drop the SIBLING events in the same
+            # sync response (a bare gather re-raises the first exception, leaving
+            # the rest of the batch unprocessed). Mirrors the invite/redaction
+            # gathers above. Surface each failure instead of swallowing it.
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(
+                        "Matrix: event handler failed during sync dispatch: %s",
+                        result,
+                    )
 
     def _is_self_sender(self, sender: str) -> bool:
         """Return True if the sender refers to the bot's own account.

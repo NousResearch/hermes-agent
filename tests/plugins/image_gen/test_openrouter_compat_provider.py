@@ -169,6 +169,43 @@ class TestHelpers:
 
         assert _to_image_url_part("/no/such/file.png") is None
 
+    def test_to_image_url_part_blocks_credential_store(self, tmp_path, monkeypatch):
+        from plugins.image_gen.openrouter import _to_image_url_part
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="credential store"):
+            _to_image_url_part(str(auth_json))
+
+    def test_to_image_url_part_never_reads_blocked_credential(self, tmp_path, monkeypatch):
+        """The guard must fire BEFORE path.read_bytes() — the credential store
+        must never be inlined into a provider request (#57698)."""
+        from pathlib import Path as _P
+
+        from plugins.image_gen.openrouter import _to_image_url_part
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        real_read_bytes = _P.read_bytes
+        read: list = []
+
+        def _spy_read_bytes(self, *a, **k):
+            read.append(str(self))
+            return real_read_bytes(self, *a, **k)
+
+        monkeypatch.setattr(_P, "read_bytes", _spy_read_bytes)
+        with pytest.raises(ValueError, match="credential store"):
+            _to_image_url_part(str(auth_json))
+        assert str(auth_json) not in read, "blocked credential must never be read"
+
     def test_extract_images(self):
         from plugins.image_gen.openrouter import _extract_images
 

@@ -1446,7 +1446,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = provider_key
+        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:

@@ -360,41 +360,74 @@ def run_dump(args):
     # API keys
     lines.append("")
     lines.append("api_keys:")
+    # Each entry: (env_var, label, pool_key_or_None).  ``pool_key`` is the
+    # provider id under ``auth.json::credential_pool`` whose entries should
+    # be consulted when the env var is unset — this lets OAuth-backed
+    # providers (Nous Portal, Anthropic via claude_code, etc.) report as
+    # set even when no API-key env var is configured.  ``None`` means the
+    # provider has no OAuth flow that lands in the credential pool.
     api_keys = [
-        ("OPENROUTER_API_KEY", "openrouter"),
-        ("OPENAI_API_KEY", "openai"),
-        ("ANTHROPIC_API_KEY", "anthropic"),
-        ("ANTHROPIC_TOKEN", "anthropic_token"),
-        ("NOUS_API_KEY", "nous"),
-        ("GOOGLE_API_KEY", "google/gemini"),
-        ("GEMINI_API_KEY", "gemini"),
-        ("GLM_API_KEY", "glm/zai"),
-        ("ZAI_API_KEY", "zai"),
-        ("KIMI_API_KEY", "kimi"),
-        ("MINIMAX_API_KEY", "minimax"),
-        ("DEEPSEEK_API_KEY", "deepseek"),
-        ("DASHSCOPE_API_KEY", "dashscope"),
-        ("HF_TOKEN", "huggingface"),
-        ("NVIDIA_API_KEY", "nvidia"),
-        ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
-        ("OPENCODE_GO_API_KEY", "opencode_go"),
-        ("KILOCODE_API_KEY", "kilocode"),
-        ("FIRECRAWL_API_KEY", "firecrawl"),
-        ("TAVILY_API_KEY", "tavily"),
-        ("BROWSERBASE_API_KEY", "browserbase"),
-        ("FAL_KEY", "fal"),
-        ("ELEVENLABS_API_KEY", "elevenlabs"),
-        ("GITHUB_TOKEN", "github"),
+        ("OPENROUTER_API_KEY", "openrouter", "openrouter"),
+        ("OPENAI_API_KEY", "openai", None),
+        ("ANTHROPIC_API_KEY", "anthropic", "anthropic"),
+        ("ANTHROPIC_TOKEN", "anthropic_token", "anthropic"),
+        ("NOUS_API_KEY", "nous", "nous"),
+        ("GOOGLE_API_KEY", "google/gemini", "gemini"),
+        ("GEMINI_API_KEY", "gemini", "gemini"),
+        ("GLM_API_KEY", "glm/zai", "zai"),
+        ("ZAI_API_KEY", "zai", "zai"),
+        ("KIMI_API_KEY", "kimi", "kimi-coding"),
+        ("MINIMAX_API_KEY", "minimax", "minimax"),
+        ("DEEPSEEK_API_KEY", "deepseek", "deepseek"),
+        ("DASHSCOPE_API_KEY", "dashscope", "alibaba"),
+        ("HF_TOKEN", "huggingface", None),
+        ("NVIDIA_API_KEY", "nvidia", "nvidia"),
+        ("OPENCODE_ZEN_API_KEY", "opencode_zen", "opencode-zen"),
+        ("OPENCODE_GO_API_KEY", "opencode_go", "opencode-go"),
+        ("KILOCODE_API_KEY", "kilocode", None),
+        ("FIRECRAWL_API_KEY", "firecrawl", None),
+        ("TAVILY_API_KEY", "tavily", None),
+        ("BROWSERBASE_API_KEY", "browserbase", None),
+        ("FAL_KEY", "fal", None),
+        ("ELEVENLABS_API_KEY", "elevenlabs", None),
+        ("GITHUB_TOKEN", "github", "copilot"),
     ]
 
     dotenv_keys = _dotenv_key_names()
 
-    for env_var, label in api_keys:
+    # OAuth-backed providers with no env var in the table above.  Their
+    # tokens live in ``credential_pool`` only, so the user previously had
+    # no way to tell from ``hermes debug`` whether they were logged in.
+    oauth_only_providers = [
+        ("openai-codex", "openai_codex"),
+        ("qwen-oauth", "qwen_oauth"),
+        ("minimax-oauth", "minimax_oauth"),
+        ("google-gemini-cli", "google_gemini_cli"),
+    ]
+
+    try:
+        from hermes_cli.auth import read_credential_pool
+        pool_data = read_credential_pool(None)
+    except Exception:
+        pool_data = {}
+
+    def _pool_has_token(pool_key: str) -> bool:
+        entries = pool_data.get(pool_key)
+        if not isinstance(entries, list):
+            return False
+        return any(
+            isinstance(e, dict) and str(e.get("access_token") or "").strip()
+            for e in entries
+        )
+
+    for env_var, label, pool_key in api_keys:
         val = os.getenv(env_var, "")
-        if show_keys and val:
-            display = _redact(val)
+        if val:
+            display = _redact(val) if show_keys else "set (env)"
+        elif pool_key and _pool_has_token(pool_key):
+            display = "set (oauth)"
         else:
-            display = "set" if val else "not set"
+            display = "not set"
         # Set in this (shell) process but absent from ~/.hermes/.env: a managed
         # backend (launchd/systemd/desktop `serve`) loads .env, not the login
         # shell, so it likely can't see this key — even though the dump reads
@@ -405,7 +438,7 @@ def run_dump(args):
         # A credential added via `hermes auth add openrouter` lives in the
         # credential pool, not as an env var — surface it so the dump doesn't
         # misleadingly read "not set" while `hermes auth list` shows it (#42130).
-        if not val and label == "openrouter":
+        if display == "not set" and label == "openrouter":
             try:
                 from agent.credential_pool import load_pool as _load_pool
 
@@ -413,6 +446,10 @@ def run_dump(args):
                     display = "set (auth pool)"
             except Exception:
                 pass
+        lines.append(f"  {label:<20} {display}")
+
+    for pool_key, label in oauth_only_providers:
+        display = "set (oauth)" if _pool_has_token(pool_key) else "not set"
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

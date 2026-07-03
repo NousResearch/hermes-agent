@@ -5754,18 +5754,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
 
+            send_kwargs = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "filename": display_name,
+                "caption": caption[:1024] if caption else None,
+                "reply_to_message_id": reply_to_id,
+                **thread_kwargs,
+                **self._notification_kwargs(metadata),
+            }
             with open(file_path, "rb") as f:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_document,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "document": f,
-                        "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
+                    {"document": f, **send_kwargs},
                     metadata,
                     reply_to_id,
                     "document",
@@ -5774,6 +5774,42 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] Failed to send document: %s", self.name, e, exc_info=True)
+            # Topic-routed sends must NOT fall through to the base sender: it
+            # has no forum/DM-topic routing, so its retry lands in the chat
+            # root («Все»/General) instead of the requested topic. For
+            # transient network errors (slow uploads hitting ReadTimeout —
+            # sendDocument uploads take much longer than text sends) retry
+            # once natively with the SAME routing kwargs; otherwise report
+            # failure rather than misdeliver.
+            _topic_routed = bool(
+                (metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+                or self._metadata_direct_messages_topic_id(metadata) is not None
+                or self._metadata_thread_id(metadata) is not None
+            )
+            _sk = locals().get("send_kwargs")
+            if _topic_routed and isinstance(_sk, dict):
+                err_name = e.__class__.__name__.lower()
+                transient = "timeout" in err_name or "timedout" in err_name or "network" in err_name or "connect" in err_name
+                if transient:
+                    try:
+                        with open(file_path, "rb") as f2:
+                            msg = await self._bot.send_document(
+                                document=f2,
+                                read_timeout=120,
+                                write_timeout=300,
+                                **_sk,
+                            )
+                        return SendResult(success=True, message_id=str(msg.message_id))
+                    except Exception as retry_err:
+                        logger.warning(
+                            "[%s] Topic-routed document retry also failed: %s",
+                            self.name, retry_err,
+                        )
+                        e = retry_err
+                return SendResult(
+                    success=False,
+                    error=f"document send failed; refusing topic-less fallback that would land outside the topic: {e}",
+                )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(

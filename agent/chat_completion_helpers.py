@@ -429,6 +429,26 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # if the join returned early because the thread finished.
         time.sleep(0)
         _poll_count += 1
+        # Diagnostic for issue #57903 — measure the maximum wall-clock
+        # gap between consecutive polls. If the gap is much larger than
+        # ``_POLL_INTERVAL`` (default 50ms), the main thread was blocked
+        # somewhere *outside* this loop (e.g. CPU-bound JSON parsing on
+        # a streaming chunk, retry backoff sleep, or another sync call).
+        # Logged via agent._buffer_status so it shows up in the gateway
+        # status stream and the desktop UI.
+        _now = time.monotonic()
+        if "_last_poll_at" in dir():
+            _gap = _now - _last_poll_at
+            if _gap > _POLL_INTERVAL * 10:  # > 500ms gap is suspicious
+                try:
+                    agent._buffer_status(
+                        f"⚠️ interruptible_api_call poll gap: "
+                        f"{_gap * 1000:.0f}ms (expected <{_POLL_INTERVAL * 1000:.0f}ms) "
+                        f"after {_poll_count} polls; main thread was blocked outside the poll loop"
+                    )
+                except Exception:
+                    pass
+        _last_poll_at = _now
 
         # Touch activity every ~30s so the gateway's inactivity
         # monitor knows we're alive while waiting for the response.

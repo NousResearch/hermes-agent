@@ -1011,6 +1011,35 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
 
+    def test_includes_response_mode_guidance(self, agent):
+        from agent.prompt_builder import RESPONSE_MODE_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert RESPONSE_MODE_GUIDANCE in prompt
+        assert "casual_conversation" in prompt
+        assert "persona and tone from SOUL.md" in prompt
+
+    def test_response_mode_guidance_follows_tool_enforcement_for_codex(self):
+        from agent.prompt_builder import RESPONSE_MODE_GUIDANCE, TOOL_USE_ENFORCEMENT_GUIDANCE
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                model="openai-codex/gpt-5-codex",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+        assert prompt.index(TOOL_USE_ENFORCEMENT_GUIDANCE) < prompt.index(RESPONSE_MODE_GUIDANCE)
+
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"

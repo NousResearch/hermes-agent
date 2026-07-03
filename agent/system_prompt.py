@@ -35,6 +35,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
+    RESPONSE_MODE_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -217,6 +218,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(_entry.platform_hint)
         except Exception:
             pass
+
+    # Keep persona/style instructions active after operational guidance so
+    # tool-use, PR, and safety rules do not accidentally turn ordinary chat
+    # into formal task reports.
+    stable_parts.append(RESPONSE_MODE_GUIDANCE)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []

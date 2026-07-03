@@ -826,7 +826,15 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    if "auth_token" in kwargs and "api_key" not in kwargs:
+        # OAuth/Bearer path: the SDK constructor auto-reads ANTHROPIC_API_KEY
+        # from the environment when api_key isn't passed, which makes it send
+        # BOTH X-Api-Key and Authorization headers. Anthropic then bills the
+        # API key instead of the subscription. Clear it so OAuth requests go
+        # out Bearer-only.
+        client.api_key = None
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):

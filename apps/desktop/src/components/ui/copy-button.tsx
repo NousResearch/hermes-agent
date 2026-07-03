@@ -49,6 +49,7 @@ export interface CopyButtonProps {
   onCopyError?: (error: unknown) => void
   preventDefault?: boolean
   showLabel?: boolean
+  side?: React.ComponentProps<typeof Tip>['side']
   stopPropagation?: boolean
   text: CopyPayload
   title?: string
@@ -69,6 +70,7 @@ export function CopyButton({
   onCopyError,
   preventDefault = false,
   showLabel,
+  side,
   stopPropagation = false,
   text,
   title
@@ -180,18 +182,20 @@ export function CopyButton({
 
   if (appearance === 'inline') {
     return (
-      <button
-        aria-label={ariaLabel}
-        className={cn(
-          'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40',
-          className
-        )}
-        disabled={disabled}
-        onClick={event => void copy(event)}
-        type="button"
-      >
-        {content}
-      </button>
+      <Tip label={feedbackLabel} side={side}>
+        <button
+          aria-label={ariaLabel}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40',
+            className
+          )}
+          disabled={disabled}
+          onClick={event => void copy(event)}
+          type="button"
+        >
+          {content}
+        </button>
+      </Tip>
     )
   }
 
@@ -229,5 +233,5 @@ export function CopyButton({
   )
 
   // Only icon-only buttons need a tooltip; the text variant already shows its label.
-  return appearance === 'icon' ? <Tip label={feedbackLabel}>{button}</Tip> : button
+  return appearance === 'icon' ? <Tip label={feedbackLabel} side={side ?? 'bottom'}>{button}</Tip> : button
 }

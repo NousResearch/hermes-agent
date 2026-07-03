@@ -121,6 +121,7 @@ Professional-readiness checks are encoded in:
 scripts/check_openai_agents_quality.py
 schemas/openai-agents-receipt.schema.json
 evals/openai_agents/governance_cases.json
+docs/openai-agents-project-tracking.json
 ```
 
 The quality gate verifies:
@@ -131,6 +132,7 @@ The quality gate verifies:
 - static scan for common secret, shell-injection, eval/exec, pickle, and SQL string-format patterns;
 - plugin registration and toolset resolution;
 - deterministic governance eval corpus;
+- project tracking manifest referential integrity across roadmap items, local commit refs, receipt groups, and next actions;
 - recent current-shape receipt schema validation;
 - optional bounded live SDK smoke with `--live-smoke`.
 

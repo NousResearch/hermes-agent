@@ -21,6 +21,7 @@ SCOPED_PATHS = [
     "plugins/openai_agents",
     "tests/plugins/test_openai_agents_bridge.py",
     "docs/openai-agents-governed-runtime-spec.md",
+    "docs/openai-agents-project-tracking.json",
     "schemas/openai-agents-receipt.schema.json",
     "evals/openai_agents/governance_cases.json",
     "pyproject.toml",
@@ -165,6 +166,92 @@ def run_governance_evals() -> None:
     print(f"governance evals: {len(cases)} case(s) ok")
 
 
+def _ensure_unique_ids(items: list[dict[str, Any]], *, field: str) -> set[str]:
+    seen: set[str] = set()
+    for item in items:
+        item_id = str(item.get("id") or "")
+        if not item_id:
+            raise RuntimeError(f"tracking {field} item missing id")
+        if item_id in seen:
+            raise RuntimeError(f"tracking {field} duplicate id: {item_id}")
+        seen.add(item_id)
+    return seen
+
+
+def _git_ref_exists(ref: str) -> bool:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def validate_project_tracking() -> None:
+    path = ROOT / "docs/openai-agents-project-tracking.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("project_id") != "OASDK-HARDENING":
+        raise RuntimeError("tracking manifest project_id must be OASDK-HARDENING")
+    if data.get("authority_model", {}).get("external_side_effects_allowed") is not False:
+        raise RuntimeError("tracking manifest must keep external side effects disabled by default")
+    roadmap = data.get("roadmap_items") or []
+    receipts = data.get("receipt_groups") or []
+    next_actions = data.get("next_actions") or []
+    if not roadmap or not receipts or not next_actions:
+        raise RuntimeError("tracking manifest requires roadmap_items, receipt_groups, and next_actions")
+
+    roadmap_ids = _ensure_unique_ids(roadmap, field="roadmap")
+    receipt_ids = _ensure_unique_ids(receipts, field="receipt_group")
+    next_action_ids = _ensure_unique_ids(next_actions, field="next_action")
+    for item_id in roadmap_ids:
+        if not re.fullmatch(r"OASDK-HARDEN-\d{3}", item_id):
+            raise RuntimeError(f"invalid roadmap id: {item_id}")
+    for item_id in receipt_ids:
+        if not re.fullmatch(r"OASDK-RCPT-[A-Z0-9-]+", item_id):
+            raise RuntimeError(f"invalid receipt group id: {item_id}")
+    for item_id in next_action_ids:
+        if not re.fullmatch(r"OASDK-NEXT-\d{3}", item_id):
+            raise RuntimeError(f"invalid next action id: {item_id}")
+
+    for item in roadmap:
+        links = set(item.get("linked_receipt_groups") or [])
+        missing = links - receipt_ids
+        if missing:
+            raise RuntimeError(f"roadmap {item['id']} links missing receipt groups: {sorted(missing)}")
+        for ref in item.get("linked_commit_refs") or []:
+            if not _git_ref_exists(str(ref)):
+                raise RuntimeError(f"roadmap {item['id']} references missing local commit: {ref}")
+        if item.get("status") in {"done", "verified"} and not item.get("acceptance"):
+            raise RuntimeError(f"roadmap {item['id']} done/verified without acceptance criteria")
+        if "approval_boundary" not in item:
+            raise RuntimeError(f"roadmap {item['id']} missing approval_boundary")
+
+    for group in receipts:
+        links = set(group.get("linked_roadmap_items") or [])
+        missing = links - roadmap_ids
+        if missing:
+            raise RuntimeError(f"receipt group {group['id']} links missing roadmap items: {sorted(missing)}")
+        if not (group.get("local_glob") or group.get("local_command")):
+            raise RuntimeError(f"receipt group {group['id']} missing local_glob/local_command")
+
+    for action in next_actions:
+        links = set(action.get("linked_roadmap_items") or [])
+        missing = links - roadmap_ids
+        if missing:
+            raise RuntimeError(f"next action {action['id']} links missing roadmap items: {sorted(missing)}")
+        for key in ("destructive", "privileged", "external_side_effect", "recurring_spend"):
+            if not isinstance(action.get(key), bool):
+                raise RuntimeError(f"next action {action['id']} missing boolean {key}")
+        if action.get("external_side_effect") and "explicit" not in str(action.get("required_approval_level", "")):
+            raise RuntimeError(f"next action {action['id']} external side effect lacks explicit approval level")
+    print(
+        f"project tracking: {len(roadmap)} roadmap item(s), "
+        f"{len(receipts)} receipt group(s), {len(next_actions)} next action(s) ok"
+    )
+
+
 def check_registration() -> None:
     from hermes_cli.plugins import discover_plugins
     from tools.registry import registry
@@ -223,6 +310,7 @@ def main() -> int:
     print("static scan: ok")
     check_registration()
     run_governance_evals()
+    validate_project_tracking()
     validate_recent_receipts()
     if args.live_smoke:
         live_smoke()

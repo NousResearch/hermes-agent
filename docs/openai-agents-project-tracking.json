@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "project_id": "OASDK-HARDENING",
+  "scope": "Local Hermes OpenAI Agents SDK bridge hardening only; Helix/NAS/Postgres migration is explicitly out of scope.",
+  "authority_model": {
+    "source_of_truth": "repo-local tracking manifest plus git history until GitHub Issues/Kanban are explicitly authorized",
+    "external_side_effects_allowed": false,
+    "recurring_jobs_allowed": false,
+    "secrets_required": false
+  },
+  "roadmap_items": [
+    {
+      "id": "OASDK-HARDEN-001",
+      "title": "Governed OpenAI Agents SDK bridge baseline",
+      "status": "done",
+      "linked_commit_refs": ["da6b37213"],
+      "linked_receipt_groups": ["OASDK-RCPT-VERIFY-LIVE"],
+      "acceptance": [
+        "Expose bounded review, execute, verify, run, and architecture lanes.",
+        "Return structured proof objects and sanitized receipts.",
+        "Pass deterministic local quality gate."
+      ],
+      "approval_boundary": "local repo code/docs/tests only; no push, no migration"
+    },
+    {
+      "id": "OASDK-HARDEN-002",
+      "title": "Sanitized failure receipts for SDK lane errors",
+      "status": "done",
+      "linked_commit_refs": ["3a78ac5ce"],
+      "linked_receipt_groups": ["OASDK-RCPT-FAILURE"],
+      "acceptance": [
+        "Failed lane attempts emit blocked-status receipts when local context is available.",
+        "Task/context are fingerprinted instead of persisted as raw text.",
+        "Error responses include receipt path and SHA-256."
+      ],
+      "approval_boundary": "local repo code/docs/tests only; no push, no migration"
+    },
+    {
+      "id": "OASDK-HARDEN-003",
+      "title": "Architecture workflow stage receipts and blocked aggregates",
+      "status": "done",
+      "linked_commit_refs": ["e3401f585"],
+      "linked_receipt_groups": ["OASDK-RCPT-ARCHITECTURE"],
+      "acceptance": [
+        "Architecture stage failures return structured blocked aggregate receipts.",
+        "Stage receipt/error details are preserved.",
+        "Live architecture smoke returns a structured aggregate instead of an unstructured tool error."
+      ],
+      "approval_boundary": "local repo code/docs/tests only; no push, no migration"
+    },
+    {
+      "id": "OASDK-HARDEN-004",
+      "title": "Project management and traceability manifest",
+      "status": "in_progress",
+      "linked_commit_refs": [],
+      "linked_receipt_groups": ["OASDK-RCPT-GATE"],
+      "acceptance": [
+        "Roadmap items, local commits, receipt groups, and next actions are tracked in a machine-readable manifest.",
+        "The OpenAI Agents SDK quality gate validates manifest referential integrity.",
+        "External tracking integrations remain explicitly out of scope until authorized."
+      ],
+      "approval_boundary": "local repo docs/scripts/tests only; no GitHub issue creation, Kanban dispatch, cron, or push"
+    }
+  ],
+  "receipt_groups": [
+    {
+      "id": "OASDK-RCPT-VERIFY-LIVE",
+      "description": "Bounded live verify-lane smoke receipts under HERMES_HOME receipts/openai_agents.",
+      "required_for_statuses": ["verified", "done"],
+      "local_glob": "receipts/openai_agents/*verify-verified.json",
+      "linked_roadmap_items": ["OASDK-HARDEN-001"]
+    },
+    {
+      "id": "OASDK-RCPT-FAILURE",
+      "description": "Sanitized blocked-status receipts for SDK lane failures.",
+      "required_for_statuses": ["done"],
+      "local_glob": "receipts/openai_agents/*-blocked.json",
+      "linked_roadmap_items": ["OASDK-HARDEN-002"]
+    },
+    {
+      "id": "OASDK-RCPT-ARCHITECTURE",
+      "description": "Architecture workflow aggregate receipts with stage status and stage receipt/error details.",
+      "required_for_statuses": ["done"],
+      "local_glob": "receipts/openai_agents/*architecture-*.json",
+      "linked_roadmap_items": ["OASDK-HARDEN-003"]
+    },
+    {
+      "id": "OASDK-RCPT-GATE",
+      "description": "Deterministic local quality gate output for SDK hardening work.",
+      "required_for_statuses": ["in_progress", "done"],
+      "local_command": "python scripts/check_openai_agents_quality.py",
+      "linked_roadmap_items": ["OASDK-HARDEN-004"]
+    }
+  ],
+  "next_actions": [
+    {
+      "id": "OASDK-NEXT-001",
+      "title": "Commit project tracking manifest and gate validation",
+      "status": "in_progress",
+      "linked_roadmap_items": ["OASDK-HARDEN-004"],
+      "required_approval_level": "normal_local_repo_change",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": false,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-002",
+      "title": "Decide whether to bridge this local tracker into GitHub Issues or Hermes Kanban",
+      "status": "blocked_waiting_for_explicit_scope",
+      "linked_roadmap_items": ["OASDK-HARDEN-004"],
+      "required_approval_level": "explicit_external_tracking_scope",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": true,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-003",
+      "title": "Rebase/update against upstream main before any push or PR",
+      "status": "blocked_waiting_for_explicit_scope",
+      "linked_roadmap_items": ["OASDK-HARDEN-001", "OASDK-HARDEN-002", "OASDK-HARDEN-003", "OASDK-HARDEN-004"],
+      "required_approval_level": "explicit_git_sync_scope",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": true,
+      "recurring_spend": false
+    }
+  ]
+}

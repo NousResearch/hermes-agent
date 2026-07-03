@@ -10,7 +10,6 @@ import json
 import logging
 import os
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
@@ -78,6 +77,7 @@ from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
+from tools.daemon_pool import DaemonThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ except Exception:
     HERMES_VERSION = "0.0.0"
 
 # Thread pool for running AIAgent (synchronous) in parallel.
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
+_executor = DaemonThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
 # Server-side page size for list_sessions. The ACP ListSessionsRequest schema
 # does not expose a client-side limit, so this is a fixed cap that clients

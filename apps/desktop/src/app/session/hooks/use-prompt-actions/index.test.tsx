@@ -271,6 +271,48 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
   })
+
+  it('does not fall back to command.dispatch after /compress slash.exec errors', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        throw new Error('session busy — /interrupt the current turn before /compress')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec'])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('session busy')
+    expect(renderedText).not.toContain('not a quick/plugin/skill command: compress')
+  })
 })
 
 describe('usePromptActions desktop slash pickers', () => {

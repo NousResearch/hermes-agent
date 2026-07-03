@@ -1,7 +1,13 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import {
+  copyTextToClipboard,
+  isDesktopFsRemoteMode,
+  renameDesktopPath,
+  revealDesktopPath,
+  trashDesktopPath
+} from '@/lib/desktop-fs'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -25,7 +31,25 @@ export type FileActionDialog = { kind: 'delete' } & FileActionTarget
 
 export const $fileActionDialog = atom<FileActionDialog | null>(null)
 
+function blockRemoteFileAction(action: string): boolean {
+  if (!isDesktopFsRemoteMode()) {
+    return false
+  }
+
+  notify({
+    kind: 'warning',
+    message: `This file lives on the gateway; ${action} is not available for a remote file.`,
+    title: 'Remote file action unavailable'
+  })
+
+  return true
+}
+
 export function requestFileDelete(target: FileActionTarget): void {
+  if (blockRemoteFileAction('Delete')) {
+    return
+  }
+
   $fileActionDialog.set({ kind: 'delete', ...target })
 }
 
@@ -39,6 +63,10 @@ export function closeFileActionDialog(): void {
 export const $renamingPath = atom<null | string>(null)
 
 export function beginInlineRename(path: string): void {
+  if (blockRemoteFileAction('Rename')) {
+    return
+  }
+
   $renamingPath.set(path)
 }
 
@@ -49,6 +77,10 @@ export function cancelInlineRename(): void {
 // ── Direct (no-dialog) actions ───────────────────────────────────────────────
 
 export async function revealFile(path: string): Promise<void> {
+  if (blockRemoteFileAction('Reveal')) {
+    return
+  }
+
   try {
     await revealDesktopPath(path)
   } catch (error) {
@@ -79,11 +111,19 @@ export function toRelativePath(path: string, relativeTo: string): string {
 // ── Dialog-confirmed mutations (called by FileActionDialogs) ──────────────────
 
 export async function executeFileRename(path: string, newName: string): Promise<void> {
+  if (blockRemoteFileAction('Rename')) {
+    return
+  }
+
   await renameDesktopPath(path, newName)
   notifyWorkspaceChanged()
 }
 
 export async function executeFileDelete(path: string): Promise<void> {
+  if (blockRemoteFileAction('Delete')) {
+    return
+  }
+
   await trashDesktopPath(path)
   notifyWorkspaceChanged()
 }

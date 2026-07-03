@@ -201,7 +201,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
+        } catch (err) {
+          if (name === 'compress') {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+
+            return
+          }
+
           // Fall back to command.dispatch for skill/send/alias directives.
         }
 

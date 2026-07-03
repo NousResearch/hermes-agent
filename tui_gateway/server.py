@@ -2838,13 +2838,50 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         )
 
 
+class _ManualCompressionInProgress(RuntimeError):
+    pass
+
+
+def _manual_compression_lock(session: dict) -> threading.Lock:
+    with session["history_lock"]:
+        lock = session.get("manual_compression_lock")
+        if lock is None:
+            lock = threading.Lock()
+            session["manual_compression_lock"] = lock
+        return lock
+
+
 def _compress_session_history(
     session: dict,
-    focus_topic: str | None = None,
-    approx_tokens: int | None = None,
-    before_messages: list | None = None,
-    history_version: int | None = None,
-) -> tuple[int, dict]:
+    focus_topic: Optional[str] = None,
+    approx_tokens: Optional[int] = None,
+    before_messages: Optional[list] = None,
+    history_version: Optional[int] = None,
+) -> tuple:
+    lock = _manual_compression_lock(session)
+    if not lock.acquire(blocking=False):
+        raise _ManualCompressionInProgress(
+            "already compressing this session — wait for the current /compress to finish"
+        )
+    try:
+        return _compress_session_history_locked(
+            session,
+            focus_topic=focus_topic,
+            approx_tokens=approx_tokens,
+            before_messages=before_messages,
+            history_version=history_version,
+        )
+    finally:
+        lock.release()
+
+
+def _compress_session_history_locked(
+    session: dict,
+    focus_topic: Optional[str] = None,
+    approx_tokens: Optional[int] = None,
+    before_messages: Optional[list] = None,
+    history_version: Optional[int] = None,
+) -> tuple:
     from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
@@ -2878,11 +2915,19 @@ def _compress_session_history(
         None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
+        force=True,
     )
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
+            usage = _get_usage(agent)
+            return 0, usage
+        if compressed is history:
+            # The compressor's lock-skip/no-op paths return the exact input
+            # list object. Do not swap the live history or bump the write-fence
+            # version for a no-op; a same-length but distinct rebuilt transcript
+            # still lands below.
             usage = _get_usage(agent)
             return 0, usage
         session["history"] = compressed
@@ -7800,6 +7845,8 @@ def _(rid, params: dict) -> dict:
             # reverts to neutral whether compaction succeeded, was a
             # no-op, or raised.
             _status_update(sid, "ready")
+    except _ManualCompressionInProgress as e:
+        return _err(rid, 4009, str(e))
     except Exception as e:
         return _err(rid, 5005, str(e))
 
@@ -11303,6 +11350,150 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
+_LIVE_SESSION_DIRECT_COMMANDS = frozenset(
+    {
+        "clear",
+        "compress",
+        "effort",
+        "history",
+        "models",
+        "prompt",
+        "rename",
+        "status",
+        "usage",
+    }
+)
+
+
+def _format_live_usage_output(session: dict) -> str:
+    agent = session.get("agent")
+    if agent is None:
+        return "(._.) No active agent -- send a message first."
+    usage = _get_usage(agent)
+    with session["history_lock"]:
+        message_count = len(session.get("history", []))
+    lines = [
+        "Session Token Usage",
+        "────────────────────────────────────────",
+        f"Model: {usage.get('model') or getattr(agent, 'model', '') or '(unknown)'}",
+        f"Input tokens:                 {int(usage.get('input') or 0):,}",
+        f"Output tokens:                {int(usage.get('output') or 0):,}",
+    ]
+    reasoning = int(usage.get("reasoning") or 0)
+    if reasoning:
+        lines.append(f"Reasoning tokens:             {reasoning:,}")
+    lines.extend(
+        [
+            f"Prompt tokens:                {int(usage.get('prompt') or 0):,}",
+            f"Completion tokens:            {int(usage.get('completion') or 0):,}",
+            f"Total tokens:                 {int(usage.get('total') or 0):,}",
+            f"API calls:                    {int(usage.get('calls') or 0):,}",
+        ]
+    )
+    if usage.get("context_max"):
+        lines.append(
+            "Current context:              "
+            f"{int(usage.get('context_used') or 0):,} / "
+            f"{int(usage.get('context_max') or 0):,} "
+            f"({int(usage.get('context_percent') or 0)}%)"
+        )
+    lines.extend(
+        [
+            f"Messages:                     {message_count:,}",
+            f"Compressions:                 {int(usage.get('compressions') or 0):,}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_live_history_output(session: dict) -> str:
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    db = _get_db()
+    if db is not None and session.get("session_key"):
+        try:
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
+            )
+        except Exception:
+            pass
+    messages = _history_to_messages(history)
+    if not messages:
+        return "No conversation history yet."
+    lines = ["Conversation History", "────────────────────────────────────────"]
+    for idx, message in enumerate(messages, start=1):
+        role = str(message.get("role") or "unknown")
+        label = "You" if role == "user" else "Hermes" if role == "assistant" else role.title()
+        text = str(message.get("text") or message.get("context") or "").strip()
+        if len(text) > 400:
+            text = f"{text[:400]}..."
+        lines.append(f"[{label} #{idx}] {text or '(no text)'}")
+    return "\n".join(lines)
+
+
+def _format_live_prompt_output(session: dict) -> str:
+    agent = session.get("agent")
+    if agent is None:
+        return "No active agent -- send a message first."
+    prompt = (
+        getattr(agent, "ephemeral_system_prompt", None)
+        or getattr(agent, "_cached_system_prompt", None)
+        or ""
+    )
+    if not prompt:
+        return "Current system prompt is not built yet; send a message first."
+    return f"Current system prompt:\n{prompt}"
+
+
+def _format_live_model_output(session: dict) -> str:
+    agent = session.get("agent")
+    model = getattr(agent, "model", "") if agent is not None else ""
+    provider = getattr(agent, "provider", "") if agent is not None else ""
+    if model and provider:
+        return f"Current model: {model} ({provider})"
+    if model:
+        return f"Current model: {model}"
+    return "Current model: (unknown)"
+
+
+def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:
+    name = (name or "").lstrip("/").lower()
+    arg = arg or ""
+    if name == "model" and not arg.strip():
+        return _format_live_model_output(session or {})
+    if name not in _LIVE_SESSION_DIRECT_COMMANDS:
+        return None
+    if name == "compress":
+        if session is None:
+            return "no active session for /compress"
+        return _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())
+    if name == "usage":
+        if session is None:
+            return "(._.) No active agent -- send a message first."
+        return _format_live_usage_output(session)
+    if name == "history":
+        if session is None:
+            return "No conversation history yet."
+        return _format_live_history_output(session)
+    if name == "prompt":
+        if session is None:
+            return "No active agent -- send a message first."
+        return _format_live_prompt_output(session)
+    if name == "status":
+        response = _methods["session.status"]("status", {"session_id": sid})
+        if response.get("error"):
+            return str(response["error"].get("message") or "status unavailable")
+        return str(response.get("result", {}).get("output") or "")
+    if name == "clear":
+        return "Screen clear is terminal-only; desktop/TUI chat left unchanged."
+    if name == "models":
+        return "Use /model to view or switch the current model; desktop users can also open the model picker."
+    if name == "rename":
+        return "Use /title <name> to rename this session."
+    if name == "effort":
+        return "Use /reasoning <effort> to change reasoning effort."
+    return None
+
 
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
@@ -11561,6 +11752,12 @@ def _(rid, params: dict) -> dict:
                 )
     except Exception:
         pass
+
+    live_output = _live_slash_command_output(
+        params.get("session_id", ""), session, name, arg
+    )
+    if live_output is not None:
+        return _ok(rid, {"type": "exec", "output": live_output or "(no output)"})
 
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
@@ -12613,6 +12810,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             from tools.process_registry import process_registry
 
             process_registry.kill_all()
+    except _ManualCompressionInProgress as e:
+        return str(e)
     except Exception as e:
         return f"live session sync failed: {e}"
     return ""
@@ -12690,6 +12889,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
+
+    live_output = _live_slash_command_output(
+        params.get("session_id", ""), session, _cmd_base, _cmd_arg
+    )
+    if live_output is not None:
+        return _ok(rid, {"output": live_output or "(no output)"})
 
     worker = session.get("slash_worker")
     if not worker:

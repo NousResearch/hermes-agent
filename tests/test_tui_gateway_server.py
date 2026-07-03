@@ -3876,6 +3876,264 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_compress_history_identity_noop_does_not_swap_or_bump():
+    live_history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    before_messages = list(live_history)
+    seen = {}
+
+    class _Agent:
+        def _compress_context(self, messages, system_message, **kwargs):
+            seen["messages"] = messages
+            seen["force"] = kwargs.get("force")
+            return messages, system_message
+
+    session = _session(
+        agent=_Agent(),
+        history=live_history,
+        history_version=7,
+    )
+
+    removed, _usage = server._compress_session_history(
+        session,
+        approx_tokens=123,
+        before_messages=before_messages,
+        history_version=7,
+    )
+
+    assert removed == 0
+    assert seen == {"messages": before_messages, "force": True}
+    assert session["history"] is live_history
+    assert session["history_version"] == 7
+
+
+def test_compress_history_same_length_rebuild_swaps_and_bumps():
+    live_history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    before_messages = list(live_history)
+    rebuilt = [
+        {"role": "system", "content": "summary"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    seen = {}
+
+    class _Agent:
+        def _compress_context(self, messages, system_message, **kwargs):
+            seen["messages"] = messages
+            seen["force"] = kwargs.get("force")
+            return rebuilt, system_message
+
+    session = _session(
+        agent=_Agent(),
+        history=live_history,
+        history_version=7,
+    )
+
+    removed, _usage = server._compress_session_history(
+        session,
+        approx_tokens=123,
+        before_messages=before_messages,
+        history_version=7,
+    )
+
+    assert removed == 0
+    assert seen == {"messages": before_messages, "force": True}
+    assert session["history"] is rebuilt
+    assert session["history_version"] == 8
+
+
+def test_slash_exec_compress_bypasses_worker_and_returns_live_output(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for /compress")
+
+    history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(model="live-model", session_id="session-key"),
+        history=history,
+    )
+
+    def fake_compress(session, focus_topic=None, **_kwargs):
+        assert focus_topic == "focus"
+        with session["history_lock"]:
+            session["history"] = list(session["history"][:2])
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_compress_session_history", fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "live-model"})
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "compress focus", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert "warning" not in resp["result"]
+    assert "messages" in resp["result"]["output"]
+    assert "4018" not in resp["result"]["output"]
+
+
+def test_slash_exec_compress_reports_existing_compression(monkeypatch):
+    lock = threading.Lock()
+    assert lock.acquire(blocking=False)
+    history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(model="live-model", session_id="session-key"),
+        history=history,
+        manual_compression_lock=lock,
+    )
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        lock.release()
+        server._sessions.pop("sid", None)
+
+    assert resp is not None
+    assert "result" in resp, resp
+    assert resp["result"]["output"].startswith("already compressing this session")
+
+
+def test_command_dispatch_compress_returns_honest_live_output(monkeypatch):
+    history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(model="live-model", session_id="session-key"),
+        history=history,
+    )
+
+    def fake_compress(session, focus_topic=None, **_kwargs):
+        with session["history_lock"]:
+            session["history"] = list(session["history"][:2])
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {}})
+    monkeypatch.setattr(server, "_compress_session_history", fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "live-model"})
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"arg": "", "name": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["type"] == "exec"
+    assert "messages" in resp["result"]["output"]
+
+
+def test_slash_exec_live_read_commands_bypass_worker(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for live read commands")
+
+    agent = types.SimpleNamespace(
+        model="live-model",
+        provider="live-provider",
+        session_api_calls=2,
+        session_input_tokens=100,
+        session_output_tokens=20,
+        session_reasoning_tokens=5,
+        session_prompt_tokens=120,
+        session_completion_tokens=20,
+        session_total_tokens=140,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=80,
+            context_length=1000,
+            compression_count=1,
+        ),
+        _cached_system_prompt="live system prompt",
+    )
+    history = [
+        {"role": "user", "content": "live question"},
+        {"role": "assistant", "content": "live answer"},
+    ]
+
+    class _DB:
+        def get_session(self, key):
+            assert key == "session-key"
+            return {"title": "Live title", "started_at": 1_700_000_000}
+
+    server._sessions["sid"] = _session(agent=agent, history=history)
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    cases = {
+        "usage": "Total tokens:                 140",
+        "history": "live question",
+        "prompt": "live system prompt",
+        "status": "Tokens: 140",
+        "model": "live-model (live-provider)",
+        "clear": "left unchanged",
+        "models": "/model",
+        "rename": "/title",
+        "effort": "/reasoning",
+    }
+
+    try:
+        for command, expected in cases.items():
+            resp = server.handle_request(
+                {
+                    "id": command,
+                    "method": "slash.exec",
+                    "params": {"command": command, "session_id": "sid"},
+                }
+            )
+            assert "result" in resp, (command, resp)
+            assert expected in resp["result"]["output"]
+            assert "(._.)" not in resp["result"]["output"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 

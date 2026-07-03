@@ -1,19 +1,63 @@
 # Opt-out method playbooks
 
-How the agent executes each broker `optout.method` using native Hermes tools. Always obey the
-**verify-before-disclose** rule: confirm a real listing exists, then submit only the fields the broker
-requires (`pdd.py plan` lists them per broker).
+How the agent executes each broker `optout.method` using native Hermes tools. Obey **least-disclosure**:
+submit only the subject's OWN identifiers, and only the fields a broker's official channel requires
+(`pdd.py plan` lists them per broker). Never disclose more than that, and confirm a listing is really
+the subject's before acting on any THIRD-PARTY / indirect record (see "Distinguish the subject" and
+"Indirect exposure"). See the posture section below for when a confirmed listing is NOT a prerequisite.
 
 **Autonomy:** `pdd.py next <subject>` sequences all of this - it decides which method applies, orders
 parents first, and routes human-only work to the digest. In `autonomy=full` (default), execute its
 actions without pausing per submission; the consent recorded at intake is the authorization. These
 playbooks are the HOW for each action type.
 
+## Opt-out posture: blind opt-out is the default (not a fallback)
+
+Operator-directed posture: **submit an opt-out or deletion on EVERY site that exposes an accessible
+removal channel, even when a listing was not first confirmed** - whichever of opt-out / deletion is
+optimal per site. Do not hand back a to-do list of "we could not search these."
+
+- **Why it is sound (does NOT violate least-disclosure):** a blind opt-out sends only the subject's own
+  identifiers to the broker's own official removal channel. You are giving the broker the subject's data
+  *to remove it*, not exposing new data or acting on a third party. (Third-party / indirect records are
+  the exception: those still require confirming the exposure first.)
+- **The opt-out flow doubles as the authoritative search.** Guided flows that match on email + DOB +
+  legal name and then say "no results" are a **stronger `not_found` than any scrape** - the broker ran
+  its own matcher against real identifiers. On guided-flow sites, "run the opt-out" and "search" are one
+  action (e.g. CheckPeople; see `site-playbooks.md`).
+
+### Blocked form -> default to the cited rights-email (the headline rule)
+
+When a removal **form** is automation-hostile (hard CAPTCHA, a Cloudflare wall that will not clear, a JS
+paywall funnel), **default to the broker's cited rights-request email** rather than recording `blocked`
+and deferring to a human - unless there is an easy in-browser solve. Decision order per site:
+
+1. **Easy in-browser solve?** (one-click remove; a guided flow whose CAPTCHA auto-clears on the
+   residential browser; plain email-verify) -> do it in the browser.
+2. **Form blocked but a cited rights-email exists?** -> send a deletion/opt-out email from the operator's
+   webmail (name + state + contact email only). This is now **preferred** over recording `blocked`.
+3. **No easy solve AND no cited email** -> `blocked` (or `human_task_queued` with the exact end-state).
+4. **Only lane requires gov-ID / physical mail** -> do NOT pursue autonomously (least-disclosure);
+   surface as a human decision.
+
+"Cited" = published by the broker itself (privacy policy / opt-out page / a working deletion alias). Do
+**not** email addresses sourced only from third-party blogs or Reddit. Per-site lanes and gotchas are
+pre-recorded in `references/site-playbooks.md` so future runs execute rather than re-derive.
+
+### Triage an external OSINT list before scanning
+
+When cross-checking any external "people OSINT" catalog, separate **first-party brokers** (removal
+targets) from **meta-search / link-out aggregators** (no first-party data -> no-ops, do not file
+opt-outs), **cluster front-ends** (covered by a parent, e.g. addresses.com -> Intelius), and
+**non-broker tools / APIs / wrong-jurisdiction** (skip). The skip-lists live in `site-playbooks.md`.
+
 ## Scan ladder (all methods)
 
-Confirm exposure before acting, cheapest first. Run **every** `search_vectors` entry from `pdd.py
-plan` (each name x location, phone, email, and address the broker's `search.by` supports) - different
-vectors surface different listings for the same person; dedupe found URLs.
+Build the exposure map cheapest first (on a site with an accessible removal channel you may still
+blind-opt-out even if the scan is inconclusive - see the posture section above). Run **every**
+`search_vectors` entry from `pdd.py plan` (each name x location, phone, email, and address the broker's
+`search.by` supports) - different vectors surface different listings for the same person; dedupe found
+URLs.
 
 1. `web_extract` on the broker `search.url` (fast HTML -> markdown). Look for `search.match_signal`.
    Build per-vector URLs from `search.url_patterns` and heed `search.url_format_quirks` (see below).
@@ -203,6 +247,19 @@ scoring that flags the session) becomes a fallback: `record ... blocked` and req
 stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
 browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
 T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+
+### CAPTCHA policy, clarified (on a consenting first-party opt-out)
+
+- **Do NOT defeat** behavioral / token challenges: a Cloudflare Turnstile that will not auto-clear,
+  **DataDome**, and **"slide-to-verify" gesture-entropy sliders** (the InfoPay lane). These are hard
+  stops -> take the email lane (rule above) or record `blocked`.
+- **Acceptable to solve** on the subject's own first-party opt-out: a **static distorted-text image
+  CAPTCHA** (read it with the vision tool) or a **plain arithmetic CAPTCHA** ("8 + 13 = ?"). That is OCR
+  / arithmetic on a consenting removal, not evasion of a bot-detection system.
+- **But** if the site then rejects the whole submission ("Captcha verification failed / feature not
+  available") after a correct answer, it is fingerprinting the automation itself, not grading the answer
+  -> **stop, do not loop** (e.g. PrivateRecords' distorted-text-THEN-arithmetic double gate). If no cited
+  rights-email exists, that is a genuine `blocked`.
 
 ## Browser backends: scan vs execute
 

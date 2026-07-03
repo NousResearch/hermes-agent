@@ -886,28 +886,6 @@ class PhotonAdapter(BasePlatformAdapter):
         # never runs — can't leave it orphaned on the port.
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
-        try:
-            patch = subprocess.run(  # noqa: S603
-                [
-                    self._node_bin,
-                    str(_SIDECAR_DIR / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_SIDECAR_DIR),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if patch.returncode != 0:
-                raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-            if patch.stderr.strip():
-                logger.debug("[photon] %s", patch.stderr.strip())
-        except Exception as exc:
-            logger.warning(
-                "[photon] failed to apply Spectrum mixed attachment patch: %s",
-                exc,
-            )
-
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
             stdin=subprocess.PIPE,

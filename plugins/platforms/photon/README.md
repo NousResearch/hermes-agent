@@ -181,12 +181,9 @@ deliberate:
    `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
    of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
    (the hosted docs can lag).
-4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
-   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
-   so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
-   fails loudly if the anchors no longer match — update them to the new output
-   (`test_spectrum_patch.py` covers the patch).
+4. Re-run mixed text/attachment inbound coverage. Spectrum 8.1.1 and newer
+   preserve ordered iMessage parts upstream; verify the target version still
+   emits every text and attachment part in order with `flattenGroups` enabled.
 5. Run `pytest tests/plugins/platforms/photon/`.
 6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises

@@ -17,6 +17,7 @@ import pytest
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 from tools.skill_manager_tool import (
     _create_skill,
+    _edit_skill,
 )
 
 SKILL_CONTENT = """\
@@ -288,3 +289,79 @@ def test_first_hook_wins_multiple_hooks(tmp_path):
     assert result["success"] is False
     assert "first hook blocked" in result["error"]
     assert not (skills_dir / "my-skill" / "SKILL.md").exists()
+
+
+# ── pre_skill_edit ──
+
+
+def test_edit_hook_is_registered_as_valid():
+    """The edit hook name is part of VALID_HOOKS."""
+    assert "pre_skill_edit" in VALID_HOOKS
+
+
+def test_edit_handled_returns_success(tmp_path):
+    """A plugin handling edit returns success without touching Hermes path."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_edit_block_aborts(tmp_path):
+    """A plugin blocking edit returns failure."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(
+        lambda **kw: {"action": "block", "reason": "no edits allowed"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "no edits allowed" in result["error"]
+
+
+def test_edit_hook_none_falls_through_to_find_skill(tmp_path):
+    """A hook returning None falls through to _find_skill (skill not found)."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(lambda **kw: None)
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    # Falls through to _find_skill which finds nothing
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_edit_misbehaving_hook_falls_through(tmp_path):
+    """A raising hook in edit falls through to default _find_skill."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    # Falls through despite the raising hook
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()

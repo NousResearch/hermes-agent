@@ -203,20 +203,20 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
 ]
 
 export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
+  'helpful',       // Полезный
+  'concise',       // Лаконичный
+  'technical',     // Технический
+  'creative',      // Творческий
+  'teacher',       // Учитель
+  'kawaii',        // Кавайный
+  'catgirl',       // Кошко-девочка
+  'pirate',        // Пират
+  'shakespeare',   // Шекспир
+  'surfer',        // Сёрфер
+  'noir',          // Нуар
+  'uwu',           // Uwu
+  'philosopher',   // Философ
+  'hype'           // Хайп
 ]
 
 // Schema-side select overrides for desktop-relevant enum fields whose
@@ -228,260 +228,240 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
-  // Terminal execution backends — kept in sync with the dispatch ladder in
-  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
-  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
-  // Text-to-speech backends — kept in sync with the built-in source of truth
-  // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
-  // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
-  'tts.provider': [
-    'edge',
-    'elevenlabs',
-    'openai',
-    'xai',
-    'minimax',
-    'mistral',
-    'gemini',
-    'neutts',
-    'kittentts',
-    'piper'
-  ],
+  'tts.provider': ['edge', 'elevenlabs', 'openai', 'xai', 'minimax', 'mistral', 'gemini', 'neutts', 'kittentts', 'piper'],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
-  // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
-  model: 'Default Model',
-  modelContextLength: 'Context Window',
-  fallbackProviders: 'Fallback Models',
-  toolsets: 'Enabled Toolsets',
-  timezone: 'Timezone',
+  model: 'Модель по умолчанию',
+  modelContextLength: 'Размер контекста',
+  fallbackProviders: 'Резервные модели',
+  toolsets: 'Включённые наборы инструментов',
+  timezone: 'Часовой пояс',
   display: {
-    personality: 'Personality',
-    showReasoning: 'Reasoning Blocks'
+    personality: 'Персона',
+    showReasoning: 'Блоки рассуждений'
   },
   agent: {
-    maxTurns: 'Max Agent Steps',
-    imageInputMode: 'Image Attachments',
-    apiMaxRetries: 'API Retries',
-    serviceTier: 'Service Tier',
-    toolUseEnforcement: 'Tool-Use Enforcement'
+    maxTurns: 'Макс. шагов агента',
+    imageInputMode: 'Изображения',
+    apiMaxRetries: 'Повторные попытки API',
+    serviceTier: 'Уровень обслуживания',
+    toolUseEnforcement: 'Контроль вызова инструментов'
   },
   terminal: {
-    cwd: 'Working Directory',
-    backend: 'Execution Backend',
-    timeout: 'Command Timeout',
-    persistentShell: 'Persistent Shell',
-    envPassthrough: 'Environment Passthrough',
-    dockerImage: 'Docker Image',
-    singularityImage: 'Singularity Image',
-    modalImage: 'Modal Image',
-    daytonaImage: 'Daytona Image'
+    cwd: 'Рабочая директория',
+    backend: 'Среда выполнения',
+    timeout: 'Таймаут команды',
+    persistentShell: 'Постоянная оболочка',
+    envPassthrough: 'Передача переменных окружения',
+    dockerImage: 'Образ Docker',
+    singularityImage: 'Образ Singularity',
+    modalImage: 'Образ Modal',
+    daytonaImage: 'Образ Daytona'
   },
-  fileReadMaxChars: 'File Read Limit',
+  fileReadMaxChars: 'Лимит чтения файла',
   toolOutput: {
-    maxBytes: 'Terminal Output Limit',
-    maxLines: 'File Page Limit',
-    maxLineLength: 'Line Length Limit'
+    maxBytes: 'Лимит вывода терминала',
+    maxLines: 'Лимит страницы файла',
+    maxLineLength: 'Лимит длины строки'
   },
   codeExecution: {
-    mode: 'Code Execution Mode'
+    mode: 'Режим выполнения кода'
   },
   approvals: {
-    mode: 'Approval Mode',
-    timeout: 'Approval Timeout',
-    mcpReloadConfirm: 'Confirm MCP Reloads'
+    mode: 'Режим одобрения',
+    timeout: 'Таймаут одобрения',
+    mcpReloadConfirm: 'Подтверждать перезагрузку MCP'
   },
-  commandAllowlist: 'Command Allowlist',
+  commandAllowlist: 'Белый список команд',
   security: {
-    redactSecrets: 'Redact Secrets',
-    allowPrivateUrls: 'Allow Private URLs'
+    redactSecrets: 'Скрывать секреты',
+    allowPrivateUrls: 'Разрешить приватные URL'
   },
   browser: {
-    allowPrivateUrls: 'Browser Private URLs',
-    autoLocalForPrivateUrls: 'Local Browser For Private URLs'
+    allowPrivateUrls: 'Приватные URL в браузере',
+    autoLocalForPrivateUrls: 'Локальный браузер для приватных URL'
   },
   checkpoints: {
-    enabled: 'File Checkpoints',
-    maxSnapshots: 'Checkpoint Limit'
+    enabled: 'Контрольные точки файлов',
+    maxSnapshots: 'Лимит контрольных точек'
   },
   voice: {
-    recordKey: 'Voice Shortcut',
-    maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    recordKey: 'Горячая клавиша голоса',
+    maxRecordingSeconds: 'Макс. длительность записи',
+    autoTts: 'Читать ответы вслух'
   },
   stt: {
-    enabled: 'Speech To Text',
-    provider: 'Speech-To-Text Provider',
+    enabled: 'Распознавание речи',
+    provider: 'Провайдер распознавания',
     local: {
-      model: 'Local Transcription Model',
-      language: 'Transcription Language'
+      model: 'Локальная модель транскрибации',
+      language: 'Язык транскрибации'
     },
     openai: {
-      model: 'OpenAI STT Model'
+      model: 'Модель OpenAI STT'
     },
     groq: {
-      model: 'Groq STT Model'
+      model: 'Модель Groq STT'
     },
     mistral: {
-      model: 'Mistral STT Model'
+      model: 'Модель Mistral STT'
     },
     elevenlabs: {
-      modelId: 'ElevenLabs STT Model',
-      languageCode: 'ElevenLabs Language',
-      tagAudioEvents: 'Tag Audio Events',
-      diarize: 'Speaker Diarization'
+      modelId: 'Модель ElevenLabs STT',
+      languageCode: 'Язык ElevenLabs',
+      tagAudioEvents: 'Разметка аудио-событий',
+      diarize: 'Диаризация спикеров'
     }
   },
   tts: {
-    provider: 'Text-To-Speech Provider',
+    provider: 'Провайдер синтеза речи',
     edge: {
-      voice: 'Edge Voice'
+      voice: 'Голос Edge'
     },
     openai: {
-      model: 'OpenAI TTS Model',
-      voice: 'OpenAI Voice'
+      model: 'Модель OpenAI TTS',
+      voice: 'Голос OpenAI'
     },
     elevenlabs: {
-      voiceId: 'ElevenLabs Voice',
-      modelId: 'ElevenLabs Model'
+      voiceId: 'Голос ElevenLabs',
+      modelId: 'Модель ElevenLabs'
     },
     xai: {
-      voiceId: 'xAI (Grok) Voice',
-      language: 'xAI Language'
+      voiceId: 'Голос xAI (Grok)',
+      language: 'Язык xAI'
     },
     minimax: {
-      model: 'MiniMax TTS Model',
-      voiceId: 'MiniMax Voice'
+      model: 'Модель MiniMax TTS',
+      voiceId: 'Голос MiniMax'
     },
     mistral: {
-      model: 'Mistral TTS Model',
-      voiceId: 'Mistral Voice'
+      model: 'Модель Mistral TTS',
+      voiceId: 'Голос Mistral'
     },
     gemini: {
-      model: 'Gemini TTS Model',
-      voice: 'Gemini Voice'
+      model: 'Модель Gemini TTS',
+      voice: 'Голос Gemini'
     },
     neutts: {
-      model: 'NeuTTS Model',
-      device: 'NeuTTS Device'
+      model: 'Модель NeuTTS',
+      device: 'Устройство NeuTTS'
     },
     kittentts: {
-      model: 'KittenTTS Model',
-      voice: 'KittenTTS Voice'
+      model: 'Модель KittenTTS',
+      voice: 'Голос KittenTTS'
     },
     piper: {
-      voice: 'Piper Voice'
+      voice: 'Голос Piper'
     }
   },
   memory: {
-    memoryEnabled: 'Persistent Memory',
-    userProfileEnabled: 'User Profile',
-    memoryCharLimit: 'Memory Budget',
-    userCharLimit: 'Profile Budget',
-    provider: 'Memory Provider'
+    memoryEnabled: 'Постоянная память',
+    userProfileEnabled: 'Профиль пользователя',
+    memoryCharLimit: 'Бюджет памяти',
+    userCharLimit: 'Бюджет профиля',
+    provider: 'Провайдер памяти'
   },
   context: {
-    engine: 'Context Engine'
+    engine: 'Движок контекста'
   },
   compression: {
-    enabled: 'Auto-Compression',
-    threshold: 'Compression Threshold',
-    targetRatio: 'Compression Target',
-    protectLastN: 'Protected Recent Messages'
+    enabled: 'Авто-сжатие',
+    threshold: 'Порог сжатия',
+    targetRatio: 'Цель сжатия',
+    protectLastN: 'Защитить последние сообщения'
   },
   delegation: {
-    model: 'Subagent Model',
-    provider: 'Subagent Provider',
-    maxIterations: 'Subagent Turn Limit',
-    maxConcurrentChildren: 'Parallel Subagents',
-    childTimeoutSeconds: 'Subagent Timeout',
-    reasoningEffort: 'Subagent Reasoning Effort'
+    model: 'Модель подагентов',
+    provider: 'Провайдер подагентов',
+    maxIterations: 'Лимит ходов подагента',
+    maxConcurrentChildren: 'Параллельные подагенты',
+    childTimeoutSeconds: 'Таймаут подагента',
+    reasoningEffort: 'Усилие рассуждений подагента'
   },
   updates: {
-    nonInteractiveLocalChanges: 'In-App Update Local Changes'
+    nonInteractiveLocalChanges: 'Локальные изменения при обновлении'
   }
 })
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
-  model: 'Used for new chats unless you pick a different model in the composer.',
-  modelContextLength: "Leave at 0 to use the selected model's detected context window.",
-  fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
+  model: 'Используется для новых чатов, если не выбрана другая модель в компоновщике.',
+  modelContextLength: 'Оставьте 0 для использования определённого размера контекста модели.',
+  fallbackProviders: 'Резервные записи провайдер:модель при ошибке основной модели.',
   display: {
-    personality: 'Default assistant style for new sessions.',
-    showReasoning: 'Show reasoning sections when the backend provides them.'
+    personality: 'Стиль ассистента по умолчанию для новых сессий.',
+    showReasoning: 'Показывать секции рассуждений, когда бэкенд их предоставляет.'
   },
-  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
+  timezone: 'Используется, когда Hermes нуждается в локальном времени. Пусто = системный часовой пояс.',
   agent: {
-    imageInputMode: 'Controls how image attachments are sent to the model.',
-    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+    imageInputMode: 'Управляет тем, как вложенные изображения отправляются модели.',
+    maxTurns: 'Верхний предел ходов с вызовом инструментов до остановки выполнения.'
   },
   terminal: {
-    cwd: 'Default project folder for tool and terminal work.',
-    persistentShell: 'Keep shell state between commands when the backend supports it.',
-    envPassthrough: 'Environment variables to pass into tool execution.',
-    dockerImage: 'Container image used when the execution backend is Docker.',
-    singularityImage: 'Image used when the execution backend is Singularity.',
-    modalImage: 'Image used when the execution backend is Modal.',
-    daytonaImage: 'Image used when the execution backend is Daytona.'
+    cwd: 'Папка проекта по умолчанию для работы с инструментами и терминалом.',
+    persistentShell: 'Сохранять состояние оболочки между командами, если бэкенд поддерживает.',
+    envPassthrough: 'Переменные окружения для передачи в выполнение инструментов.',
+    dockerImage: 'Образ контейнера при выполнении в Docker.',
+    singularityImage: 'Образ при выполнении в Singularity.',
+    modalImage: 'Образ при выполнении в Modal.',
+    daytonaImage: 'Образ при выполнении в Daytona.'
   },
   codeExecution: {
-    mode: 'How strictly code execution is scoped to the current project.'
+    mode: 'Строгость ограничения выполнения кода текущим проектом.'
   },
-  fileReadMaxChars: 'Maximum characters Hermes can read from one file request.',
+  fileReadMaxChars: 'Максимум символов, которые Hermes может прочитать из одного файла.',
   approvals: {
-    mode: 'How Hermes handles commands that need explicit approval.',
-    timeout: 'How long approval prompts wait before timing out.'
+    mode: 'Как Hermes обрабатывает команды, требующие явного одобрения.',
+    timeout: 'Как долго ожидается одобрение до таймаута.'
   },
   security: {
-    redactSecrets: 'Hide detected secrets from model-visible content when possible.'
+    redactSecrets: 'Скрывать обнаруженные секреты из видимого моделью содержимого, когда возможно.'
   },
   checkpoints: {
-    enabled: 'Create rollback snapshots before file edits.'
+    enabled: 'Создавать снимки отката перед редактированием файлов.'
   },
   memory: {
-    memoryEnabled: 'Save durable memories that can help future sessions.',
-    userProfileEnabled: 'Maintain a compact profile of user preferences.'
+    memoryEnabled: 'Сохранять постоянные воспоминания для помощи в будущих сессиях.',
+    userProfileEnabled: 'Поддерживать компактный профиль предпочтений пользователя.'
   },
   context: {
-    engine: 'Strategy for managing long conversations near the context limit.'
+    engine: 'Стратегия управления длинными разговорами около лимита контекста.'
   },
   compression: {
-    enabled: 'Summarize older context when conversations get large.'
+    enabled: 'Резюмировать старый контекст при больших разговорах.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Автоматически озвучивать ответы ассистента.'
   },
   tts: {
     xai: {
-      voiceId: 'xAI voice ID (e.g. eve) or a custom voice ID.',
-      language: 'Spoken language code, e.g. en.'
+      voiceId: 'ID голоса xAI (например, eve) или пользовательский ID.',
+      language: 'Код языка, например ru.'
     },
     neutts: {
-      device: 'Local inference device for NeuTTS.'
+      device: 'Локальное устройство для NeuTTS.'
     }
   },
   stt: {
-    enabled: 'Enable local or provider-backed speech transcription.',
+    enabled: 'Включить локальное или через провайдера распознавание речи.',
     elevenlabs: {
-      languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
+      languageCode: 'ISO-639-3 код языка. Пусто = автоопределение ElevenLabs.'
     }
   },
   updates: {
     nonInteractiveLocalChanges:
-      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+      'При обновлении Hermes из приложения (без терминала) сохранять локальные изменения (stash) или отбрасывать (discard). Обновления через терминал всегда спрашивают.'
   }
 })
 

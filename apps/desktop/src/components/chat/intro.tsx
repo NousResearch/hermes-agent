@@ -20,24 +20,24 @@ const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
 
 const FALLBACK_COPY: IntroCopy[] = [
   {
-    headline: 'What are we moving today?',
-    body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
+    headline: 'Что будем делать сегодня?',
+    body: 'Пришли баг, ветку, план или идею. Я изучу репозиторий и предложу следующий шаг.'
   },
   {
-    headline: "What's on your mind?",
-    body: "Bring the code, question, or stuck part. I'll read the room before making changes."
+    headline: 'О чём думаете?',
+    body: 'Поделитесь кодом, вопросом или проблемой. Я сначала разберусь, потом предложу решение.'
   },
   {
-    headline: 'What should Hermes look at?',
-    body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
+    headline: 'Что показать Hermes?',
+    body: 'Отправь задачу, падающий тест или набросок плана. Я помогу превратить это в действие.'
   },
   {
-    headline: 'Where should we start?',
-    body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
+    headline: 'С чего начнём?',
+    body: 'Принеси проблему, цель или файл. Я сначала изучу, потом предложу конкретный следующий шаг.'
   },
   {
-    headline: 'What needs attention?',
-    body: "Send the context you have. I'll help sort it into a plan or a fix."
+    headline: 'Что требует внимания?',
+    body: 'Отправь всё, что есть. Я помогу разобраться и составить план или исправление.'
   }
 ]
 
@@ -116,24 +116,24 @@ function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
 
   return [
     {
-      headline: `${label} mode is on. What should we work on?`,
-      body: "Send the task, file, or rough idea. I'll use your configured voice and keep the work grounded in this repo."
+      headline: `Режим «${label}» включён. Что будем делать?`,
+      body: 'Отправь задачу, файл или идею. Я буду работать в заданном стиле и держать фокус на репозитории.'
     },
     {
-      headline: `What does ${label} Hermes need to see?`,
-      body: "Bring the context or the stuck part. I'll adapt to your configured personality."
+      headline: `Что показать Hermes в режиме «${label}»?`,
+      body: 'Поделитесь контекстом или проблемой. Я адаптируюсь к выбранной персоналии.'
     },
     {
-      headline: `${label} mode is ready.`,
-      body: "Send the problem, file, or idea. I'll follow the personality you've configured."
+      headline: `Режим «${label}» готов к работе.`,
+      body: 'Отправь проблему, файл или идею. Я буду следовать настроенной персоналии.'
     },
     {
-      headline: `What should ${label} Hermes tackle?`,
-      body: "Drop the task here. I'll keep the work grounded in the repo."
+      headline: `Что поставить на выполнение в режиме «${label}»?`,
+      body: 'Опиши задачу здесь. Я буду работать в контексте репозитория.'
     },
     {
-      headline: 'Where should we begin?',
-      body: `Give me the context and I'll answer in ${label} mode.`
+      headline: 'С чего начать?',
+      body: `Дай мне контекст, и я отвечу в режиме «${label}».`
     }
   ]
 }

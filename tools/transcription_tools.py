@@ -1225,11 +1225,22 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
+            # Render placeholders by their quote context (and platform):
+            # ``shlex.quote`` is POSIX-only — on Windows it single-quotes
+            # values, which cmd.exe treats literally, so spaced/back-slashed
+            # paths break Local STT and shell metacharacters in a filename are
+            # not neutralized. ``_render_command_stt_template`` uses
+            # ``subprocess.list2cmdline`` on Windows and honours whether the
+            # placeholder sits inside quotes, mirroring the command-STT
+            # provider path above and ``tools.tts_tool``.
+            command = _render_command_stt_template(
+                command_template,
+                {
+                    "input_path": prepared_input,
+                    "output_dir": output_dir,
+                    "language": str(language),
+                    "model": normalized_model,
+                },
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())

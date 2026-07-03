@@ -699,8 +699,18 @@ def compress_context(
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
-                    # Propagate title to the new session with auto-numbering
+                    # Propagate title to the new session with auto-numbering.
+                    # Snapshot the parent row BEFORE end_session()/id rotation so
+                    # the child can inherit the same gateway-origin metadata
+                    # (source, user_id, session_key, chat_id/chat_type/thread_id).
+                    # Without that carry-forward, compression-created child
+                    # sessions lose the origin identity needed for gateway
+                    # resume/session scoping across compression boundaries.
                     old_title = agent._session_db.get_session_title(agent.session_id)
+                    try:
+                        _parent_session_row = agent._session_db.get_session(agent.session_id)
+                    except Exception:
+                        _parent_session_row = None
                     agent._session_db.end_session(agent.session_id, "compression")
                     old_session_id = agent.session_id
                     agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -729,12 +739,22 @@ def compress_context(
                         pass
                     agent._session_db_created = False
                     try:
+                        _parent_source = (
+                            (_parent_session_row or {}).get("source")
+                            or agent.platform
+                            or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+                        )
                         agent._session_db.create_session(
                             session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            source=_parent_source,
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            user_id=(_parent_session_row or {}).get("user_id"),
+                            session_key=(_parent_session_row or {}).get("session_key"),
+                            chat_id=(_parent_session_row or {}).get("chat_id"),
+                            chat_type=(_parent_session_row or {}).get("chat_type"),
+                            thread_id=(_parent_session_row or {}).get("thread_id"),
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

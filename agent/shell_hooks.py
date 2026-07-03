@@ -790,7 +790,13 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
 
 
 def _record_approval(event: str, command: str) -> None:
-    entry = {"event": event, "command": command, "approved_at": _utc_now_iso(), "script_mtime_at_approval": script_mtime_iso(command)}
+    entry = {
+        "event": event,
+        "command": command,
+        "approved_at": _utc_now_iso(),
+        "script_mtime_at_approval": script_mtime_iso(command),
+        "script_hash_at_approval": script_content_hash(command),
+    }
     with _locked_update_approvals() as data:
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, event, command)] + [entry]
 
@@ -843,6 +849,21 @@ def script_mtime_iso(command: str) -> Optional[str]:
     except OSError:
         return None
     return None if mtime is None else datetime.fromtimestamp(mtime, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def script_content_hash(command: str) -> Optional[str]:
+    """SHA-256 hex digest of the resolved script file, or ``None`` if
+    the script is missing or unreadable."""
+    import hashlib
+    path = _command_script_path(command)
+    if not path:
+        return None
+    try:
+        expanded = os.path.expanduser(path)
+        with open(expanded, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
 
 
 def script_is_executable(command: str) -> bool:

@@ -1081,7 +1081,10 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     assert "Resume this session with:" in out
     assert "hermes --tui --resume 20260409_000001_abc123" in out
     assert 'hermes --tui -c "demo title"' in out
-    assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
+    # Total is input + output + cache (10 + 6 + 4) = 20. reasoning_tokens (1) is
+    # a subset of output_tokens and must NOT be added again — matches
+    # CanonicalUsage.total_tokens. It is still surfaced as the breakdown value.
+    assert "Tokens:         20 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
 def test_print_tui_exit_summary_prefers_actual_active_session_file(

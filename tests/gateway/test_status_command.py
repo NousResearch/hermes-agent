@@ -152,8 +152,10 @@ async def test_status_command_reads_token_totals_from_session_db():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    # 1000 + 250 + 500 + 100 + 50 = 1,900
-    assert "**Cumulative API tokens (re-sent each call):** 1,900" in result
+    # input + output + cache_read + cache_write = 1000 + 250 + 500 + 100 = 1,850.
+    # reasoning_tokens (50) is a subset of output_tokens and must NOT be added
+    # again — matches CanonicalUsage.total_tokens.
+    assert "**Cumulative API tokens (re-sent each call):** 1,850" in result
 
 
 @pytest.mark.asyncio

@@ -515,12 +515,16 @@ class GatewaySlashCommandsMixin:
                 row = await self._session_db.get_session(session_entry.session_id)
                 if isinstance(row, dict):
                     session_row = row
+                    # reasoning_tokens is a subset of output_tokens (the
+                    # provider reports it as a breakdown of completion/output
+                    # tokens), so it must NOT be added again. Matches
+                    # CanonicalUsage.total_tokens (agent/usage_pricing.py) =
+                    # input + cache_read + cache_write + output.
                     db_total_tokens = (
                         _int_value(row.get("input_tokens"))
                         + _int_value(row.get("output_tokens"))
                         + _int_value(row.get("cache_read_tokens"))
                         + _int_value(row.get("cache_write_tokens"))
-                        + _int_value(row.get("reasoning_tokens"))
                     )
             except Exception:
                 db_total_tokens = 0

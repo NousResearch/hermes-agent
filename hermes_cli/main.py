@@ -1350,12 +1350,15 @@ def _print_tui_exit_summary(
         cache_read_tokens = int(session.get("cache_read_tokens") or 0)
         cache_write_tokens = int(session.get("cache_write_tokens") or 0)
         reasoning_tokens = int(session.get("reasoning_tokens") or 0)
+        # reasoning_tokens is a subset of output_tokens (the provider reports it
+        # as a breakdown of completion/output tokens), so it must NOT be added
+        # again here. This mirrors CanonicalUsage.total_tokens
+        # (agent/usage_pricing.py) = input + cache_read + cache_write + output.
         total_tokens = (
             input_tokens
             + output_tokens
             + cache_read_tokens
             + cache_write_tokens
-            + reasoning_tokens
         )
     except Exception:
         return

@@ -243,6 +243,18 @@ def test_clean_bot_trigger_text_keeps_bare_command_suffix_compact():
     assert adapter._clean_bot_trigger_text("/new@LynxBot") == "/new"
 
 
+def test_clean_bot_trigger_text_keeps_other_bot_command_suffix():
+    adapter = _make_adapter(bot_username="LynxBot")
+
+    assert adapter._clean_bot_trigger_text("/reasoning@OtherBot medium") == "/reasoning@OtherBot medium"
+
+
+def test_clean_bot_trigger_text_still_strips_leading_bot_mention():
+    adapter = _make_adapter(bot_username="LynxBot")
+
+    assert adapter._clean_bot_trigger_text("@LynxBot what did Alice say?") == "what did Alice say?"
+
+
 def test_observed_group_context_replays_as_current_message_context_not_user_turns():
     from gateway.run import (
         _build_gateway_agent_history,

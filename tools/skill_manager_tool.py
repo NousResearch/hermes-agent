@@ -879,6 +879,18 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
 
+    # ── pre_skill_edit hook (allow plugin handle / block) ──
+    from hermes_cli.plugins import invoke_hook as _invoke_skill_hook
+
+    for _hr in _invoke_skill_hook("pre_skill_edit", name=name, content=content):
+        if not isinstance(_hr, dict):
+            continue
+        _act = _hr.get("action")
+        if _act == "block":
+            return {"success": False, "error": _hr.get("reason", "Skill edit blocked by plugin")}
+        if _act == "handled":
+            return {"success": True, "message": f"Skill '{name}' edited by plugin.", "hook_handled": True}
+
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}

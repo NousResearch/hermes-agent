@@ -1632,6 +1632,11 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            # full (default): replay multimodal content unchanged. text_only:
+            # replace image/media parts in the review fork with text markers,
+            # relying on surrounding assistant vision interpretations already
+            # in the conversation. Useful for slow local multimodal models.
+            "media_replay": "full",
             "timeout": 120,
             "extra_body": {},
         },

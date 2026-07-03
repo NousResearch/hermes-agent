@@ -136,3 +136,87 @@ def test_digest_records_tool_names_in_arc():
     digest = out[0]["content"]
     assert "USER: do the thing" in digest
     assert "tools: skill_view, patch" in digest
+
+
+# ---------------------------------------------------------------------------
+# media_replay=text_only — strip media from background-review private snapshot
+# ---------------------------------------------------------------------------
+
+def test_background_review_media_replay_defaults_to_full():
+    with patch("hermes_cli.config.load_config", return_value={}):
+        assert br._background_review_media_replay_mode() == "full"
+
+
+def test_background_review_media_replay_accepts_documented_text_only_alias():
+    cfg = {"auxiliary": {"background_review": {"media_replay": "text-only"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        assert br._background_review_media_replay_mode() == "text_only"
+
+
+def test_background_review_media_replay_unknown_values_fall_back_to_full():
+    cfg = {"auxiliary": {"background_review": {"media_replay": "strip-images"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        assert br._background_review_media_replay_mode() == "full"
+
+
+def test_strip_media_parts_preserves_text_and_omits_images_without_mutating_input():
+    original = [
+        {
+            "role": "tool",
+            "content": [
+                {"type": "text", "text": "Image loaded. Question: what is visible?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        },
+        {"role": "assistant", "content": "The screenshot shows Excel with B2 selected."},
+    ]
+
+    out = br._background_review_strip_media_parts(original)
+
+    assert out is not original
+    assert original[0]["content"][1]["type"] == "image_url"  # input untouched
+    assert out[0]["content"][0] == {"type": "text", "text": "Image loaded. Question: what is visible?"}
+    assert all(part.get("type") != "image_url" for part in out[0]["content"])
+    assert "Image omitted from background review" in out[0]["content"][-1]["text"]
+    assert out[1] == original[1]
+
+
+def test_strip_media_parts_handles_multimodal_envelopes():
+    original = [{
+        "role": "tool",
+        "content": {
+            "_multimodal": True,
+            "text_summary": "capture mode=vision 100x100",
+            "content": [
+                {"type": "text", "text": "capture mode=vision 100x100"},
+                {"type": "input_image", "image_url": {"url": "data:image/png;base64,BBBB"}},
+            ],
+        },
+    }]
+
+    out = br._background_review_strip_media_parts(original)
+    content = out[0]["content"]
+
+    assert isinstance(content, str)
+    assert "capture mode=vision" in content
+    assert "data:image" not in content
+    assert "input_image" not in content
+    assert "Image omitted from background review" in content
+
+
+def test_strip_media_parts_leaves_text_only_multimodal_envelopes_unchanged():
+    original = [{
+        "role": "tool",
+        "content": {
+            "_multimodal": True,
+            "text_summary": "plain text capture metadata",
+            "content": [{"type": "text", "text": "plain text capture metadata"}],
+        },
+    }]
+
+    out = br._background_review_strip_media_parts(original)
+
+    assert out == original
+    assert out is not original
+    assert out[0]["content"] is not original[0]["content"]
+    assert "Image omitted" not in str(out[0]["content"])

@@ -295,6 +295,26 @@ identical and skill capture near-identical to the main-model review.
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
 
+### Avoiding repeated image processing in background review
+
+If your main model is a slow local multimodal model, a full-cache replay can
+still be expensive when the conversation contains screenshots or attached
+images. Keep the review on the main model but ask the review fork to omit media
+parts and rely only on text that is already present in the transcript:
+
+```yaml
+auxiliary:
+  background_review:
+    media_replay: text_only   # full (default) | text_only
+```
+
+`text_only` only changes the private background-review snapshot. The foreground
+conversation and persisted session keep their original multimodal content. The
+review snapshot keeps text that was already in the conversation, including tool
+text, multimodal `text_summary` fields, and prior assistant interpretations, but
+removes direct image/media parts and adds an explicit omitted-media marker. It
+does not create new image descriptions or match images to prior captions.
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a

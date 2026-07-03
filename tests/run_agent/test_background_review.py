@@ -473,3 +473,52 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_text_only_media_replay_strips_images_before_run(monkeypatch):
+    """media_replay=text_only transforms only the fork's private history."""
+    captured: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["conversation_history"] = kwargs["conversation_history"]
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    messages_snapshot = [
+        {
+            "role": "tool",
+            "content": [
+                {"type": "text", "text": "Image loaded into your context."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+            "tool_call_id": "call_img",
+        },
+        {"role": "assistant", "content": "The image shows Excel with B2 selected."},
+    ]
+    cfg = {"auxiliary": {"background_review": {"media_replay": "text_only"}}}
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+    agent = _bare_agent()
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_skills=True,
+    )
+
+    history = captured["conversation_history"]
+    assert history is not messages_snapshot
+    assert messages_snapshot[0]["content"][1]["type"] == "image_url"
+    assert all(part.get("type") != "image_url" for part in history[0]["content"])
+    assert "Image omitted from background review" in history[0]["content"][-1]["text"]
+    assert history[1]["content"] == "The image shows Excel with B2 selected."

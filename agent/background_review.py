@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
@@ -151,6 +152,96 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
         ),
     }
     return [digest] + keep
+
+
+_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+_BACKGROUND_REVIEW_IMAGE_OMITTED = (
+    "[Image omitted from background review. Use the surrounding tool text "
+    "and the assistant's vision interpretation already present in the "
+    "conversation instead of re-processing media.]"
+)
+
+
+def _background_review_media_replay_mode() -> str:
+    """Return the configured media replay mode for background review.
+
+    ``full`` preserves the historical behavior: the review fork receives the
+    same multimodal message parts as the foreground transcript. ``text_only``
+    omits media parts from the review snapshot while preserving text that was
+    already present in the transcript. This avoids re-running expensive vision
+    encoders for local multimodal models while keeping the change opt-in.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+        task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+        value = str(task.get("media_replay", "full") or "full").strip().lower()
+    except Exception:
+        return "full"
+    aliases = {
+        "full": "full",
+        "text_only": "text_only",
+        "text-only": "text_only",
+    }
+    return aliases.get(value, "full")
+
+
+def _background_review_strip_media_parts(messages_snapshot: List[Dict]) -> List[Dict]:
+    """Return a background-review-safe copy with media parts omitted.
+
+    The foreground conversation keeps the full multimodal transcript. This
+    helper only transforms the review fork's private snapshot, so it does not
+    affect user-visible history. Text that was already in the transcript remains
+    verbatim; image parts are removed and annotated with an explanatory text
+    marker. Existing assistant replies after ``vision_analyze`` /
+    ``computer_use`` captures remain in the transcript, so the review can use
+    that prior visual interpretation without forcing the provider to process the
+    pixels again. This helper does not create new image descriptions or match
+    images to prior captions.
+    """
+    cleaned: List[Dict] = []
+    for msg in messages_snapshot or []:
+        if not isinstance(msg, dict):
+            cleaned.append(msg)
+            continue
+        new_msg = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, list):
+            new_parts: List[Any] = []
+            omitted = 0
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES:
+                    omitted += 1
+                    continue
+                new_parts.append(deepcopy(part))
+            if omitted:
+                new_parts.append({"type": "text", "text": _BACKGROUND_REVIEW_IMAGE_OMITTED})
+            new_msg["content"] = new_parts
+        elif isinstance(content, dict) and content.get("_multimodal") is True:
+            parts = content.get("content") or []
+            has_media = any(
+                isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                for part in parts
+            )
+            if not has_media:
+                new_msg["content"] = deepcopy(content)
+                cleaned.append(new_msg)
+                continue
+            # Tool-result multimodal envelopes already carry a plain-text view
+            # for providers that cannot accept image parts. Reuse that canonical
+            # existing text for the review fork instead of preserving an
+            # envelope that still contains media.
+            try:
+                from agent.tool_dispatch_helpers import _multimodal_text_summary
+
+                summary = _multimodal_text_summary(content)
+            except Exception:
+                summary = str(content.get("text_summary") or "[multimodal tool result]")
+            new_msg["content"] = f"{summary}\n{_BACKGROUND_REVIEW_IMAGE_OMITTED}"
+        cleaned.append(new_msg)
+    return cleaned
 
 
 # Review-prompt strings — used by ``spawn_background_review_thread`` to build
@@ -777,11 +868,15 @@ def _run_review_in_thread(
             try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
-                # model -> replay the full snapshot (warm cache reads).
+                # model -> replay the full snapshot (warm cache reads), unless
+                # the user opts into text-only media replay to avoid expensive
+                # vision re-encoding on local multimodal models.
                 _review_history = (
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
+                if _background_review_media_replay_mode() == "text_only":
+                    _review_history = _background_review_strip_media_parts(_review_history)
                 review_agent.run_conversation(
                     user_message=(
                         prompt
@@ -904,4 +999,6 @@ __all__ = [
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
+    "_background_review_media_replay_mode",
+    "_background_review_strip_media_parts",
 ]

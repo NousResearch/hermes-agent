@@ -1072,6 +1072,15 @@ auxiliary:
     api_key: ""
     timeout: 30
 
+  # Background memory/skill self-improvement review
+  background_review:
+    provider: "auto"           # "auto" = main chat model; set provider+model to route elsewhere
+    model: ""
+    base_url: ""
+    api_key: ""
+    media_replay: "full"       # "full" | "text_only"; text_only omits image parts in the review fork
+    timeout: 120
+
   # Kanban triage specifier — `hermes kanban specify <id>` (or the
   # dashboard's ✨ Specify button on Triage-column cards) uses this
   # slot to expand a one-liner into a concrete spec and promote the

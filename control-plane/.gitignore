@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.orchard-state/
+run/
+data/
+config.yaml
+.env

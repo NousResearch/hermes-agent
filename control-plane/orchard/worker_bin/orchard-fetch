@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""orchard-fetch <url> [<url2> ...]  — fetch an allowlisted integration URL.
+
+The tenant's control plane writes an allowlist (integrations.json) and the
+tenant's tokens (secrets.json) into this HERMES_HOME. This helper:
+  * refuses any URL whose host is NOT in the integration allowlist,
+  * auto-injects the right auth header (token read here, never on the command
+    line, never printed),
+  * prints the response body to stdout.
+
+Because it's a plain executable (not `curl | sh` / `python3 -c`), Hermes' security
+scanner does not prompt for it. Usage from a skill:
+    "$HERMES_HOME/bin/orchard-fetch" "$GITHUB_API_URL/user/repos?per_page=20"
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+def _home() -> str:
+    return os.environ.get("HERMES_HOME") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+
+
+def _load(name: str) -> dict:
+    try:
+        with open(os.path.join(_home(), name)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _match(host: str, domains: dict) -> dict | None:
+    for d, cfg in domains.items():
+        if host == d or host.endswith("." + d):
+            return cfg
+    return None
+
+
+def _fetch(url: str) -> int:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    domains = _load("integrations.json").get("domains", {})
+    cfg = _match(host, domains)
+    if cfg is None:
+        sys.stderr.write(
+            f"orchard-fetch: '{host}' is not an allowlisted integration domain. "
+            f"Allowed: {sorted(domains)}\n"
+        )
+        return 3
+
+    secrets = _load("secrets.json")
+    token_env = cfg.get("token_env") or ""
+    token = secrets.get(token_env) or os.environ.get(token_env, "")
+
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", cfg.get("accept", "application/json"))
+    if token:
+        auth = cfg.get("auth", "bearer")
+        if auth == "basic":
+            user_env = cfg.get("user_env", "")
+            user = secrets.get(user_env) or os.environ.get(user_env, "")
+            blob = base64.b64encode(f"{user}:{token}".encode()).decode()
+            req.add_header("Authorization", "Basic " + blob)
+        else:  # bearer
+            req.add_header("Authorization", "Bearer " + token)
+    else:
+        sys.stderr.write(
+            f"orchard-fetch: no token for {host} (env {token_env} empty). "
+            "Ask the user to connect the integration first.\n"
+        )
+        return 4
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            sys.stdout.write(r.read().decode("utf-8", "replace"))
+        return 0
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:800]
+        sys.stderr.write(f"HTTP {e.code} from {host}: {body}\n")
+        return 10 + (1 if e.code == 401 else 0)  # 11 => unauthorized/expired
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"orchard-fetch error: {type(e).__name__}: {e}\n")
+        return 1
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write("usage: orchard-fetch <url> [<url> ...]\n")
+        return 2
+    rc = 0
+    for url in sys.argv[1:]:
+        rc = _fetch(url) or rc
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

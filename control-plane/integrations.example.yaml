@@ -1,0 +1,45 @@
+# Integration catalog — the "our integrations" list shown in the dashboard.
+# Admin-curated, single common source. Split per field:
+#   secret: true   -> a TOKEN, entered by each employee via the one-time form
+#                     (per-employee, never shown).
+#   secret: false  -> COMMON org config (URLs, emails...) with a `value` here —
+#                     one value for everyone, injected into all workers. Not
+#                     stored per-employee. Edit it once, right here.
+# Copy to integrations.yaml and adjust.
+integrations:
+  - id: github
+    name: GitHub
+    icon: "🐙"
+    docs_url: "https://github.com/settings/tokens"
+    auth: bearer                              # how orchard-fetch authenticates
+    accept: "application/vnd.github+json"
+    fields:
+      - { env: GITHUB_API_URL, label: "GitHub API base URL", secret: false, value: "https://api.github.com" }
+      - { env: GITHUB_TOKEN,   label: "Personal access token (classic)", secret: true }
+
+  - id: gitlab
+    name: GitLab
+    icon: "🦊"
+    docs_url: "https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html"
+    fields:
+      - { env: GITLAB_URL,   label: "GitLab base URL", secret: false, value: "https://gitlab.corp.internal" }
+      - { env: GITLAB_TOKEN, label: "Personal access token", secret: true }
+
+  - id: jira
+    name: Jira
+    icon: "🧩"
+    docs_url: "https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/"
+    fields:
+      - { env: JIRA_URL,   label: "Jira base URL", secret: false, value: "https://corp.atlassian.net" }
+      - { env: JIRA_TOKEN, label: "API token",     secret: true }
+      # Model rule (basic): non-secret = COMMON (one value for everyone).
+      # Anything that's per-person (e.g. an account email) should be a token or
+      # wait for the future `scope: per_employee` field — keep it out for now.
+
+  - id: wiki
+    name: Confluence Wiki
+    icon: "📚"
+    docs_url: "https://support.atlassian.com/confluence-cloud/"
+    fields:
+      - { env: CONFLUENCE_URL,   label: "Wiki base URL", secret: false, value: "https://corp.atlassian.net/wiki" }
+      - { env: CONFLUENCE_TOKEN, label: "API token",     secret: true }

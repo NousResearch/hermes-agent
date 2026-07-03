@@ -1,0 +1,36 @@
+# Demo config for the local end-to-end loop.
+# Points at the REAL DeepSeek API so provisioned workers actually answer.
+# In production, base_url would be your internal on-prem endpoint.
+llm:
+  model: "deepseek-v4-flash"
+  provider: "deepseek"
+  base_url: "https://api.deepseek.com/v1"
+  api_key_env: "ORCHARD_LLM_API_KEY"
+  reasoning_effort: "none"
+paths:
+  root: "./data"
+  runtime: "./run"
+  registry_db: "./data/orchard.db"
+# Absolute path to the Hermes executable (its own venv).
+hermes_bin: "/Users/stanislav/hermes-agent/.venv/bin/hermes"
+supervisor:
+  max_active_workers: 5
+  idle_ttl_seconds: 900
+  warm_pool_size: 0
+  wake_timeout_seconds: 120
+security:
+  run_as_user: null        # dev: workers share this OS user...
+  sandbox: "seatbelt"      # ...but confine each worker to its own dir via macOS sandbox
+  home_mode: "0700"
+  secret_mode: "0600"
+  require_provisioned: true
+  auto_provision: true     # first message from an unknown user -> auto-create their profile
+backend: "local"
+secrets:
+  store: "local"
+  form_base_url: "http://127.0.0.1:8700"
+  link_ttl_seconds: 900
+skills:
+  shared_dir: "./skills-base"      # admin-curated read-only base skills
+integrations:
+  catalog_file: "./integrations.example.yaml"

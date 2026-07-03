@@ -36,19 +36,19 @@ async def _run_one_notifier_tick(monkeypatch, runner):
     await runner._kanban_notifier_watcher(interval=1)
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, platform=Platform.TELEGRAM):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._kanban_sub_fail_counts = {}
     return runner
 
 
-def _create_completed_subscription(summary="done once"):
+def _create_completed_subscription(summary="done once", platform="telegram"):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="notify once", assignee="worker")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_notify_sub(conn, task_id=tid, platform=platform, chat_id="chat-1")
         kb.complete_task(conn, tid, summary=summary)
         return tid
     finally:
@@ -88,6 +88,28 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     assert adapter.sent[0]["text"] == "done once"
     assert "カンバン" not in adapter.sent[0]["text"]
     assert tid not in adapter.sent[0]["text"]
+
+
+def test_discord_completion_strips_generic_no_op_safety_footer(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-completion.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "現在時刻を確認しました。2026-07-03 17:41:51 JST（+0900）です。"
+        "外部サービス変更、公開、削除、GitHub push、VPS変更は行っていません。"
+    )
+    _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["text"] == "現在時刻を確認しました。2026-07-03 17:41:51 JST（+0900）です。"
+    assert "外部サービス変更" not in adapter.sent[0]["text"]
+    assert "GitHub push" not in adapter.sent[0]["text"]
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

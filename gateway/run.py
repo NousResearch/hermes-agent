@@ -141,6 +141,13 @@ _KANBAN_COMPLETION_INTERNAL_DETAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DISCORD_NO_OP_SAFETY_FOOTERS = (
+    "外部サービス変更、公開、削除、GitHub push、VPS変更は行っていません。",
+    "外部サービス変更、公開、削除、GitHub push/PR、VPS変更は行っていません。",
+    "実装・公開・GitHub push・VPS変更は行っていません。",
+    "外部送信、公開、削除、GitHub push/PR、VPS変更、本番再起動は行っていません。",
+)
+
 
 def _discord_sanitize_completion_summary(text: str) -> str:
     """Keep Discord completion summaries human-facing while preserving facts."""
@@ -156,6 +163,9 @@ def _discord_sanitize_completion_summary(text: str) -> str:
     cleaned = "\n".join(kept_lines).strip()
     if not cleaned:
         return ""
+
+    for footer in _DISCORD_NO_OP_SAFETY_FOOTERS:
+        cleaned = cleaned.replace(footer, "")
 
     cleaned = re.sub(
         r"調査レポートとJSONをワークスペースに保存し、?",
@@ -175,6 +185,8 @@ def _discord_sanitize_completion_summary(text: str) -> str:
         "削除・archive・設定変更など外部影響のある操作は行っていません。",
         "削除やアーカイブ、設定変更はしていません。",
     )
+    cleaned = re.sub(r"\s+。", "。", cleaned)
+    cleaned = re.sub(r"。{2,}", "。", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned[:500].rstrip()
 

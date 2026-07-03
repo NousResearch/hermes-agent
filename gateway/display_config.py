@@ -83,7 +83,11 @@ _TIER_MINIMAL = {
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
     "telegram":    {**_TIER_HIGH, "tool_progress": "new"},
-    "discord":     {**_TIER_HIGH, "final_response_edits_progress": True},
+    "discord":     {
+        **_TIER_HIGH,
+        "tool_progress": "off",
+        "final_response_edits_progress": False,
+    },
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;

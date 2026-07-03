@@ -29,9 +29,11 @@ def test_discord_status_suppresses_internal_noise_like_telegram():
     """Discord should keep chat clean from gateway/internal lifecycle chatter."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
     preflight = "📦 Preflight compression: ~138,265 tokens >= 136,000 threshold. This may take a moment."
+    working = "確認します。"
 
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", preflight) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "interim", working) is None
     assert _sanitize_gateway_final_response(Platform.DISCORD, preflight) == ""
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
@@ -94,13 +96,9 @@ def test_discord_status_strips_only_known_gateway_chrome_prefixes():
     normal = "ユーザー本文の絵文字は残す 😄"
     code = "```python\nprint('⚠️ hello')\n```"
 
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", gateway) == (
-        "Gateway再起動中です。復旧後の次の返答に回しました。"
-    )
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", restart) == (
-        "Gateway restarted successfully. Your session continues."
-    )
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", normal) == normal
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", gateway) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", restart) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", normal) is None
     assert _sanitize_gateway_final_response(Platform.DISCORD, code) == code
 
 
@@ -123,6 +121,6 @@ def test_telegram_existing_status_display_is_preserved():
 def test_discord_gateway_chrome_static_paths_are_covered():
     source = Path(__import__("gateway.run").run.__file__).read_text()
 
-    assert "send_msg = _strip_discord_gateway_chrome_emoji(msg) if platform == Platform.DISCORD else msg" in source
+    assert "source.platform not in {Platform.WEBHOOK, Platform.DISCORD}" in source
     assert "warning_message = _strip_discord_gateway_chrome_emoji(warning_message)" in source
-    assert 'emoji = "" if source.platform == Platform.DISCORD else get_tool_emoji' in source
+    assert "if source.platform == Platform.DISCORD:" in source

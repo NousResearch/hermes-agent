@@ -180,14 +180,14 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all' tool progress; Telegram is in tier_high
-        but overrides tool_progress to 'new' (less edit pressure)."""
+        """Telegram keeps compact progress; Discord defaults to final-only."""
         from gateway.display_config import resolve_display_setting
 
         # Telegram: tier_high member with tool_progress="new" override.
         assert resolve_display_setting({}, "telegram", "tool_progress") == "new"
-        # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        # Discord: native typing indicator + final answer only.
+        assert resolve_display_setting({}, "discord", "tool_progress") == "off"
+        assert resolve_display_setting({}, "discord", "final_response_edits_progress") is False
 
     def test_medium_tier_platforms(self):
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""

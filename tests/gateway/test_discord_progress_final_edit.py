@@ -139,7 +139,7 @@ def _install_fakes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discord_progress_updates_one_message_and_returns_edit_target(monkeypatch, tmp_path):
+async def test_discord_suppresses_tool_progress_and_returns_final_only(monkeypatch, tmp_path):
     adapter = DiscordProgressAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch)
@@ -157,15 +157,10 @@ async def test_discord_progress_updates_one_message_and_returns_edit_target(monk
     )
 
     assert result["final_response"] == "done"
-    assert result["final_response_edits_progress"] is True
-    assert result["progress_message_id"] == adapter.sent[0]["message_id"]
-    assert len(adapter.sent) == 1
-    assert adapter.edits
-    assert adapter.edits[-1]["message_id"] == adapter.sent[0]["message_id"]
-    assert "\n" not in adapter.edits[-1]["content"]
-    assert "ファイル検索" in adapter.edits[-1]["content"]
-    assert "スキル確認" not in adapter.edits[-1]["content"]
-    assert "端末確認" not in adapter.edits[-1]["content"]
+    assert result.get("final_response_edits_progress") is not True
+    assert "progress_message_id" not in result
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

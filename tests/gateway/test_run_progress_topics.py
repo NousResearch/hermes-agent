@@ -153,7 +153,7 @@ class LongPreviewAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
+        self.tool_progress_callback("tool.started", "web_search", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -170,7 +170,7 @@ class DelayedProgressAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.tool_progress_callback("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
-        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        self.tool_progress_callback("tool.started", "search_files", "second command", {})
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -189,13 +189,13 @@ class ManyProgressLinesAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         cb = self.tool_progress_callback
         assert cb is not None
-        cb("tool.started", "terminal", "first-short", {})
+        cb("tool.started", "web_search", "first-short", {})
         # Let the progress task create the first editable bubble, then enqueue
         # the rest quickly.  The cancellation drain must roll them into fresh
         # editable bubbles instead of trying to edit the first one past limit.
         time.sleep(0.35)
         for idx in range(1, 8):
-            cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
+            cb("tool.started", "web_search", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -283,7 +283,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '💻 端末確認: "必要な確認を実行中"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -885,6 +885,54 @@ async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_discord_suppresses_interim_commentary_even_when_enabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-discord-commentary-off",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": True,
+            },
+        },
+        platform=Platform.DISCORD,
+        chat_id="dm-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert result.get("already_sent") is not True
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_discord_suppresses_streaming_even_when_enabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-discord-streaming-off",
+        config_data={
+            "display": {"streaming": True, "interim_assistant_messages": True},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.DISCORD,
+        chat_id="dm-2",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert result.get("already_sent") is not True
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
 async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -1038,19 +1086,19 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
 
-    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.DISCORD,
+        platform=Platform.TELEGRAM,
         chat_id="dm-1",
         chat_type="dm",
         thread_id=None,
     )
-    session_key = "agent:main:discord:dm:dm-1"
+    session_key = "agent:main:telegram:dm:dm-1"
     runner._session_run_generation[session_key] = 1
 
     original_send = adapter.send
@@ -1058,7 +1106,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
 
     async def send_and_invalidate(chat_id, content, reply_to=None, metadata=None):
         result = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if "first command" in content and not invalidated["done"]:
+        if "端末確認" in content and not invalidated["done"]:
             invalidated["done"] = True
             runner._invalidate_session_run_generation(session_key, reason="test_stop")
         return result
@@ -1078,8 +1126,8 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     all_progress_text = " ".join(call["content"] for call in adapter.sent)
     all_progress_text += " ".join(call["content"] for call in adapter.edits)
     assert result["final_response"] == "done"
-    assert 'first command' in all_progress_text
-    assert 'second command' not in all_progress_text
+    assert "端末確認" in all_progress_text
+    assert "ファイル検索" not in all_progress_text
 
 
 @pytest.mark.asyncio
@@ -1099,19 +1147,19 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
     fake_run_agent.AIAgent = DelayedInterimAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.DISCORD,
+        platform=Platform.TELEGRAM,
         chat_id="dm-2",
         chat_type="dm",
         thread_id=None,
     )
-    session_key = "agent:main:discord:dm:dm-2"
+    session_key = "agent:main:telegram:dm:dm-2"
     runner._session_run_generation[session_key] = 1
 
     original_send = adapter.send

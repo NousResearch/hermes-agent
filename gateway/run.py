@@ -487,10 +487,10 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     platform_value = _gateway_platform_value(platform)
     if platform_value == "discord":
-        redacted = _redact_gateway_user_facing_secrets(text)
-        if _TELEGRAM_NOISY_STATUS_RE.search(redacted):
-            return None
-        return _strip_discord_gateway_chrome_emoji(redacted)
+        # Discord should not receive lifecycle/interim status callbacks such
+        # as "確認します" or compression/tool notices. The final response path
+        # remains responsible for user-visible answers and errors.
+        return None
 
     if platform_value != "telegram":
         return text
@@ -16111,8 +16111,13 @@ class GatewayRunner:
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
+        # Discord uses only the native typing indicator plus the final answer;
+        # persistent "端末確認" / "ファイル検索" status bubbles are too noisy there.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform not in {Platform.WEBHOOK, Platform.DISCORD}
+        )
         _final_response_edits_progress = bool(
             resolve_display_setting(
                 user_config,
@@ -16121,15 +16126,15 @@ class GatewayRunner:
                 False,
             )
         )
-        # Discord should leave one clean final answer, not separate tool-log
-        # bubbles. Other platforms keep their existing progress behavior.
-        if source.platform != Platform.DISCORD:
+        # A final response can edit a progress bubble only when this run
+        # actually created one. Discord intentionally creates none.
+        if source.platform != Platform.DISCORD or not tool_progress_enabled:
             _final_response_edits_progress = False
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            source.platform not in {Platform.WEBHOOK, Platform.DISCORD}
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,
@@ -16281,7 +16286,7 @@ class GatewayRunner:
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
                     label, clean_preview = _japanese_tool_progress(tool_name, preview)
-                    msg = f"{prefix}{label}: {clean_preview or '実行中'}"
+                    msg = f"{prefix}{label}: {args_str or clean_preview or '実行中'}"
                 elif preview:
                     label, clean_preview = _japanese_tool_progress(tool_name, preview)
                     msg = f"{prefix}{label}: \"{clean_preview}\""
@@ -16891,6 +16896,8 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            if source.platform == Platform.DISCORD:
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             if _final_response_edits_progress:

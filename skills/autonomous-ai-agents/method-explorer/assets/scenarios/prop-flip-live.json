@@ -1,0 +1,42 @@
+{
+  "intent": "obtain data with key ok; a local cache is also available",
+  "default": "tombstone",
+  "notes": "reachability-flip VARIANT (success reachable)",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "primary down"
+    },
+    {
+      "id": "r-bravo",
+      "match": {
+        "action_contains": "bravo"
+      },
+      "outcome": "tombstone",
+      "reason": "mirror down"
+    },
+    {
+      "id": "r-charlie",
+      "match": {
+        "action_contains": "charlie"
+      },
+      "outcome": "progress",
+      "reason": "cache now available",
+      "opens": [
+        "delta"
+      ]
+    },
+    {
+      "id": "r-delta",
+      "match": {
+        "action_contains": "delta"
+      },
+      "outcome": "success",
+      "reason": "verified valid JSON with key ok"
+    }
+  ]
+}

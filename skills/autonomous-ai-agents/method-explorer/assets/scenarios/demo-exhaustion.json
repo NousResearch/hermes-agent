@@ -1,0 +1,15 @@
+{
+  "intent": "obtain the data from the only available source",
+  "default": "tombstone",
+  "notes": "demo: exhaustion",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "the sole source is unreachable"
+    }
+  ]
+}

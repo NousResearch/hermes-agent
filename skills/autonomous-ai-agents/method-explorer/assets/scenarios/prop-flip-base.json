@@ -1,0 +1,31 @@
+{
+  "intent": "obtain data with key ok; only these sources exist and all are down",
+  "default": "tombstone",
+  "notes": "reachability-flip BASE (no success path)",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "primary down"
+    },
+    {
+      "id": "r-bravo",
+      "match": {
+        "action_contains": "bravo"
+      },
+      "outcome": "tombstone",
+      "reason": "mirror down"
+    },
+    {
+      "id": "r-charlie",
+      "match": {
+        "action_contains": "charlie"
+      },
+      "outcome": "tombstone",
+      "reason": "cache also unavailable"
+    }
+  ]
+}

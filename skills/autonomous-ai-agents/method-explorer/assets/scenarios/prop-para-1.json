@@ -1,0 +1,42 @@
+{
+  "intent": "Be careful and verify the evidence: produce a data file containing valid JSON with a top-level key \"ok\"",
+  "default": "tombstone",
+  "notes": "paraphrase variant 1",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "primary network source is down"
+    },
+    {
+      "id": "r-bravo",
+      "match": {
+        "action_contains": "bravo"
+      },
+      "outcome": "tombstone",
+      "reason": "mirror network source is down"
+    },
+    {
+      "id": "r-charlie",
+      "match": {
+        "action_contains": "charlie"
+      },
+      "outcome": "progress",
+      "reason": "local cache hit",
+      "opens": [
+        "delta"
+      ]
+    },
+    {
+      "id": "r-delta",
+      "match": {
+        "action_contains": "delta"
+      },
+      "outcome": "success",
+      "reason": "verified valid JSON with key ok"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "intent": "have legal cover in place to start the project Friday",
+  "default": "tombstone",
+  "notes": "Necessity / dissolution (algorithm-spec §8.2, propose-and-log default). The happy path treats 'obtain a signed contract' as an instrumental sub-goal, but every signed-contract method tombstones (standard contract, redline the clause, their template, counter-sign). A signed contract was only an ASSUMED method: the PARENT desire 'legal cover to start' is reachable another way that BYPASSES the sub-goal — a letter of intent or a purchase order — which progresses to success via 'verify'. Expected: once the contract methods are exhausted, the planner RECORDS a dispensability/necessity judgement (propose-and-log, NOT a silent prune), climbs, and reaches legal cover via the bypass. Fully side-effect-free: every outcome comes from a rule or the tombstone default; no rule runs a real action.",
+  "rules": [
+    { "id": "r-standard",    "match": { "action_contains": "standard" }, "outcome": "tombstone", "reason": "vendor rejects a clause in our standard contract" },
+    { "id": "r-redline",     "match": { "action_contains": "redline" },  "outcome": "tombstone", "reason": "the redlined clause is still rejected" },
+    { "id": "r-template",    "match": { "action_contains": "template" }, "outcome": "tombstone", "reason": "their template adds an unacceptable indemnity clause" },
+    { "id": "r-countersign", "match": { "action_contains": "counter" },  "outcome": "tombstone", "reason": "counter-signature stalls in their legal queue past Friday" },
+    { "id": "r-sign",        "match": { "action_contains": "sign" },     "outcome": "tombstone", "reason": "no signature is reachable before Friday" },
+    { "id": "r-contract",    "match": { "action_contains": "contract" }, "outcome": "tombstone", "reason": "every signed-contract method is blocked" },
+    { "id": "r-letter",      "match": { "action_contains": "letter" },   "outcome": "progress",  "reason": "a letter of intent gives legal cover to start", "opens": ["verify"] },
+    { "id": "r-purchase",    "match": { "action_contains": "purchase" }, "outcome": "progress",  "reason": "a purchase order gives legal cover to start", "opens": ["verify"] },
+    { "id": "r-verify",      "match": { "action_contains": "verify" },   "outcome": "success",   "reason": "legal cover confirmed in place to start Friday" }
+  ]
+}

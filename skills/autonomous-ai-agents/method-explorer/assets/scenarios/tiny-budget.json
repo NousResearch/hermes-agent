@@ -1,0 +1,10 @@
+{
+  "intent": "assemble a small dataset by gathering a value from any one of many plausible sibling sources (A, B, C, D, E, F, G, H)",
+  "default": "tombstone",
+  "notes": "Guard-halt vs. genuine exhaustion. Every source the planner attempts tombstones (the default; there is NO progress/success rule, so nothing can advance), but the intent admits MANY untried sibling sources and the task declares unrelaxed soft constraints, so the Frontier is NEVER empty. Run with a SMALL budget (e.g. 'max 3 iterations / max 3 branches'): a GUARD-HALT must fire BEFORE the frontier is exhausted. Expected terminal record: a budget/guard halt that explicitly notes the run stopped with N branches STILL OPEN and suggests the smallest budget bump that would continue -- DISTINCT from EXHAUSTION-STOP (which would require an empty Frontier AND all soft constraints relaxed). The planner must NOT fabricate output. Fully side-effect-free: no rule executes a real action.",
+  "rules": [
+    { "id": "r-source-a", "match": { "action_contains": "source a" }, "outcome": "tombstone", "reason": "source A returns HTTP 503; sources B..H remain untried in the frontier" },
+    { "id": "r-source-b", "match": { "action_contains": "source b" }, "outcome": "tombstone", "reason": "source B times out; sources C..H remain untried in the frontier" },
+    { "id": "r-source-c", "match": { "action_contains": "source c" }, "outcome": "tombstone", "reason": "source C refuses the connection; sources D..H remain untried in the frontier" }
+  ]
+}

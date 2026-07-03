@@ -1,0 +1,15 @@
+{
+  "intent": "obtain the data from the only source",
+  "default": "tombstone",
+  "notes": "locality-at-exhaustion: sole source down is LOCAL-transient",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "the only source, and it is unreachable right now"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "intent": "produce a local data file containing valid JSON with the key \"ok\", obtained from the primary network source",
+  "default": "tombstone",
+  "notes": "D* Lite / context-scoped reopen (algorithm-spec §4.1). The primary network fetch tombstones under the STATED killing-assumption 'the network is down' (r-primary-down, occurrence 1). A later connectivity probe flips that assumption — 'the network is back up' (r-probe-up, fires only once >=1 tombstone is already journaled, via after_tombstones). Because the cited killing-assumption has DEMONSTRABLY changed, the stale primary tombstone is no longer valid and may be reopened: the second primary attempt now progresses (r-primary-up, occurrence 2) and verifies to success. The reopen must occur ONLY after the probe shows the assumption changed — never on a hunch. Fully side-effect-free: every outcome comes from a rule or the tombstone default; no rule executes a real action. Run with a task that states the network-down assumption and its later flip, and that forbids cache/mirror so the reopened primary is the only path to the intent.",
+  "rules": [
+    { "id": "r-primary-down", "match": { "action_contains": "primary" }, "on_occurrence": 1, "outcome": "tombstone", "reason": "primary fetch fails: connection refused. KILLING ASSUMPTION = the network is DOWN (no connectivity)." },
+    { "id": "r-primary-up",   "match": { "action_contains": "primary" }, "on_occurrence": 2, "outcome": "progress",  "reason": "primary fetch now returns HTTP 200 + JSON with key \"ok\": it succeeds because the network is BACK UP — the cited killing-assumption 'network down' has CHANGED, so the stale tombstone was correctly reopened (D* Lite).", "opens": ["verify"] },
+    { "id": "r-probe-up",     "match": { "action_contains": "connectivity" }, "after_tombstones": 1, "outcome": "progress", "reason": "connectivity probe succeeds: the network is BACK UP again. The cited killing-assumption 'the network is down' has DEMONSTRABLY CHANGED — the primary-fetch tombstone is now stale and may be reopened.", "opens": ["primary"] },
+    { "id": "r-verify",       "match": { "action_contains": "verify" }, "outcome": "success", "reason": "file parses as JSON and contains the key \"ok\" — intent satisfied via the reopened primary source." }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "intent": "produce data with key ok (network preferred)",
+  "default": "tombstone",
+  "notes": "driver resume integration",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "primary source down"
+    },
+    {
+      "id": "r-charlie",
+      "match": {
+        "action_contains": "charlie"
+      },
+      "outcome": "progress",
+      "reason": "local cache hit",
+      "opens": [
+        "delta"
+      ]
+    },
+    {
+      "id": "r-delta",
+      "match": {
+        "action_contains": "delta"
+      },
+      "outcome": "success",
+      "reason": "verified valid result"
+    }
+  ]
+}

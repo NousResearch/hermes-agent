@@ -1,0 +1,17 @@
+{
+  "intent": "produce a local data file containing valid JSON with the key \"ok\"",
+  "default": "tombstone",
+  "notes": "Forces the network-family methods (primary, then mirror) to tombstone. With the network siblings exhausted, the loop makes an ORDINARY backtrack: relax the soft constraint 'prefer a fresh network source' and take the local path, which progresses to success. This is NOT the K=5 upstream-jump heuristic (that fires only when K consecutive siblings tombstone while MORE untried siblings remain) — it is simply running out of network siblings and backing up. Fully side-effect-free: every node's outcome comes from a rule or the tombstone default; no rule executes a real action. Run with a task that declares the soft constraint 'prefer fresh network source over local cache'.",
+  "rules": [
+    { "id": "r-primary", "match": { "action_contains": "primary" }, "outcome": "tombstone", "reason": "primary source A returns HTTP 503" },
+    { "id": "r-mirror",  "match": { "action_contains": "mirror" },  "outcome": "tombstone", "reason": "mirror B times out (network unreachable)" },
+    { "id": "r-network", "match": { "action_contains": "network" }, "outcome": "tombstone", "reason": "every network source is down" },
+    { "id": "r-remote",  "match": { "action_contains": "remote" },  "outcome": "tombstone", "reason": "remote endpoint refuses connection" },
+    { "id": "r-fetch",   "match": { "action_contains": "fetch" },   "outcome": "tombstone", "reason": "remote fetch fails (no connectivity)" },
+    { "id": "r-download","match": { "action_contains": "download" },"outcome": "tombstone", "reason": "download fails (no connectivity)" },
+    { "id": "r-cache",   "match": { "action_contains": "cache" },   "outcome": "progress", "reason": "local cache hit", "opens": ["verify"] },
+    { "id": "r-local",   "match": { "action_contains": "local" },   "outcome": "progress", "reason": "local copy available", "opens": ["verify"] },
+    { "id": "r-write",   "match": { "action_contains": "write" },   "outcome": "progress", "reason": "simulated write succeeds" },
+    { "id": "r-verify",  "match": { "action_contains": "verify" },  "outcome": "success",  "reason": "file parses as JSON and contains key \"ok\"" }
+  ]
+}

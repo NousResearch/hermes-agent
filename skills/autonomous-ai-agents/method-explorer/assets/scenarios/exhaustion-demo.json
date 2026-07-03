@@ -1,0 +1,6 @@
+{
+  "intent": "obtain data available only from a single hard-constrained, unreachable source",
+  "default": "tombstone",
+  "notes": "Every attempt tombstones and the task declares NO soft constraints, so the Frontier empties with nothing left to relax. Expected: EXHAUSTION-STOP with a structured no-viable-path report (blocking hard constraint + unblock condition), NO fabricated output, and a verdict distinguishable from a guard-halt. Run with a task whose hard constraint forbids any alternative source or fabrication.",
+  "rules": []
+}

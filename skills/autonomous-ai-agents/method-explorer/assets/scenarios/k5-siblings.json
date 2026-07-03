@@ -1,0 +1,18 @@
+{
+  "intent": "secure a working build of the release artifact, honoring the single ranked soft constraint 'prefer the in-house native build pipeline over an external alternative build service'",
+  "default": "tombstone",
+  "notes": "Five DISTINCT sibling methods (attempt-a..attempt-e) under one parent decision 'use the in-house native pipeline' each tombstone. Per the skill's upstream-jump heuristic (K=5), after 5 sibling tombstones the planner must stop trying siblings, climb to the parent decision, and RELAX the soft constraint 'prefer in-house' to take the external ALTERNATIVE path, which then progresses to success. Side-effect-free: every outcome comes from a rule or the tombstone default; no rule runs a real action. LABELING CONTRACT for the run: label the five sibling attempts 'attempt-a'..'attempt-e' (collectively 'sibling' / 'method'); reserve the words 'relax', 'upstream', and 'alternative' EXCLUSIVELY for the post-K upstream-jump move so the progress rules fire only there. Progress rules are ordered after the five specific sibling rules and before the generic 'method' tombstone so the relaxed path always wins.",
+  "rules": [
+    { "id": "r-attempt-a",  "match": { "action_contains": "attempt-a" },   "outcome": "tombstone", "reason": "native build config A fails: toolchain mismatch" },
+    { "id": "r-attempt-b",  "match": { "action_contains": "attempt-b" },   "outcome": "tombstone", "reason": "native build config B fails: missing in-house dependency" },
+    { "id": "r-attempt-c",  "match": { "action_contains": "attempt-c" },   "outcome": "tombstone", "reason": "native build config C fails: incompatible compiler flags" },
+    { "id": "r-attempt-d",  "match": { "action_contains": "attempt-d" },   "outcome": "tombstone", "reason": "native build config D fails: pipeline cache corrupt" },
+    { "id": "r-attempt-e",  "match": { "action_contains": "attempt-e" },   "outcome": "tombstone", "reason": "native build config E fails: in-house runner offline" },
+    { "id": "r-sibling",    "match": { "action_contains": "sibling" },     "outcome": "tombstone", "reason": "another in-house sibling config fails the same way" },
+    { "id": "r-relax",      "match": { "action_contains": "relax" },       "outcome": "progress", "reason": "relaxed soft constraint 'prefer in-house'; the external alternative becomes admissible", "opens": ["finalize"] },
+    { "id": "r-upstream",   "match": { "action_contains": "upstream" },    "outcome": "progress", "reason": "upstream jump: parent decision 'use in-house pipeline' is the suspect; climb and re-chart", "opens": ["finalize"] },
+    { "id": "r-alternative","match": { "action_contains": "alternative" }, "outcome": "progress", "reason": "external alternative build service produces the artifact", "opens": ["finalize"] },
+    { "id": "r-method",     "match": { "action_contains": "method" },      "outcome": "tombstone", "reason": "yet another in-house method fails the same way" },
+    { "id": "r-finalize",   "match": { "action_contains": "finalize" },    "outcome": "success", "reason": "release artifact built and verified; intent satisfied" }
+  ]
+}

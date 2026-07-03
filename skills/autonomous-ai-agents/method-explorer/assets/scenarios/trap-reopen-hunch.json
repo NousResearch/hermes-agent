@@ -1,0 +1,23 @@
+{
+  "intent": "obtain the data",
+  "default": "tombstone",
+  "notes": "TRAP: tempt re-expanding a dead method with no assumption change",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "down"
+    },
+    {
+      "id": "r-bravo",
+      "match": {
+        "action_contains": "bravo"
+      },
+      "outcome": "tombstone",
+      "reason": "down"
+    }
+  ]
+}

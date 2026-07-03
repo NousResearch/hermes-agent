@@ -1,0 +1,42 @@
+{
+  "intent": "obtain the data",
+  "default": "tombstone",
+  "notes": "locality-label regression: network-down is LOCAL-transient",
+  "rules": [
+    {
+      "id": "r-alfa",
+      "match": {
+        "action_contains": "alfa"
+      },
+      "outcome": "tombstone",
+      "reason": "primary network source is down"
+    },
+    {
+      "id": "r-bravo",
+      "match": {
+        "action_contains": "bravo"
+      },
+      "outcome": "tombstone",
+      "reason": "mirror network source is down"
+    },
+    {
+      "id": "r-charlie",
+      "match": {
+        "action_contains": "charlie"
+      },
+      "outcome": "progress",
+      "reason": "local cache hit",
+      "opens": [
+        "delta"
+      ]
+    },
+    {
+      "id": "r-delta",
+      "match": {
+        "action_contains": "delta"
+      },
+      "outcome": "success",
+      "reason": "verified valid JSON with key ok"
+    }
+  ]
+}

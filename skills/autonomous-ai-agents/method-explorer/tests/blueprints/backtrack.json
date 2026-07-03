@@ -1,0 +1,17 @@
+{
+  "id": "backtrack",
+  "intent": "produce a data file containing valid JSON with a top-level key \"ok\"",
+  "meanings": {
+    "alfa": "fetch from the primary network source",
+    "bravo": "fetch from the mirror network source",
+    "charlie": "read the local cache",
+    "delta": "verify the file is valid JSON with key ok"
+  },
+  "methods": [
+    {"tag": "alfa", "outcome": "tombstone", "reason": "primary network source is down"},
+    {"tag": "bravo", "outcome": "tombstone", "reason": "mirror network source is down"},
+    {"tag": "charlie", "outcome": "progress", "opens": ["delta"], "reason": "local cache hit"},
+    {"tag": "delta", "outcome": "success", "reason": "verified valid JSON with key ok"}
+  ],
+  "base_terminal": "success"
+}

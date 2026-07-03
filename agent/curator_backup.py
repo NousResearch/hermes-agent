@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ def _load_config() -> Dict[str, Any]:
 
 def is_enabled() -> bool:
     """Default ON — the whole point of the backup is safety by default."""
-    return bool(_load_config().get("enabled", True))
+    return is_truthy_value(_load_config().get("enabled", True))
 
 
 def get_keep() -> int:

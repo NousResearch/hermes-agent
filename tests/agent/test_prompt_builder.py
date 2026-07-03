@@ -415,6 +415,42 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_guidance_loads_skills_when_material_to_execution_not_any_relevance(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "materially change how you execute or verify" in result
+        assert "simple factual answers" in result
+        assert "low-risk copy/wording" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" not in result
+
+    def test_guidance_preserves_mandatory_high_risk_skill_loading(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Configure Hermes Agent\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "load the `hermes-agent` skill first" in result
+        assert "code changes, tests, PR/review" in result
+        assert "production, billing, or customer-data" in result
+        assert "If the user names a skill" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

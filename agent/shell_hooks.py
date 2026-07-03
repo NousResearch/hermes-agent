@@ -552,6 +552,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
+        # The approval covers the script bytes it saw (sha256 pinned in the allowlist): bytes changed
+        # since, by an update, a pull or an edit, run only once approved again.
+        if changed := _unapproved_change(spec):
+            return _fail_closed_block(spec, changed) if spec.fail_closed and spec.event in _BLOCKING_EVENTS else None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
@@ -864,6 +868,61 @@ def script_content_hash(command: str) -> Optional[str]:
             return hashlib.sha256(fh.read()).hexdigest()
     except OSError:
         return None
+
+
+def script_change_since_approval(entry: Optional[dict[str, Any]], command: str) -> Optional[str]:
+    """Why the script ``command`` runs no longer matches what ``entry`` approved, or ``None``. An entry
+    with no pinned hash (approved before pinning) counts as changed only when the mtime it recorded moved."""
+    if not isinstance(entry, dict):
+        return None
+    pinned = entry.get("script_hash_at_approval")
+    if not isinstance(pinned, str):
+        mtime_at, mtime_now = entry.get("script_mtime_at_approval"), script_mtime_iso(command)
+        moved = isinstance(mtime_at, str) and mtime_now is not None and mtime_now != mtime_at
+        return "script modified since it was approved" if moved else None
+    current = script_content_hash(command)
+    if current == pinned:
+        return None
+    return "script unreadable since it was approved" if current is None else "script content changed since it was approved"
+
+
+def _unapproved_change(spec: ShellHookSpec) -> Optional[str]:
+    """Fire-time check: the reason this hook's script is not the approved one, else ``None``. Consent held
+    without an allowlist entry (an opt-in, a launch's --accept-hooks) has no bytes to compare."""
+    entry = allowlist_entry_for(spec.event, spec.command)
+    if entry is None:
+        return None
+    reason = script_change_since_approval(entry, spec.command)
+    if reason is None:
+        if not isinstance(entry.get("script_hash_at_approval"), str):
+            _pin_hash(spec.event, spec.command)  # an approval from before pinning, unchanged since: pin it now
+        return None
+    if _opt_in_in_force():  # hooks_auto_accept / --accept-hooks approve every hook, the changed one too
+        _record_approval(spec.event, spec.command)
+        return None
+    once = (_home_key(), spec.event, spec.command, reason)
+    if once not in _skip_logged:
+        _skip_logged.add(once)
+        logger.warning("shell hook %s -> %s: %s — not run until approved again (`hermes hooks doctor`; "
+                       "`hermes hooks revoke` then approve at a CLI prompt, or --accept-hooks).",
+                       spec.event, spec.command, reason)
+    return reason
+
+
+def _pin_hash(event: str, command: str) -> None:
+    digest = script_content_hash(command)
+    if digest is None:
+        return
+    with _locked_update_approvals() as data:
+        for e in data.get("approvals", []):
+            if _entry_matches(e, event, command) and not isinstance(e.get("script_hash_at_approval"), str):
+                e["script_hash_at_approval"] = digest
+
+
+def _opt_in_in_force() -> bool:
+    from hermes_cli.config import load_config  # lazy: avoids import cycle
+    cfg = load_config()
+    return _resolve_effective_accept(cfg if isinstance(cfg, dict) else {}, False)
 
 
 def script_is_executable(command: str) -> bool:

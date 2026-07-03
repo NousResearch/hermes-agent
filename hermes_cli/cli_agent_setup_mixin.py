@@ -8,6 +8,7 @@ import sys
 
 from rich.markup import escape as _escape
 
+from hermes_cli.session_resume import stage_session_resume_note
 from utils import base_url_host_matches
 
 
@@ -693,6 +694,11 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
+            # Keep the cached/ephemeral system prompt unchanged.  The turn
+            # prologue consumes this into the first post-resume user sidecar,
+            # preserving role alternation and replay bytes.
+            if self._resumed:
+                stage_session_resume_note(self.agent, self.conversation_history)
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

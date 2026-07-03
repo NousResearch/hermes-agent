@@ -331,6 +331,11 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
             cli.agent._todo_store = TodoStore()
     if hasattr(cli.agent, "_invalidate_system_prompt"):
         cli.agent._invalidate_system_prompt()
+    if reason == "resume":
+        # A warm switch to a session used during this process stays silent;
+        # an older persisted transcript gets one API-side note on its next turn.
+        from hermes_cli.session_resume import stage_session_resume_note
+        stage_session_resume_note(cli.agent, cli.conversation_history)
     with suppress(Exception):
         _mm = getattr(cli.agent, "_memory_manager", None)
         # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals

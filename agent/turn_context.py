@@ -140,6 +140,11 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
     return _pop_turn_note(agent, "_gateway_turn_context_notes")
 
 
+def consume_session_resume_note(agent: Any) -> str:
+    """Pop the one-shot cross-process session-resume note."""
+    return _pop_turn_note(agent, "_session_resume_note")
+
+
 def consume_surface_switch_note(agent: Any) -> str:
     """Pop the surface-switch note staged by the system-prompt restore (#104414); rides the same
     user-message channel as the gateway notes, behind the cached prefix."""
@@ -807,7 +812,8 @@ def _merge_gateway_notes(
     surface-switch correction. Multimodal (list) content can't take the string sidecar —
     append a durable text part instead."""
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
+        part for part in (consume_session_resume_note(agent),
+                          consume_gateway_turn_context_notes(agent),
                           consume_surface_switch_note(agent)) if part
     )
     if not _turn_notes:

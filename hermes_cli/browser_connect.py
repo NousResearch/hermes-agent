@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shlex
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass, field
 
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_BROWSER_CDP_PORT = 9222
@@ -222,24 +226,124 @@ def _wait_for_browser_debug_ready_or_exit(
     return "starting"
 
 
-def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
+_LAUNCH_STDERR_LOG = "launch-stderr.log"
+_STDERR_TAIL_LIMIT = 2000
+
+
+@dataclass
+class LaunchAttempt:
+    """Outcome of one candidate-binary launch attempt."""
+
+    binary: str
+    state: str  # "ready" | "starting" | "exited" | "spawn-failed"
+    returncode: int | None = None
+    stderr_tail: str = ""
+
+
+@dataclass
+class ChromeDebugLaunch:
+    """Structured result of ``launch_chrome_debug``.
+
+    ``launched`` mirrors the legacy boolean contract: a launch command was
+    executed and the browser is ready or still starting (it does NOT
+    guarantee the CDP port ever opens). ``attempts`` carries per-candidate
+    diagnostics so callers can explain *why* nothing came up.
+    """
+
+    launched: bool = False
+    attempts: list[LaunchAttempt] = field(default_factory=list)
+
+    @property
+    def hint(self) -> str | None:
+        """Best user-facing explanation for a failed/soft launch, if any."""
+        for attempt in self.attempts:
+            if attempt.state == "exited" and attempt.returncode == 0:
+                name = os.path.basename(attempt.binary)
+                return (
+                    f"{name} exited immediately without opening the debug port — an already-running "
+                    f"{name} instance likely absorbed the launch (Chromium's single-instance "
+                    "behavior). Close ALL of its processes (including background/tray instances) "
+                    "and retry /browser connect."
+                )
+        for attempt in self.attempts:
+            if attempt.state == "exited" and attempt.stderr_tail:
+                return (
+                    f"{os.path.basename(attempt.binary)} exited before the debug port opened: "
+                    f"{attempt.stderr_tail.splitlines()[-1].strip()}"
+                )
+        return None
+
+
+def _read_stderr_tail(path: str) -> str:
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return data[-_STDERR_TAIL_LIMIT:].decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def launch_chrome_debug(
+    port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None
+) -> ChromeDebugLaunch:
+    """Launch a Chromium-family browser with remote debugging, with diagnostics.
+
+    Tries each detected candidate binary in turn. A candidate that exits
+    before the CDP port opens (crash, singleton forward to an existing
+    instance, bad profile dir) is logged — with exit code and a stderr tail —
+    and the next candidate is tried.
+    """
     system = system or platform.system()
+    result = ChromeDebugLaunch()
     candidates = get_chrome_debug_candidates(system)
     if not candidates:
-        return False
+        logger.info("browser debug launch: no Chromium-family binary found (system=%s)", system)
+        return result
 
-    os.makedirs(chrome_debug_data_dir(), exist_ok=True)
+    data_dir = chrome_debug_data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+    stderr_path = os.path.join(data_dir, _LAUNCH_STDERR_LOG)
+
     for candidate in candidates:
         try:
-            proc = subprocess.Popen(
-                [candidate, *_chrome_debug_args(port)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **_detach_kwargs(system),
-            )
-            state = _wait_for_browser_debug_ready_or_exit(proc, port)
-            if state != "exited":
-                return True
-        except Exception:
+            with open(stderr_path, "wb") as stderr_file:
+                proc = subprocess.Popen(
+                    [candidate, *_chrome_debug_args(port)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    **_detach_kwargs(system),
+                )
+        except Exception as exc:
+            result.attempts.append(LaunchAttempt(binary=candidate, state="spawn-failed"))
+            logger.info("browser debug launch: failed to spawn %s: %s", candidate, exc)
             continue
-    return False
+
+        logger.info(
+            "browser debug launch: spawned %s (pid=%s) with --remote-debugging-port=%d",
+            candidate,
+            getattr(proc, "pid", None),
+            port,
+        )
+        state = _wait_for_browser_debug_ready_or_exit(proc, port)
+        attempt = LaunchAttempt(binary=candidate, state=state)
+        result.attempts.append(attempt)
+
+        if state != "exited":
+            result.launched = True
+            return result
+
+        attempt.returncode = getattr(proc, "returncode", None)
+        attempt.stderr_tail = _read_stderr_tail(stderr_path)
+        logger.warning(
+            "browser debug launch: %s exited (code=%s) before port %d opened%s",
+            candidate,
+            attempt.returncode,
+            port,
+            f"; stderr tail: {attempt.stderr_tail}" if attempt.stderr_tail else "",
+        )
+
+    return result
+
+
+def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
+    return launch_chrome_debug(port, system).launched

@@ -1229,7 +1229,18 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
+    # The xAI /v1/tts API only supports mp3 and wav codecs — it has no native
+    # Opus/OGG output.  When the caller requests an .ogg file (e.g. Telegram
+    # voice bubbles via the auto-reply path), we synthesize to a temp .mp3
+    # first and transcode with ffmpeg after the API call returns.  Without
+    # this, MP3 bytes are silently written into the .ogg-named file, producing
+    # broken voice bubbles (issue #57213).
+    _needs_opus_transcode = output_path.endswith(".ogg")
     codec = "wav" if output_path.endswith(".wav") else "mp3"
+    # When transcoding to opus, write the API response to a temp mp3 file so
+    # the final .ogg lands at the caller's requested output_path.
+    _mp3_tmp: str = output_path.rsplit(".", 1)[0] + "._xaitemp.mp3" if _needs_opus_transcode else ""
+    _write_path: str = _mp3_tmp if _needs_opus_transcode else output_path
     payload: Dict[str, Any] = {
         "text": text,
         "voice_id": voice_id,
@@ -1271,8 +1282,28 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     )
     response.raise_for_status()
 
-    with open(output_path, "wb") as f:
+    with open(_write_path, "wb") as f:
         f.write(response.content)
+
+    # Transcode to Opus/OGG if the caller requested an .ogg output path.
+    # xAI's /v1/tts API has no native Opus codec, so we write mp3 to a temp
+    # file and convert with ffmpeg (same pattern as the dispatcher-level
+    # _convert_to_opus used by other providers).
+    if _needs_opus_transcode:
+        opus_path = _convert_to_opus(_mp3_tmp)
+        if opus_path:
+            # Clean up the temp mp3 file
+            try:
+                os.unlink(_mp3_tmp)
+            except OSError:
+                pass
+            return opus_path
+        # ffmpeg not available or conversion failed — fall back to the mp3
+        # file so the caller at least gets *some* audio rather than nothing.
+        logger.warning(
+            "xAI TTS: ffmpeg opus conversion failed; returning mp3 at %s", _mp3_tmp
+        )
+        return _mp3_tmp
 
     return output_path
 

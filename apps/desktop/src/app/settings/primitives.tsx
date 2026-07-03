@@ -11,9 +11,7 @@ import { PAGE_INSET_X } from '../layout-constants'
 export function SettingsContent({ children }: { children: ReactNode }) {
   return (
     <section className="min-h-0 overflow-hidden">
-      <div className={cn('h-full min-h-0 overflow-y-auto pb-20', PAGE_INSET_X)}>
-        <div className="mx-auto w-full max-w-4xl">{children}</div>
-      </div>
+      <div className={cn('h-full min-h-0 overflow-y-auto pb-20', PAGE_INSET_X)}>{children}</div>
     </section>
   )
 }

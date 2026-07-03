@@ -4094,6 +4094,68 @@ class TestGatewayBusyReadout:
         assert data["gateway_busy"] is False
 
 
+    def test_active_work_counts_stay_off_the_public_status(self, monkeypatch):
+        """Per-session diagnostics live only on the authenticated endpoint; the
+        public /api/status probe stays aggregate-only."""
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 4,
+            "active_work_counts": {
+                "messaging": 2,
+                "cron": 1,
+                "api_server": 1,
+                "deferred": 0,
+            },
+            "active_agent_details": [
+                {
+                    "session_key": "agent:main:feishu:dm:c1:u1",
+                    "platform": "feishu",
+                    "seconds_since_activity": 367.5,
+                    "last_activity_desc": "api_call",
+                }
+            ],
+            # A deliberately stale timestamp: busy must NOT depend on it.
+            "updated_at": "2020-01-01T00:00:00+00:00",
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["active_agents"] == 4
+        assert "active_agent_details" not in data
+        assert "active_work_counts" not in data
+
+        private = self.client.get("/api/status/active-work")
+        assert private.status_code == 200
+        body = private.json()
+        assert body["active_agents"] == 4
+        assert body["active_work_counts"] == {
+            "messaging": 2,
+            "cron": 1,
+            "api_server": 1,
+            "deferred": 0,
+        }
+        assert body["active_agent_details"] == [
+            {
+                "session_key": "agent:main:feishu:dm:c1:u1",
+                "platform": "feishu",
+                "seconds_since_activity": 367.5,
+                "last_activity_desc": "api_call",
+            }
+        ]
+
+
+    def test_active_work_details_require_auth(self):
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import app
+
+        client = TestClient(app)
+        response = client.get("/api/status/active-work")
+
+        assert response.status_code == 401
+
+
 class TestStatusMemoryBlock:
     """NS-656: /api/status must always carry a `memory` block."""
 

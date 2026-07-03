@@ -37,6 +37,7 @@ import {
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   getSessionOwnerHints,
   hydrateSessionOwnerHints,
@@ -814,16 +815,22 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('/live/session/path')
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
 
+    // Bare new sessions are intentionally DETACHED across every mode
+    // (#57911): neither sticky local nor sticky remote cwd is an accept-
+    // able bare-default — only an explicit configured default pre-attaches.
+    // The per-backend memory itself stays isolated (asserted directly).
     expect(workspaceCwdForNewSession()).toBe('')
 
     setCurrentCwd('/backend/project-a')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
-
-    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-a')
     expect(workspaceCwdForNewSession()).toBe('')
 
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
     setCurrentCwd('/backend/project-b')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('')
 
     // Back on local with no configured default: a bare new chat is detached and
     // never reads the remote keys (nor inherits the sticky local workspace).
@@ -832,20 +839,23 @@ describe('workspaceCwdForNewSession', () => {
   })
 
   it('remembers only the workspace the user picked, not the one they looked at', () => {
-    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
-    // in the remembered workspace, and every session resume used to write that
-    // key — so opening a project chat silently made it the destination for the
-    // next "New session". Following a conversation must leave the memory alone.
+    // The reported bug (#77496 / #80213): every session resume used to write
+    // the remembered-workspace key — so opening a project chat silently moved
+    // the memory. Following a conversation must leave the memory alone.
+    // (Since #57911 a bare new session is detached in remote mode too, so the
+    // memory is asserted directly — its remaining consumer is resume seeding
+    // via ensureDefaultWorkspaceCwd.)
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
     setCurrentCwd('/backend/picked')
 
     setCurrentCwdTransient('/backend/some-other-project')
 
     expect($currentCwd.get()).toBe('/backend/some-other-project')
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 
-  it('settling a resumed session does not move where the next new chat starts', () => {
+  it('settling a resumed session does not move the remembered workspace', () => {
     // The reporter's exact sequence: work in a project, open a chat from it,
     // then ask for a new session. Resume settling publishes the conversation's
     // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
@@ -856,7 +866,39 @@ describe('workspaceCwdForNewSession', () => {
     setSelectedStoredSessionId('sess-in-project')
     commitWorkspaceCwdForSelectedSession('/backend/last-project')
 
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('does not stick a previous remote workspace onto a bare new session (#57911)', () => {
+    // Repro: in remote mode the user attaches to project-A so the renderer
+    // persists /tradingview as the remembered cwd under the remote key. The
+    // user then presses Cmd+N *without* being scoped into any project. A bare
+    // new session must NOT inherit /tradingview — pre-fix this returned the
+    // sticky remembered cwd and the gateway mapped it back to the wrong
+    // project via project_tree.py.
+    window.localStorage.setItem(
+      'hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default',
+      '/tradingview',
+    )
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    applyConfiguredDefaultProjectDir(null)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('respects an explicit configured default in remote mode (#57911)', () => {
+    // Symmetric guard: removing the remote branch must NOT regress users who
+    // *did* set a configured default — the explicit default pre-attaches
+    // identically across local and remote mode.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    window.localStorage.setItem(
+      'hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default',
+      '/tradingview',
+    )
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 })
 

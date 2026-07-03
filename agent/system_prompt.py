@@ -46,6 +46,26 @@ from agent.prompt_builder import (
 from agent.runtime_cwd import resolve_context_cwd
 
 
+FUSION_MAIN_AGENT_GUIDANCE = """
+## Fusion sidekick operating mode
+
+When Fusion is enabled, act as the architect and reviewer. Delegate by default
+for exploration, implementation, tests, lint, requested edits, bulk changes,
+and slow verification. Use delegate_task with sidekick=true for that work so the
+persistent sidekick keeps its own cached context across delegations.
+
+Keep direct main-agent actions minimal: gather only enough context to plan,
+resolve ambiguity, set acceptance criteria, and review the sidekick's output.
+You own architectural decisions, ambiguity resolution, subtle judgment calls,
+final acceptance, and tasks where judgment itself is the deliverable.
+
+Treat subagent summaries as self-reports, not proof. Before telling the user
+something succeeded, verify the relevant files, tests, commands, URLs, or other
+handles yourself. If review finds issues, delegate a precise follow-up edit to
+the sidekick rather than rebuilding the sidekick context from scratch.
+""".strip()
+
+
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
@@ -163,6 +183,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    if getattr(agent, "_fusion_enabled", False):
+        stable_parts.append(FUSION_MAIN_AGENT_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

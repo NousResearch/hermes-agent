@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import atexit
 import enum
 import json
 import logging
@@ -147,6 +148,23 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+
+# Fusion persistent sidekick registry. One sidekick child is kept alive
+# per parent session so its conversation and provider-side prompt cache persist
+# across delegate_task(sidekick=True) calls. Dict mutation is protected by the
+# module lock; each sidekick has its own run lock to serialize history writes.
+_sidekick_registry_lock = threading.Lock()
+_sidekick_agents: Dict[str, Any] = {}
+_sidekick_locks: Dict[str, threading.Lock] = {}
+
+
+def _sidekick_session_key(parent_agent) -> str:
+    session_id = getattr(parent_agent, "session_id", None)
+    if session_id:
+        return str(session_id)
+    # AIAgent normally always has session_id. This fallback keeps direct unit
+    # callers from sharing a global sidekick by accident.
+    return f"agent:{id(parent_agent)}"
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -666,6 +684,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    persistent_sidekick: bool = False,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -675,11 +694,21 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    if persistent_sidekick:
+        parts = [
+            "You are the persistent Fusion sidekick for the main Hermes agent.",
+            "",
+            "YOUR ROLE:\n"
+            "Execute delegated work across this parent session. New tasks arrive "
+            "as user messages; your conversation context persists across those "
+            "delegations, so reference prior work instead of rediscovering it.",
+        ]
+    else:
+        parts = [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -702,6 +731,20 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    if persistent_sidekick:
+        parts.append(
+            "\n## Fusion Sidekick Instructions\n"
+            "- Be the execution worker for the main agent: explore code, run "
+            "commands, write code/tests/lint fixes, and apply specific edit "
+            "requests.\n"
+            "- Return only relevant snippets, paths, commands, and verification "
+            "results; do not dump whole files unless asked.\n"
+            "- Surface architectural choices, ambiguity, risk, or judgment calls "
+            "back to the main agent instead of deciding them unilaterally.\n"
+            "- Your context persists across delegations. Reuse prior discoveries "
+            "and keep continuity, but treat each new user message as the current "
+            "delegated task.\n"
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1062,6 +1105,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    persistent_sidekick: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1149,6 +1193,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        persistent_sidekick=persistent_sidekick,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1339,6 +1384,8 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    if persistent_sidekick:
+        child._is_persistent_sidekick = True
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -2292,10 +2339,12 @@ def _run_single_child(
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
-        # Remove child from active tracking
+        is_persistent_sidekick = getattr(child, "_is_persistent_sidekick", False) is True
 
-        # Unregister child from interrupt propagation
-        if hasattr(parent_agent, "_active_children"):
+        # Remove child from active tracking. Persistent Fusion sidekicks stay
+        # registered for their parent session so interrupt propagation keeps
+        # working across delegate_task(sidekick=True) calls.
+        if not is_persistent_sidekick and hasattr(parent_agent, "_active_children"):
             try:
                 lock = getattr(parent_agent, "_active_children_lock", None)
                 if lock:
@@ -2308,9 +2357,10 @@ def _run_single_child(
 
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
+        # don't outlive the delegation. Persistent sidekicks are closed only at
+        # parent-session teardown via close_sidekick_for_session().
         try:
-            if hasattr(child, "close"):
+            if not is_persistent_sidekick and hasattr(child, "close"):
                 child.close()
         except Exception:
             logger.debug("Failed to close child agent after delegation")
@@ -2346,6 +2396,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    sidekick: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -2417,15 +2468,8 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    fusion_cfg = _load_fusion_config()
+    sidekick_requested = is_truthy_value(sidekick, default=False)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2436,6 +2480,8 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
+        if sidekick_requested:
+            return tool_error("Fusion sidekick accepts a single goal in v1; use normal delegation for task batches.")
         if len(tasks) > max_children:
             return tool_error(
                 f"Too many tasks: {len(tasks)} provided, but "
@@ -2452,6 +2498,14 @@ def delegate_task(
 
     if not task_list:
         return tool_error("No tasks provided.")
+
+    if sidekick_requested:
+        if not is_truthy_value(fusion_cfg.get("enabled"), default=False):
+            return tool_error("Fusion sidekick requires fusion.enabled=true in config.yaml.")
+        if background:
+            return tool_error("Fusion sidekick runs synchronously in v1; omit background=true.")
+        if top_role != "leaf" or any(_normalize_role(t.get("role") or top_role) != "leaf" for t in task_list):
+            return tool_error("Fusion sidekick is a leaf worker in v1; role='orchestrator' is not supported.")
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
@@ -2480,33 +2534,94 @@ def delegate_task(
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
+    sidekick_lock: Optional[threading.Lock] = None
+    sidekick_lock_acquired = False
     try:
-        for i, t in enumerate(task_list):
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
+        if sidekick_requested:
+            session_key = _sidekick_session_key(parent_agent)
+            sidekick_lock = _get_sidekick_lock(session_key)
+            if not sidekick_lock.acquire(blocking=False):
+                return json.dumps(
+                    {
+                        "status": "sidekick_busy",
+                        "summary": (
+                            "Persistent Fusion sidekick is working on another task "
+                            "for this session; retry when it finishes."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            sidekick_lock_acquired = True
+            try:
+                sidekick_creds = _resolve_delegation_credentials(
+                    _sidekick_delegation_config(cfg, fusion_cfg),
+                    parent_agent,
+                )
+            except ValueError as exc:
+                sidekick_lock.release()
+                sidekick_lock_acquired = False
+                return tool_error(str(exc))
+            t = task_list[0]
+            child = _get_or_create_sidekick(
+                session_key=session_key,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
+                creds=sidekick_creds,
+                fusion_cfg=fusion_cfg,
+                effective_max_iter=effective_max_iter,
             )
-            # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+            # Fold the per-call context into the user message so later
+            # sidekick delegations don't lose file paths, constraints, or
+            # error details. The sidekick's system prompt persists across
+            # calls; only the per-call user message varies.
+            ctx = t.get("context")
+            if ctx and str(ctx).strip():
+                t = dict(t)
+                t["goal"] = f"{t['goal']}\n\nCONTEXT:\n{ctx}"
+            children.append((0, t, child))
+        else:
+            # Resolve delegation credentials (provider:model pair). When
+            # delegation.provider is configured, this resolves the full
+            # credential bundle via the same runtime provider system used by
+            # CLI/gateway startup. When unconfigured, children inherit parent.
+            try:
+                creds = _resolve_delegation_credentials(cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+            for i, t in enumerate(task_list):
+                # Per-task role beats top-level; normalise again so unknown
+                # per-task values warn and degrade to leaf uniformly.
+                effective_role = _normalize_role(t.get("role") or top_role)
+                child = _build_child_agent(
+                    task_index=i,
+                    goal=t["goal"],
+                    context=t.get("context"),
+                    # Subagents always inherit the parent's toolsets; the model
+                    # cannot choose or narrow them (no model-facing toolsets arg).
+                    toolsets=None,
+                    model=creds["model"],
+                    max_iterations=effective_max_iter,
+                    task_count=n_tasks,
+                    parent_agent=parent_agent,
+                    override_provider=creds["provider"],
+                    override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
+                    override_acp_command=creds.get("command"),
+                    override_acp_args=creds.get("args"),
+                    role=effective_role,
+                )
+                # Override with correct parent tool names (before child construction mutated global)
+                child._delegate_saved_tool_names = _parent_tool_names
+                children.append((i, t, child))
+    except BaseException:
+        # A raised child build must not leave the per-session sidekick lock
+        # held forever — that would turn every later sidekick call into a
+        # permanent "sidekick_busy" for this session.
+        if sidekick_lock_acquired and sidekick_lock is not None:
+            sidekick_lock.release()
+            sidekick_lock_acquired = False
+        raise
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2885,7 +3000,12 @@ def delegate_task(
         return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----
-    return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+    try:
+        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+    finally:
+        if sidekick_lock_acquired and sidekick_lock is not None:
+            sidekick_lock.release()
+            sidekick_lock_acquired = False
 
 
 def _resolve_child_credential_pool(
@@ -3122,6 +3242,135 @@ def _load_config() -> dict:
         return {}
 
 
+def _load_full_config() -> dict:
+    """Load the complete Hermes config for non-delegation feature flags."""
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config()
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_fusion_config() -> dict:
+    cfg = _load_full_config().get("fusion", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _fusion_enabled() -> bool:
+    return is_truthy_value(_load_fusion_config().get("enabled"), default=False)
+
+
+def _sidekick_delegation_config(base_cfg: dict, fusion_cfg: dict) -> dict:
+    """Merge sidekick-specific overrides over delegation config.
+
+    Priority: fusion.sidekick_* → delegation.* → parent
+    inheritance (implemented by _resolve_delegation_credentials returning None).
+    """
+    merged = dict(base_cfg or {})
+    mapping = {
+        "sidekick_model": "model",
+        "sidekick_provider": "provider",
+        "sidekick_base_url": "base_url",
+        "sidekick_api_key": "api_key",
+        "sidekick_api_mode": "api_mode",
+    }
+    for src, dst in mapping.items():
+        value = str((fusion_cfg or {}).get(src) or "").strip()
+        if value:
+            merged[dst] = value
+    return merged
+
+
+def _sidekick_toolsets(fusion_cfg: dict) -> Optional[List[str]]:
+    raw = (fusion_cfg or {}).get("sidekick_toolsets")
+    if not isinstance(raw, list):
+        return None
+    toolsets = [str(item).strip() for item in raw if str(item or "").strip()]
+    return toolsets or None
+
+
+def _get_sidekick_lock(session_key: str) -> threading.Lock:
+    with _sidekick_registry_lock:
+        lock = _sidekick_locks.get(session_key)
+        if lock is None:
+            lock = threading.Lock()
+            _sidekick_locks[session_key] = lock
+        return lock
+
+
+def _get_or_create_sidekick(
+    *,
+    session_key: str,
+    parent_agent,
+    creds: dict,
+    fusion_cfg: dict,
+    effective_max_iter: int,
+):
+    with _sidekick_registry_lock:
+        child = _sidekick_agents.get(session_key)
+        if child is not None:
+            return child
+        # context is deliberately NOT baked into the persistent system prompt:
+        # it is per-delegation data, folded into each call's user message by
+        # the caller. Baking the first call's context here would pin stale
+        # context for the whole session AND duplicate it on the first call.
+        child = _build_child_agent(
+            task_index=0,
+            goal="Persistent Fusion sidekick for this parent session",
+            context=None,
+            toolsets=_sidekick_toolsets(fusion_cfg),
+            model=creds.get("model"),
+            max_iterations=effective_max_iter,
+            task_count=1,
+            parent_agent=parent_agent,
+            override_provider=creds.get("provider"),
+            override_base_url=creds.get("base_url"),
+            override_api_key=creds.get("api_key"),
+            override_api_mode=creds.get("api_mode"),
+            override_acp_command=creds.get("command"),
+            override_acp_args=creds.get("args"),
+            role="leaf",
+            persistent_sidekick=True,
+        )
+        setattr(child, "_is_persistent_sidekick", True)
+        _sidekick_agents[session_key] = child
+        return child
+
+
+def close_sidekick_for_session(session_id: str) -> Optional[Any]:
+    """Close and forget the persistent sidekick for a parent session.
+
+    Returns the child object that was closed, if any, so parent teardown can
+    avoid closing the same sidekick a second time via its active-children list.
+    """
+    key = str(session_id or "")
+    if not key:
+        return None
+    with _sidekick_registry_lock:
+        child = _sidekick_agents.pop(key, None)
+        _sidekick_locks.pop(key, None)
+    if child is None:
+        return None
+    try:
+        if hasattr(child, "close"):
+            child.close()
+    except Exception:
+        logger.debug("Failed to close persistent sidekick for session %s", key, exc_info=True)
+    return child
+
+
+def _close_all_sidekicks() -> None:
+    with _sidekick_registry_lock:
+        keys = list(_sidekick_agents.keys())
+    for key in keys:
+        close_sidekick_for_session(key)
+
+
+atexit.register(_close_all_sidekicks)
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -3171,6 +3420,19 @@ def _build_top_level_description() -> str:
             f"config.yaml to enable nesting."
         )
 
+    try:
+        fusion_enabled = _fusion_enabled()
+    except Exception:
+        fusion_enabled = False
+    sidekick_background_clause = (
+        "FUSION SIDEKICK EXCEPTION: when the optional sidekick=true parameter "
+        "is available and used, the persistent sidekick runs synchronously in "
+        "v1; do not combine it with background=true. Use normal delegation for "
+        "background fan-out.\n\n"
+        if fusion_enabled
+        else ""
+    )
+
     return (
         "Spawn one or more subagents to work on tasks in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
@@ -3187,6 +3449,7 @@ def _build_top_level_description() -> str:
         "batch is just N independent background subagents (N handles, each "
         "completes on its own). Do NOT wait or poll; just continue with other "
         "work after dispatching.\n\n"
+        f"{sidekick_background_clause}"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -3297,6 +3560,16 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    if _fusion_enabled():
+        overrides_params["properties"]["sidekick"] = {
+            "type": "boolean",
+            "description": (
+                "Route to the persistent sidekick agent. It retains conversation "
+                "context across calls (cache-efficient). Use for exploration, "
+                "implementation, tests, lint, and requested edits. Do NOT use "
+                "for tasks where subtle judgment is the deliverable."
+            ),
+        }
 
     return {
         "description": _build_top_level_description(),
@@ -3398,10 +3671,13 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     needs its workers' results within its own turn. The live path is
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
     case the intercept is bypassed. Direct Python callers of ``delegate_task``
-    keep the historical synchronous default.
+    keep the historical synchronous default. Sidekick delegations always run
+    synchronously (mirrors the live path), so auto-background must not fire
+    for them — otherwise sidekick=true would be spuriously rejected.
     """
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
-    return not is_subagent
+    sidekick_requested = is_truthy_value(args.get("sidekick"), default=False)
+    return not is_subagent and not sidekick_requested
 
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
@@ -3438,6 +3714,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
+        sidekick=args.get("sidekick"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

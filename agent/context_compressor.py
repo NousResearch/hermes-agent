@@ -39,6 +39,8 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
+FUSION_WORK_COMPLEXITY_HEADING = "## Work Complexity Assessment"
+_FUSION_VERDICTS = ("MECHANICAL", "FRONTIER_JUDGMENT")
 
 
 SUMMARY_PREFIX = (
@@ -1076,6 +1078,11 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        # Fusion compaction routing piggybacks a single deterministic verdict on
+        # the existing summary call.  The owning AIAgent is stored separately so
+        # tests and plugin engines can opt in without changing constructor shape.
+        self._fusion_compaction_routing: bool = False
+        self._fusion_verdict_owner: Any = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1639,6 +1646,62 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    def _fusion_routing_enabled(self) -> bool:
+        return bool(getattr(self, "_fusion_compaction_routing", False))
+
+    def _fusion_work_complexity_prompt_section(self) -> str:
+        if not self._fusion_routing_enabled():
+            return ""
+        return f"""
+{FUSION_WORK_COMPLEXITY_HEADING}
+[Choose exactly one label on the first line of this section:
+- MECHANICAL: the next work is mostly deterministic implementation, file edits,
+  tests, lint fixes, data gathering, or command execution that can run on the
+  cheaper sidekick/mechanical route.
+- FRONTIER_JUDGMENT: the next work requires subtle architectural judgment,
+  ambiguous tradeoff resolution, product/security reasoning, or final acceptance.
+After the label, add at most one short reason. Do not invent facts.]"""
+
+    def _extract_fusion_verdict(self, summary: str) -> Optional[str]:
+        if not summary:
+            return None
+        pattern = rf"{re.escape(FUSION_WORK_COMPLEXITY_HEADING)}\s*(.*?)(?:\n## |\Z)"
+        match = re.search(pattern, summary, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        section = match.group(1)
+        first_non_empty = ""
+        for line in section.splitlines():
+            stripped = line.strip().upper()
+            if stripped:
+                first_non_empty = stripped
+                break
+        for verdict in _FUSION_VERDICTS:
+            if re.search(rf"\b{re.escape(verdict)}\b", first_non_empty):
+                return verdict
+        return None
+
+    def _record_fusion_verdict(self, summary: str) -> None:
+        if not self._fusion_routing_enabled():
+            return
+        owner = getattr(self, "_fusion_verdict_owner", None)
+        if owner is None:
+            return
+        setattr(owner, "_fusion_routing_verdict", self._extract_fusion_verdict(summary))
+
+    def _strip_fusion_verdict_section(self, summary: str) -> str:
+        """Remove the Fusion verdict section from persisted summary text.
+
+        The verdict is consumed through ``_record_fusion_verdict`` before this
+        runs. Keeping the raw section would leak a stale routing label into the
+        next iterative-update prompt and into main-agent conversation history.
+        """
+        if not summary or not self._fusion_routing_enabled():
+            return summary
+        pattern = rf"{re.escape(FUSION_WORK_COMPLEXITY_HEADING)}\s*.*?(?=\n## |\Z)"
+        stripped = re.sub(pattern, "", summary, flags=re.IGNORECASE | re.DOTALL)
+        return re.sub(r"\n{3,}", "\n\n", stripped).strip()
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -1668,6 +1731,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 self._summary_failure_cooldown_until - now,
             )
             return None
+        if self._fusion_routing_enabled():
+            owner = getattr(self, "_fusion_verdict_owner", None)
+            if owner is not None:
+                setattr(owner, "_fusion_routing_verdict", None)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
@@ -1791,6 +1858,7 @@ Be specific with file paths, commands, line numbers, and results.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+{self._fusion_work_complexity_prompt_section()}
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
@@ -1886,6 +1954,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            self._record_fusion_verdict(summary)
+            summary = self._strip_fusion_verdict_section(summary)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()

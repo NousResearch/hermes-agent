@@ -59,6 +59,62 @@ from utils import base_url_host_matches, is_truthy_value
 logger = logging.getLogger("run_agent")
 
 
+def _fusion_cfg_str(fusion_cfg: dict, key: str) -> str:
+    """Return a stripped string config value from the optional fusion block."""
+    return str((fusion_cfg or {}).get(key) or "").strip()
+
+
+def _build_fusion_frontier_runtime(agent: Any, fusion_cfg: dict) -> dict[str, Any]:
+    """Snapshot the frontier runtime once at session start for Fusion routing."""
+    return {
+        "model": _fusion_cfg_str(fusion_cfg, "frontier_model") or agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+        "api_key": getattr(agent, "api_key", ""),
+        "api_mode": agent.api_mode,
+    }
+
+
+def _build_fusion_routing_runtime(agent: Any, fusion_cfg: dict) -> dict[str, Any]:
+    """Resolve the MECHANICAL runtime for Fusion compaction routing.
+
+    Priority is route-specific config first, then sidekick config, then the
+    current runtime only when no alternate provider is requested. Avoiding a
+    blind cross-provider fallback prevents a cheap-route model from inheriting
+    the frontier provider's key/base URL by accident.
+    """
+    target_provider = (
+        _fusion_cfg_str(fusion_cfg, "routing_provider")
+        or _fusion_cfg_str(fusion_cfg, "sidekick_provider")
+        or str(getattr(agent, "provider", "") or "").strip()
+    )
+    current_provider = str(getattr(agent, "provider", "") or "").strip()
+    same_provider = not target_provider or target_provider == current_provider
+
+    return {
+        "model": (
+            _fusion_cfg_str(fusion_cfg, "routing_model")
+            or _fusion_cfg_str(fusion_cfg, "sidekick_model")
+        ),
+        "provider": target_provider,
+        "base_url": (
+            _fusion_cfg_str(fusion_cfg, "routing_base_url")
+            or _fusion_cfg_str(fusion_cfg, "sidekick_base_url")
+            or (str(getattr(agent, "base_url", "") or "").strip() if same_provider else "")
+        ),
+        "api_key": (
+            _fusion_cfg_str(fusion_cfg, "routing_api_key")
+            or _fusion_cfg_str(fusion_cfg, "sidekick_api_key")
+            or (getattr(agent, "api_key", "") if same_provider else "")
+        ),
+        "api_mode": (
+            _fusion_cfg_str(fusion_cfg, "routing_api_mode")
+            or _fusion_cfg_str(fusion_cfg, "sidekick_api_mode")
+            or (str(getattr(agent, "api_mode", "") or "").strip() if same_provider else "")
+        ),
+    }
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.OpenAI`` / ``run_agent.cleanup_vm`` / ... and have those
@@ -1216,6 +1272,19 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    _fusion_cfg = _agent_cfg.get("fusion", {}) if isinstance(_agent_cfg, dict) else {}
+    if not isinstance(_fusion_cfg, dict):
+        _fusion_cfg = {}
+    agent._fusion_enabled = is_truthy_value(_fusion_cfg.get("enabled"), default=False)
+    agent._fusion_compaction_routing = bool(
+        agent._fusion_enabled
+        and is_truthy_value(_fusion_cfg.get("compaction_routing"), default=False)
+    )
+    agent._fusion_routing_verdict = None
+    agent._fusion_routing_suspended = False
+    agent._fusion_frontier_runtime = _build_fusion_frontier_runtime(agent, _fusion_cfg)
+    agent._fusion_routing_runtime = _build_fusion_routing_runtime(agent, _fusion_cfg)
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
@@ -1704,6 +1773,11 @@ def init_agent(
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
         except Exception:
             pass
+    try:
+        setattr(agent.context_compressor, "_fusion_compaction_routing", agent._fusion_compaction_routing)
+        setattr(agent.context_compressor, "_fusion_verdict_owner", agent)
+    except Exception:
+        pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
 

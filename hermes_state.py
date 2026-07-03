@@ -2076,6 +2076,26 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_model_config_key(self, session_id: str, key: str, value_json: str) -> None:
+        """Set one key inside the session ``model_config`` JSON object.
+
+        This preserves existing metadata such as ``_delegate_from`` and
+        ``_branched_from`` while allowing narrowly scoped session runtime
+        snapshots. ``value_json`` must be a JSON fragment (for example ``null``
+        or ``{"model": "..."}``).
+        """
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key or ""):
+            raise ValueError(f"Invalid model_config key: {key!r}")
+        json_path = f"$.{key}"
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model_config = json_set("
+                "COALESCE(model_config, '{}'), ?, json(?)) WHERE id = ?",
+                (json_path, value_json, session_id),
+            )
+        self._execute_write(_do)
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):

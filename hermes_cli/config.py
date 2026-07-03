@@ -2083,6 +2083,26 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Fusion — optional persistent sidekick + compaction-boundary model
+    # routing. Disabled by default: when fusion.enabled is false, the delegate
+    # tool schema, main system prompt, and compression prompt remain unchanged.
+    "fusion": {
+        "enabled": False,
+        "sidekick_model": "",      # "" = delegation.model, then parent model
+        "sidekick_provider": "",   # "" = delegation.provider, then parent provider
+        "sidekick_base_url": "",   # "" = delegation.base_url
+        "sidekick_api_key": "",    # "" = delegation.api_key, then parent key
+        "sidekick_api_mode": "",   # "" = auto-detect / delegation.api_mode
+        "sidekick_toolsets": [],    # [] = same toolsets ephemeral children get
+        "compaction_routing": False,  # routing only fires at context compaction; never without compaction
+        "routing_model": "",       # MECHANICAL target; "" = sidekick_model; both "" = no switch
+        "routing_provider": "",    # "" = sidekick_provider, then current provider
+        "routing_base_url": "",    # "" = sidekick_base_url, then current base_url when provider matches
+        "routing_api_key": "",     # "" = sidekick_api_key, then current key when provider matches
+        "routing_api_mode": "",    # "" = sidekick_api_mode, then current api_mode when provider matches
+        "frontier_model": "",      # FRONTIER_JUDGMENT target; "" = session start model
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -3124,7 +3144,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -4983,7 +5003,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "delegation", "fusion",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }

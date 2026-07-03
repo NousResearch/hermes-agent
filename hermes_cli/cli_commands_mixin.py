@@ -666,6 +666,92 @@ class CLICommandsMixin:
         _cprint("  Your CLI session is intact.")
         return True
 
+    def _restore_fusion_routed_runtime_for_session(self, session_id: str) -> bool:
+        """Best-effort restore of a session's persisted Fusion route.
+
+        Credentials are intentionally not stored in the session DB. Resolve them
+        from live provider config/credential pools, then switch through the low
+        level helper so this automatic restore does not mark routing suspended.
+        """
+        agent = getattr(self, "agent", None)
+        session_db = getattr(self, "_session_db", None)
+        if not agent or not session_db:
+            return False
+        if not (
+            getattr(agent, "_fusion_enabled", False)
+            and getattr(agent, "_fusion_compaction_routing", False)
+        ):
+            return False
+
+        try:
+            session_row = session_db.get_session(session_id)
+            raw_model_config = (session_row or {}).get("model_config")
+            if not raw_model_config:
+                return False
+            model_config = json.loads(raw_model_config)
+        except Exception:
+            return False
+        if not isinstance(model_config, dict):
+            return False
+
+        routed = model_config.get("_fusion_routed_runtime")
+        if not isinstance(routed, dict):
+            return False
+        target_model = str(routed.get("model") or "").strip()
+        target_provider = str(routed.get("provider") or "").strip()
+        if not target_model or not target_provider:
+            return False
+        stored_base_url = str(routed.get("base_url") or "").strip()
+        stored_api_mode = str(routed.get("api_mode") or "").strip()
+
+        api_key = ""
+        resolved_base_url = ""
+        resolved_api_mode = ""
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=target_provider,
+                target_model=target_model,
+            )
+            api_key = runtime.get("api_key", "") or ""
+            resolved_base_url = runtime.get("base_url", "") or ""
+            resolved_api_mode = runtime.get("api_mode", "") or ""
+        except Exception:
+            # Some custom/direct-alias routes only have the persisted endpoint.
+            # Let switch_model fail/rollback cleanly if credentials cannot be
+            # resolved; resume should still succeed on the config default.
+            if target_provider in {"custom", "local"} or target_provider.startswith("custom:"):
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                    runtime = resolve_runtime_provider(
+                        requested=target_provider,
+                        explicit_base_url=stored_base_url or None,
+                        target_model=target_model,
+                    )
+                    api_key = runtime.get("api_key", "") or ""
+                    resolved_base_url = runtime.get("base_url", "") or ""
+                    resolved_api_mode = runtime.get("api_mode", "") or ""
+                except Exception:
+                    pass
+
+        try:
+            from agent import agent_runtime_helpers
+
+            return bool(
+                agent_runtime_helpers.switch_model(
+                    agent,
+                    target_model,
+                    target_provider,
+                    api_key=api_key,
+                    base_url=resolved_base_url or stored_base_url,
+                    api_mode=resolved_api_mode or stored_api_mode,
+                )
+            )
+        except Exception:
+            return False
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         from cli import _cprint, _sync_process_session_id
@@ -784,7 +870,8 @@ class CLICommandsMixin:
         # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(old_session_id=old_session_id)
+            self._restore_fusion_routed_runtime_for_session(target_id)
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):

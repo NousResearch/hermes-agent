@@ -52,9 +52,11 @@ class _FakeAgent:
         self.session_cost_status = "estimated"
         self.session_cost_source = "openrouter"
         self.context_compressor = _FakeCompressor()
+        self.last_reset_old_session_id = None
 
-    def reset_session_state(self):
+    def reset_session_state(self, old_session_id=None):
         """Mirror the real AIAgent.reset_session_state()."""
+        self.last_reset_old_session_id = old_session_id
         self.session_total_tokens = 0
         self.session_input_tokens = 0
         self.session_output_tokens = 0
@@ -168,6 +170,7 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli._session_db.append_message(cli.session_id, role="user", content="next turn")
 
     assert cli.agent.session_id == cli.session_id
+    assert cli.agent.last_reset_old_session_id == old_session_id
     assert cli.agent._last_flushed_db_idx == 0
     assert cli.agent._todo_store.read() == []
     assert cli.session_start > old_session_start

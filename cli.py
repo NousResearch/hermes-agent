@@ -6969,7 +6969,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(old_session_id=old_session_id)
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

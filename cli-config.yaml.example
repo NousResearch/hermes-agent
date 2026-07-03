@@ -1026,6 +1026,34 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Fusion (persistent sidekick + compaction-boundary routing)
+# =============================================================================
+# Disabled by default. When fusion.enabled is false, Hermes preserves existing
+# behavior: no sidekick parameter in delegate_task, no main-agent prompt change,
+# and no extra Work Complexity section in compression prompts.
+#
+# Sidekick pattern: the main agent plans/reviews/decides; a cheaper persistent
+# sidekick explores, edits, tests, and fixes with its own cached context. Long
+# sidekick sessions can compact their own history just like normal agents.
+# Process restarts do not rehydrate sidekick history; the next sidekick call
+# lazily creates a fresh child. No cache keep-alive pingers are used.
+fusion:
+  enabled: false            # Master switch — everything below is inert when false.
+  sidekick_model: ""        # "" = delegation.model, then parent model.
+  sidekick_provider: ""     # "" = delegation.provider, then parent provider.
+  sidekick_base_url: ""     # "" = delegation.base_url.
+  sidekick_api_key: ""      # "" = delegation.api_key, then parent key.
+  sidekick_api_mode: ""     # "" = auto-detect / delegation.api_mode.
+  sidekick_toolsets: []     # [] = same toolsets ephemeral delegate children get.
+  compaction_routing: false # Routing only fires at compaction. Sessions that never compact never route.
+  routing_model: ""         # MECHANICAL target ("" = sidekick_model; both "" = no switch).
+  routing_provider: ""      # "" = sidekick_provider, then current provider.
+  routing_base_url: ""      # "" = sidekick_base_url; only fall back to current base_url for same-provider routes.
+  routing_api_key: ""       # "" = sidekick_api_key; only fall back to current key for same-provider routes.
+  routing_api_mode: ""      # "" = sidekick_api_mode; only fall back to current api_mode for same-provider routes.
+  frontier_model: ""        # FRONTIER_JUDGMENT target ("" = session's starting model).
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

@@ -1809,6 +1809,9 @@ export const ja = defineLocale({
     applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
+    handoffFailedTitle: '更新が完了しませんでした',
+    handoffFailedBody:
+      'Hermes アップデーターは起動しましたが、更新は適用されませんでした——アプリは以前のバージョンのままです。アプリ内更新を再試行するか、ターミナルで「hermes update」を実行してください。',
     notNow: '今は後で',
     applyStatus: {
       preparing: 'バックエンドを更新しています…',

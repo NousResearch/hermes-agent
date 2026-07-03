@@ -1832,6 +1832,9 @@ export const en: Translations = {
     applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
+    handoffFailedTitle: 'Update didn’t complete',
+    handoffFailedBody:
+      'The Hermes updater was launched but the update wasn’t applied — the app is still on the previous version. You can retry the in-app update or run “hermes update” in a terminal.',
     notNow: 'Not now',
     applyStatus: {
       preparing: 'Updating backend…',

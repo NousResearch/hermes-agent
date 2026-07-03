@@ -233,6 +233,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+    handoffResult: () => ipcRenderer.invoke('hermes:updates:handoff-result'),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:updates:progress', listener)

@@ -2006,6 +2006,9 @@ export const zh: Translations = {
     applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
+    handoffFailedTitle: '更新未完成',
+    handoffFailedBody:
+      'Hermes 更新器已启动但更新未应用——应用仍为之前的版本。你可以重试应用内更新，或在终端中运行“hermes update”。',
     notNow: '暂不',
     applyStatus: {
       preparing: '正在更新后端…',

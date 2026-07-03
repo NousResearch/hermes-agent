@@ -186,6 +186,7 @@ declare global {
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
+        handoffResult: () => Promise<DesktopUpdateHandoffResult>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -329,6 +330,30 @@ export interface DesktopUpdateApplyResult {
   /** True when a detached relauncher took over (macOS bundle swap / Linux
    *  re-exec): the app is about to quit and reopen itself. */
   handedOff?: boolean
+}
+
+/** Post-relaunch validation result for the Tauri updater hand-off (#57645).
+ *  When the desktop spawned hermes-setup --update and quit, the next instance
+ *  checks whether the git SHA actually changed. If not, the update failed
+ *  silently and the renderer surfaces a closeable error. */
+export interface DesktopUpdateHandoffResult {
+  /** True when a fresh hand-off marker was found and the SHA did not change —
+   *  the update failed silently. The renderer should land on a closeable
+   *  error state. */
+  pending?: boolean
+  /** True when the hand-off marker indicates the update did NOT take (same SHA
+   *  before and after). */
+  failed?: boolean
+  /** True when the hand-off marker indicates the update DID take (SHA changed). */
+  succeeded?: boolean
+  /** The git HEAD SHA recorded at hand-off time. */
+  recordedSha?: string
+  /** The git HEAD SHA at relaunch time (may be '' if git is unavailable). */
+  currentSha?: string
+  /** The Hermes version string recorded at hand-off time. */
+  recordedVersion?: string
+  /** Error message if the check itself failed. */
+  error?: string
 }
 
 export type DesktopUpdateStage =

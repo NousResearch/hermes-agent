@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateHandoffResult,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
@@ -642,6 +643,48 @@ let lastFocusAt = 0
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
 
+/**
+ * Post-relaunch validation for the Tauri updater hand-off (#57645).
+ *
+ * When the desktop spawned `hermes-setup --update` and quit, the next instance
+ * must check whether the git SHA actually changed. If it didn't, the updater
+ * failed silently — the user clicked "Update now", the app closed and reopened,
+ * but the version is unchanged and there is no error. Without this check the
+ * app silently reverts to the old version and re-shows the "update available"
+ * pill as if nothing happened.
+ *
+ * On a failed hand-off we land on a closeable `error` state so the user knows
+ * the update didn't take and can retry or fall back to `hermes update` in a
+ * terminal.
+ */
+async function checkHandoffResult(): Promise<void> {
+  const bridge = window.hermesDesktop?.updates
+
+  if (!bridge?.handoffResult) {
+    return
+  }
+
+  let result: DesktopUpdateHandoffResult
+
+  try {
+    result = await bridge.handoffResult()
+  } catch {
+    // Bridge not ready or IPC failed — don't block startup.
+    return
+  }
+
+  if (result?.pending && result?.failed) {
+    $updateApply.set({
+      ...IDLE,
+      applying: false,
+      stage: 'error',
+      error: 'handoff-failed',
+      message: translateNow('updates.handoffFailedBody')
+    })
+    $updateOverlayOpen.set(true)
+  }
+}
+
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
   if (pollerStarted || typeof window === 'undefined') {
@@ -655,6 +698,7 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
+  void checkHandoffResult()
   void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()

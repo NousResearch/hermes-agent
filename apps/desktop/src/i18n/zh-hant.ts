@@ -1755,6 +1755,9 @@ export const zhHant = defineLocale({
     applyingClose: '此視窗會在更新期間關閉，隨後 Hermes 會自動重新開啟。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
+    handoffFailedTitle: '更新未完成',
+    handoffFailedBody:
+      'Hermes 更新程式已啟動但更新未套用——應用程式仍為之前的版本。您可以重試應用程式內更新，或在終端機中執行「hermes update」。',
     notNow: '暫不',
     applyStatus: {
       preparing: '正在更新後端…',

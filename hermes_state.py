@@ -5708,6 +5708,27 @@ class SessionDB:
 
         return result
 
+    def maybe_warn_auto_prune_disabled(self) -> None:
+        """Log a one-time warning when sessions.auto_prune is off.
+
+        Default is disabled (see hermes_cli/config.py DEFAULT_CONFIG), so
+        without this, operators get no signal that ended sessions and
+        state.db will grow unbounded until they opt in. Fires once per
+        HERMES_HOME (tracked via state_meta); never raises.
+        """
+        try:
+            if self.get_meta("auto_prune_disabled_warned"):
+                return
+            logger.warning(
+                "sessions.auto_prune is disabled (the default): ended "
+                "sessions and state.db will not be pruned or VACUUMed "
+                "automatically. Set sessions.auto_prune=true in config.yaml, "
+                "or run `hermes sessions prune` manually, to reclaim space."
+            )
+            self.set_meta("auto_prune_disabled_warned", "1")
+        except Exception:
+            pass
+
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #
     # State machine:

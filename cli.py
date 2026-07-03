@@ -1792,6 +1792,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
 
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_prune", False):
+            session_db.maybe_warn_auto_prune_disabled()
             return
         session_db.maybe_auto_prune_and_vacuum(
             retention_days=int(cfg.get("retention_days", 90)),

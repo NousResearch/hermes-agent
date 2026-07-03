@@ -416,6 +416,8 @@ def model_forces_max_completion_tokens(model: str) -> bool:
         or m.startswith("o1")
         or m.startswith("o3")
         or m.startswith("o4")
+        or m.startswith("kimi-")
+        or m.startswith("moonshot")
     )
 
 

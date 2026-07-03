@@ -121,6 +121,26 @@ class TestProviderClass:
         with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
             assert _openrouter()._resolve_model() == "google/gemini-3.1-flash-image-preview"
 
+    def test_model_top_level_config_override(self):
+        cfg = {"model": "openai/gpt-image-2"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain() == ["openai/gpt-image-2"]
+
+    def test_nous_honors_top_level_model(self):
+        from plugins.image_gen.openrouter import _build_providers
+
+        cfg = {"model": "openai/gpt-image-2"}
+        nous = {p.name: p for p in _build_providers()}["nous"]
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert nous._resolve_model_chain() == ["openai/gpt-image-2"]
+
+    def test_explicit_model_kwarg_wins_over_config(self):
+        cfg = {"model": "openai/gpt-image-2"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain("google/gemini-3-pro-image") == [
+                "google/gemini-3-pro-image"
+            ]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -266,6 +286,17 @@ class TestGenerate:
 
         headers = mock_post.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer sk-or-test"
+
+    def test_generate_uses_model_kwarg_from_dispatch(self):
+        """image_generate passes image_gen.model as a model kwarg — honor it."""
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            result = _openrouter().generate(prompt="a pet", model="openai/gpt-image-2")
+
+        assert result["success"] is True
+        assert result["model"] == "openai/gpt-image-2"
+        assert mock_post.call_args.kwargs["json"]["model"] == "openai/gpt-image-2"
 
     def test_posts_to_resolved_base_url(self):
         """Nous routes to its own base URL — proves the same code serves both."""

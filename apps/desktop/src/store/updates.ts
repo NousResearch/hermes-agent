@@ -185,6 +185,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
       }
     },
     durationMs: 0,
+    icon: 'gift',
     id: UPDATE_TOAST_ID,
     kind: 'info',
     message: translateNow('notifications.updateReadyMessage', behind),
@@ -611,6 +612,7 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
+  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -633,6 +635,7 @@ export function startUpdatePoller(): void {
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(
     () => {
+      void checkUpdates()
       void checkBackendUpdates()
     },
     30 * 60 * 1000
@@ -660,6 +663,7 @@ function onFocus() {
   }
 
   lastFocusAt = now
+  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
 }

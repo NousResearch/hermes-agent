@@ -18,9 +18,9 @@ Configuration in config.yaml:
           bot_id: "your-bot-id"          # or WECOM_BOT_ID env var
           secret: "your-secret"          # or WECOM_SECRET env var
           websocket_url: "wss://openws.work.weixin.qq.com"
-          dm_policy: "open"              # open | allowlist | disabled | pairing
+          dm_policy: "pairing"           # open | allowlist | disabled | pairing
           allow_from: ["user_id_1"]
-          group_policy: "open"           # open | allowlist | disabled
+          group_policy: "pairing"        # open | allowlist | disabled | pairing
           group_allow_from: ["group_id_1"]
           groups:
             group_id_1:
@@ -161,7 +161,7 @@ class WeComAdapter(BasePlatformAdapter):
             or os.getenv("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
         ).strip() or DEFAULT_WS_URL
 
-        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WECOM_DM_POLICY", "open")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WECOM_DM_POLICY", "pairing")).strip().lower()
         # dm_policy already honors WECOM_DM_POLICY, so the allowlist must honor
         # WECOM_ALLOWED_USERS too. Without the env fallback an env-only setup
         # (dm_policy=allowlist via env, no config extra) runs with an empty
@@ -172,7 +172,7 @@ class WeComAdapter(BasePlatformAdapter):
             or os.getenv("WECOM_ALLOWED_USERS", "")
         )
 
-        self._group_policy = str(extra.get("group_policy") or os.getenv("WECOM_GROUP_POLICY", "open")).strip().lower()
+        self._group_policy = str(extra.get("group_policy") or os.getenv("WECOM_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 
@@ -514,7 +514,7 @@ class WeComAdapter(BasePlatformAdapter):
             if not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
                 return
-        elif not self._is_dm_allowed(sender_id):
+        elif not self._is_dm_intake_allowed(sender_id):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
@@ -861,15 +861,38 @@ class WeComAdapter(BasePlatformAdapter):
         """WeCom gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("WECOM_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return _entry_matches(self._allow_from, sender_id)
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return _entry_matches(self._allow_from, principal)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
         if self._group_policy == "disabled":
+            return False
+        if self._group_policy == "pairing":
             return False
         if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
             return False

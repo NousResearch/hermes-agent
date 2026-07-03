@@ -675,7 +675,6 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver_extra": self._render_delivery_extra(
                 route_config.get("deliver_extra", {}), payload
             ),
-            "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -709,7 +708,11 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately
+        # Non-blocking — return 202 Accepted immediately.  The per-delivery
+        # session is closed by the ``on_processing_complete`` override below
+        # once the agent run actually finishes (``handle_message`` itself is
+        # fire-and-forget: it spawns ``_process_message_background`` and
+        # returns before the run starts, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -723,6 +726,94 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    async def on_processing_complete(
+        self, event: "MessageEvent", outcome: Any
+    ) -> None:
+        """Close the per-delivery webhook session once its run finishes.
+
+        A webhook delivery is one-shot: the ``delivery_id`` is baked into the
+        session key, so the session will never receive a second turn.  Mirror
+        the cron completion path (``cron/scheduler.py`` →
+        ``end_session(..., "cron_complete")``) by marking the session ended
+        when the run completes.  Without this, webhook sessions keep
+        ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
+        rows with ``ended_at`` set, so unclosed webhook sessions accumulate
+        unbounded and drive state.db bloat (the ghost-session leak).
+
+        This hook is the one seam that runs at the TRUE end of the run:
+        ``BasePlatformAdapter._process_message_background`` fires it after the
+        message handler returns, on the success, failure, and cancellation
+        paths alike — so error runs are reaped too.  (``handle_message`` is
+        fire-and-forget; wrapping IT closes before the run even starts.)
+        ``end_session()`` is first-reason-wins and no-ops on an already-ended
+        row, so this never clobbers a ``compression``/``agent_close`` reason.
+        """
+        await self._end_webhook_session(event, event.source.chat_id)
+
+    async def _end_webhook_session(
+        self, event: "MessageEvent", session_chat_id: str
+    ) -> None:
+        """Mark the per-delivery webhook session ended in state.db.
+
+        Resolves the persisted ``session_id`` from the gateway session store
+        using the SAME source the run was keyed on (so profile multiplexing
+        and key construction match exactly), then closes it via the existing
+        ``SessionDB.end_session`` API — never a hand-written UPDATE.
+        """
+        runner = self.gateway_runner
+        if runner is None:
+            return
+        session_db = getattr(runner, "_session_db", None)
+        store = getattr(runner, "session_store", None)
+        if session_db is None or store is None:
+            return
+        try:
+            key_fn = getattr(runner, "_session_key_for_source", None)
+            if key_fn is None:
+                return
+            session_key = key_fn(event.source)
+            # Resolve the persisted session_id via the store's public,
+            # lock-held accessor (peek_session_id) rather than reaching into
+            # the private _entries dict without the store lock. Fall back to
+            # the private path only for older stores / test doubles that
+            # predate the accessor.
+            peek = getattr(store, "peek_session_id", None)
+            if callable(peek):
+                session_id = peek(session_key)
+            else:
+                if hasattr(store, "_ensure_loaded"):
+                    try:
+                        store._ensure_loaded()
+                    except Exception:
+                        pass
+                entries = getattr(store, "_entries", {}) or {}
+                entry = entries.get(session_key)
+                session_id = getattr(entry, "session_id", None) if entry else None
+            if not session_id:
+                logger.debug(
+                    "[webhook] No session_id to close for %s (key=%s)",
+                    session_chat_id,
+                    session_key,
+                )
+                return
+            # AsyncSessionDB forwards end_session via asyncio.to_thread; a
+            # plain SessionDB exposes it synchronously.  Handle both.
+            _end = session_db.end_session
+            result = _end(session_id, "webhook_complete")
+            if asyncio.iscoroutine(result):
+                await result
+            logger.debug(
+                "[webhook] Closed session %s for delivery %s",
+                session_id,
+                session_chat_id,
+            )
+        except Exception as e:
+            logger.debug(
+                "[webhook] Failed to close session for %s: %s",
+                session_chat_id,
+                e,
+            )
 
     # ------------------------------------------------------------------
     # Signature validation

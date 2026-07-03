@@ -5452,6 +5452,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else "Your current task will be interrupted."
         )
         msg = f"⚠️ Gateway {action} — {hint}"
+        discord_restart_msg = (
+            "♻️ Hermes reload in progress — I'll resume my threads once back."
+        )
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -5484,6 +5487,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_str = _parsed["platform"]
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
+
+            if self._restart_requested and platform_str == Platform.DISCORD.value:
+                # Discord servers may have many active session threads. Avoid
+                # broadcasting routine reload lifecycle pings into every thread;
+                # keep in-chat /restart notices scoped to the originator, while
+                # planned/service reloads use only the configured home channel.
+                if restart_source is None:
+                    continue
+                try:
+                    restart_thread_id = (
+                        str(restart_source.thread_id) if restart_source.thread_id else None
+                    )
+                    if (
+                        restart_source.platform.value,
+                        str(restart_source.chat_id),
+                        restart_thread_id,
+                    ) != (
+                        platform_str,
+                        chat_id,
+                        str(thread_id) if thread_id else None,
+                    ):
+                        continue
+                except Exception:
+                    continue
 
             # Deduplicate only identical delivery targets. Thread/topic-aware
             # platforms can share a parent chat while still routing to distinct
@@ -5526,7 +5553,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                message = (
+                    discord_restart_msg
+                    if platform == Platform.DISCORD and self._restart_requested
+                    else msg
+                )
+                result = await adapter.send(
+                    chat_id,
+                    message,
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -5606,10 +5642,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.thread_id,
                     adapter=adapter,
                 )
+                metadata = _non_conversational_metadata(metadata, platform=platform)
+                message = (
+                    discord_restart_msg
+                    if platform == Platform.DISCORD and self._restart_requested
+                    else msg
+                )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(str(home.chat_id), message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -14184,9 +14226,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
+            message = (
+                "♻️ Hermes reloaded — resuming my threads."
+                if platform == Platform.DISCORD
+                else "♻ Gateway restarted successfully. Your session continues."
+            )
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                message,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

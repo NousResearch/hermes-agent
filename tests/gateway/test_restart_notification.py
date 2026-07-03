@@ -9,7 +9,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
-from gateway.session import build_session_key
+from gateway.session import SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -643,6 +643,109 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
         f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
     )
     assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_marks_discord_lifecycle_nonconversational(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "discord", "chat_id": "42"}))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms = {
+        Platform.DISCORD: runner.config.platforms[Platform.TELEGRAM],
+    }
+    runner.adapters = {Platform.DISCORD: adapter}
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("discord", "42", None)
+    adapter.send.assert_awaited_once_with(
+        "42",
+        "♻️ Hermes reloaded — resuming my threads.",
+        metadata={"non_conversational": True},
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_discord_planned_restart_shutdown_notifies_home_only():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms = {
+        Platform.DISCORD: runner.config.platforms[Platform.TELEGRAM],
+    }
+    runner.config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+        platform=Platform.DISCORD,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.adapters = {Platform.DISCORD: adapter}
+
+    for thread_id in ("topic-a", "topic-b"):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="parent-42",
+            chat_type="group",
+            user_id=f"user-{thread_id}",
+            thread_id=thread_id,
+        )
+        session_key = build_session_key(source)
+        runner._running_agents[session_key] = object()
+        runner.session_store._entries[session_key] = MagicMock(origin=source)
+
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "home-42",
+        "♻️ Hermes reload in progress — I'll resume my threads once back.",
+        metadata={"non_conversational": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_discord_in_chat_restart_shutdown_notifies_origin_thread_only():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms = {
+        Platform.DISCORD: runner.config.platforms[Platform.TELEGRAM],
+    }
+    runner.adapters = {Platform.DISCORD: adapter}
+
+    origin = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-42",
+        chat_type="group",
+        user_id="u1",
+        thread_id="topic-a",
+    )
+    other = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-42",
+        chat_type="group",
+        user_id="u2",
+        thread_id="topic-b",
+    )
+    runner._restart_command_source = origin
+    for source in (origin, other):
+        session_key = build_session_key(source)
+        runner._running_agents[session_key] = object()
+        runner.session_store._entries[session_key] = MagicMock(origin=source)
+
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "parent-42",
+        "♻️ Hermes reload in progress — I'll resume my threads once back.",
+        metadata={"thread_id": "topic-a", "non_conversational": True},
+    )
 
 
 @pytest.mark.asyncio

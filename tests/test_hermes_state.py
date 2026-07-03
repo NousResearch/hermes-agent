@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import pytest
@@ -1160,6 +1161,49 @@ class TestMessageStorage:
         assert len(conv) == 1
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+
+    def test_replace_messages_preserves_structured_reasoning_columns(self, db):
+        """Fork-style get_messages() -> replace_messages() must not double-encode reasoning JSON."""
+        db.create_session(session_id="src", source="cli")
+        db.create_session(session_id="fork", source="cli", parent_session_id="src")
+        reasoning_details = [
+            {"type": "reasoning.text", "text": "step one"},
+        ]
+        codex_reasoning_items = [
+            {"id": "rs_1", "type": "reasoning", "encrypted_content": "blob"},
+        ]
+        codex_message_items = [
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        ]
+        db.append_message(
+            "src",
+            role="assistant",
+            content="done",
+            reasoning_details=reasoning_details,
+            codex_reasoning_items=codex_reasoning_items,
+            codex_message_items=codex_message_items,
+        )
+
+        db.replace_messages("fork", db.get_messages("src"))
+
+        fork_msg = db.get_messages_as_conversation("fork")[0]
+        assert fork_msg["reasoning_details"] == reasoning_details
+        assert fork_msg["codex_reasoning_items"] == codex_reasoning_items
+        assert fork_msg["codex_message_items"] == codex_message_items
+
+        stored = db._conn.execute(
+            "SELECT reasoning_details, codex_reasoning_items, codex_message_items "
+            "FROM messages WHERE session_id = ?",
+            ("fork",),
+        ).fetchone()
+        assert isinstance(json.loads(stored["reasoning_details"]), list)
+        assert isinstance(json.loads(stored["codex_reasoning_items"]), list)
+        assert isinstance(json.loads(stored["codex_message_items"]), list)
 
 
 # =========================================================================

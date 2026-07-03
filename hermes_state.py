@@ -3092,6 +3092,30 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _encode_json_field(value: Any) -> Optional[str]:
+        """Serialize a structured JSON column without double-encoding JSON text."""
+        if not value:
+            return None
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+                return value
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return json.dumps(value)
+
+    @staticmethod
+    def _decode_json_field(value: Any, field_name: str) -> Any:
+        """Deserialize a JSON column, returning None on corrupt stored data."""
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to deserialize %s, falling back to None", field_name)
+            return None
+
     def append_message(
         self,
         session_id: str,
@@ -3124,18 +3148,9 @@ class SessionDB:
         message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
-        )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
-        codex_message_items_json = (
-            json.dumps(codex_message_items)
-            if codex_message_items else None
-        )
+        reasoning_details_json = self._encode_json_field(reasoning_details)
+        codex_items_json = self._encode_json_field(codex_reasoning_items)
+        codex_message_items_json = self._encode_json_field(codex_message_items)
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -3232,15 +3247,9 @@ class SessionDB:
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
-            reasoning_details_json = (
-                json.dumps(reasoning_details) if reasoning_details else None
-            )
-            codex_items_json = (
-                json.dumps(codex_reasoning_items) if codex_reasoning_items else None
-            )
-            codex_message_items_json = (
-                json.dumps(codex_message_items) if codex_message_items else None
-            )
+            reasoning_details_json = self._encode_json_field(reasoning_details)
+            codex_items_json = self._encode_json_field(codex_reasoning_items)
+            codex_message_items_json = self._encode_json_field(codex_message_items)
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
@@ -3428,6 +3437,14 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            if msg.get("role") == "assistant":
+                for field in (
+                    "reasoning_details",
+                    "codex_reasoning_items",
+                    "codex_message_items",
+                ):
+                    if msg.get(field):
+                        msg[field] = self._decode_json_field(msg[field], field)
             result.append(msg)
         return result
 

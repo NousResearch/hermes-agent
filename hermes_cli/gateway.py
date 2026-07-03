@@ -356,11 +356,21 @@ def _scan_gateway_pids(
     def _matches_current_profile(command: str) -> bool:
         command_lc = command.lower()
         if current_profile_name:
-            return (
-                f"--profile {current_profile_name_lc}" in command_lc
-                or f"-p {current_profile_name_lc}" in command_lc
-                or f"hermes_home={current_home_lc}" in command_lc
-            )
+            # Match the flag VALUE as a whole token, not a substring. "-p dev"
+            # is a substring of "-p dev-test", so a substring check scopes a
+            # live *sibling* profile's gateway to this profile: it reports a
+            # dead profile as running and, because find_gateway_pids() feeds
+            # kill_gateway(), lets a profile-scoped ``gateway stop`` terminate
+            # the WRONG profile's gateway. Mirrors the same fix in
+            # gateway.status._command_line_belongs_to_profile (#52536).
+            tokens = command_lc.split()
+            for idx in range(len(tokens) - 1):
+                if (
+                    tokens[idx] in ("--profile", "-p")
+                    and tokens[idx + 1] == current_profile_name_lc
+                ):
+                    return True
+            return any(tok == f"hermes_home={current_home_lc}" for tok in tokens)
 
         # Default-profile case: no profile flag in argv. Accept as long as
         # the command doesn't advertise *some other* profile. HERMES_HOME

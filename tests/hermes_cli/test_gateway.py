@@ -1169,3 +1169,50 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+def test_scan_gateway_pids_rejects_sibling_prefix_profile(monkeypatch):
+    """A profile whose name is a prefix of a sibling ("dev" vs "dev-test") must
+    not scope the sibling's live gateway to itself.
+
+    Regression: ``_matches_current_profile`` used a substring check, so profile
+    "dev" matched ``--profile dev-test`` — reporting a dead "dev" profile as
+    running and, via ``find_gateway_pids`` → ``kill_gateway``, letting a
+    profile-scoped ``gateway stop`` terminate the WRONG profile's gateway.
+    """
+    import pathlib
+    import subprocess as _sp
+
+    # Current profile is "dev".
+    monkeypatch.setattr(
+        gateway, "get_hermes_home",
+        lambda: pathlib.Path("/home/u/.hermes/profiles/dev"),
+    )
+    monkeypatch.setattr(gateway, "_profile_arg", lambda *a, **k: "--profile dev")
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+
+    # Force the POSIX ``ps`` path so the scan is deterministic on any host.
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    _real_isdir = gateway.os.path.isdir
+    monkeypatch.setattr(
+        gateway.os.path, "isdir",
+        lambda p: False if str(p) == "/proc" else _real_isdir(p),
+    )
+
+    # One live gateway — belonging to the SIBLING profile "dev-test".
+    ps_out = (
+        "12345 python -m hermes_cli.main --profile dev-test gateway run --replace\n"
+    )
+    monkeypatch.setattr(
+        gateway.subprocess, "run",
+        lambda cmd, *a, **k: _sp.CompletedProcess(cmd, 0, stdout=ps_out, stderr=""),
+    )
+
+    # Profile-scoped scan: "dev" must NOT claim the "dev-test" gateway.
+    scoped = gateway._scan_gateway_pids(set(), all_profiles=False)
+    assert 12345 not in scoped, f"sibling-prefix profile matched: {scoped}"
+
+    # Sanity: the all-profiles sweep still finds it — proving the scan works and
+    # the exclusion above is the profile check, not an accidental no-op.
+    all_found = gateway._scan_gateway_pids(set(), all_profiles=True)
+    assert 12345 in all_found

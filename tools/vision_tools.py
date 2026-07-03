@@ -1666,6 +1666,8 @@ async def video_analyze_tool(
         local_path = Path(os.path.expanduser(resolved_url))
 
         if local_path.is_file():
+            from agent.file_safety import raise_if_read_blocked
+            raise_if_read_blocked(str(local_path))
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False

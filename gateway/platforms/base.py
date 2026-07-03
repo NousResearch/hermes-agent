@@ -1268,6 +1268,10 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
+    from tools.environments.local import _msys_to_windows_path
+
+    candidate = _msys_to_windows_path(candidate)
+
     try:
         expanded = Path(os.path.expanduser(candidate))
     except (OSError, RuntimeError, ValueError):

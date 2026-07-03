@@ -928,6 +928,30 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(notes.resolve())
 
+    def test_accepts_msys_path_after_windows_normalization(
+        self, tmp_path, monkeypatch,
+    ):
+        """Git Bash ``MEDIA:/c/Users/...`` must normalize before pathlib (#47767)."""
+        self._patch_roots(monkeypatch)
+        media = tmp_path / "photo.png"
+        media.write_bytes(b"png")
+
+        import tools.environments.local as local_mod
+
+        msys_input = "/c/Users/test/photo.png"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        def _fake_msys(path: str) -> str:
+            assert path == msys_input
+            return str(media)
+
+        monkeypatch.setattr(local_mod, "_msys_to_windows_path", _fake_msys)
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(msys_input)
+            == str(media.resolve())
+        )
+
     def test_accepts_any_extension_not_on_denylist(self, tmp_path, monkeypatch):
         """No extension allowlist — .md, .txt, .json, .py all deliver."""
         self._patch_roots(monkeypatch)

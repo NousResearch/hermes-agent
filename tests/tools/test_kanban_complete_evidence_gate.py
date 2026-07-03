@@ -59,6 +59,52 @@ def test_kanban_complete_tool_rejects_missing_evidence(tmp_path, monkeypatch):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(
+            {"summary": "done with empty proof", "evidence_paths": [None, "", "   "]},
+            id="top-level-paths-null-and-empty",
+        ),
+        pytest.param(
+            {"summary": "done with null ref", "evidence_refs": None},
+            id="top-level-refs-null",
+        ),
+        pytest.param(
+            {"summary": "done with empty metadata", "metadata": {"evidence_refs": ""}},
+            id="metadata-ref-empty-string",
+        ),
+        pytest.param(
+            {"summary": "done with empty artifacts", "metadata": {"artifacts": []}},
+            id="metadata-artifacts-empty-list",
+        ),
+    ],
+)
+def test_kanban_complete_tool_rejects_empty_and_null_evidence_fields(
+    tmp_path, monkeypatch, args
+):
+    tid = _setup_worker(tmp_path, monkeypatch)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete(args)
+    payload = json.loads(out)
+    err = payload.get("error", "")
+    assert "kanban_complete blocked" in err
+    assert "evidence path" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        events = kb.list_events(conn, tid)
+        assert any(e.kind == "completion_blocked_missing_evidence" for e in events)
+    finally:
+        conn.close()
+
+
 def test_kanban_complete_tool_accepts_evidence_paths(tmp_path, monkeypatch):
     tid = _setup_worker(tmp_path, monkeypatch)
     evidence = _evidence_file(tmp_path)

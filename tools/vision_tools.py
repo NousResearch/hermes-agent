@@ -1356,7 +1356,18 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    # Prefer config.yaml auxiliary.vision.model; env var is a legacy override.
+    model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _vmodel = cfg_get(_cfg, "auxiliary", "vision", "model")
+        if _vmodel:
+            model = str(_vmodel).strip() or None
+    except Exception:
+        pass
+    if not model:
+        model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return await vision_analyze_tool(image_url, full_prompt, model)
 
 
@@ -1718,7 +1729,19 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    # Prefer config.yaml auxiliary.video.model (falling back to vision);
+    # env vars are a legacy override.
+    model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _vmodel = cfg_get(_cfg, "auxiliary", "video", "model") or cfg_get(_cfg, "auxiliary", "vision", "model")
+        if _vmodel:
+            model = str(_vmodel).strip() or None
+    except Exception:
+        pass
+    if not model:
+        model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return video_analyze_tool(video_url, full_prompt, model)
 
 

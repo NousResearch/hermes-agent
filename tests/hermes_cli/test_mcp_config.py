@@ -490,6 +490,27 @@ class TestEnvVarInterpolation:
         assert _interpolate_env_vars(True) is True
         assert _interpolate_env_vars(None) is None
 
+    def test_interpolate_cursor_env_prefix(self, monkeypatch):
+        """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
+        monkeypatch.setenv("MY_KEY", "secret123")
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
+
+    def test_interpolate_cursor_env_prefix_missing(self, monkeypatch):
+        """An unset ${env:VAR} keeps its literal placeholder, like ${VAR}."""
+        monkeypatch.delenv("MISSING_VAR", raising=False)
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${env:MISSING_VAR}") == "Bearer ${env:MISSING_VAR}"
+
+    def test_env_ref_name_strips_prefix(self):
+        from tools.mcp_tool import _env_ref_name
+
+        assert _env_ref_name("env:API_KEY") == "API_KEY"
+        assert _env_ref_name("API_KEY") == "API_KEY"
+        assert _env_ref_name(" env:API_KEY ") == "API_KEY"
+
 
 # ---------------------------------------------------------------------------
 # Tests: probe-path env resolution (#37792)

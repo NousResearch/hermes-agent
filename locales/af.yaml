@@ -88,6 +88,7 @@ gateway:
     not_enough:            "Nie genoeg gesprek om saam te pers nie (ten minste 4 boodskappe nodig)."
     no_provider:           "Geen verskaffer opgestel nie -- kan nie saampers nie."
     nothing_to_do:         "Niks om saam te pers nie (die transkripsie is steeds heeltemal beskermde konteks)."
+    aggressive_unsupported: "--aggressive word nie ondersteun nie; gebruik '/compress here [N]' om net onlangse uitruilings te behou, of /undo om beurte te verwyder."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
     aborted:               "⚠️ Kompressie gestaak ({error}). Geen boodskappe is laat val nie — die gesprek is onveranderd. Voer /compress uit om weer te probeer, /reset vir 'n skoon sessie, of kyk na jou auxiliary.compression-modelkonfigurasie."
@@ -367,6 +368,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ Gereedskap-vordering: **NUUT** — vertoon wanneer gereedskap verander (voorskoulengte: `display.tool_preview_length`, verstek 40)."
     mode_all:              "⚙️ Gereedskap-vordering: **ALMAL** — elke gereedskaps-oproep vertoon (voorskoulengte: `display.tool_preview_length`, verstek 40)."
     mode_verbose:          "⚙️ Gereedskap-vordering: **OMSLAGTIG** — elke gereedskaps-oproep met volle argumente."
+    mode_log:              "⚙️ Gereedskap-vordering: **LOG** — stil in die klets; gereedskaps-oproepe word na ~/.hermes/logs/tool_calls.log geskryf."
     saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
     save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
 

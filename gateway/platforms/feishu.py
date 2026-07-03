@@ -732,10 +732,10 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
-        "body{font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:13px;background:#fff}"
+        "body{font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:14px;color:#1a1a1a;background:#fff}"
         "table{border-collapse:collapse}"
-        "th{background:#f0f4ff;font-weight:600;text-align:left;padding:6px 10px;border-bottom:2px solid #d0d7ff;white-space:nowrap}"
-        "td{padding:6px 10px;border-bottom:1px solid #eee;white-space:nowrap}"
+        "th{background:#f0f4ff;font-weight:600;text-align:left;padding:7px 12px;border-bottom:2px solid #d0d7ff;white-space:nowrap}"
+        "td{padding:7px 12px;border-bottom:1px solid #eee;white-space:nowrap}"
         "tr:last-child td{border-bottom:none}"
         "</style></head><body><table>"
         f"<thead><tr>{th_cells}</tr></thead>"
@@ -747,28 +747,21 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
         browser = p.chromium.launch()
         try:
             page = browser.new_page(
-                viewport={"width": 1200, "height": 100},
-                device_scale_factor=2,
+                viewport={"width": 1600, "height": 100},
+                device_scale_factor=3,
             )
             page.set_content(html)
+            page.wait_for_timeout(100)  # let fonts settle
             bbox = page.locator("table").bounding_box()
-            clip = None
-            if bbox:
-                clip = {
-                    "x": bbox["x"],
-                    "y": bbox["y"],
-                    "width": bbox["width"],
-                    "height": bbox["height"],
-                }
-                page.set_viewport_size({
-                    "width": int(bbox["width"]) + 20,
-                    "height": int(bbox["height"]) + 20,
-                })
-            return page.screenshot(
-                clip=clip,
-                full_page=False,
-                scale="device",
-            )
+            if bbox is None:
+                return page.screenshot(full_page=True)
+            clip = {
+                "x": bbox["x"],
+                "y": bbox["y"],
+                "width": bbox["width"],
+                "height": bbox["height"],
+            }
+            return page.screenshot(clip=clip, full_page=False)
         finally:
             browser.close()
 

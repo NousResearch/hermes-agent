@@ -1303,20 +1303,19 @@ def switch_model(
         api_mode = determine_api_mode(target_provider, base_url)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
-    # without it, /model switches into an anthropic_messages-routed OpenCode
-    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
-    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
-    if (
-        api_mode == "anthropic_messages"
-        and target_provider in {"opencode-zen", "opencode-go"}
-        and isinstance(base_url, str)
-        and base_url
-    ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
+    # symmetrically (strip /v1 for anthropic_messages, re-append it for
+    # chat_completions / codex_responses).  Mirrors the same logic in
+    # hermes_cli.runtime_provider.resolve_runtime_provider; without the strip,
+    # /model switches into an anthropic_messages-routed OpenCode model
+    # (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
+    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404
+    # page — and without the re-append, a stripped URL persisted to
+    # model.base_url broke every later chat_completions model (glm, deepseek,
+    # kimi) the same way.
+    if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
+        from hermes_cli.models import normalize_opencode_base_url
+        base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)

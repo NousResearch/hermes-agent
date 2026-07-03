@@ -184,10 +184,13 @@ def cmd_fallback_add(args) -> None:
         return
 
     # Picker picked the same thing that's already the primary → nothing changed,
-    # and there's nothing useful to add as a fallback to itself.
+    # and there's nothing useful to add as a fallback to itself.  Compare on the
+    # chain's full (provider, model, base_url) identity — the same tuple used for
+    # chain dedup below — so keeping the current model as primary on endpoint A
+    # while adding endpoint B as a fallback is not wrongly rejected as "same as
+    # primary".
     primary_entry = _extract_fallback_from_model_cfg(model_before)
-    if primary_entry and primary_entry["provider"] == new_entry["provider"] \
-            and primary_entry["model"] == new_entry["model"]:
+    if primary_entry and _entry_identity(primary_entry) == _entry_identity(new_entry):
         _restore_model_cfg(model_before)
         _restore_auth_active_provider(active_provider_before)
         print()

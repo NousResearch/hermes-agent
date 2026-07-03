@@ -351,6 +351,28 @@ class TestRunConversationCodexPath:
         )
         return captured
 
+    def test_uses_profile_codex_home_when_profile_defines_one(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._capture_routing_agent(monkeypatch)
+        profile_home = tmp_path / "profiles" / "coder-codex"
+        codex_home = profile_home / "codex-home"
+        codex_home.mkdir(parents=True)
+        (codex_home / "config.toml").write_text(
+            'default_permissions = ":danger-full-access"\n',
+            encoding="utf-8",
+        )
+        inherited_codex_home = tmp_path / "global-codex"
+        inherited_codex_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("CODEX_HOME", str(inherited_codex_home))
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("work a kanban task")
+
+        assert captured.get("codex_home") == str(codex_home)
+
     def test_approvals_mode_off_auto_approves_codex_server_requests(
         self, monkeypatch
     ):

@@ -18,11 +18,28 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _profile_codex_home_override() -> str | None:
+    """Return a profile-local Codex home when the active profile defines one."""
+    hermes_home = (os.environ.get("HERMES_HOME") or "").strip()
+    if not hermes_home:
+        return None
+    try:
+        candidate = Path(hermes_home).expanduser() / "codex-home"
+        if (candidate / "config.toml").is_file():
+            return str(candidate)
+    except Exception:
+        logger.debug(
+            "codex app-server: profile Codex home lookup failed", exc_info=True
+        )
+    return None
 
 
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
@@ -286,6 +303,8 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
+        codex_home = _profile_codex_home_override()
+
         def _on_codex_event(note: dict) -> None:
             # Bridge Codex app-server item/started notifications to Hermes
             # tool-progress so gateways show verbose "running X" breadcrumbs
@@ -304,6 +323,7 @@ def run_codex_app_server_turn(
 
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_home=codex_home,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

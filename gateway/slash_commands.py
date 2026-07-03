@@ -2268,12 +2268,26 @@ class GatewaySlashCommandsMixin:
         _quick_key = self._session_key_for_source(event.source) if event.source else None
         if adapter and _quick_key:
             try:
+                # Carry over media/reply payloads from the original event so an
+                # attached document (e.g. "/goal <plan attached as PDF>") is
+                # visible to the kickoff turn. #57928.
+                has_media = bool(getattr(event, "media_urls", None))
                 kickoff_event = MessageEvent(
                     text=state.goal,
-                    message_type=MessageType.TEXT,
+                    message_type=event.message_type if has_media else MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    media_urls=list(getattr(event, "media_urls", []) or []),
+                    media_types=list(getattr(event, "media_types", []) or []),
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    reply_to_author_id=event.reply_to_author_id,
+                    reply_to_author_name=event.reply_to_author_name,
+                    reply_to_is_own_message=event.reply_to_is_own_message,
+                    auto_skill=event.auto_skill,
+                    internal=event.internal,
+                    timestamp=event.timestamp,
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:

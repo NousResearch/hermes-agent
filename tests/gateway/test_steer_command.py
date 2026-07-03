@@ -187,5 +187,95 @@ async def test_steer_rejected_payload_returns_rejection_message():
     assert "rejected" in result.lower() or "empty" in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_steer_carries_attachment_paths_into_running_agent_57928():
+    """When /steer is invoked with media attached (Telegram document etc.),
+    the steer text must include an [Attached files: ...] hint so the model
+    knows which paths to read_file(), and the fallback MessageEvent must
+    preserve the media_urls / media_types / reply_to_* fields. Otherwise
+    the agent never sees the file.
+    """
+    from gateway.platforms.base import MessageEvent
+    from datetime import datetime
+
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    event = MessageEvent(
+        text="/steer analyze this file",
+        source=_make_source(),
+        message_id="m42",
+        media_urls=["/tmp/inbox/data.csv"],
+        media_types=["document"],
+        reply_to_message_id="r99",
+    )
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    # Agent.steer was called with the prompt AND an [Attached files: ...] hint
+    running_agent.steer.assert_called_once()
+    steered = running_agent.steer.call_args.args[0]
+    assert "analyze this file" in steered
+    assert "/tmp/inbox/data.csv" in steered
+    assert "[Attached files:" in steered
+
+    # No fallback queueing happened — agent was running, no _pending_messages mutation
+    assert runner._pending_messages == {}
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_steer_fallback_queue_preserves_media_urls_and_reply_57928():
+    """When /steer falls back to /queue semantics (pending sentinel or no
+    agent), the synthesized MessageEvent must carry media_urls / media_types
+    / reply_to_* fields, otherwise the queued turn still loses the file."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+    from gateway.platforms.base import MessageEvent
+
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
+
+    event = MessageEvent(
+        text="/steer look at the attached CSV",
+        source=_make_source(),
+        message_id="m43",
+        media_urls=["/tmp/inbox/data.csv"],
+        media_types=["document"],
+        reply_to_message_id="r11",
+        reply_to_text="the spreadsheet I dropped earlier",
+    )
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert sk in adapter._pending_messages
+    queued = adapter._pending_messages[sk]
+    assert queued.media_urls == ["/tmp/inbox/data.csv"]
+    assert queued.media_types == ["document"]
+    assert queued.reply_to_message_id == "r11"
+    assert queued.reply_to_text == "the spreadsheet I dropped earlier"
+
+
+@pytest.mark.asyncio
+async def test_steer_without_attachments_omits_attachments_hint_57928():
+    """Regression guard: without media, the steer text must remain just the
+    command args — no spurious [Attached files: ] noise."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(_make_event("/steer also check auth.log"))
+
+    assert result is not None
+    running_agent.steer.assert_called_once_with("also check auth.log")
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

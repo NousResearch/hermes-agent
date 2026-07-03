@@ -3204,6 +3204,18 @@ class GatewaySlashCommandsMixin:
                     lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
                 )
 
+                # If _compress_context returned unchanged because a
+                # concurrent compression lock is held, tell the user
+                # clearly instead of showing the misleading
+                # "No changes from compression" no-op text.
+                _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
+                if _lock_skipped:
+                    holder = _lock_skipped if isinstance(_lock_skipped, str) else "unknown"
+                    return (
+                        f"⏳ Compression already in progress for this session "
+                        f"(holder: {holder}). Please wait for it to finish."
+                    )
+
                 # Re-append the verbatim tail after the compressed head,
                 # guarding the seam against illegal role adjacency.
                 if partial and tail:

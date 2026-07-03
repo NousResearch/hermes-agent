@@ -34,6 +34,31 @@ from utils import (
 )
 
 
+@pytest.fixture
+def symlink_privilege(tmp_path: Path) -> None:
+    """Skip when the environment cannot create symlinks.
+
+    On Windows, ``os.symlink`` requires Developer Mode or elevation
+    (``SeCreateSymbolicLinkPrivilege``); without either it raises
+    ``OSError`` WinError 1314 — the default for unelevated contributor
+    runs.  Probe with a throwaway link and skip only on that error, so
+    the symlink coverage still runs where privileges exist (POSIX, or
+    Windows with Developer Mode on) and any other ``OSError`` still
+    fails loudly.
+    """
+    probe_target = tmp_path / ".symlink-probe-target"
+    probe_target.write_text("probe", encoding="utf-8")
+    probe_link = tmp_path / ".symlink-probe-link"
+    try:
+        probe_link.symlink_to(probe_target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symlink privilege not held")
+        raise
+    probe_link.unlink()
+    probe_target.unlink()
+
+
 # ─── Direct helper ────────────────────────────────────────────────────────────
 
 
@@ -43,7 +68,7 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     return tmp
 
 
-def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
+def test_atomic_replace_preserves_symlink(tmp_path: Path, symlink_privilege: None) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("original\n", encoding="utf-8")
@@ -100,7 +125,7 @@ def test_atomic_replace_accepts_pathlike_and_str(tmp_path: Path) -> None:
 # ─── atomic_json_write / atomic_yaml_write wiring ──────────────────────────
 
 
-def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
+def test_atomic_json_write_preserves_symlink(tmp_path: Path, symlink_privilege: None) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
     real.write_text("{}", encoding="utf-8")
@@ -113,7 +138,7 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     assert loaded == {"hello": "world"}
 
 
-def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
+def test_atomic_yaml_write_preserves_symlink(tmp_path: Path, symlink_privilege: None) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("placeholder: true\n", encoding="utf-8")
@@ -220,7 +245,9 @@ def test_atomic_roundtrip_yaml_update_restores_owner(
 # ─── Broken-symlink edge case ─────────────────────────────────────────────
 
 
-def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
+def test_atomic_replace_broken_symlink_creates_target(
+    tmp_path: Path, symlink_privilege: None
+) -> None:
     """A symlink pointing at a missing file: the write should create the
     real target (resolving via realpath) rather than leaving the dangling
     link in place as a regular file.
@@ -261,7 +288,7 @@ def test_atomic_replace_copy_fallback(
 
 
 def test_atomic_replace_copy_fallback_preserves_symlink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symlink_privilege: None
 ) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"

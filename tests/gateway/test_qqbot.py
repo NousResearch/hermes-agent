@@ -190,6 +190,43 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
+    def test_connect_accepts_is_reconnect_kwarg(self):
+        """connect(is_reconnect=True) must not raise TypeError (regression
+        for #52914 / #57252 - the gateway reconnect watcher calls
+        connect(is_reconnect=True) and the missing kwarg caused an infinite
+        backoff loop).
+        """
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._ensure_token = mock.AsyncMock(
+            side_effect=RuntimeError("stop after client init")
+        )
+
+        # Both forms must not raise TypeError.
+        assert asyncio.run(adapter.connect()) is False
+        assert asyncio.run(adapter.connect(is_reconnect=True)) is False
+
+    def test_connect_signature_matches_base_contract(self):
+        """connect() signature must conform to BasePlatformAdapter.connect -
+        same parameter name, KEYWORD_ONLY kind, and default False. Prevents
+        the regression from silently recurring if the kwarg is later moved
+        to a positional or given a different default.
+        """
+        import inspect
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.qqbot import QQAdapter
+
+        base_sig = inspect.signature(BasePlatformAdapter.connect)
+        sig = inspect.signature(QQAdapter.connect)
+        assert sig.parameters.keys() == base_sig.parameters.keys(), (
+            f"QQAdapter.connect parameters {list(sig.parameters)} must match "
+            f"BasePlatformAdapter.connect parameters {list(base_sig.parameters)}"
+        )
+        is_reconnect_param = sig.parameters["is_reconnect"]
+        assert is_reconnect_param.kind == inspect.Parameter.KEYWORD_ONLY
+        assert is_reconnect_param.default is False
+
 
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling

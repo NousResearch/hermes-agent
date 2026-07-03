@@ -92,18 +92,14 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
 
 function buildDesktopBackendEnv({
   hermesHome,
-  pythonPathEntries = [],
   venvRoot,
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
 }: any = {}) {
-  const delimiter = delimiterForPlatform(platform)
-  const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
 
   return {
-    PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,

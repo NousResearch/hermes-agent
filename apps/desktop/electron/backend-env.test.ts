@@ -50,10 +50,9 @@ test('desktop backend PATH preserves first occurrence and avoids duplicates', ()
   )
 })
 
-test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () => {
+test('buildDesktopBackendEnv leaves PYTHONPATH unset and builds backend PATH', () => {
   const env = buildDesktopBackendEnv({
     hermesHome: '/Users/test/.hermes',
-    pythonPathEntries: ['/repo/hermes-agent'],
     venvRoot: '/Users/test/.hermes/hermes-agent/venv',
     currentEnv: {
       PATH: '/usr/bin:/bin',
@@ -63,7 +62,7 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
     pathModule: path.posix
   })
 
-  assert.equal(env.PYTHONPATH, '/repo/hermes-agent:/existing/pythonpath')
+  assert.equal(env.PYTHONPATH, undefined)
   assert.ok(env.PATH.startsWith('/Users/test/.hermes/node/bin:/Users/test/.hermes/hermes-agent/venv/bin:'))
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
 })
@@ -83,7 +82,6 @@ test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root'
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {
   const env = buildDesktopBackendEnv({
     hermesHome: 'C:\\Users\\test\\AppData\\Local\\hermes',
-    pythonPathEntries: ['C:\\repo\\hermes-agent'],
     venvRoot: 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv',
     currentEnv: {
       Path: 'C:\\Windows\\System32;C:\\Windows',
@@ -99,6 +97,7 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   assert.ok(env.Path.includes('\\venv\\Scripts;'))
   assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
   assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
+  assert.equal(env.PYTHONPATH, undefined)
 })
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {

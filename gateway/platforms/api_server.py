@@ -1239,6 +1239,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        session_model: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1258,7 +1259,18 @@ class APIServerAdapter(BasePlatformAdapter):
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
+        global defaults for this agent instance only. Used only by the
+        OpenAI-compatible endpoints (chat completions, responses, runs).
+
+        ``session_model`` is the model persisted on the session row at
+        creation time (POST /api/sessions {"model": ...}). Precedence
+        matches run.py's GatewayRunner._resolve_session_agent_runtime:
+        session model > runtime fallback model > gateway default (Codex
+        finding #1, CRITICAL — this was previously stored but never read
+        on the chat path, so a session's chosen model silently had no
+        effect). Used only by the /api/sessions/{id}/chat[/stream]
+        endpoints — mutually exclusive with ``route`` in practice, since
+        no caller passes both.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1290,7 +1302,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolved from the request's ``model`` field by the HTTP handler.
         # Precedence (highest first): session ``/model`` override → model_routes
         # route → global config — an explicit user-issued ``/model`` on the
-        # session always beats static per-client route config.
+        # session always beats static per-client route config. Only the
+        # OpenAI-compatible endpoints pass ``route``; session-chat endpoints
+        # never do (see ``session_model`` below instead).
         session_override = self._session_model_override_for(
             gateway_session_key or session_id
         )
@@ -1330,6 +1344,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server model route skipped: session /model override wins for %s",
                 gateway_session_key or session_id,
             )
+
+        # Session-persisted model wins over both of the above (Codex finding
+        # #1, CRITICAL). Matches run.py's precedence: session model > runtime
+        # fallback model > gateway default. Only session-chat endpoints pass
+        # ``session_model``, and they never pass ``route`` (see above), so
+        # this never fights the model_routes block for the same call.
+        if session_model:
+            model = session_model
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -1933,7 +1955,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -1946,12 +1968,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
+        # Session's persisted model (Codex finding #1, CRITICAL) — previously
+        # fetched and discarded here, so a session's chosen model at creation
+        # time silently had no effect on any chat turn.
+        session_model = session.get("model") if isinstance(session, dict) else None
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            session_model=session_model,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -1977,7 +2004,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -1989,6 +2016,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        # Session's persisted model (Codex finding #1, CRITICAL) — see
+        # _handle_session_chat for the non-streaming twin of this fix.
+        session_model = session.get("model") if isinstance(session, dict) else None
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -2043,6 +2073,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    session_model=session_model,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4082,6 +4113,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        session_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4097,6 +4129,10 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        ``session_model`` threads the session's persisted model (Codex
+        finding #1) through to ``_create_agent()`` — see its docstring for
+        precedence.
         """
         loop = asyncio.get_running_loop()
 
@@ -4118,6 +4154,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    session_model=session_model,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent

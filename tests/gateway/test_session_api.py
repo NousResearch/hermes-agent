@@ -252,6 +252,51 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_threads_session_model_to_run_agent(auth_adapter, session_db):
+    """Codex finding #1 (CRITICAL): POST /api/sessions persists a per-session
+    model, but /api/sessions/{id}/chat fetched the session record and threw
+    it away -- the session's chosen model silently had no effect on any chat
+    turn. Must reach _run_agent as session_model."""
+    session_id = session_db.create_session("model-pinned-session", "api_server", model="claude-sonnet-4-6")
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200
+
+    mock_run.assert_awaited_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_model"] == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_threads_session_model_to_run_agent(adapter, session_db):
+    """Streaming twin of the CRITICAL finding #1 regression test above."""
+    session_id = session_db.create_session("model-pinned-stream-session", "api_server", model="gpt-5.5")
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200
+            await resp.read()
+
+    mock_run.assert_awaited_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [

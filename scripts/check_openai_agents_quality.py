@@ -21,6 +21,7 @@ SCOPED_PATHS = [
     "plugins/openai_agents",
     "tests/plugins/test_openai_agents_bridge.py",
     "docs/openai-agents-governed-runtime-spec.md",
+    "docs/openai-agents-git-workflow.md",
     "docs/openai-agents-project-tracking.json",
     "schemas/openai-agents-receipt.schema.json",
     "evals/openai_agents/governance_cases.json",
@@ -189,6 +190,24 @@ def _git_ref_exists(ref: str) -> bool:
     return proc.returncode == 0
 
 
+def _git_output(args: list[str]) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stdout.strip()}")
+    return proc.stdout.strip()
+
+
+def _path_allowed_untracked(path: str, allowed: list[str]) -> bool:
+    normalized = path.replace("\\", "/")
+    return any(normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/") for item in allowed)
+
+
 def validate_project_tracking() -> None:
     path = ROOT / "docs/openai-agents-project-tracking.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -246,9 +265,36 @@ def validate_project_tracking() -> None:
                 raise RuntimeError(f"next action {action['id']} missing boolean {key}")
         if action.get("external_side_effect") and "explicit" not in str(action.get("required_approval_level", "")):
             raise RuntimeError(f"next action {action['id']} external side effect lacks explicit approval level")
+
+    git_workflow = data.get("git_workflow") or {}
+    if git_workflow.get("tracking_mode") != "native_git_local_first":
+        raise RuntimeError("git_workflow.tracking_mode must be native_git_local_first")
+    if git_workflow.get("working_branch") != _git_output(["branch", "--show-current"]):
+        raise RuntimeError("git_workflow.working_branch does not match current branch")
+    if git_workflow.get("repo_remote") != _git_output(["remote", "get-url", "origin"]):
+        raise RuntimeError("git_workflow.repo_remote does not match origin remote")
+    if git_workflow.get("upstream_ref") != "origin/main":
+        raise RuntimeError("git_workflow.upstream_ref must remain origin/main for PR readiness")
+    required_cmds = set(git_workflow.get("pre_commit_required_commands") or [])
+    if "python scripts/check_openai_agents_quality.py" not in required_cmds:
+        raise RuntimeError("git_workflow missing SDK quality gate pre-commit command")
+    external_actions = set(git_workflow.get("external_actions_require_explicit_scope") or [])
+    for required_external in {"git push", "gh issue create", "gh pr create"}:
+        if required_external not in external_actions:
+            raise RuntimeError(f"git_workflow must mark {required_external!r} as explicit-scope")
+    for ref in git_workflow.get("tracked_local_commit_refs") or []:
+        if not _git_ref_exists(str(ref)):
+            raise RuntimeError(f"git_workflow references missing local commit: {ref}")
+    allowed_untracked = list(git_workflow.get("allowed_untracked_paths") or [])
+    status = _git_output(["status", "--porcelain", "--untracked-files=all"])
+    for line in status.splitlines():
+        if line.startswith("?? "):
+            untracked_path = line[3:]
+            if not _path_allowed_untracked(untracked_path, allowed_untracked):
+                raise RuntimeError(f"unexpected untracked path not allowed by git_workflow: {untracked_path}")
     print(
         f"project tracking: {len(roadmap)} roadmap item(s), "
-        f"{len(receipts)} receipt group(s), {len(next_actions)} next action(s) ok"
+        f"{len(receipts)} receipt group(s), {len(next_actions)} next action(s), git workflow ok"
     )
 
 

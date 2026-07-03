@@ -122,6 +122,7 @@ scripts/check_openai_agents_quality.py
 schemas/openai-agents-receipt.schema.json
 evals/openai_agents/governance_cases.json
 docs/openai-agents-project-tracking.json
+docs/openai-agents-git-workflow.md
 ```
 
 The quality gate verifies:
@@ -133,6 +134,7 @@ The quality gate verifies:
 - plugin registration and toolset resolution;
 - deterministic governance eval corpus;
 - project tracking manifest referential integrity across roadmap items, local commit refs, receipt groups, and next actions;
+- native git workflow fields: current branch, origin remote, local commit refs, explicit-scope external actions, and allowed untracked paths;
 - recent current-shape receipt schema validation;
 - optional bounded live SDK smoke with `--live-smoke`.
 

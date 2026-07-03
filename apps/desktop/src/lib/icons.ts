@@ -9,6 +9,9 @@ import {
   IconAt as AtSign,
   IconWaveSine as AudioLines,
   IconChartBar as BarChart3,
+  IconBell as Bell,
+  IconBookmark as Bookmark,
+  IconBookmarkFilled as BookmarkFilled,
   IconBrain as Brain,
   IconBug as Bug,
   IconCheck as Check,
@@ -28,6 +31,7 @@ import {
   IconCopy as CopyIcon,
   IconCpu as Cpu,
   IconDownload as Download,
+  IconEgg as Egg,
   IconExternalLink as ExternalLink,
   IconEye as Eye,
   IconEyeOff as EyeOff,
@@ -43,6 +47,7 @@ import {
   IconInfoCircle as Info,
   IconKey as KeyRound,
   IconLayersIntersect2 as Layers3,
+  IconLayoutDashboard as LayoutDashboard,
   IconLink as Link,
   IconLink as Link2,
   IconLink as LinkIcon,
@@ -50,7 +55,10 @@ import {
   IconLoader2 as Loader2Icon,
   IconLock as Lock,
   IconLogin as LogIn,
+  IconMail as Mail,
+  IconMaximize as Maximize,
   IconMessageCircle as MessageCircle,
+  IconMessageQuestion as MessageQuestion,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
   IconMicrophoneOff as MicOff,
@@ -66,6 +74,7 @@ import {
   IconLayoutBottombar as PanelBottom,
   IconLayoutSidebar as PanelLeftIcon,
   IconPlayerPause as Pause,
+  IconPaw as PawPrint,
   IconPencil as Pencil,
   IconPencil as PencilIcon,
   IconPencil as PencilLine,
@@ -81,11 +90,14 @@ import {
   IconSettings as Settings,
   IconSettings2 as Settings2,
   IconAdjustmentsHorizontal as SlidersHorizontal,
-  IconSparkles as Sparkles,
   IconSquare as Square,
+  IconChartDots3 as Starmap,
+  IconSteeringWheel as SteeringWheel,
+  IconPlayerStopFilled as StopFilled,
   IconSun as Sun,
   IconTerminal2 as Terminal,
   IconTrash as Trash2,
+  IconUpload as Upload,
   IconUsers as Users,
   IconVolume2 as Volume2,
   IconVolume2 as Volume2Icon,
@@ -95,7 +107,9 @@ import {
   IconX as X,
   IconX as XIcon,
   IconBolt as Zap,
-  IconBoltFilled as ZapFilled
+  IconBoltFilled as ZapFilled,
+  IconZoomIn as ZoomIn,
+  IconZoomOut as ZoomOut
 } from '@tabler/icons-react'
 
 export {
@@ -109,6 +123,9 @@ export {
   AtSign,
   AudioLines,
   BarChart3,
+  Bell,
+  Bookmark,
+  BookmarkFilled,
   Brain,
   Bug,
   Check,
@@ -128,6 +145,7 @@ export {
   CopyIcon,
   Cpu,
   Download,
+  Egg,
   ExternalLink,
   Eye,
   EyeOff,
@@ -143,6 +161,7 @@ export {
   Info,
   KeyRound,
   Layers3,
+  LayoutDashboard,
   Link,
   Link2,
   LinkIcon,
@@ -150,7 +169,10 @@ export {
   Loader2Icon,
   Lock,
   LogIn,
+  Mail,
+  Maximize,
   MessageCircle,
+  MessageQuestion,
   MessageSquareText,
   Mic,
   MicOff,
@@ -166,6 +188,7 @@ export {
   PanelBottom,
   PanelLeftIcon,
   Pause,
+  PawPrint,
   Pencil,
   PencilIcon,
   PencilLine,
@@ -181,11 +204,14 @@ export {
   Settings,
   Settings2,
   SlidersHorizontal,
-  Sparkles,
   Square,
+  Starmap,
+  SteeringWheel,
+  StopFilled,
   Sun,
   Terminal,
   Trash2,
+  Upload,
   Users,
   Volume2,
   Volume2Icon,
@@ -195,7 +221,25 @@ export {
   X,
   XIcon,
   Zap,
-  ZapFilled
+  ZapFilled,
+  ZoomIn,
+  ZoomOut
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'
+
+/**
+ * Named icon-size scale — the single source of truth for SVG icon dimensions,
+ * replacing ad-hoc `h-N w-N` / `size={N}`. Use `<Icon className={iconSize.sm} />`
+ * (Tailwind `size-*` sets w+h and beats the icon's default 24px); compose with
+ * `cn()` for colour/animation classes.
+ */
+export const iconSize = {
+  xs: 'size-3', // 12px
+  sm: 'size-3.5', // 14px
+  md: 'size-4', // 16px
+  lg: 'size-5', // 20px
+  xl: 'size-6' // 24px
+} as const
+
+export type IconSize = keyof typeof iconSize

@@ -51,12 +51,48 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
-def ensure_uv() -> Optional[str]:
-    """Return the managed uv path, installing it first if necessary.
+class _UvResult(str):
+    """``ensure_uv()`` return value that survives an update boundary.
 
-    On failure returns ``None`` (never raises) so callers can fall
-    back to pip gracefully.
+    ``ensure_uv()``'s arity has flipped between a single path string and a
+    ``(path, fresh_bootstrap)`` tuple across releases. ``hermes update`` runs
+    the call site from the *old*, already-imported ``hermes_cli.main`` against
+    this *freshly pulled* module, so the two can disagree on how many values
+    ``ensure_uv()`` returns. An install parked on a 2-tuple release runs
+    ``uv_bin, fresh_bootstrap = ensure_uv()`` against the single-value module
+    and crashes the first update: the returned path is a plain ``str``, which is
+    itself iterable, so the 2-target unpack walks its characters and raises
+    ``ValueError: too many values to unpack (expected 2)`` (and on the failure
+    path the ``None`` return raises ``TypeError: cannot unpack non-iterable
+    NoneType``). This wrapper answers to both conventions:
+
+        uv_bin = ensure_uv()         # behaves as the path str ("" when absent)
+        uv_bin, fresh = ensure_uv()  # unpacks as (path|None, fresh_bootstrap)
+
+    Missing uv is the empty string (falsy) instead of ``None`` so legacy
+    2-target call sites can still unpack a failure without raising, while
+    ``if not uv_bin`` keeps working for single-value callers.
+
+    POSIX only. This wrapper is **never** returned on Windows — see
+    ``ensure_uv()`` for why the ``__iter__`` override is unsafe there.
     """
+
+    fresh_bootstrap: bool
+
+    def __new__(cls, path: Optional[str], fresh: bool = False) -> "_UvResult":
+        self = super().__new__(cls, path or "")
+        self.fresh_bootstrap = fresh
+        return self
+
+    def __iter__(self):
+        # Tuple-unpacking hook for legacy ``uv_bin, fresh = ensure_uv()`` sites.
+        # First element mirrors the historical contract: the path string, or
+        # ``None`` when uv is unavailable.
+        return iter(((str(self) or None), self.fresh_bootstrap))
+
+
+def _ensure_uv_path() -> Optional[str]:
+    """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
     existing = resolve_uv()
     if existing:
         return existing
@@ -86,6 +122,37 @@ def ensure_uv() -> Optional[str]:
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
     return result
+
+
+def ensure_uv():
+    """Return the managed uv path, installing it first if necessary.
+
+    On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
+    both usable directly as the path *and* unpackable as
+    ``(path, fresh_bootstrap)`` for older call sites parked on a 2-tuple
+    release — see :class:`_UvResult` for the update-boundary rationale.
+
+    On **Windows** we deliberately return a plain ``str``/``None`` instead.
+    ``subprocess`` there serializes the argv via ``subprocess.list2cmdline``,
+    which iterates every entry *as a string* (``for c in arg``). The dependency
+    installer passes uv straight into the command list (``[uv_bin, "pip", ...]``),
+    so a ``_UvResult`` — whose ``__iter__`` yields ``(path, fresh_bootstrap)``
+    rather than characters — would inject the bool into the command line and
+    crash the install with ``TypeError: sequence item 1: expected str instance,
+    bool found``. A plain ``str`` matches the historical Windows contract and is
+    subprocess-safe. (A single value cannot satisfy both 2-target unpacking and
+    Windows char-iteration: both use the iterator protocol, with contradictory
+    results.)
+
+    On failure the result is falsy — never raises — so callers can fall back to
+    pip gracefully.
+    """
+    result = _ensure_uv_path()
+    if platform.system() == "Windows":
+        # See docstring: a str subclass with an overridden __iter__ is unsafe as
+        # a Windows subprocess argument. Hand back the plain path (or None).
+        return result
+    return _UvResult(result)
 
 
 def update_managed_uv() -> Optional[str]:

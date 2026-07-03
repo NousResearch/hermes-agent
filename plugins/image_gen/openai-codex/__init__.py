@@ -14,19 +14,24 @@ Selection precedence for the tier (first hit wins):
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
-Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
+Output is saved as PNG under ``$HERMES_HOME/cache/images/``. Source images for
+image-to-image/editing are sent as Responses ``input_image`` content parts.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_images,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -73,11 +78,21 @@ _SIZES = {
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
 # done by ``API_MODEL``.
-_CODEX_CHAT_MODEL = "gpt-5.4"
+_CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
-    "You are an assistant that must fulfill image generation requests by "
-    "using the image_generation tool when provided."
+    "You are an assistant that must fulfill image generation and image editing "
+    "requests by using the image_generation tool when provided."
+)
+
+_MAX_REFERENCE_IMAGES = 16
+_MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
+# gpt-image-2's Responses ``input_image`` accepts raster formats only. The
+# shared magic-byte sniffer also recognizes SVG/TIFF/ICO, which the API
+# rejects server-side — gate to this allowlist so unsupported inputs fail
+# locally with a clear error instead of an opaque HTTP 400.
+_ACCEPTED_INPUT_MIME = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
 
 
@@ -143,8 +158,111 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
+def _sniff_image_mime(raw: bytes) -> Optional[str]:
+    """Return a safe raster image MIME from magic bytes (not filename labels).
+
+    Delegates magic-byte detection to the shared sniffer in
+    ``agent.image_routing`` (single source of truth), then gates the result
+    to :data:`_ACCEPTED_INPUT_MIME` — the raster formats gpt-image-2's
+    ``input_image`` actually accepts. SVG/TIFF/ICO (which the shared sniffer
+    also recognizes) are rejected here so they fail locally with a clear
+    error instead of an opaque server-side HTTP 400.
+    """
+    from agent.image_routing import _sniff_mime_from_bytes
+
+    mime = _sniff_mime_from_bytes(raw)
+    if mime in _ACCEPTED_INPUT_MIME:
+        return mime
+    return None
+
+
+def _data_url_to_input_image_url(value: str) -> str:
+    """Validate and canonicalize a data:image URL for Responses input_image."""
+    if "," not in value:
+        raise ValueError("Image data URL is missing a comma separator")
+    header, data = value.split(",", 1)
+    header_lc = header.lower()
+    if not header_lc.startswith("data:image/") or ";base64" not in header_lc:
+        raise ValueError("Only base64 data:image URLs are supported as Codex image inputs")
+    raw = base64.b64decode(data, validate=True)
+    if len(raw) > _MAX_INPUT_IMAGE_BYTES:
+        raise ValueError("Image data URL exceeds 25MB cap")
+    mime = _sniff_image_mime(raw)
+    if mime is None:
+        raise ValueError("Image data URL does not contain supported image bytes")
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _local_image_to_data_url(value: str) -> str:
+    """Read a local image path and return a validated data:image URL."""
+    try:
+        from agent.file_safety import get_read_block_error
+
+        blocked = get_read_block_error(value)
+        if blocked:
+            raise ValueError(blocked)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.debug("Codex image input read guard unavailable: %s", exc)
+
+    path = Path(os.path.expanduser(value)).resolve()
+    if not path.is_file():
+        raise ValueError(f"Image input path does not exist or is not a file: {value}")
+    size = path.stat().st_size
+    if size <= 0:
+        raise ValueError(f"Image input path is empty: {value}")
+    if size > _MAX_INPUT_IMAGE_BYTES:
+        raise ValueError(f"Image input path exceeds 25MB cap: {value}")
+    raw = path.read_bytes()
+    mime = _sniff_image_mime(raw)
+    if mime is None:
+        raise ValueError(f"Image input path is not a supported image: {value}")
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _to_input_image_part(value: str) -> Dict[str, str]:
+    """Convert a URL/data URL/local path into a Responses input_image part."""
+    candidate = (value or "").strip()
+    if not candidate:
+        raise ValueError("Blank image input")
+    lowered = candidate.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        image_url = candidate
+    elif lowered.startswith("data:"):
+        image_url = _data_url_to_input_image_url(candidate)
+    else:
+        image_url = _local_image_to_data_url(candidate)
+    return {"type": "input_image", "image_url": image_url}
+
+
+def _normalize_input_images(
+    image_url: Optional[str],
+    reference_image_urls: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    """Collect primary + reference images as ordered Responses content parts."""
+    values: List[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        values.append(image_url.strip())
+    for ref in (normalize_reference_images(reference_image_urls) or []):
+        values.append(ref)
+    values = values[:_MAX_REFERENCE_IMAGES]
+    return [_to_input_image_part(value) for value in values]
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if input_images:
+        content.extend(input_images)
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
@@ -152,7 +270,7 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
         "tools": [{
             "type": "image_generation",
@@ -242,7 +360,14 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
-def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
@@ -253,7 +378,12 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     })
-    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        input_images=input_images,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     image_b64: Optional[str] = None
@@ -319,7 +449,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required",
+            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
@@ -327,10 +457,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             ),
         }
 
+    def capabilities(self) -> Dict[str, Any]:
+        # The Codex Responses image_generation tool accepts source/reference
+        # images as `input_image` message content parts. Keep this capability
+        # honest so the dynamic `image_generate` schema encourages identity-
+        # preserving edits instead of unrelated text-to-image redraws.
+        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
+
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
@@ -383,11 +523,24 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
+            input_images = _normalize_input_images(image_url, reference_image_urls)
+        except Exception as exc:
+            return error_response(
+                error=f"Invalid image input for Codex image editing: {exc}",
+                error_type="invalid_image_input",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        try:
             b64 = _collect_image_b64(
                 token,
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                input_images=input_images or None,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -428,7 +581,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            modality="image" if input_images else "text",
+            extra={"size": size, "quality": meta["quality"], "input_image_count": len(input_images)},
         )
 
 

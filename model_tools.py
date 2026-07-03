@@ -34,6 +34,10 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+# Tracks platform-bundle names already flagged in disabled_toolsets so the
+# advisory (#33924) is logged once per name, not on every tool recompute.
+_WARNED_DISABLED_BUNDLES: set = set()
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -140,7 +144,11 @@ def _run_async(coro):
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_run_in_worker)
+        # Carry the active profile + approval/sudo callbacks into the worker so
+        # async tools resolve get_hermes_home() under the active profile.
+        from tools.thread_context import propagate_context_to_thread
+
+        future = pool.submit(propagate_context_to_thread(_run_in_worker))
         try:
             return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
@@ -221,7 +229,6 @@ _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search", "web_extract"],
     "terminal_tools": ["terminal"],
     "vision_tools": ["vision_analyze"],
-    "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
@@ -252,6 +259,14 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+
+# Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
+# process sees many distinct toolset/config fingerprints over its lifetime
+# (per-session toolset sets, config edits, kanban-task toggles); without a
+# bound the cache grows unboundedly. 8 comfortably covers the warm working
+# set (the handful of distinct platform/toolset combos a gateway actually
+# serves) while keeping the cap small. (#19251)
+_TOOL_DEFS_CACHE_MAX = 8
 
 
 def _clear_tool_defs_cache() -> None:
@@ -329,6 +344,11 @@ def get_tool_definitions(
         # agent inits and providers that enforce unique tool names
         # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
         # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
+        # Bound the cache with LRU eviction so a long-lived Gateway process
+        # doesn't accumulate entries unboundedly across the many distinct
+        # toolset/config fingerprints it sees over its lifetime (#19251).
+        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
         _tool_defs_cache[cache_key] = result
         return list(result)
     return result
@@ -379,8 +399,29 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
-                tools_to_include.difference_update(resolved)
+                if toolset_name.startswith("hermes-"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
+                    # subtracting the whole bundle would strip core tools shared
+                    # by other enabled toolsets and empty the tool list (#33924).
+                    # Subtract only the bundle's non-core delta; keep core.
+                    from toolsets import bundle_non_core_tools
+                    to_remove = bundle_non_core_tools(toolset_name)
+                    tools_to_include.difference_update(to_remove)
+                    resolved = sorted(to_remove)
+                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                        _WARNED_DISABLED_BUNDLES.add(toolset_name)
+                        logger.info(
+                            "agent.disabled_toolsets contains platform-bundle "
+                            "name '%s'; core tools are preserved and only its "
+                            "platform-specific tools (%s) are removed. Bundle "
+                            "names usually belong in `toolsets:`, not "
+                            "`disabled_toolsets` (#33924).",
+                            toolset_name,
+                            ", ".join(resolved) if resolved else "none",
+                        )
+                else:
+                    resolved = resolve_toolset(toolset_name)
+                    tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
@@ -823,6 +864,7 @@ def _emit_post_tool_call_hook(
     status: Optional[str] = None,
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
 
@@ -853,6 +895,7 @@ def _emit_post_tool_call_hook(
             status=status,
             error_type=error_type,
             error_message=error_message,
+            middleware_trace=list(middleware_trace or []),
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -869,6 +912,8 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    skip_tool_request_middleware: bool = False,
+    tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
@@ -900,6 +945,7 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
@@ -970,9 +1016,31 @@ def handle_function_call(
                 user_task=user_task,
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
+                skip_tool_request_middleware=skip_tool_request_middleware,
+                tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
+
+    _tool_original_args = dict(function_args)
+    if not skip_tool_request_middleware:
+        try:
+            from hermes_cli.middleware import apply_tool_request_middleware
+
+            _tool_request_mw = apply_tool_request_middleware(
+                function_name,
+                function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
+            )
+            function_args = _tool_request_mw.payload
+            _tool_original_args = _tool_request_mw.original_payload
+            _tool_middleware_trace = _tool_request_mw.trace
+        except Exception as _mw_err:
+            logger.debug("tool_request middleware error: %s", _mw_err)
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -1000,6 +1068,7 @@ def handle_function_call(
                     tool_call_id=tool_call_id or "",
                     turn_id=turn_id or "",
                     api_request_id=api_request_id or "",
+                    middleware_trace=list(_tool_middleware_trace),
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
@@ -1018,6 +1087,7 @@ def handle_function_call(
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    middleware_trace=list(_tool_middleware_trace),
                 )
                 return result
 
@@ -1073,6 +1143,7 @@ def handle_function_call(
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
+                        session_id=session_id,
                         enabled_tools=sandbox_enabled,
                     )
             else:
@@ -1080,9 +1151,22 @@ def handle_function_call(
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
+                        session_id=session_id,
                         user_task=user_task,
                     )
-            result = _dispatch(function_args)
+            from hermes_cli.middleware import run_tool_execution_middleware
+
+            result = run_tool_execution_middleware(
+                function_name,
+                function_args,
+                _dispatch,
+                original_args=_tool_original_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
+            )
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
@@ -1101,6 +1185,7 @@ def handle_function_call(
             turn_id=turn_id,
             api_request_id=api_request_id,
             duration_ms=duration_ms,
+            middleware_trace=list(_tool_middleware_trace),
         )
 
         # Generic tool-result canonicalization seam: plugins receive the

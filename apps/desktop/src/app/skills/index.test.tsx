@@ -75,13 +75,11 @@ describe('SkillsView toolset management', () => {
   })
 
   it('renders toolset titles without leading emoji', async () => {
-    getToolsets.mockResolvedValue([
-      toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })
-    ])
+    getToolsets.mockResolvedValue([toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })])
 
     await renderSkills()
 
-    expect(screen.getByText('Cron Jobs')).toBeTruthy()
+    expect(await screen.findByText('Cron Jobs')).toBeTruthy()
     expect(screen.queryByText(/⏰/)).toBeNull()
   })
 

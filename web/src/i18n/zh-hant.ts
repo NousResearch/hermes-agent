@@ -158,6 +158,7 @@ export const zhHant: Translations = {
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
+    newChat: "新對話",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -285,8 +286,8 @@ export const zhHant: Translations = {
     nameRequired: "名稱為必填",
     nameRule:
       "僅允許小寫字母、數字、底線及連字號；首字必須為字母或數字；最多 64 個字元。",
-    invalidName: "設定檔名稱無效",
-    cloneFromDefault: "從預設設定檔複製設定",
+    invalidName: "設定檔名稱無效",    cloneFrom: "從設定檔複製",
+    cloneFromNone: "無（空白）",
     allProfiles: "設定檔",
     noProfiles: "找不到設定檔。",
     defaultBadge: "預設",
@@ -431,6 +432,14 @@ export const zhHant: Translations = {
     replaceCurrentValue: "取代目前值（{preview}）",
     showValue: "顯示實際值",
     hideValue: "隱藏值",
+    customTitle: "自訂密鑰",
+    customHint: "儲存在 .env 中、Hermes 無法識別的任意環境變數。可用於為技能、MCP 伺服器或你自己的工具注入環境變數。",
+    customConfigured: "已設定 {count} 個自訂密鑰",
+    addCustomKey: "新增自訂密鑰",
+    customKeyName: "變數名稱",
+    customKeyNamePlaceholder: "例如 MY_SERVICE_API_KEY",
+    add: "新增",
+    invalidKeyName: "僅能使用字母、數字和底線（必須以字母或底線開頭）。",
   },
 
   oauth: {

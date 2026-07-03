@@ -341,6 +341,17 @@ class TestCompress:
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
 
+    def test_compress_strips_db_persisted_from_assembled_messages(self, compressor):
+        """Regression for #57491: shallow copies must not carry flush markers."""
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_db_persisted": True}
+            for i in range(10)
+        ]
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = compressor.compress(msgs)
+        assert len(result) < len(msgs)
+        assert all("_db_persisted" not in msg for msg in result)
+
     def test_protect_first_n_decays_after_first_compression(self):
         """Regression for #11996: protect_first_n must protect early turns on
         the FIRST compaction but DECAY afterwards, so the same early user

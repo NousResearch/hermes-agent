@@ -191,6 +191,48 @@ class TestFlushAfterCompression:
                 "final answer",
             ]
 
+    def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
+        """Regression for #57491: live cached-agent markers must not block child flush."""
+        from agent.conversation_compression import compress_context
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+            parent_sid = "20260701_152840_parent"
+            db.create_session(parent_sid, "gateway", model="test/model")
+
+            agent = self._make_agent(db)
+            agent.session_id = parent_sid
+            agent.compression_in_place = False
+            agent._ensure_db_session()
+
+            messages = [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"message {i}",
+                    "_db_persisted": True,
+                }
+                for i in range(12)
+            ]
+
+            with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+                compressed, _ = compress_context(
+                    agent, messages, approx_tokens=100_000, system_message="sys"
+                )
+
+            assert agent.session_id != parent_sid
+            child_sid = agent.session_id
+
+            agent._flush_messages_to_session_db(compressed, None)
+
+            child_rows = db.get_messages(child_sid)
+            assert len(child_rows) == len(compressed), (
+                f"Expected {len(compressed)} rows in child session, got {len(child_rows)}. "
+                f"_db_persisted marker propagation bug (#57491)."
+            )
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split

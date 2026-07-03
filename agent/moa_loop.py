@@ -687,23 +687,26 @@ def aggregate_moa_context(
     aggregator: dict[str, str],
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
-    max_tokens: int | None = None,
+    reference_max_tokens: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
     Failures are returned as model-specific notes instead of aborting the normal
     agent loop; the main model can still act with partial context.
 
-    ``max_tokens`` is ``None`` by default: MoA does not cap reference or
-    aggregator output, so each model uses its own maximum. ``call_llm`` omits
-    the parameter entirely when it is ``None`` (see its docstring), which also
-    sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
-    here previously truncated long aggregator syntheses.
+    ``reference_max_tokens`` applies ONLY to the reference fan-out — the
+    aggregator's own synthesis call is never capped, so it always uses its
+    model's own maximum. ``call_llm`` omits the parameter entirely when it
+    is ``None`` (see its docstring), which also sidesteps providers that
+    reject ``max_tokens`` outright. A hardcoded cap on the aggregator call
+    previously truncated long aggregator syntheses (#53580) — passing
+    ``reference_max_tokens`` to both calls here would silently reintroduce
+    that regression.
 
     ``temperature`` / ``aggregator_temperature`` are ``None`` by default:
-    like max_tokens, ``call_llm`` omits temperature when None so the
-    provider default applies — matching single-model agent behavior. Presets
-    may still pin explicit values.
+    like ``reference_max_tokens``, ``call_llm`` omits temperature when None
+    so the provider default applies — matching single-model agent behavior.
+    Presets may still pin explicit values.
     """
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
@@ -711,7 +714,7 @@ def aggregate_moa_context(
         reference_models,
         ref_messages,
         temperature=temperature,
-        max_tokens=max_tokens,
+        max_tokens=reference_max_tokens,
     )
 
     joined = "\n\n".join(
@@ -748,7 +751,6 @@ def aggregate_moa_context(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
-            max_tokens=max_tokens,
             reasoning_config=_aggregator_reasoning_config(aggregator),
             **agg_runtime,
         )

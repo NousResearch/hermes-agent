@@ -21,7 +21,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import _entry_identity, get_fallback_chain
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +205,13 @@ def cmd_fallback_add(args) -> None:
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
 
-    # Reject exact-duplicate fallback entries.
+    # Reject exact-duplicate fallback entries. Use the chain's own identity
+    # (provider, model, base_url) — the same tuple ``get_fallback_chain`` dedups
+    # on — so two distinct routes that share a provider label and model name but
+    # target different base_urls are correctly treated as separate entries.
+    new_identity = _entry_identity(new_entry)
     for existing in chain:
-        if existing.get("provider") == new_entry["provider"] \
-                and existing.get("model") == new_entry["model"]:
+        if _entry_identity(existing) == new_identity:
             print()
             print(f"  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
             return

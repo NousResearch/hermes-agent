@@ -12,7 +12,7 @@ export function SessionsSection({ sessions, selectedId, onSelect }: { sessions: 
     <section className="drilldown-workspace" aria-label="Сессии агентов">
       <div className="stack-list compact-stack">
         {sessions.map((session) => (
-          <button className={`list-card glass-card tap tone-${session.tone}`} data-selected={session.id === selected.id} key={session.id} type="button" onClick={() => onSelect(session)}>
+          <button className={`list-card glass-card tap tone-${session.tone}`} data-selected={session.id === selected.id} aria-pressed={session.id === selected.id} key={session.id} type="button" onClick={() => onSelect(session)}>
             <div>
               <span className="mono-label">{session.time}</span>
               <h2>{session.agent}</h2>

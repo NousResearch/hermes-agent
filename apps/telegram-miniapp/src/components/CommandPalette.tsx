@@ -1,6 +1,11 @@
+import { type RefObject } from "react";
 import { quickActions, type NavKey, type QuickAction } from "../mockData";
+import { useDialog } from "./useDialog";
 
 export function CommandPalette({ isOpen, onClose, onNavigate }: { isOpen: boolean; onClose: () => void; onNavigate: (tab: NavKey) => void }) {
+  // Hook must run unconditionally; it no-ops while closed and traps focus /
+  // closes on Escape / restores focus to the trigger while open.
+  const dialogRef = useDialog(isOpen, onClose);
   if (!isOpen) return null;
 
   const routeMap: Partial<Record<QuickAction["id"], NavKey>> = {
@@ -12,7 +17,14 @@ export function CommandPalette({ isOpen, onClose, onNavigate }: { isOpen: boolea
 
   return (
     <div className="sheet-backdrop" role="presentation" onClick={onClose}>
-      <section className="command-sheet glass-card" aria-label="Палитра команд" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+      <section
+        ref={dialogRef as RefObject<HTMLElement>}
+        className="command-sheet glass-card"
+        aria-label="Палитра команд"
+        role="dialog"
+        aria-modal="true"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="sheet-handle" />
         <div className="section-heading compact">
           <div>

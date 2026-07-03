@@ -49,7 +49,7 @@ export function LogsSection({
             {filteredLogs.map((line) => {
               const key = logLineKey(line);
               return (
-                <button className={`log-line tap level-${line.level}`} data-selected={key === selectedKey} key={key} type="button" onClick={() => onSelect(line)}>
+                <button className={`log-line tap level-${line.level}`} data-selected={key === selectedKey} aria-pressed={key === selectedKey} key={key} type="button" onClick={() => onSelect(line)}>
                   <span>{line.time}</span>
                   {line.message}
                 </button>

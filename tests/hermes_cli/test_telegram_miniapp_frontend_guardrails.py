@@ -14,6 +14,10 @@ APP_MODEL_TS = FRONTEND_SRC / "appModel.ts"
 APPROVALS_SECTION_TSX = FRONTEND_SRC / "components" / "ApprovalsSection.tsx"
 COMMAND_PALETTE_TSX = FRONTEND_SRC / "components" / "CommandPalette.tsx"
 SNAPSHOTS_HOOK_TS = FRONTEND_SRC / "useMiniAppSnapshots.ts"
+USE_DIALOG_TS = FRONTEND_SRC / "components" / "useDialog.ts"
+SESSIONS_SECTION_TSX = FRONTEND_SRC / "components" / "SessionsSection.tsx"
+LOGS_SECTION_TSX = FRONTEND_SRC / "components" / "LogsSection.tsx"
+STYLES_CSS = FRONTEND_SRC / "styles.css"
 
 FORBIDDEN_FRONTEND_ENDPOINTS = [
     "/api/actions",
@@ -268,6 +272,40 @@ def test_approvals_badge_is_derived_live_not_hardcoded():
     # in live mode unless the approvals endpoint is fresh (no stale count).
     assert "item.key === \"approvals\" && approvalCount > 0 && approvalsTrustworthy" in app_text
     assert 'endpointHealth.approvals.state === "ok"' in app_text
+
+
+def test_dialogs_are_focus_trapped_and_escapable():
+    # Both modal dialogs must use the shared accessible dialog hook (focus trap,
+    # Escape to close, focus restoration).
+    dialog = read_frontend(USE_DIALOG_TS)
+    assert 'event.key === "Escape"' in dialog
+    assert "previouslyFocused" in dialog and ".focus()" in dialog  # restore focus
+    assert 'event.key !== "Tab"' in dialog  # tab trap present
+
+    for path in (COMMAND_PALETTE_TSX, APPROVALS_SECTION_TSX):
+        text = read_frontend(path)
+        assert "useDialog(" in text, f"{path.name} must use the accessible dialog hook"
+        assert "role=\"dialog\"" in text and 'aria-modal="true"' in text
+
+
+def test_accessibility_affordances_present():
+    app_text = read_frontend(APP_TSX)
+    # Live status region for the connection state, dynamic toggle label, and the
+    # decorative glyph hidden from assistive tech.
+    assert 'role="status" aria-live="polite"' in app_text
+    # Toggle has a STABLE accessible name plus aria-pressed for on/off state.
+    assert 'aria-pressed={theme === "dark"}' in app_text
+    assert 'aria-label="Тёмная тема"' in app_text
+    assert 'aria-hidden="true"' in app_text
+
+    css = read_frontend(STYLES_CSS)
+    assert ":focus-visible {" in css and "outline:" in css
+    # Touch targets meet the 44px minimum.
+    assert ".filter-chip {\n  min-height: 44px;" in css
+
+    # Selection is announced on every master list's selectable rows.
+    for path in (APPROVALS_SECTION_TSX, SESSIONS_SECTION_TSX, LOGS_SECTION_TSX):
+        assert "aria-pressed" in read_frontend(path), f"{path.name} rows must announce selection"
 
 
 def test_mock_quick_actions_remain_read_only_navigation():

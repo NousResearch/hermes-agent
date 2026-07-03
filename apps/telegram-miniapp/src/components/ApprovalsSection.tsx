@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { type ApprovalDecision } from "../api";
 import { type ApprovalDecisionValue, type ApprovalPreview } from "../mockData";
 import { EmptyState, RiskBadge } from "./chrome";
+import { useDialog } from "./useDialog";
+import { triggerTelegramImpact } from "../telegram";
 
 const DECISION_LABEL: Record<ApprovalDecisionValue, string> = {
   approve_once: "Одобрить один раз",
@@ -72,9 +74,13 @@ function ConfirmSheet({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  // Trap focus in the destructive-action dialog, close on Escape (unless
+  // sending), and restore focus to the decision button on close.
+  const dialogRef = useDialog(true, onCancel, { busy: pending });
   return (
     <div className="sheet-backdrop" role="presentation" onClick={pending ? undefined : onCancel}>
       <section
+        ref={dialogRef as RefObject<HTMLElement>}
         className="command-sheet glass-card"
         aria-label="Подтверждение решения"
         role="dialog"
@@ -155,6 +161,8 @@ export function ApprovalsSection({
 
   async function runDecision(target: ApprovalPreview, decision: ApprovalDecisionValue) {
     if (!onDecision) return;
+    // Tactile confirmation at the moment the owner commits a destructive action.
+    triggerTelegramImpact("rigid");
     setPending(true);
     try {
       await onDecision(target.id, decision);
@@ -168,7 +176,7 @@ export function ApprovalsSection({
     <section className="approval-workspace" aria-label="Очередь одобрений">
       <div className="stack-list compact-stack">
         {approvals.map((approval) => (
-          <button className="approval-row glass-card tap" data-selected={approval.id === selected.id} key={approval.id} type="button" onClick={() => onSelect(approval)}>
+          <button className="approval-row glass-card tap" data-selected={approval.id === selected.id} aria-pressed={approval.id === selected.id} key={approval.id} type="button" onClick={() => onSelect(approval)}>
             <span>
               <strong>{approval.title}</strong>
               <small>{approval.source}</small>

@@ -114,6 +114,10 @@ export function configureTelegramMainButton(text: string, onClick: () => void): 
   };
 }
 
+export function triggerTelegramImpact(style: "light" | "medium" | "heavy" | "rigid" | "soft" = "rigid"): void {
+  window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.(style);
+}
+
 export function triggerTelegramRefreshHaptic(type: "start" | "success" | "warning"): void {
   const haptic = window.Telegram?.WebApp?.HapticFeedback;
   if (!haptic) return;

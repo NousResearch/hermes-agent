@@ -166,6 +166,17 @@ button {
   cursor: pointer;
 }
 
+/* Visible keyboard/switch focus in both themes; pointer taps stay ring-free. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .screen {
   position: relative;
   z-index: 1;
@@ -1104,7 +1115,8 @@ h2 {
 }
 
 .ghost-button {
-  padding: 8px 12px;
+  min-height: 44px;
+  padding: 8px 14px;
   font-size: 0.8rem;
 }
 
@@ -1449,7 +1461,7 @@ button.list-card[data-selected="true"] {
 }
 
 .filter-chip {
-  min-height: 40px;
+  min-height: 44px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   padding: 0 14px;

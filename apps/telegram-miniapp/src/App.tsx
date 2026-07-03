@@ -186,7 +186,7 @@ export function App() {
             aria-label="Тёмная тема"
             title={theme === "dark" ? "Переключить на светлую" : "Переключить на тёмную"}
           >
-            {theme === "dark" ? "☀" : "☾"}
+            <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
           </button>
           <span className="status-pill"><span />Защищено</span>
         </div>
@@ -199,7 +199,7 @@ export function App() {
           <p className="hero-copy">
             Персональная диспетчерская для агентов, сессий, логов и будущих ручных одобрений. Сейчас режим только чтение.
           </p>
-          <div className={`connection-banner state-${apiState}`}>{connectionLabel}</div>
+          <div className={`connection-banner state-${apiState}`} role="status" aria-live="polite">{connectionLabel}</div>
         </div>
         <aside className="runtime-panel" aria-label="Пользователь и среда">
           <span>Контекст</span>

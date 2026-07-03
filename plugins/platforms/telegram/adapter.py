@@ -4429,7 +4429,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             # Build provider buttons — folds provider groups (display only).
-            keyboard = self._build_provider_keyboard(providers)
+            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
 
             provider_label = get_label(current_provider)
             text = self.format_message(
@@ -4437,7 +4437,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"Select a provider:{provider_page_info}"
                 )
             )
 
@@ -4467,6 +4467,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "on_model_selected": on_model_selected,
                 "current_model": current_model,
                 "current_provider": current_provider,
+                "provider_page": 0,
             }
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4474,10 +4475,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    _PROVIDER_PAGE_SIZE = 10
     _MODEL_PAGE_SIZE = 8
 
-    def _build_provider_keyboard(self, providers: list):
-        """Build the top-level provider keyboard, folding provider groups.
+    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+        """Build the paginated top-level provider keyboard, folding groups.
 
         Provider families (Kimi/Moonshot, MiniMax, xAI Grok, ...) collapse to
         a single ``mpg:<gid>`` button; tapping it drills into a member
@@ -4522,9 +4524,30 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in providers:
                 buttons.append(_provider_button(p))
 
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        page_size = self._PROVIDER_PAGE_SIZE
+        total = len(buttons)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_buttons = buttons[start:end]
+
+        rows = [page_buttons[i : i + 2] for i in range(0, len(page_buttons), 2)]
+
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mpv:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mpv:{page + 1}"))
+            rows.append(nav)
+
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
-        return InlineKeyboardMarkup(rows)
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -4648,6 +4671,38 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
+                    )
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mpv:"):
+            # --- Provider page navigation ---
+            try:
+                page = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            state["provider_page"] = page
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4833,7 +4888,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif data == "mb":
             # --- Back to provider list (folds groups) ---
-            keyboard = self._build_provider_keyboard(state["providers"])
+            page = int(state.get("provider_page", 0) or 0)
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
 
             try:
                 provider_label = get_label(state["current_provider"])
@@ -4846,7 +4904,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4908,7 +4966,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

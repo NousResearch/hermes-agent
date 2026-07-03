@@ -3187,10 +3187,13 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        # Guard — drop truly empty messages (no text, no @mentions, no media).
+        # Pure @-mentions with empty text are kept so the agent can respond
+        # based on recent group context.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            if not mentions:
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
 
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)

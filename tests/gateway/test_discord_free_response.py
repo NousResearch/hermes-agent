@@ -108,6 +108,7 @@ def adapter(monkeypatch):
     for _var in (
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_THREAD_OWNER_ROUTING",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -772,6 +773,41 @@ async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypa
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_owner_routing_ignores_foreign_thread_followups(adapter, monkeypatch):
+    """Creator-owns-thread mode should not ambiently follow up in another bot's thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_owner_routing"] = True
+
+    thread = FakeThread(channel_id=456, name="athena-owned thread")
+    adapter._threads.mark("456")  # we replied here once, but did not create it
+
+    message = make_message(channel=thread, content="ambient chatter — not ours")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_owner_routing_keeps_bot_created_threads_open(adapter, monkeypatch):
+    """Creator-owns-thread mode still allows ambient follow-ups in bot-created threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_owner_routing"] = True
+
+    thread = FakeThread(channel_id=456, name="hermes-owned thread")
+    adapter._threads.mark("456")
+    adapter._owned_threads.mark("456")
+
+    message = make_message(channel=thread, content="follow-up without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
 
 
 

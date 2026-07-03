@@ -850,9 +850,13 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Track threads where the bot has participated so follow-up messages
-        # in those threads don't require @mention.  Persisted to disk so the
+        # in those threads don't require @mention. Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Track threads this bot CREATED. In creator-owns-thread mode, only
+        # these threads get ambient follow-ups; merely replying once in another
+        # bot's thread is not enough to claim it.
+        self._owned_threads = ThreadParticipationTracker("discord_owned")
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -4686,6 +4690,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
             self._threads.mark(thread_id)
+            self._owned_threads.mark(thread_id)
 
         # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
@@ -4962,6 +4967,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_thread_owner_routing(self) -> bool:
+        """Return whether only bot-created threads get ambient follow-ups.
+
+        When enabled, a Discord bot only treats a thread as mention-free if it
+        CREATED that thread itself. Merely having replied once in a thread does
+        not grant ownership, which prevents two Hermes profiles from both
+        latching onto the same thread forever after a single explicit mention.
+        """
+        configured = self.config.extra.get("thread_owner_routing")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_OWNER_ROUTING", "false").lower() in {"true", "1", "yes", "on"}
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
@@ -6204,14 +6224,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 or is_voice_linked_channel
             )
 
-            # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in)
-            # — UNLESS thread_require_mention is enabled, in which case threads
-            # are gated the same as channels.  Useful when multiple bots share
-            # a thread.
+            # Skip the mention check if the message is in a thread the bot may
+            # ambiently own. Default behavior keys off prior participation;
+            # creator-owns-thread mode narrows that to threads this bot
+            # created itself. UNLESS thread_require_mention is enabled, in
+            # which case threads are gated the same as channels.
+            ambient_thread_ids = self._owned_threads if self._discord_thread_owner_routing() else self._threads
             in_bot_thread = (
                 is_thread
-                and thread_id in self._threads
+                and bool(thread_id)
+                and thread_id in ambient_thread_ids
                 and not self._discord_thread_require_mention()
             )
 
@@ -6237,6 +6259,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    self._owned_threads.mark(thread_id)
                     # Pre-seed dedup: when _auto_create_thread creates a thread
                     # via message.create_thread(), Discord fires a second
                     # MESSAGE_CREATE event for the "thread starter message".
@@ -8269,6 +8292,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    if "thread_owner_routing" in discord_cfg and not os.getenv("DISCORD_THREAD_OWNER_ROUTING"):
+        os.environ["DISCORD_THREAD_OWNER_ROUTING"] = str(discord_cfg["thread_owner_routing"]).lower()
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")

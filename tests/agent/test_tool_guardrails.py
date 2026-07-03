@@ -37,13 +37,15 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     cfg = ToolCallGuardrailConfig()
 
     assert cfg.warnings_enabled is True
-    assert cfg.hard_stop_enabled is False
+    assert cfg.hard_stop_enabled is True
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
+    assert cfg.idempotent_streak_warn_after == 5
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert cfg.idempotent_streak_halt_after == 10
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -74,22 +76,24 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
-def test_default_repeated_identical_failed_call_warns_without_blocking():
+def test_default_repeated_identical_failed_call_warns_then_blocks():
     controller = ToolCallGuardrailController()
     args = {"query": "same"}
 
     decisions = []
-    for _ in range(5):
+    for i in range(5):
         assert controller.before_call("web_search", args).action == "allow"
         decisions.append(
             controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
         )
 
     assert decisions[0].action == "allow"
-    assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn", "warn"]
-    assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
-    assert controller.before_call("web_search", args).action == "allow"
-    assert controller.halt_decision is None
+    assert [d.action for d in decisions[1:3]] == ["warn", "warn"]
+    assert [d.action for d in decisions[3:5]] == ["warn", "warn"]
+    # After 5 failures, the next before_call should block
+    blocked = controller.before_call("web_search", args)
+    assert blocked.action == "block"
+    assert blocked.code == "repeated_exact_failure_block"
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():
@@ -149,7 +153,11 @@ def test_file_mutation_lint_error_result_is_not_a_tool_failure():
 
 def test_same_tool_varying_args_warns_by_default_without_halting():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
     )
 
     first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
@@ -188,21 +196,24 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
     assert third.count == 3
 
 
-def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_default():
+def test_idempotent_no_progress_repeated_result_warns_then_blocks_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
     args = {"path": "/tmp/same.txt"}
     result = "same file contents"
 
-    for _ in range(4):
+    for _ in range(2):
         assert controller.before_call("read_file", args).action == "allow"
         decision = controller.after_call("read_file", args, result, failed=False)
 
     assert decision.action == "warn"
     assert decision.code == "idempotent_no_progress_warning"
-    assert controller.before_call("read_file", args).action == "allow"
-    assert controller.halt_decision is None
+
+    # Third call should be blocked
+    blocked = controller.before_call("read_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
 
 
 def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
@@ -256,3 +267,60 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_idempotent_streak_warns_then_halts_after_consecutive_read_only_calls():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            idempotent_streak_warn_after=3,
+            idempotent_streak_halt_after=5,
+        )
+    )
+
+    # 5 consecutive idempotent calls with different args (not no-progress)
+    decision = None
+    for i in range(3):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+        decision = controller.after_call("web_search", {"query": f"q{i}"}, f"result {i}", failed=False)
+    # After 3, should warn
+    assert decision is not None
+    assert decision.action == "warn"
+    assert decision.code == "idempotent_streak_warning"
+
+    for i in range(3, 5):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+        decision = controller.after_call("web_search", {"query": f"q{i}"}, f"result {i}", failed=False)
+
+    # 6th call should be halted
+    blocked = controller.before_call("web_search", {"query": "q6"})
+    assert blocked.action == "halt"
+    assert blocked.code == "idempotent_streak_halt"
+    assert blocked.count == 5
+
+
+def test_mutating_tool_resets_idempotent_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            idempotent_streak_warn_after=3,
+            idempotent_streak_halt_after=5,
+        )
+    )
+
+    # 4 idempotent calls
+    for i in range(4):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+        controller.after_call("web_search", {"query": f"q{i}"}, f"result {i}", failed=False)
+
+    # A mutating call resets the streak
+    assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
+    controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False)
+
+    # Streak should be reset — more idempotent calls allowed
+    for i in range(4):
+        assert controller.before_call("web_search", {"query": f"r{i}"}).action == "allow"
+        controller.after_call("web_search", {"query": f"r{i}"}, f"result {i}", failed=False)
+
+    # 5th after reset should still be allowed (streak is 4)
+    assert controller.before_call("web_search", {"query": "r5"}).action == "allow"

@@ -65,18 +65,20 @@ class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    are enabled by default so runaway loops are halted before they burn budget
+    and degenerate output.
     """
 
     warnings_enabled: bool = True
-    hard_stop_enabled: bool = False
+    hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    idempotent_streak_warn_after: int = 5
+    idempotent_streak_halt_after: int = 10
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -109,6 +111,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
             ),
+            idempotent_streak_warn_after=_positive_int(
+                warn_after.get("idempotent_streak", data.get("idempotent_streak_warn_after")),
+                defaults.idempotent_streak_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -120,6 +126,10 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            idempotent_streak_halt_after=_positive_int(
+                hard_stop_after.get("idempotent_streak", data.get("idempotent_streak_halt_after")),
+                defaults.idempotent_streak_halt_after,
             ),
         )
 
@@ -232,6 +242,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._idempotent_streak: int = 0
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -279,6 +290,27 @@ class ToolCallGuardrailController:
                     )
                     self._halt_decision = decision
                     return decision
+
+            # Idempotent streak: consecutive read-only calls without any
+            # mutating action. Models stuck in search/read loops without
+            # making progress (writing, executing, patching) are halted.
+            if self._idempotent_streak >= self.config.idempotent_streak_halt_after:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="idempotent_streak_halt",
+                    message=(
+                        f"Halted: {self._idempotent_streak} consecutive read-only "
+                        f"tool calls ({tool_name}) without any mutating action. "
+                        "You appear to be stuck in a search/read loop. Stop "
+                        "researching and take action: write code, run a command, "
+                        "or produce your final answer."
+                    ),
+                    tool_name=tool_name,
+                    count=self._idempotent_streak,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -349,7 +381,12 @@ class ToolCallGuardrailController:
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            # Mutating tool call resets the idempotent streak
+            self._idempotent_streak = 0
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        # Idempotent tool succeeded — increment the streak
+        self._idempotent_streak += 1
 
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
@@ -369,6 +406,21 @@ class ToolCallGuardrailController:
                 ),
                 tool_name=tool_name,
                 count=repeat_count,
+                signature=signature,
+            )
+
+        if self.config.warnings_enabled and self._idempotent_streak >= self.config.idempotent_streak_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="idempotent_streak_warning",
+                message=(
+                    f"{self._idempotent_streak} consecutive read-only tool calls "
+                    f"without any mutating action. You may be stuck in a loop. "
+                    "Consider taking action: write code, run a command, or produce "
+                    "your final answer."
+                ),
+                tool_name=tool_name,
+                count=self._idempotent_streak,
                 signature=signature,
             )
 

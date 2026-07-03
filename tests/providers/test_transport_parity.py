@@ -280,7 +280,10 @@ class TestCustomOllamaParity:
             provider_profile=get_provider_profile("custom"),
             ollama_num_ctx=131072,
         )
+        # options.num_ctx — native /api/chat endpoint
         assert kw["extra_body"]["options"]["num_ctx"] == 131072
+        # top-level num_ctx — OpenAI-compat /v1/chat/completions endpoint (#43900)
+        assert kw["extra_body"]["num_ctx"] == 131072
 
     def test_think_false_when_disabled(self, transport):
         kw = transport.build_kwargs(
@@ -291,3 +294,14 @@ class TestCustomOllamaParity:
             reasoning_config={"enabled": False, "effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_num_ctx_absent_when_not_set(self, transport):
+        """When ollama_num_ctx is not provided, extra_body has no num_ctx keys."""
+        kw = transport.build_kwargs(
+            model="llama3.1",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("custom"),
+        )
+        assert "num_ctx" not in kw.get("extra_body", {})
+        assert "options" not in kw.get("extra_body", {})

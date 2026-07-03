@@ -162,6 +162,15 @@ _active_subagents_lock = threading.Lock()
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
+_dispatched_tool_call_ids_lock = threading.Lock()
+# tool_call_id -> True for every delegate_task call already accepted in this
+# process. Guards against double-dispatch of the SAME tool call (e.g. a
+# concurrent/sequential execution path invoking it twice, or a caller
+# retrying a tool_call_id it already submitted) spawning duplicate children.
+# Deliberately process-lifetime, not TTL'd: a tool_call_id is unique per API
+# response and never legitimately recurs within one process.
+_dispatched_tool_call_ids: Dict[str, bool] = {}
+
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
@@ -2082,6 +2091,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2095,10 +2105,25 @@ def delegate_task(
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
+    ``tool_call_id`` (when provided by the dispatcher) is used as an
+    idempotency key: a second delegate_task call carrying a tool_call_id
+    already seen in this process is rejected before any child is built,
+    so a duplicate dispatch of the same tool call can't spawn duplicate
+    children.
+
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    if tool_call_id:
+        with _dispatched_tool_call_ids_lock:
+            if tool_call_id in _dispatched_tool_call_ids:
+                return tool_error(
+                    f"delegate_task already dispatched for tool_call_id={tool_call_id!r}; "
+                    "skipping duplicate spawn."
+                )
+            _dispatched_tool_call_ids[tool_call_id] = True
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running

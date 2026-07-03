@@ -199,6 +199,26 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_called_once()
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_duplicate_tool_call_id_rejected(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
+        }
+        parent = _make_mock_parent()
+        first = json.loads(
+            delegate_task(goal="Fix tests", parent_agent=parent, tool_call_id="call-123")
+        )
+        self.assertIn("results", first)
+        mock_run.assert_called_once()
+
+        second = json.loads(
+            delegate_task(goal="Fix tests", parent_agent=parent, tool_call_id="call-123")
+        )
+        self.assertIn("error", second)
+        self.assertIn("call-123", second["error"])
+        mock_run.assert_called_once()  # no second child spawned
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
         mock_run.side_effect = [
             {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},

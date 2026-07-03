@@ -11777,6 +11777,20 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+    if name == "compress":
+        # slash.exec is the desktop/web client's primary path for /compress, but
+        # those clients fall back to command.dispatch whenever slash.exec throws
+        # (e.g. a slow compression trips the client's RPC timeout). Without a
+        # compress branch here that fallback dead-ended in a bogus
+        # "not a quick/plugin/skill command: compress". Run the same live-agent
+        # compression slash.exec does and hand it back as exec output.
+        if not session:
+            return _ok(rid, {"type": "exec", "output": "compress: no active session"})
+        result = _mirror_slash_side_effects(
+            params.get("session_id", ""), session, f"compress {arg}".strip()
+        )
+        return _ok(rid, {"type": "exec", "output": result or "(no output)"})
+
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 

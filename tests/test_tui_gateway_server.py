@@ -3905,6 +3905,52 @@ def test_slash_exec_compress_does_not_run_the_throwaway_worker(monkeypatch):
     assert "Compressed: 4 → 2 messages" in out
 
 
+def test_command_dispatch_compress_runs_live_compression(monkeypatch):
+    """Regression: the desktop/web clients call slash.exec for /compress and fall
+    back to command.dispatch when slash.exec throws (e.g. a slow compression trips
+    the client RPC timeout). command.dispatch had no compress branch, so the
+    fallback dead-ended in a bogus "not a quick/plugin/skill command: compress".
+    command.dispatch must run the same live-agent compression and return it as an
+    exec directive — never a 4018.
+    """
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        with session["history_lock"]:
+            session["history"] = session["history"][-2:]
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {}})
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(),
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    # No 4018 dead-end; a coherent exec directive carrying the compression summary.
+    assert "error" not in resp
+    assert resp["result"]["type"] == "exec"
+    out = resp["result"]["output"]
+    assert "not a quick/plugin/skill command" not in out
+    assert "Compressed: 4 → 2 messages" in out
+
+
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     """When AIAgent._compress_context rotates session_id (compression split),
     the gateway session_key must follow so subsequent approval routing,

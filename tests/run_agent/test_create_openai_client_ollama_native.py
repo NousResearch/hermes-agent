@@ -12,6 +12,7 @@ non-Ollama ``custom:<name>`` (vLLM / llama.cpp / LM Studio) is never mis-routed.
 
 from unittest.mock import MagicMock, patch
 
+from agent.chat_completion_helpers import build_api_kwargs
 from agent.ollama_native_adapter import OllamaNativeClient
 from run_agent import AIAgent
 
@@ -44,7 +45,10 @@ def test_bare_custom_routes_native(mock_openai):
 
 @patch("run_agent.OpenAI")
 def test_suffixed_custom_instance_still_routes_native(mock_openai):
-    """The bug: 'custom:ollama-2' previously fell through to /v1."""
+    """Client selection: 'custom:ollama-2' must get the native client (previously it
+    fell through to /v1). NOTE: this only asserts the client TYPE — that num_ctx
+    actually reaches the payload is covered separately by
+    test_suffixed_custom_instance_injects_num_ctx."""
     mock_openai.return_value = MagicMock()
     agent = _make_agent("custom:ollama-2")
     with patch("agent.ollama_native_adapter.is_native_ollama_base_url", return_value=True):
@@ -52,6 +56,19 @@ def test_suffixed_custom_instance_still_routes_native(mock_openai):
             {"api_key": "ollama", "base_url": _BASE_URL}, reason="test", shared=False
         )
     assert isinstance(client, OllamaNativeClient)
+
+
+@patch("run_agent.OpenAI")
+def test_suffixed_custom_instance_injects_num_ctx(mock_openai):
+    """Routing the native client is not enough — num_ctx must reach extra_body, which
+    only happens on the provider-profile path. A named custom instance must resolve to
+    the 'custom' profile so ollama_num_ctx is injected; otherwise the model loads at
+    Ollama's 4096 default despite using the native client."""
+    mock_openai.return_value = MagicMock()
+    agent = _make_agent("custom:ollama-2")
+    agent._ollama_num_ctx = 64000
+    kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
+    assert kwargs["extra_body"]["options"]["num_ctx"] == 64000
 
 
 @patch("run_agent.OpenAI")

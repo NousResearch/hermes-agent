@@ -764,6 +764,15 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     try:
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
+        if _profile is None and str(agent.provider).startswith("custom:"):
+            # Named custom instances ("custom:<name>") aren't in the registry, but
+            # they ARE custom providers: resolve them to the "custom" profile so the
+            # profile path runs build_api_kwargs_extras() and injects ollama_num_ctx.
+            # Without this, create_openai_client routes a custom:<name> Ollama endpoint
+            # to the native client but num_ctx never reaches extra_body, so the model
+            # loads at Ollama's 4096 default. Mirrors the provider-type match used for
+            # native selection in agent_runtime_helpers.create_openai_client.
+            _profile = get_provider_profile("custom")
     except Exception:
         _profile = None
 

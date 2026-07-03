@@ -57,7 +57,7 @@ def _flag_enabled() -> bool:
 def native_root(base_url: str) -> str:
     """Native Ollama root for a base URL — strips a trailing /v1 (and /) so we can
     POST to {root}/api/chat regardless of whether the caller passed the /v1 form."""
-    b = (base_url or "").rstrip("/")
+    b = (base_url or "").strip().rstrip("/")
     if b.endswith("/v1"):
         b = b[:-3]
     return b
@@ -180,7 +180,9 @@ def _to_ollama_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                         args = json.loads(args) if args.strip() else {}
                     except (TypeError, ValueError):
                         args = {}
-                elif not isinstance(args, dict):
+                # Coerce anything that isn't an object (bad parse, or a JSON null /
+                # array / scalar) to {} — Ollama expects tool-call args as an object.
+                if not isinstance(args, dict):
                     args = {}
                 conv.append({
                     "function": {"name": fn.get("name") or "", "arguments": args}
@@ -519,11 +521,20 @@ class OllamaNativeClient:
         self.chat = _ChatNamespace(self)
         self.embeddings = _Embeddings(self)
         self.is_closed = False
-        self._http = http_client or httpx.Client(
-            timeout=httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
-            if timeout is None
-            else timeout
+        # Per-request default timeout. Applied both to a self-made client AND, below,
+        # as the explicit per-request timeout — so an injected http_client that only
+        # carries httpx's short 5s default never governs a long local-model call.
+        self._default_timeout = (
+            timeout
+            if timeout is not None
+            else httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
         )
+        self._http = http_client or httpx.Client(timeout=self._default_timeout)
+        # Also expose the httpx client as `_client`: the agent's socket-abort path
+        # (force_close_tcp_sockets -> _iter_pool_sockets) resolves the pool via
+        # getattr(client, "_client"), the OpenAI-SDK convention. Without this alias
+        # interrupt / stale-kill can't shut a long native stream's socket.
+        self._client = self._http
 
     # lifecycle / SDK-compat surface
     def close(self) -> None:
@@ -559,12 +570,13 @@ class OllamaNativeClient:
                 h[k] = v
         return h
 
-    @staticmethod
-    def _timeout_kwargs(timeout: Any) -> Dict[str, Any]:
-        """httpx request kwargs: forward an explicit per-request timeout when given,
-        else omit it so the client's configured default applies. (Passing
-        ``timeout=None`` to httpx DISABLES the timeout entirely, which we never want.)"""
-        return {} if timeout is None else {"timeout": timeout}
+    def _timeout_kwargs(self, timeout: Any) -> Dict[str, Any]:
+        """httpx request kwargs. Always pass a concrete timeout — the caller's when
+        given, else our long default — so a request never silently falls back to
+        httpx's 5s default (which applies when an external http_client was injected
+        without one). Passing ``timeout=None`` to httpx DISABLES the timeout, which
+        we never want."""
+        return {"timeout": timeout if timeout is not None else self._default_timeout}
 
     def _create_chat_completion(
         self,

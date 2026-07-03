@@ -638,6 +638,46 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Override the background-review prompts the forked review agent receives
+  # after each turn. Each value here REPLACES the module-level constant for
+  # that review kind. Leave a field unset (null / missing) to keep the
+  # shipped default — these are *opt-in* overrides, not new defaults.
+  #
+  # Resolution chain (first hit wins):
+  #   1. agent instance attribute (per-subclass / per-test override)
+  #   2. this config block
+  #   3. module-level constant in `agent/background_review.py`
+  #
+  # Use ``memory``  to retune what counts as memory-worthy.
+  # Use ``skill``   to retune the skill-create / patch / library-shape ladder.
+  # Use ``combined`` when both review kinds fire in the same fork.
+  # Set a field to "" (empty string) to disable that review variant
+  # explicitly — the fork will skip work for that kind.
+  #
+  # Safety: this only changes the user-message the background review fork
+  # receives. The main-conversation system prompt and per-conversation prompt
+  # cache are untouched (per AGENTS.md "Per-conversation prompt caching is
+  # sacred"). Three reasons it is NOT a new core tool:
+  #   - The escape-hatch is per-turn and only fires from one call site
+  #     (`agent._spawn_background_review`). It does not ship on every API
+  #     call.
+  # - Override applies to a prompt that the existing review fork already
+  #   consumes; nothing new fires when the override is unset.
+  # review_prompts:
+  #   memory: |
+  #     Review the conversation above. Save ONLY durable user facts to memory
+  #     (persona, preferences, persistent environment facts). One-shot tool
+  #     failures and transient task notes do NOT belong in memory.
+  #     If nothing qualifies, say "Nothing to save." and stop.
+  #   skill: |
+  #     Update the skill library. Be active on durable lessons only:
+  #     technique, recurring user preference, or wrong/outdated skill.
+  #     Skip session-one-off fixes and environment failures.
+  #   combined: |
+  #     Two things. Memory: durable user facts only. Skills: durable lessons
+  #     from this session. Skip one-offs on both sides.
+  #     "Nothing to save." is fine when both criteria are empty.
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

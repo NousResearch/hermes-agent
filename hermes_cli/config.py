@@ -928,6 +928,28 @@ DEFAULT_CONFIG = {
         # Set a positive value in config.yaml only if you explicitly want a
         # grace window on /restart (and keep it well under TimeoutStopSec).
         "restart_drain_timeout": 0,
+        # Background-review prompt overrides — let users tune the
+        # memory/skill/combined review forks without forking Hermes.
+        # Each value (None = unset) replaces the module-level constant in
+        # ``agent.background_review`` for that review kind only. Set a
+        # non-empty string to override. Set ``""`` (empty string) to
+        # disable that review variant explicitly — ``spawn_background_
+        # review_thread`` short-circuits and skips the fork entirely,
+        # saving the model call. Resolution order:
+        #   1. agent instance attribute (``agent._MEMORY_REVIEW_PROMPT`` etc.)
+        #   2. this config block
+        #   3. module-level constant in ``agent.background_review``
+        # Override ONLY changes the prompt the background review fork
+        # receives — the main-conversation system prompt and prompt cache
+        # are never touched (per AGENTS.md "Per-conversation prompt caching
+        # is sacred"). Use ``memory`` to retune memory-write criteria,
+        # ``skill`` to retune skill-create / patch / library-shape rules,
+        # ``combined`` when both review kinds fire in the same fork.
+        "review_prompts": {
+            "memory": None,
+            "skill": None,
+            "combined": None,
+        },
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries

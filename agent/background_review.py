@@ -157,6 +157,10 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # the user-message that the forked review agent receives.  AIAgent exposes
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
+#
+# Users can override any of these via ``agent.review_prompts.{memory,skill,
+# combined}`` in config.yaml — see ``_resolve_review_prompt`` below for the
+# full resolution chain.
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Focus on:\n"
@@ -602,6 +606,15 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+    # Empty-prompt short-circuit: the config-resolved prompt can be ""
+    # when the user explicitly turns off this review variant. The
+    # original sentinel was supposed to skip the fork entirely; rather
+    # than spawn an agent that receives a sub-minimal user message
+    # (still consumes a model call), we never enter the try block.
+    # Must run BEFORE _resolve_review_runtime(agent) etc., since those
+    # touch live agent attributes that we want to leave untouched.
+    if not prompt:
+        return
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
         # ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -869,6 +882,80 @@ def _run_review_in_thread(
             pass
 
 
+# Mapping from config-side review-prompt key (``agent.review_prompts.*`` in
+# config.yaml) to the module-level constants and the matching agent-attribute
+# names. Centralising the mapping keeps ``_resolve_review_prompt`` tiny and
+# means adding a new review kind only needs one edit here.
+_REVIEW_PROMPT_BY_KIND: Dict[str, str] = {
+    "memory": "_MEMORY_REVIEW_PROMPT",
+    "skill": "_SKILL_REVIEW_PROMPT",
+    "combined": "_COMBINED_REVIEW_PROMPT",
+}
+
+
+def _resolve_review_prompt(agent: Any, kind: str) -> str:
+    """Pick the review prompt to send to the forked review agent.
+
+    Resolution order (first hit wins):
+
+      1. ``agent.<attr>`` — a per-instance override set by tests or by a
+         subclass. Wins on any non-empty value. Back-compat path with
+         the existing ``getattr(agent, "_MEMORY_REVIEW_PROMPT", ...)``
+         fallback pattern.
+      2. ``agent.review_prompts.<kind>`` in ``config.yaml`` — the new
+         override slot. ``None`` / missing key → fall through. An empty
+         string (``""``) is treated as an explicit "this review kind is
+         off" signal: ``spawn_background_review_thread`` short-circuits
+         and the forked agent never spawns, saving the model call.
+      3. The module-level constant for that kind — the unchanged default.
+
+    Pure read against ``agent``. The config read is wrapped in a narrow
+    ``except (ImportError, OSError, ValueError)`` so a misconfigured
+    user gets a ``logger.warning`` line and falls through to the module
+    constant rather than crashing the review thread.
+    """
+    attr_name = _REVIEW_PROMPT_BY_KIND.get(kind)
+    if attr_name is None:
+        # Unknown kind — caller bug. Don't raise: a bad probe into the
+        # review API shouldn't kill the user's turn.
+        return _MEMORY_REVIEW_PROMPT
+    # 1. Per-instance override (test patches, agent subclassing).
+    try:
+        per_instance = getattr(agent, attr_name)
+    except AttributeError:
+        per_instance = None
+    if per_instance:
+        return per_instance
+    # 2. config.yaml override (None / missing = fall through). We narrow
+    # the except to the realistic failure modes a misconfigured user can
+    # hit (yaml parse error, missing file, bad JSON) — anything else is a
+    # bug we'd rather see than swallow.
+    cfg = None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except (ImportError, OSError, ValueError) as exc:
+        # ImportError: hermes_cli.config unavailable in odd contexts.
+        # OSError: user config file unreadable.
+        # ValueError: yaml/json parse error in the user's config.
+        logger.warning(
+            "background_review: could not read config (%s); "
+            "falling back to module-level prompt constants",
+            exc,
+        )
+    if isinstance(cfg, dict):
+        agent_cfg = cfg.get("agent")
+        if isinstance(agent_cfg, dict):
+            rp_cfg = agent_cfg.get("review_prompts")
+            if isinstance(rp_cfg, dict):
+                override = rp_cfg.get(kind)
+                if override is not None:
+                    return override
+    # 3. Module-level constant — preserved verbatim so legacy callers
+    # that import ``AIAgent._SKILL_REVIEW_PROMPT`` see the same text.
+    return globals()[attr_name]
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
@@ -881,15 +968,17 @@ def spawn_background_review_thread(
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
     """
-    # Pick the right prompt based on which triggers fired.  Allow per-agent
-    # override (the prompts moved to module-level constants but old code paths
-    # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
+    # Pick the right prompt based on which triggers fired. Resolution chain
+    # (see ``_resolve_review_prompt``): agent instance attribute → config.yaml
+    # ``agent.review_prompts.{kind}`` → module-level constant here. The
+    # existing per-agent override path is preserved so legacy test patches
+    # that set ``agent._MEMORY_REVIEW_PROMPT`` etc. keep working.
     if review_memory and review_skills:
-        prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
+        prompt = _resolve_review_prompt(agent, "combined")
     elif review_memory:
-        prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
+        prompt = _resolve_review_prompt(agent, "memory")
     else:
-        prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+        prompt = _resolve_review_prompt(agent, "skill")
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)
@@ -901,6 +990,7 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "_resolve_review_prompt",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

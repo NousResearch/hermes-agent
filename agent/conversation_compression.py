@@ -1370,6 +1370,11 @@ def compress_context(
                 _lock_sid, existing,
             )
             _lock_holder = None  # don't release a lock we don't own
+            # Signal to callers that this no-op is due to a concurrent lock,
+            # not a genuine "nothing to compress" or aux-model failure.
+            # Manual /compress callers can surface a clear status message
+            # instead of the misleading "No changes from compression" text.
+            agent._compression_skipped_due_to_lock = existing or True
             # Surface to the user once — quiet for downstream auto-compress loops
             if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
                 agent._last_compression_lock_warning_sid = _lock_sid

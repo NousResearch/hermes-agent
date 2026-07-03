@@ -85,6 +85,18 @@ _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 _DISK_CACHE_BASENAME = "bws_cache.json"
 
 
+def _platform_default_hermes_home() -> Path:
+    """Return the platform-native default Hermes home path."""
+    try:
+        from hermes_constants import _get_platform_default_hermes_home  # local import to avoid cycles
+        return _get_platform_default_hermes_home()
+    except Exception:
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if os.name == "nt" and local_appdata:
+            return Path(local_appdata) / "hermes"
+        return Path.home() / ".hermes"
+
+
 def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     """Return the disk cache path under hermes_home/cache/.
 
@@ -96,7 +108,7 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
             from hermes_constants import _get_platform_default_hermes_home
             default = _get_platform_default_hermes_home()
         except ImportError:
-            default = Path.home() / ".hermes"
+            default = _platform_default_hermes_home()
         home_path = Path(os.getenv("HERMES_HOME") or default)
     return home_path / "cache" / _DISK_CACHE_BASENAME
 

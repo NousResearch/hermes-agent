@@ -23,6 +23,18 @@ import sys
 from pathlib import Path
 
 
+def _platform_default_hermes_home() -> Path:
+    """Return the platform-native default Hermes home path."""
+    try:
+        from hermes_constants import _get_platform_default_hermes_home  # local import to avoid cycles
+        return _get_platform_default_hermes_home()
+    except Exception:
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if os.name == "nt" and local_appdata:
+            return Path(local_appdata) / "hermes"
+        return Path.home() / ".hermes"
+
+
 def _build_full_manifest(
     bot_name: str,
     bot_description: str,
@@ -170,12 +182,7 @@ def slack_manifest_command(args) -> int:
 
                 target = Path(get_hermes_home()) / "slack-manifest.json"
             except Exception:
-                try:
-                    from hermes_constants import _get_platform_default_hermes_home
-                    default = _get_platform_default_hermes_home()
-                except ImportError:
-                    default = Path.home() / ".hermes"
-                target = Path(os.environ.get("HERMES_HOME") or str(default)) / "slack-manifest.json"
+                target = Path(os.environ.get("HERMES_HOME") or str(_platform_default_hermes_home())) / "slack-manifest.json"
         else:
             target = Path(write_target).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)

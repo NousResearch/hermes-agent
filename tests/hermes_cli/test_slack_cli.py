@@ -2,7 +2,10 @@
 
 import argparse
 
+import hermes_constants
+
 from hermes_cli.slack_cli import _build_full_manifest
+from hermes_cli.slack_cli import slack_manifest_command
 from hermes_cli.subcommands.slack import build_slack_parser
 
 
@@ -112,3 +115,32 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         for event in ("message.im", "message.channels", "message.groups", "app_mention"):
             assert event in bot_events
+
+    def test_manifest_write_uses_platform_default_root_when_env_unset(self, tmp_path, monkeypatch):
+        """The default write target should follow the Windows-native Hermes root."""
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setattr(
+            hermes_constants,
+            "_get_platform_default_hermes_home",
+            lambda: local_appdata / "hermes",
+        )
+        monkeypatch.setattr(
+            hermes_constants,
+            "get_hermes_home",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        args = argparse.Namespace(
+            write=True,
+            name=None,
+            description=None,
+            slashes_only=True,
+            no_assistant=False,
+        )
+
+        slack_manifest_command(args)
+
+        target = local_appdata / "hermes" / "slack-manifest.json"
+        assert target.exists()

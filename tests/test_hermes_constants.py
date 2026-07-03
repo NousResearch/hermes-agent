@@ -33,9 +33,15 @@ class TestGetDefaultHermesRoot:
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        expected = (
+            tmp_path / "LocalAppData" / "hermes"
+            if os.name == "nt"
+            else tmp_path / ".hermes"
+        )
 
-        assert get_default_hermes_root() == tmp_path / ".hermes"
+        assert get_default_hermes_root() == expected
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME = ~/.hermes, returns ~/.hermes."""
@@ -546,6 +552,7 @@ class TestSecureParentDir:
         # Should not raise
         secure_parent_dir(target)
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs elevated privileges")
     def test_symlink_resolved(self, tmp_path, monkeypatch):
         """Symlinks should be resolved before checking depth."""
         real_dir = tmp_path / "a" / "b"
@@ -784,6 +791,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == legacy
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs elevated privileges")
     def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
         """A dangling legacy symlink must NOT shadow populated new-layout data.
 
@@ -802,6 +810,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs elevated privileges")
     def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at a populated directory is honoured."""
         self._set_home(tmp_path, monkeypatch)
@@ -813,6 +822,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("cache/images", "image_cache")
         assert result == legacy
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs elevated privileges")
     def test_symlink_to_empty_dir_returns_new(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at an EMPTY directory falls through."""
         self._set_home(tmp_path, monkeypatch)

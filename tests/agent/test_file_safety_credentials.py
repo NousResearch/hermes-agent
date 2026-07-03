@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+import hermes_constants
+
 
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
@@ -188,6 +190,24 @@ def test_read_file_tool_blocks_nested_google_oauth_path(
     assert "credential store" in out["error"]
     assert "REFRESH_TOKEN_MARKER" not in json.dumps(out)
     assert "ACCESS_TOKEN_MARKER" not in json.dumps(out)
+
+
+def test_platform_default_fallback_uses_windows_root(tmp_path, monkeypatch):
+    """If direct Hermes imports fail, the helper should still honor the Windows root."""
+    import agent.file_safety as fs
+
+    local_appdata = tmp_path / "LocalAppData"
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        hermes_constants,
+        "_get_platform_default_hermes_home",
+        lambda: local_appdata / "hermes",
+    )
+
+    assert fs._hermes_home_path() == local_appdata / "hermes"
+    assert fs._hermes_root_path() == local_appdata / "hermes"
 
 
 def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):

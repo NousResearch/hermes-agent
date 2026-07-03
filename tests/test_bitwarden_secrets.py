@@ -22,6 +22,8 @@ from unittest import mock
 
 import pytest
 
+import hermes_constants
+
 
 # Make the worktree importable without depending on the installed wheel.
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,10 +93,10 @@ def test_platform_asset_name(system, machine, libc_text, expected):
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_zip(binary_bytes: bytes) -> bytes:
+def _make_fake_zip(binary_bytes: bytes, member_name: str = "bws") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("bws", binary_bytes)
+        zf.writestr(member_name, binary_bytes)
     return buf.getvalue()
 
 
@@ -188,7 +190,7 @@ def test_install_bws_rejects_malicious_member(hermes_home, monkeypatch):
 
 def test_install_bws_happy_path(hermes_home, monkeypatch):
     fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
-    zip_bytes = _make_fake_zip(fake_binary)
+    zip_bytes = _make_fake_zip(fake_binary, bw._platform_binary_name())
     asset_name = bw._platform_asset_name()
     checksum_text = (
         f"{hashlib.sha256(zip_bytes).hexdigest()}  {asset_name}\n"
@@ -690,9 +692,10 @@ def test_disk_cache_written_after_first_fetch(monkeypatch, tmp_path):
 
     cache_path = bw._disk_cache_path(home)
     assert cache_path.exists()
-    # Mode must be 0600 — disk cache contains plaintext secret values
+    # Mode must be 0600 on POSIX — disk cache contains plaintext secret values.
     mode = os.stat(cache_path).st_mode & 0o777
-    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+    if os.name != "nt":
+        assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
 
     # File contents: key (fingerprint not raw token), secrets dict, fetched_at
     payload_disk = json.loads(cache_path.read_text())
@@ -880,3 +883,18 @@ def test_reset_cache_for_tests_deletes_disk_file(tmp_path):
     assert not cache_path.exists()
     # Idempotent
     bw._reset_cache_for_tests(home)
+
+
+def test_disk_cache_path_defaults_to_platform_root_on_windows(tmp_path, monkeypatch):
+    """Fallback disk cache path should follow the platform-native Hermes home."""
+    local_appdata = tmp_path / "LocalAppData"
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setattr(
+        hermes_constants,
+        "_get_platform_default_hermes_home",
+        lambda: local_appdata / "hermes",
+    )
+
+    cache_path = bw._disk_cache_path(None)
+    assert cache_path == local_appdata / "hermes" / "cache" / "bws_cache.json"

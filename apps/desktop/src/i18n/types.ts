@@ -641,6 +641,15 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      loadingModels: string
+      modelSectionTitle: string
+      modelCount: (count: number) => string
+      modelInUse: string
+      modelDefault: string
+      modelInactiveHint: string
+      modelSelectedTitle: string
+      modelSelectedMessage: (model: string) => string
+      failedSelectModel: (model: string) => string
     }
   }
 

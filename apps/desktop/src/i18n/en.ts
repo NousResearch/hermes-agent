@@ -743,7 +743,16 @@ export const en: Translations = {
       postSetupCompleteMessage: step => `${step} installed.`,
       postSetupErrorTitle: 'Setup finished with errors',
       postSetupErrorMessage: step => `Check the ${step} log.`,
-      postSetupFailed: step => `Failed to run ${step} setup`
+      postSetupFailed: step => `Failed to run ${step} setup`,
+      loadingModels: 'Loading model catalog...',
+      modelSectionTitle: 'Model',
+      modelCount: count => `${count} model${count === 1 ? '' : 's'}`,
+      modelInUse: 'In use',
+      modelDefault: 'default',
+      modelInactiveHint: 'Select this backend first to change its model.',
+      modelSelectedTitle: 'Model selected',
+      modelSelectedMessage: model => `${model} applies to new sessions.`,
+      failedSelectModel: model => `Failed to select ${model}`
     }
   },
 
@@ -839,7 +848,8 @@ export const en: Translations = {
     emptyTitle: 'Nothing learned yet',
     emptyDesc: 'As Hermes builds skills and memories for your work, they appear here.',
     share: 'Share map',
-    shareHint: 'Copy the code to share this map, or paste one to load. It only includes the layout, not your memory or skill text.',
+    shareHint:
+      'Copy the code to share this map, or paste one to load. It only includes the layout, not your memory or skill text.',
     shareTitle: 'Import / export map',
     sharePlaceholder: 'Paste a map code…',
     copy: 'Copy map code',

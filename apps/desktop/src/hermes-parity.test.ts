@@ -5,10 +5,12 @@ import {
   getMcpCatalog,
   getMemoryStatus,
   getSkillHubSources,
+  getToolsetModels,
   installSkillFromHub,
   resetMemory,
   runDebugShare,
   searchSkillsHub,
+  selectToolsetModel,
   setCuratorPaused,
   setMcpServerEnabled,
   testMcpServer
@@ -113,6 +115,26 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/ops/debug-share', method: 'POST', timeoutMs: 120_000 })
+    )
+  })
+
+  it('reads a backend model catalog scoped to a provider row', async () => {
+    await getToolsetModels('image_gen', 'FAL.ai')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/tools/toolsets/image_gen/models?provider=FAL.ai' })
+    )
+  })
+
+  it('persists a backend model selection', async () => {
+    await selectToolsetModel('image_gen', 'z-image-turbo', 'FAL.ai')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/tools/toolsets/image_gen/model',
+        method: 'PUT',
+        body: { model: 'z-image-turbo', provider: 'FAL.ai' }
+      })
     )
   })
 })

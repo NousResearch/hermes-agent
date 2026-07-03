@@ -679,6 +679,26 @@ export interface ToolsetConfig {
   active_provider: string | null
 }
 
+/** One model row from a toolset backend's catalog (image/video gen). */
+export interface ToolsetModel {
+  id: string
+  display: string
+  speed: string
+  strengths: string
+  price: string
+}
+
+/** Shape of `GET /api/tools/toolsets/{name}/models`. */
+export interface ToolsetModelsResponse {
+  name: string
+  has_models: boolean
+  provider?: string | null
+  plugin?: string | null
+  models: ToolsetModel[]
+  current: string | null
+  default: string | null
+}
+
 /** Shape of `GET /api/tools/computer-use/status`.
  *
  *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware

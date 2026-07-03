@@ -54,7 +54,8 @@ import type {
   StarmapGraph,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  ToolsetModelsResponse
 } from '@/types/hermes'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -162,7 +163,9 @@ export type {
   StarmapGraph,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  ToolsetModel,
+  ToolsetModelsResponse
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -612,6 +615,28 @@ export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
+  })
+}
+
+export function getToolsetModels(name: string, provider?: string): Promise<ToolsetModelsResponse> {
+  const suffix = provider ? `?provider=${encodeURIComponent(provider)}` : ''
+
+  return window.hermesDesktop.api<ToolsetModelsResponse>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/models${suffix}`
+  })
+}
+
+export function selectToolsetModel(
+  name: string,
+  model: string,
+  provider?: string
+): Promise<{ ok: boolean; name: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; name: string; model: string }>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/model`,
+    method: 'PUT',
+    body: { model, provider }
   })
 }
 

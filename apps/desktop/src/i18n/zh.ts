@@ -927,7 +927,16 @@ export const zh: Translations = {
       postSetupCompleteMessage: step => `已安装 ${step}。`,
       postSetupErrorTitle: '设置完成但有错误',
       postSetupErrorMessage: step => `请检查 ${step} 日志。`,
-      postSetupFailed: step => `运行 ${step} 设置失败`
+      postSetupFailed: step => `运行 ${step} 设置失败`,
+      loadingModels: '正在加载模型目录…',
+      modelSectionTitle: '模型',
+      modelCount: count => `${count} 个模型`,
+      modelInUse: '使用中',
+      modelDefault: '默认',
+      modelInactiveHint: '请先选择此后端，然后再更改其模型。',
+      modelSelectedTitle: '模型已选择',
+      modelSelectedMessage: model => `${model} 将应用于新会话。`,
+      failedSelectModel: model => `选择 ${model} 失败`
     }
   },
 
@@ -1656,8 +1665,7 @@ export const zh: Translations = {
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
       createFailed: '无法创建项目',
-      staleBackend:
-        '请更新 Hermes 后端以创建项目——当前后端比桌面应用旧（设置 → 更新 → 后端）。',
+      staleBackend: '请更新 Hermes 后端以创建项目——当前后端比桌面应用旧（设置 → 更新 → 后端）。',
       deleteConfirm: '这会从 Hermes 中移除已保存的项目。文件、git 仓库和工作树保持不变。',
       startWork: '新建工作树',
       newWorktreeTitle: '新建工作树',

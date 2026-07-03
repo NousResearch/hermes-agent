@@ -9,6 +9,23 @@ from hermes_cli.config import cfg_get, get_hermes_home, load_config
 from .server import MiniAppSettings, _default_allowed_origins
 
 
+def _as_bool(value: Any) -> bool:
+    """Strictly coerce a config value to bool, failing CLOSED.
+
+    A plain ``bool(value)`` would make the string ``"false"`` (e.g. a quoted
+    YAML value) truthy and silently ENABLE a security-sensitive switch. Here
+    only a real boolean ``True`` or an explicit affirmative string turns it on;
+    anything unrecognized stays off.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "on", "1"}
+    return False
+
+
 def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSettings:
     """Resolve Mini App settings without mutating config.yaml or .env.
 
@@ -35,6 +52,12 @@ def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSetting
         action_owners={str(value) for value in action_owners if str(value).strip()},
         hermes_home=str(get_hermes_home()),
         cors_allowed_origins=cors_allowed_origins or _default_allowed_origins(),
+        action_initdata_ttl_seconds=int(section.get("action_initdata_ttl_seconds") or 900),
+        # bridge_enabled is the durable switch the gateway-side bridge service
+        # reads to decide whether to run its export/resolve cycle. It does NOT
+        # register the sidecar decision route (that stays --enable-actions only)
+        # and does nothing until a gateway wiring reads it; default off.
+        bridge_enabled=_as_bool(section.get("bridge_enabled")),
         enable_actions=False,
         public_smoke=False,
     )

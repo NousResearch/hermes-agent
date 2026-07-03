@@ -77,9 +77,8 @@ def build_status_snapshot(*, hermes_home_configured: bool | None = None) -> dict
             "active_agents": active_agents,
             "restart_requested": bool(runtime.get("restart_requested")),
         },
-        "miniapp": {
-            "mode": "local-read-only",
-            "actions_enabled": False,
-            "public_exposure": False,
-        },
+        # The `miniapp` block is intentionally NOT set here: the /api/status
+        # route is the single source of truth for it (it must reflect the live
+        # actions_ready state and public_smoke), so setting it here too would
+        # risk drift between two constructors.
     }

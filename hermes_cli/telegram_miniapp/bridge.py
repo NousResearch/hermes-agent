@@ -47,13 +47,20 @@ def derive_bridge_key(bot_token: str) -> bytes:
     return hmac.new(b"hermes-miniapp-bridge", (bot_token or "").encode(), hashlib.sha256).digest()
 
 
-def opaque_approval_id(bridge_key: bytes, *, session_key: str, command: str, seq: int = 0) -> str:
-    # Stable identity from session + command + FIFO position only. It does NOT
-    # depend on a timestamp: real gateway approvals carry no stable
+def opaque_approval_id(
+    bridge_key: bytes, *, session_key: str, command: str, seq: int = 0, nonce: str | None = None
+) -> str:
+    # Stable identity from session + command + a per-instance discriminator. It
+    # does NOT depend on a timestamp: real gateway approvals carry no stable
     # ``requested_at``, so timing must not perturb the id (or the id/version
-    # would churn every export tick and every decision would go stale). ``seq``
-    # disambiguates two identical commands in the same session.
-    material = f"{session_key}\x1f{command}\x1f{seq}".encode()
+    # would churn every export tick and every decision would go stale).
+    #
+    # The discriminator is the entry's per-instance ``nonce`` when present (bound
+    # to one specific approval, so a re-issued identical command gets a new id
+    # and a stale decision can never match it), else the FIFO ``seq`` — which for
+    # a session head is always 0, letting the gateway resolver recompute it.
+    discriminator = nonce if nonce is not None else seq
+    material = f"{session_key}\x1f{command}\x1f{discriminator}".encode()
     return hmac.new(bridge_key, material, hashlib.sha256).hexdigest()[:16]
 
 
@@ -129,10 +136,21 @@ def project_snapshot(bridge_key: bytes, pendings: Iterable[dict[str, Any]], *, n
     items: list[dict[str, Any]] = []
     index: dict[str, ApprovalRef] = {}
     seen_sessions: set[str] = set()
-    for seq, pending in enumerate(pendings):
+    per_session_seq: dict[str, int] = {}
+    for pending in pendings:
         session_key = str(pending.get("session_key", ""))
         command = str(pending.get("command", ""))
-        approval_id = opaque_approval_id(bridge_key, session_key=session_key, command=command, seq=seq)
+        # The opaque id MUST fold in a discriminator the gateway CAS resolver can
+        # recompute from the head entry alone. Prefer the entry's per-instance
+        # nonce (`_nonce`, assigned at enqueue) so the id is bound to ONE approval
+        # instance; fall back to a PER-SESSION FIFO position (so every session
+        # head is seq 0, matching the resolver) rather than a global index (which
+        # only made the first session's head resolvable).
+        fallback_seq = per_session_seq.get(session_key, 0)
+        per_session_seq[session_key] = fallback_seq + 1
+        approval_id = opaque_approval_id(
+            bridge_key, session_key=session_key, command=command, seq=fallback_seq, nonce=pending.get("_nonce")
+        )
         # The gateway resolves a session FIFO, so only the oldest pending per
         # session is head-resolvable; anything behind it is reject-on-decision.
         is_head = session_key not in seen_sessions
@@ -172,12 +190,14 @@ class DecisionResult:
 
 def _decision_id(payload: dict[str, Any]) -> str:
     # Include decision + snapshot_version so two distinct decisions that happen
-    # to reuse a client_request_id do not collide into one file / one id.
+    # to reuse a client_request_id do not collide into one file / one id. 128
+    # bits (32 hex) keeps this id — used as a filename and the dedup/replay key
+    # — collision-free for audit and idempotency purposes.
     material = "\x1f".join(
         str(payload.get(field))
         for field in ("client_request_id", "approval_id", "decision", "snapshot_version")
     ).encode()
-    return hashlib.sha256(material).hexdigest()[:16]
+    return hashlib.sha256(material).hexdigest()[:32]
 
 
 def validate_decision(
@@ -363,7 +383,20 @@ class MiniAppBridge:
         head_fn = current_head if current_head is not None else self.head_id_for_session
         self._ensure_dirs()
         receipts: list[dict[str, Any]] = []
-        for path in sorted(self._decisions.glob("*.json")):
+
+        def _order(path: Path) -> tuple[int, str]:
+            # Fail-closed conflict resolution: if the owner submits BOTH an
+            # approve and a reject for one approval in the same tick, the reject
+            # must win regardless of decision-id hash order. Process rejects
+            # first (0) so they resolve the head before the approve is even
+            # considered; the id breaks ties for determinism.
+            try:
+                decision = str(((json.loads(path.read_text(encoding="utf-8")) or {}).get("payload") or {}).get("decision", ""))
+            except (OSError, ValueError, TypeError, AttributeError):
+                decision = ""
+            return (1 if decision.startswith("approve") else 0, path.name)
+
+        for path in sorted(self._decisions.glob("*.json"), key=_order):
             try:
                 envelope = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
@@ -379,7 +412,17 @@ class MiniAppBridge:
             )
             payload = envelope.get("payload") if isinstance(envelope, dict) else None
             approval_id = payload.get("approval_id") if isinstance(payload, dict) else None
-            if result.accepted and result.session_key and result.choice:
+            # Persistent replay guard: a receipt on disk means this exact decision
+            # was already resolved in a PRIOR run. The in-memory `_applied` set is
+            # empty after a restart, so without this check a leftover decision file
+            # could re-resolve. Checked BEFORE the accepted-branch and regardless
+            # of live validation: even if the queue/snapshot changed since (so
+            # validation would now say stale/unknown), an existing receipt is
+            # authoritative — report already_resolved and never overwrite it.
+            receipt_exists = bool(result.decision_id and (self._receipts / f"{result.decision_id}.json").exists())
+            if receipt_exists:
+                result = DecisionResult(False, "already_resolved", decision_id=result.decision_id)
+            elif result.accepted and result.session_key and result.choice:
                 # Early, non-authoritative reject against the exported index.
                 if head_fn(result.session_key) != approval_id:
                     result = DecisionResult(False, "rejected_not_head", decision_id=result.decision_id)
@@ -406,7 +449,10 @@ class MiniAppBridge:
                 "resolved_at": _coarse_time(now),
                 "redaction": "safe-receipt",
             }
-            if result.decision_id:
+            # Never overwrite an existing authoritative receipt (e.g. replace an
+            # `accepted` receipt with a later `already_resolved`); still audit the
+            # replay attempt below.
+            if result.decision_id and not receipt_exists:
                 self._atomic_write(self._receipts / f"{result.decision_id}.json", json.dumps(receipt, ensure_ascii=False))
             self._append_audit(receipt)
             receipts.append(receipt)
@@ -415,7 +461,7 @@ class MiniAppBridge:
 
     # ── gateway side: one full driver cycle ──────────────────────────────
     def run_cycle(
-        self, pendings: Iterable[dict[str, Any]], resolver: Callable[[str, str], int], *, now: int | float
+        self, pendings: Iterable[dict[str, Any]], resolver: Callable[..., int], *, now: int | float
     ) -> list[dict[str, Any]]:
         """One gateway tick: re-export the live queue (refreshing the head
         index), then process any queued decisions against that fresh state.
@@ -426,8 +472,32 @@ class MiniAppBridge:
         gateway. Activating it on the running gateway (config bridge_enabled +
         restart) stays an explicit owner decision.
         """
+        self.sweep_stale_decisions(now=now)
         self.export(list(pendings), now=now)
         return self.process_pending_decisions(resolver, now=now)
+
+    def sweep_stale_decisions(self, *, now: int | float) -> int:
+        """Delete decision files whose ``issued_at`` is outside the decision TTL.
+        If actions are enabled but no consumer ran (or a decision expired before
+        processing), this stops orphaned files from accumulating; such decisions
+        would be rejected anyway. Uses the SAME two-sided window as
+        ``validate_decision`` (``abs(now - issued_at) > TTL``) so a future-dated
+        decision — rejected by validation forever — is also swept instead of
+        lingering as a permanent orphan. Returns the number swept."""
+        self._ensure_dirs()
+        swept = 0
+        for path in self._decisions.glob("*.json"):
+            try:
+                envelope = json.loads(path.read_text(encoding="utf-8"))
+                issued_at = (envelope.get("payload") or {}).get("issued_at")
+            except (OSError, ValueError, TypeError, AttributeError):
+                self._safe_unlink(path)
+                swept += 1
+                continue
+            if not isinstance(issued_at, (int, float)) or abs(now - issued_at) > _DECISION_TTL_SECONDS:
+                self._safe_unlink(path)
+                swept += 1
+        return swept
 
     def _append_audit(self, receipt: dict[str, Any]) -> None:
         line = json.dumps(receipt, ensure_ascii=False) + "\n"

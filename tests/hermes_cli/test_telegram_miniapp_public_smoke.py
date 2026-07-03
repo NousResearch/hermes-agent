@@ -107,6 +107,40 @@ def test_public_smoke_cannot_be_activated_by_durable_config():
     assert settings.enable_actions is False
 
 
+def test_bridge_enabled_and_initdata_ttl_are_read_from_durable_config():
+    # Unlike the run-only kill switches (enable_actions / public_smoke), the
+    # gateway-side bridge switch and the action initData TTL ARE durable config:
+    # they govern a separate gateway service and freshness, not the sidecar's
+    # own action route, so config must carry them across restarts.
+    settings = settings_from_config({
+        "telegram_miniapp": {
+            "bridge_enabled": True,
+            "action_initdata_ttl_seconds": 120,
+        }
+    })
+    assert settings.bridge_enabled is True
+    assert settings.action_initdata_ttl_seconds == 120
+    # But bridge_enabled must NOT flip the sidecar's own action route on.
+    assert settings.enable_actions is False
+
+
+def test_bridge_enabled_defaults_off_and_ttl_defaults_to_900():
+    settings = settings_from_config({"telegram_miniapp": {}})
+    assert settings.bridge_enabled is False
+    assert settings.action_initdata_ttl_seconds == 900
+
+
+def test_bridge_enabled_fails_closed_on_quoted_false_and_junk():
+    # A plain bool() would make the string "false" truthy and silently enable a
+    # security-sensitive gateway switch. Only explicit affirmatives turn it on.
+    for off in ["false", "False", "FALSE", "no", "off", "0", 0, "", "maybe", None]:
+        settings = settings_from_config({"telegram_miniapp": {"bridge_enabled": off}})
+        assert settings.bridge_enabled is False, f"{off!r} must NOT enable the bridge"
+    for on in [True, "true", "True", "yes", "on", "1", 1]:
+        settings = settings_from_config({"telegram_miniapp": {"bridge_enabled": on}})
+        assert settings.bridge_enabled is True, f"{on!r} must enable the bridge"
+
+
 def test_public_smoke_cli_forces_loopback_bind(monkeypatch):
     from hermes_cli.telegram_miniapp import cli
 

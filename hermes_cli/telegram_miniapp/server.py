@@ -47,7 +47,8 @@ class MiniAppSettings:
     action_owners: set[str] = field(default_factory=set)
     hermes_home: str | None = None
     action_rate_limit_per_minute: int = 5
-    action_initdata_ttl_seconds: int = 86400
+    action_initdata_ttl_seconds: int = 900
+    bridge_enabled: bool = False
     auth_rate_limit_per_minute: int = 10
     auth_global_limit: int = 50
     status_rate_limit_per_minute: int = 60
@@ -308,6 +309,9 @@ def create_app(
     # of the same decision must not both miss the cache and double-submit.
     action_idempotency: dict[str, dict[str, Any]] = {}
     action_idempotency_lock = threading.Lock()
+    # Bound the cache so a long-lived sidecar cannot grow it without limit; the
+    # oldest entries (well past their decision TTL) are evicted first.
+    _ACTION_IDEMPOTENCY_CAP = 512
     status_provider = status_provider or (lambda: build_status_snapshot(hermes_home_configured=True))
     if approvals_provider is None:
         def approvals_provider() -> dict[str, Any]:
@@ -613,6 +617,8 @@ def create_app(
                     "message": "Решение отправлено на подтверждение gateway.",
                 }
                 action_idempotency[idem_key] = body
+                while len(action_idempotency) > _ACTION_IDEMPOTENCY_CAP:
+                    action_idempotency.pop(next(iter(action_idempotency)))
             return _apply_api_no_store(JSONResponse(body), settings)
 
     return app

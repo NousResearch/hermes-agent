@@ -16448,6 +16448,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform=source.platform,
             require_platform_override_for={Platform.MATTERMOST},
         )
+        # Matrix edits/reactions are room timeline events, so high-frequency
+        # thinking deltas can flood rooms and homeservers. Keep this disabled
+        # until Matrix has a bounded, rate-limited rendering design.
+        if source.platform == Platform.MATRIX and _thinking_enabled:
+            if not getattr(self, "_matrix_thinking_progress_disabled_warned", False):
+                logger.warning(
+                    "Matrix: display.platforms.matrix.thinking_progress is disabled "
+                    "because live thinking progress can flood Matrix rooms"
+                )
+                self._matrix_thinking_progress_disabled_warned = True
+            _thinking_enabled = False
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
 

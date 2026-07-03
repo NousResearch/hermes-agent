@@ -1141,6 +1141,37 @@ async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_run_agent_matrix_ignores_thinking_progress_opt_in(
+    monkeypatch, tmp_path, caplog
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-thinking-disabled-even-if-enabled",
+        config_data={
+            "display": {
+                "platforms": {
+                    "matrix": {
+                        "tool_progress": "off",
+                        "thinking_progress": True,
+                    }
+                }
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert not any("weighing the options here" in text for text in all_contents)
+    assert "thinking_progress is disabled" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
     QueuedCommentaryAgent.calls = 0
     adapter, result = await _run_with_agent(

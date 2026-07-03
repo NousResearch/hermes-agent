@@ -93,6 +93,8 @@ $HERMES_HOME/receipts/openai_agents/
 
 Receipts include lane, model, SDK version, governance contract, result, enforcement metadata, best-effort token usage when exposed by the SDK, and SHA-256 hashes returned to Hermes for independent proof. Secret-bearing keys such as API keys/tokens/secrets/passwords/credentials are removed before persistence.
 
+Failed SDK lane attempts also write sanitized blocked-status receipts when the bridge has enough local context to do so. Failure receipts fingerprint task/context with SHA-256 and character counts instead of persisting prompt/context text, so parsing/model errors remain auditable without durable private-content leakage.
+
 ### 6.4 Model trust policy
 
 Blocked model/provider fragments include Alibaba, Baichuan, DeepSeek, Doubao, Kimi, MiniMax, Moonshot, Qwen, Stepfun, Tencent, Volcengine, Wenxin, Yi, and Zhipu.

@@ -251,3 +251,66 @@ def test_receipt_schema_file_accepts_minimal_receipt_shape():
     assert "receipt" in schema["required"]
     assert "result" in schema["required"]
     assert "receipt_sha256" in schema["properties"]
+
+
+def test_failure_receipt_fingerprints_inputs_without_prompt_leakage(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    marker = "do-not-persist"
+    context_marker = "also-do-not-persist"
+    task = "Review private project text with " + "api" + "_key='" + marker + "'"
+    context = "sensitive context " + "tok" + "en='" + context_marker + "'"
+
+    receipt_path, receipt_sha = oat._write_failure_receipt(
+        lane="execute",
+        error=RuntimeError("structured output parse failed"),
+        task=task,
+        context=context,
+        acceptance_criteria=["must emit proof"],
+        constraints=["analysis only; no mutation"],
+        worker="HermesOpenAIAgentsExecuteWorker",
+        model="gpt-5.5",
+        max_turns=2,
+        max_tokens=700,
+        sdk_guardrails_attached=True,
+    )
+
+    saved_text = Path(receipt_path).read_text(encoding="utf-8")
+    saved = json.loads(saved_text)
+    assert saved["success"] is False
+    assert saved["result"]["status"] == "blocked"
+    assert saved["input_fingerprints"]["task_sha256"] == oat._sha256_text(task)
+    assert saved["input_fingerprints"]["context_sha256"] == oat._sha256_text(context)
+    assert "do-not-persist" not in saved_text
+    assert "also-do-not-persist" not in saved_text
+    assert receipt_sha == oat._sha256_file(receipt_path)
+
+
+def test_governed_lane_error_response_includes_failure_receipt(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(oat, "_resolve_openai_api_key", lambda: "test-key")
+
+    class BrokenRunner:
+        @staticmethod
+        def run_sync(*args, **kwargs):
+            raise RuntimeError("sdk structured-output failure")
+
+    monkeypatch.setattr(oat, "_format_worker_input", lambda **kwargs: "{}")
+
+    import agents
+
+    monkeypatch.setattr(agents.Runner, "run_sync", BrokenRunner.run_sync)
+
+    raw = oat._handle_openai_agents_execute({
+        "task": "Draft a tiny proof object",
+        "constraints": ["analysis only; no mutation"],
+        "max_turns": 2,
+        "max_tokens": 700,
+    })
+    payload = json.loads(raw)
+
+    assert "error" in payload
+    assert payload["receipt_sha256"] == oat._sha256_file(payload["receipt_path"])
+    receipt = json.loads(Path(payload["receipt_path"]).read_text(encoding="utf-8"))
+    assert receipt["success"] is False
+    assert receipt["result"]["status"] == "blocked"
+    assert receipt["input_fingerprints"]["task_chars"] == len("Draft a tiny proof object")

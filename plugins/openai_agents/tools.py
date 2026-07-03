@@ -350,6 +350,77 @@ def _sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _failure_receipt_payload(
+    *,
+    lane: str,
+    error: BaseException,
+    task: str = "",
+    context: str = "",
+    acceptance_criteria: list[str] | None = None,
+    constraints: list[str] | None = None,
+    worker: str | None = None,
+    model: str | None = None,
+    max_turns: int | None = None,
+    max_tokens: int | None = None,
+    preflight_enforced: bool = True,
+    sdk_guardrails_attached: bool = False,
+) -> dict[str, Any]:
+    """Build a sanitized receipt for failed SDK lane attempts.
+
+    Failure receipts are intentionally task/context fingerprinted, not content
+    dumping. They preserve traceability without writing user prompts, secrets,
+    or long private context into durable receipt files.
+    """
+    error_type = type(error).__name__
+    error_message = str(error)
+    return {
+        "success": False,
+        "lane": lane,
+        "model": model or DEFAULT_MODEL,
+        "max_turns": max_turns or _DEFAULT_MAX_TURNS,
+        "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
+        "usage": {"available": False, "reason": "sdk_lane_failed_before_usage_capture"},
+        "governance_contract": _GOVERNANCE_CONTRACT,
+        "receipt": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "worker": worker or _LANE_CONFIG.get(lane, {}).get("name") or "HermesOpenAIAgentsUnknownWorker",
+            "structured_output": True,
+            "preflight_enforced": preflight_enforced,
+            "sdk_guardrails_attached": sdk_guardrails_attached,
+            "postconditions_enforced": True,
+            "trace_sensitive_data": False,
+        },
+        "result": {
+            "status": "blocked",
+            "summary": f"OpenAI Agents SDK {lane} lane failed before verified output: {error_type}",
+            "actions_taken": [],
+            "proof": [],
+            "risks": ["No verified SDK worker output was produced for this attempt."],
+            "next_required_action": "Inspect the sanitized failure receipt and retry with adjusted bounds or prompt if appropriate.",
+            "requires_human_approval": False,
+        },
+        "truncated": False,
+        "error": {"type": error_type, "message": error_message[:1000]},
+        "input_fingerprints": {
+            "task_sha256": _sha256_text(task) if task else None,
+            "task_chars": len(task or ""),
+            "context_sha256": _sha256_text(context) if context else None,
+            "context_chars": len(context or ""),
+            "acceptance_criteria_count": len(acceptance_criteria or []),
+            "constraints_count": len(constraints or []),
+        },
+    }
+
+
+def _write_failure_receipt(**kwargs: Any) -> tuple[str, str]:
+    path = _write_receipt(_failure_receipt_payload(**kwargs))
+    return path, _sha256_file(path)
+
+
 def _usage_to_dict(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
@@ -556,6 +627,16 @@ def _run_governed_lane(lane: Literal["review", "execute", "verify"], args: dict)
             detail=f"{type(exc).__name__}: {exc}",
         )
 
+    task = ""
+    context = ""
+    acceptance_criteria: list[str] = []
+    constraints: list[str] = []
+    model: str | None = None
+    max_turns = _DEFAULT_MAX_TURNS
+    max_tokens = _DEFAULT_MAX_TOKENS
+    lane_cfg = _LANE_CONFIG[lane]
+    guardrail_kwargs: dict[str, list[Any]] = {"input_guardrails": [], "output_guardrails": []}
+
     try:
         task = _clean_text(args.get("task") or args.get("prompt"), limit=_MAX_TASK_CHARS, field="task")
         if not task:
@@ -641,7 +722,33 @@ def _run_governed_lane(lane: Literal["review", "execute", "verify"], args: dict)
         response_payload["receipt_sha256"] = _sha256_file(receipt_path)
         return tool_result(response_payload)
     except Exception as exc:
-        return tool_error(f"OpenAI Agents SDK {lane} lane failed: {type(exc).__name__}: {exc}")
+        try:
+            receipt_path, receipt_sha256 = _write_failure_receipt(
+                lane=lane,
+                error=exc,
+                task=task,
+                context=context,
+                acceptance_criteria=acceptance_criteria,
+                constraints=constraints,
+                worker=lane_cfg["name"],
+                model=model,
+                max_turns=max_turns,
+                max_tokens=max_tokens,
+                preflight_enforced=True,
+                sdk_guardrails_attached=bool(
+                    guardrail_kwargs.get("input_guardrails") or guardrail_kwargs.get("output_guardrails")
+                ),
+            )
+        except Exception as receipt_exc:
+            return tool_error(
+                f"OpenAI Agents SDK {lane} lane failed: {type(exc).__name__}: {exc}",
+                receipt_error=f"{type(receipt_exc).__name__}: {receipt_exc}",
+            )
+        return tool_error(
+            f"OpenAI Agents SDK {lane} lane failed: {type(exc).__name__}: {exc}",
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+        )
 
 
 def _parse_tool_json(raw: str) -> dict[str, Any]:

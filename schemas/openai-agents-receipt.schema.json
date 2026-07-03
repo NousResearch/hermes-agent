@@ -58,6 +58,24 @@
       }
     },
     "truncated": {"type": "boolean"},
+    "error": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    },
+    "input_fingerprints": {
+      "type": "object",
+      "properties": {
+        "task_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "task_chars": {"type": "integer", "minimum": 0},
+        "context_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "context_chars": {"type": "integer", "minimum": 0},
+        "acceptance_criteria_count": {"type": "integer", "minimum": 0},
+        "constraints_count": {"type": "integer", "minimum": 0}
+      }
+    },
     "receipt_path": {"type": "string"},
     "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }

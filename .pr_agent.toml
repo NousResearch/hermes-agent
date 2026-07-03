@@ -1,0 +1,22 @@
+# ตั้งค่า PR-Agent สำหรับด่านตรวจโค้ดก่อน merge (F2)
+# ตัวรีวิวใช้ AI ราคาถูกตามแนวทาง AI Relay: Gemini 2.5 Flash เป็นหลัก
+# ห้ามใส่ key ในไฟล์นี้ — key อยู่ที่ ~/.hermes/.env เท่านั้น (ตัว wrapper โหลดให้)
+
+[config]
+model = "gemini/gemini-2.5-flash"
+fallback_models = ["openrouter/anthropic/claude-haiku-4.5"]
+git_provider = "github"
+
+[pr_reviewer]
+require_score_review = true
+require_tests_review = true
+require_security_review = true
+persistent_comment = true
+extra_instructions = """
+ตอบเป็นภาษาไทยแบบภาษาคน อ่านง่ายสำหรับเจ้าของงานที่ไม่ใช่ dev
+เข้มเป็นพิเศษกับ: ความลับ/รหัสหลุดในโค้ด · logic เดา (หยิบค่าแรกที่เจอ) ·
+การแก้ไฟล์นอกขอบเขตงาน · โค้ดที่อ้างว่า test แล้วแต่ไม่มี test จริง
+"""
+
+[pr_description]
+publish_labels = false

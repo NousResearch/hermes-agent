@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# pr-review — ด่านตรวจโค้ด AI ก่อน merge (F2)
+# ใช้: pr-review <ลิงก์ PR/MR> [review|describe|improve]   (ค่าเริ่มต้น: review)
+# ผล: AI รีวิวโค้ดแล้วโพสต์ความเห็นลงใน PR นั้นเป็นภาษาไทย
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "ใช้: pr-review <ลิงก์ PR/MR> [review|describe|improve]"
+  exit 2
+fi
+
+PR_URL="$1"
+CMD="${2:-review}"
+HOME_GATE_DIR="${HOME}/.hermes/pr-review-gate"
+VENV="${HOME_GATE_DIR}/venv"
+CONFIG="${HOME_GATE_DIR}/pr_agent.toml"
+
+if [ ! -x "${VENV}/bin/pr-agent" ]; then
+  echo "ยังไม่ได้ติดตั้ง — รัน: bash scripts/pr-review-gate/install-pr-review-gate.sh"
+  exit 10
+fi
+
+# โหลด key จาก ~/.hermes/.env และ .hermes/.env ของ repo ปัจจุบัน (ไม่พิมพ์ค่าออกจอ)
+load_env() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  while IFS= read -r raw; do
+    line="${raw%%#*}"
+    case "$line" in
+      *=*)
+        key="${line%%=*}"; key="$(echo "$key" | tr -d '[:space:]')"
+        val="${line#*=}"; val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+        if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key:-}" ]; then
+          export "$key"="$val"
+        fi
+        ;;
+    esac
+  done < "$f"
+}
+load_env "${HOME}/.hermes/.env"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "${ROOT}" ] && load_env "${ROOT}/.hermes/.env"
+
+# GitHub token: ใช้ของ gh CLI ถ้ายังไม่ได้ตั้งเอง
+if [ -z "${GITHUB__USER_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+  export GITHUB__USER_TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
+# GitLab (สำหรับ repo งานทีมบน GitLab): ตั้ง GITLAB__PERSONAL_ACCESS_TOKEN ใน ~/.hermes/.env
+if [ -n "${GITLAB__PERSONAL_ACCESS_TOKEN:-}" ] && [[ "${PR_URL}" != *github.com* ]]; then
+  export CONFIG__GIT_PROVIDER="gitlab"
+fi
+# ส่งคีย์ Gemini ให้ pr-agent ทั้งสองชื่อที่มันรองรับ
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  export GOOGLE_AI_STUDIO__GEMINI_API_KEY="${GEMINI_API_KEY}"
+fi
+
+# ตั้งค่ารุ่น AI ผ่านตัวแปรระบบ (ช่องทางมาตรฐานของ PR-Agent · override ได้ด้วย PR_REVIEW_MODEL)
+export CONFIG__MODEL="${PR_REVIEW_MODEL:-gemini/gemini-2.5-flash}"
+export CONFIG__FALLBACK_MODELS='["openrouter/anthropic/claude-haiku-4.5"]'
+exec "${VENV}/bin/pr-agent" --pr_url "${PR_URL}" "${CMD}"

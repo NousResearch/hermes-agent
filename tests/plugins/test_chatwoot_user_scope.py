@@ -61,6 +61,15 @@ class TestToolRequestMiddleware:
         assert out is not None
         assert out["args"]["user_id"] == "memberabc"
 
+    def test_rewrites_get_waitlisted_gigs_when_user_id_missing(self, chatwoot_session):
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_tool_request(
+                tool_name="crwd_db",
+                args={"action": "get_waitlisted_gigs"},
+            )
+        assert out is not None
+        assert out["args"]["user_id"] == "memberabc"
+
     def test_does_not_rewrite_foreign_user_id(self, chatwoot_session):
         with patch.object(us, "resolved_member_id", return_value="memberabc"):
             out = us.on_tool_request(
@@ -120,6 +129,17 @@ class TestPreToolCallBlock:
             out = us.on_pre_tool_call(
                 tool_name="crwd_db",
                 args={"action": "get_user_gigs", "user_id": "69a6f191cb29b0b371b3a156"},
+            )
+        assert out == {"action": "block", "message": us._CROSS_USER_BLOCK_MSG}
+
+    def test_blocks_foreign_get_waitlisted_gigs_user_id(self, chatwoot_session):
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_pre_tool_call(
+                tool_name="crwd_db",
+                args={
+                    "action": "get_waitlisted_gigs",
+                    "user_id": "69a6f191cb29b0b371b3a156",
+                },
             )
         assert out == {"action": "block", "message": us._CROSS_USER_BLOCK_MSG}
 

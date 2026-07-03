@@ -12,3 +12,4 @@ provides_tools:
   - get_gig_details
   - get_user_gig_history
   - get_user_joined_gigs
+  - get_waitlisted_gigs

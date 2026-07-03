@@ -3525,7 +3525,7 @@ OPTIONAL_ENV_VARS = {
         "url": "https://www.mongodb.com/docs/manual/reference/connection-string/",
         "tools": [
             "get_active_gigs", "get_user_profile_by_id", "get_gig_details",
-            "get_user_gig_history", "get_user_joined_gigs",
+            "get_user_gig_history", "get_user_joined_gigs", "get_waitlisted_gigs",
         ],
         "password": True,
         "category": "tool",

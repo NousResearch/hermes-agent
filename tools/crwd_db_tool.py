@@ -68,7 +68,8 @@ _GIG_FIELDS = {
 }
 _MEMBER_FIELDS = {
     "member": 1, "user_id": 1, "worker_id": 1, "crwd_id": 1, "status": 1,
-    "isCompleted": 1, "hasPaid": 1, "isDeleted": 1, "createdAt": 1, "updatedAt": 1,
+    "isAccepted": 1, "isApproved": 1, "isCompleted": 1, "hasPaid": 1,
+    "isDeleted": 1, "createdAt": 1, "updatedAt": 1,
 }
 # What product a member is approved to buy for a gig (name + buy link).
 _PURCHASE_FIELDS = {
@@ -361,6 +362,48 @@ def _get_user(identifier: str) -> str:
     )
 
 
+def _get_waitlisted_gigs(user_id: str, limit: int = 10) -> str:
+    """Gigs the member applied for but has not been accepted into yet."""
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return tool_error("user_id is required for get_waitlisted_gigs")
+    row_limit = max(1, min(int(limit or 10), _HARD_LIMIT))
+
+    oid = _oid(user_id)
+    id_values = [oid, user_id] if oid is not None else [user_id]
+    member_filter = {
+        "$or": [
+            {"member": {"$in": id_values}},
+            {"user_id": {"$in": id_values}},
+            {"worker_id": {"$in": id_values}},
+        ],
+        "isDeleted": {"$ne": True},
+        "isAccepted": False,
+    }
+    members = list(
+        _db()[_COLL_MEMBERS]
+        .find(member_filter, _MEMBER_FIELDS, max_time_ms=_MAX_TIME_MS)
+        .limit(row_limit)
+    )
+    crwd_ids = [m["crwd_id"] for m in members if m.get("crwd_id") is not None]
+    gigs_by_id = {}
+    if crwd_ids:
+        for gig in _db()[_COLL_CRWDS].find(
+            {"_id": {"$in": crwd_ids}}, _GIG_FIELDS, max_time_ms=_MAX_TIME_MS
+        ):
+            gigs_by_id[str(gig["_id"])] = _slim_gig(gig)
+
+    items = []
+    for m in members:
+        items.append({
+            "membership": _serialize_doc(m),
+            "gig": gigs_by_id.get(str(m.get("crwd_id"))),
+        })
+    return json.dumps(
+        {"_type": "waitlisted_gigs", "items": items, "error": None}, ensure_ascii=False
+    )
+
+
 def _get_user_gigs(user_id: str, limit: int = 10) -> str:
     user_id = (user_id or "").strip()
     if not user_id:
@@ -563,6 +606,10 @@ def crwd_db_tool(args: Dict[str, Any], **_kw: Any) -> str:
             return _get_user(identifier=args.get("identifier", ""))
         if action == "get_user_gigs":
             return _get_user_gigs(user_id=args.get("user_id", ""), limit=args.get("limit", 10))
+        if action == "get_waitlisted_gigs":
+            return _get_waitlisted_gigs(
+                user_id=args.get("user_id", ""), limit=args.get("limit", 10)
+            )
         if action == "get_user_products":
             return _get_user_products(user_id=args.get("user_id", ""), limit=args.get("limit", 10))
         if action == "get_user_receipts":
@@ -580,7 +627,7 @@ def crwd_db_tool(args: Dict[str, Any], **_kw: Any) -> str:
             )
         return tool_error(
             "Unknown action. Use: list_active_gigs, get_gig_details, get_user, "
-            "get_user_gigs, custom_query"
+            "get_user_gigs, get_waitlisted_gigs, custom_query"
         )
     except RuntimeError as exc:
         # Config/connection problems -- safe to surface the short message.
@@ -599,13 +646,15 @@ CRWD_DB_SCHEMA = {
         "membership, a member's approved products (buy links), their receipt/"
         "proof upload status, and their account notifications. Read-only. Use "
         "the specific action if it fits (list_active_gigs, get_gig_details, "
-        "get_user, get_user_gigs, get_user_products, get_user_receipts, "
-        "get_user_notifications); use custom_query only when none of the "
+        "get_user, get_user_gigs, get_waitlisted_gigs, get_user_products, "
+        "get_user_receipts, get_user_notifications); use custom_query only when none of the "
         "others answer the question. list_active_gigs accepts user_id to "
         "exclude gigs the member already has a membership for, and offset for "
         "pagination; it returns has_more and next_offset for the next page. "
         "get_gig_details fuzzy-matches gig names and returns ranked candidates "
-        "-- pick the _id you mean before using it elsewhere."
+        "-- pick the _id you mean before using it elsewhere. "
+        "get_waitlisted_gigs returns gigs the member applied for but is not "
+        "yet accepted into (isAccepted false / pending approval)."
     ),
     "parameters": {
         "type": "object",
@@ -614,8 +663,8 @@ CRWD_DB_SCHEMA = {
                 "type": "string",
                 "enum": [
                     "list_active_gigs", "get_gig_details", "get_user",
-                    "get_user_gigs", "get_user_products", "get_user_receipts",
-                    "get_user_notifications", "custom_query",
+                    "get_user_gigs", "get_waitlisted_gigs", "get_user_products",
+                    "get_user_receipts", "get_user_notifications", "custom_query",
                 ],
             },
             "limit": {"type": "integer", "description": "max rows per page (capped at 20; list_active_gigs default 5)"},
@@ -632,7 +681,8 @@ CRWD_DB_SCHEMA = {
                 "description": (
                     "users._id. For list_active_gigs: exclude gigs the member "
                     "already has a membership for. Also used by get_user_gigs, "
-                    "get_user_products, get_user_receipts, get_user_notifications."
+                    "get_waitlisted_gigs, get_user_products, get_user_receipts, "
+                    "get_user_notifications."
                 ),
             },
             "query": {"type": "string", "description": "gig _id, name, or free text to fuzzy-match (get_gig_details)"},

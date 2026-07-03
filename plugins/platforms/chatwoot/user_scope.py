@@ -23,6 +23,7 @@ _OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
 _USER_SCOPED_ACTIONS = frozenset({
     "get_user",
     "get_user_gigs",
+    "get_waitlisted_gigs",
     "get_user_products",
     "get_user_receipts",
     "get_user_notifications",

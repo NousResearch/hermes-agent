@@ -133,6 +133,20 @@ class TestRouter:
         assert result["tool"] == "get_user_joined_gigs"
         mock_fn.assert_called_once()
 
+    def test_waitlisted_gigs_intent(self):
+        router = _load_module("router")
+        with patch.object(router.queries, "get_waitlisted_gigs", return_value={"success": True, "items": []}) as mock_fn:
+            result = router.route_intent("What are my waitlisted gigs?", "69a6f191cb29b0b371b3a156")
+        assert result["tool"] == "get_waitlisted_gigs"
+        mock_fn.assert_called_once()
+
+    def test_pending_approval_intent(self):
+        router = _load_module("router")
+        with patch.object(router.queries, "get_waitlisted_gigs", return_value={"success": True, "items": []}) as mock_fn:
+            result = router.route_intent("Which gigs are pending approval?", "69a6f191cb29b0b371b3a156")
+        assert result["tool"] == "get_waitlisted_gigs"
+        mock_fn.assert_called_once()
+
     def test_no_match_returns_none(self):
         router = _load_module("router")
         assert router.route_intent("hello world random chat", "69a6f191cb29b0b371b3a156") is None
@@ -187,6 +201,35 @@ class TestQueries:
         result = queries.get_user_profile_by_id("69a6f191cb29b0b371b3a156")
         assert result["success"] is False
 
+    def test_get_waitlisted_gigs_filters_is_accepted_false(self, monkeypatch):
+        queries = _load_module("queries")
+        mock_db = MagicMock()
+        mock_members = MagicMock()
+        mock_crwds = MagicMock()
+        mock_db.added_crwd_members = mock_members
+        mock_db.crwds = mock_crwds
+        gig_oid = queries.parse_object_id("69e6a4d6cea992cbda22b381")
+        member_cursor = MagicMock()
+        mock_members.find.return_value = member_cursor
+        member_cursor.sort.return_value = member_cursor
+        member_cursor.limit.return_value = [
+            {"crwd_id": gig_oid, "isAccepted": False, "status": "Pending"},
+        ]
+        mock_crwds.find_one.return_value = {
+            "_id": gig_oid,
+            "name": "Pending Gig",
+            "status": "Active",
+        }
+        monkeypatch.setattr(queries, "get_mongo_db", lambda: mock_db)
+
+        result = queries.get_waitlisted_gigs("69a6f191cb29b0b371b3a156")
+        assert result["success"] is True
+        assert len(result["items"]) == 1
+        assert result["items"][0]["membership"]["isAccepted"] is False
+        assert result["items"][0]["gig"]["name"] == "Pending Gig"
+        member_filter = mock_members.find.call_args[0][0]
+        assert member_filter["isAccepted"] is False
+
 
 class TestHandlers:
     def test_get_active_gigs_handler(self, monkeypatch):
@@ -203,6 +246,18 @@ class TestHandlers:
         data = json.loads(raw)
         assert data["success"] is False
 
+    def test_get_waitlisted_gigs_handler(self, monkeypatch):
+        handlers = _load_module("handlers")
+        with patch.object(
+            handlers.queries,
+            "get_waitlisted_gigs",
+            return_value={"success": True, "items": [{"membership": {"isAccepted": False}}]},
+        ):
+            raw = handlers.get_waitlisted_gigs({})
+        data = json.loads(raw)
+        assert data["success"] is True
+        assert data["items"][0]["membership"]["isAccepted"] is False
+
 
 class TestPluginRegistration:
     def test_register_wires_hook_and_tools(self):
@@ -210,7 +265,7 @@ class TestPluginRegistration:
         ctx = MagicMock()
         plugin.register(ctx)
         ctx.register_hook.assert_called_once_with("pre_llm_call", plugin._prefetch_context)
-        assert ctx.register_tool.call_count == 5
+        assert ctx.register_tool.call_count == 6
         tool_names = [call.kwargs["name"] for call in ctx.register_tool.call_args_list]
         assert tool_names == [
             "get_active_gigs",
@@ -218,6 +273,7 @@ class TestPluginRegistration:
             "get_gig_details",
             "get_user_gig_history",
             "get_user_joined_gigs",
+            "get_waitlisted_gigs",
         ]
 
     def test_prefetch_context_returns_dict_when_routed(self, monkeypatch):

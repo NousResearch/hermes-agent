@@ -260,3 +260,44 @@ def get_user_joined_gigs(user_id: str, limit: int = 50) -> Dict[str, Any]:
         items.append(entry)
 
     return {"success": True, "items": items, "count": len(items)}
+
+
+def get_waitlisted_gigs(user_id: str, limit: int = 50) -> Dict[str, Any]:
+    """Memberships where the member applied but is not yet accepted (isAccepted false)."""
+    oid = parse_object_id(user_id)
+    db = get_mongo_db()
+    limit = max(1, min(int(limit), 100))
+
+    memberships = list(
+        db.added_crwd_members.find(
+            {
+                "member": oid,
+                "isDeleted": {"$ne": True},
+                "isAccepted": False,
+            },
+        )
+        .sort([("createdAt", -1)])
+        .limit(limit)
+    )
+
+    items = []
+    for membership in memberships:
+        crwd_id = membership.get("crwd_id")
+        gig_doc = db.crwds.find_one({"_id": crwd_id}) if crwd_id else None
+        membership_data = serialize_doc(membership)
+        entry: Dict[str, Any] = {
+            "membership": {
+                "_id": membership_data.get("_id"),
+                "crwd_id": membership_data.get("crwd_id"),
+                "status": membership_data.get("status"),
+                "isApproved": membership_data.get("isApproved"),
+                "isAccepted": membership_data.get("isAccepted"),
+                "hasPaid": membership_data.get("hasPaid"),
+                "createdAt": membership_data.get("createdAt"),
+            },
+        }
+        if gig_doc:
+            entry["gig"] = format_gig_item(gig_doc)
+        items.append(entry)
+
+    return {"success": True, "items": items, "count": len(items)}

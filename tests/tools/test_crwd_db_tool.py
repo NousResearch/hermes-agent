@@ -328,6 +328,50 @@ class TestListActiveGigsPagination:
         assert out["next_offset"] is None
 
 
+class TestWaitlistedGigs:
+    def test_requires_user_id(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        out = json.loads(t.crwd_db_tool({"action": "get_waitlisted_gigs"}))
+        assert "error" in out
+        assert "user_id" in out["error"]
+
+    def test_filters_is_accepted_false_and_joins_gigs(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        user_id = "69a6f191cb29b0b371b3a156"
+        member_oid = t._oid(user_id)
+        gig_oid = t._oid("69e6a4d6cea992cbda22b381")
+        mock_members = MagicMock()
+        member_cursor = MagicMock()
+        mock_members.find.return_value = member_cursor
+        member_cursor.limit.return_value = [
+            {
+                "member": member_oid,
+                "crwd_id": gig_oid,
+                "isAccepted": False,
+                "status": "Pending",
+            },
+        ]
+        mock_crwds = MagicMock()
+        mock_crwds.find.return_value = [
+            {"_id": gig_oid, "name": "Waitlisted Gig", "gig_stores": []},
+        ]
+        with patch.object(t, "_db", return_value=_fake_db({
+            "added_crwd_members": mock_members,
+            "crwds": mock_crwds,
+        })):
+            out = json.loads(t.crwd_db_tool({
+                "action": "get_waitlisted_gigs",
+                "user_id": user_id,
+            }))
+        assert out["_type"] == "waitlisted_gigs"
+        assert len(out["items"]) == 1
+        assert out["items"][0]["membership"]["isAccepted"] is False
+        assert out["items"][0]["gig"]["name"] == "Waitlisted Gig"
+        member_filter = mock_members.find.call_args[0][0]
+        assert member_filter["isAccepted"] is False
+        assert member_filter["isDeleted"] == {"$ne": True}
+
+
 class TestRouter:
     def test_unknown_action(self, monkeypatch):
         monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")

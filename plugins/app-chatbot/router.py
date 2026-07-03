@@ -29,6 +29,13 @@ _JOINED_GIGS_PATTERNS = (
     re.compile(r"\bgigs? i am (in|on)\b", re.I),
 )
 
+_WAITLISTED_GIGS_PATTERNS = (
+    re.compile(r"\bwaitlist(?:ed)? gigs?\b", re.I),
+    re.compile(r"\bpending approval\b", re.I),
+    re.compile(r"\bgigs? (?:are )?pending\b", re.I),
+    re.compile(r"\bgigs? (?:still )?waiting (?:for )?approval\b", re.I),
+)
+
 _HISTORY_PATTERNS = (
     re.compile(r"\bgig history\b", re.I),
     re.compile(r"\bpast gigs?\b", re.I),
@@ -100,6 +107,10 @@ def route_intent(user_message: str, default_user_id: str) -> Optional[Dict[str, 
             if user_id:
                 return {"tool": "get_user_joined_gigs", "result": queries.get_user_joined_gigs(user_id)}
 
+        if _matches(message, _WAITLISTED_GIGS_PATTERNS):
+            if user_id:
+                return {"tool": "get_waitlisted_gigs", "result": queries.get_waitlisted_gigs(user_id)}
+
         if _matches(message, _HISTORY_PATTERNS):
             if user_id:
                 return {"tool": "get_user_gig_history", "result": queries.get_user_gig_history(user_id)}
@@ -142,7 +153,7 @@ def format_router_context(
     lines = [
         "[Data access policy]",
         "- Fetch CRWD/gig/user data ONLY via: get_active_gigs, get_user_profile_by_id,",
-        "  get_gig_details, get_user_gig_history, get_user_joined_gigs.",
+        "  get_gig_details, get_user_gig_history, get_user_joined_gigs, get_waitlisted_gigs.",
         "- Do not attempt direct MongoDB queries for database data.",
         "- If no predefined tool covers the question, say so and ask the user to rephrase.",
     ]

@@ -72,3 +72,12 @@ def get_user_joined_gigs(args: Dict[str, Any], **_: Any) -> str:
         return _handle_result(queries.get_user_joined_gigs(user_id, limit=limit))
     except Exception as exc:
         return _handle_error(exc)
+
+
+def get_waitlisted_gigs(args: Dict[str, Any], **_: Any) -> str:
+    try:
+        user_id = _resolve_user_id(args)
+        limit = args.get("limit", 50)
+        return _handle_result(queries.get_waitlisted_gigs(user_id, limit=limit))
+    except Exception as exc:
+        return _handle_error(exc)

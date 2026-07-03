@@ -43,6 +43,7 @@ def register(ctx) -> None:
         (schemas.GET_GIG_DETAILS, handlers.get_gig_details),
         (schemas.GET_USER_GIG_HISTORY, handlers.get_user_gig_history),
         (schemas.GET_USER_JOINED_GIGS, handlers.get_user_joined_gigs),
+        (schemas.GET_WAITLISTED_GIGS, handlers.get_waitlisted_gigs),
     ]
     for schema, handler in tool_pairs:
         ctx.register_tool(

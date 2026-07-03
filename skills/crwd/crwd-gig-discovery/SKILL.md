@@ -19,6 +19,7 @@ Find gigs and explain them against the member's **real** data — not in the abs
 - "Tell me about the [X] gig" — payout, deadline, store, what's involved
 - "How do I apply?" / "Am I approved yet?"
 - "What gigs do I have?"
+- "What are my waitlisted gigs?" / "What gigs are pending approval?"
 - "Where do I go for this gig?" / "Where's the nearest Walmart/Target?"
 - "What are the store hours?" / "Are they open now?"
 
@@ -35,16 +36,21 @@ Find gigs and explain them against the member's **real** data — not in the abs
 2. **A specific gig by name/text:** `get_gig_details` (fuzzy-matches, returns ranked
    candidates with an `_id`). **Confirm the right `_id`** before you quote details or use it
    elsewhere — if two candidates are close, ask which one they mean.
-3. **Their gigs / approval state:** `get_user_gigs`. The current member's CRWD `user_id` is
+3. **Waitlisted / pending approval:** `get_waitlisted_gigs` with `user_id` from the
+   `[CRWD member]` context line. Returns gigs they applied for but are not yet accepted
+   (`isAccepted: false`). Use this for "waitlisted", "pending approval", or "still waiting
+   to be approved" — not `get_user_gigs` or `list_active_gigs`.
+4. **Their active gigs:** `get_user_gigs`. The current member's CRWD `user_id` is
    provided to you in context (a `[CRWD member]` line) — pass it straight through as `user_id`.
-   This shows the campaigns they're an active member of and their membership status.
-4. **Include the product name + buy link by default.** `list_active_gigs` and
+   This shows campaigns they're an **active/approved** member of (Home → Active), not
+   waitlisted gigs.
+5. **Include the product name + buy link by default.** `list_active_gigs` and
    `get_gig_details` already return each store's `products[]` with `name` and `product_url`.
    When you describe a gig, surface those links alongside payout/deadline/store — don't wait
    for the member to ask "where do I buy it?" Links are helpful; give the real `product_url`,
    don't just name the product. (Only skip them if the gig genuinely has no product, or the
    member explicitly says they just want the list.)
-5. **For a live (in-store / `irl`) gig, help them get to the store.** The gig data names the
+6. **For a live (in-store / `irl`) gig, help them get to the store.** The gig data names the
    retailer (`stores[].store_name`) and, for `irl` gigs, an `address`/`city`/`state`/
    `postal_code`. Surface that store info by default when you describe a live gig.
    - **Never assume the member's location.** If you don't already know their city/ZIP (from
@@ -58,11 +64,11 @@ Find gigs and explain them against the member's **real** data — not in the abs
    - Point them at the **retailer the gig actually uses**, not just any big-box store.
    - Suggest they **call ahead to confirm stock** — you cannot see live inventory, so never
      claim something is in stock.
-6. Explain the flow against their **actual** state, not generically: browse → apply →
+7. Explain the flow against their **actual** state, not generically: browse → apply →
    **get approved** → perform → submit proof → get paid. If they're waiting on approval, say
    that; if approved, point them at what to do next (`crwd-gig-execution`).
-7. Be precise on **payout, deadline, and estimated time** — quote the real numbers; never guess.
-8. Offer a deadline reminder if the gig is time-sensitive (see `crwd-reminders-followups`).
+8. Be precise on **payout, deadline, and estimated time** — quote the real numbers; never guess.
+9. Offer a deadline reminder if the gig is time-sensitive (see `crwd-reminders-followups`).
 
 For the deeper lifecycle detail, load
 `skill_view("crwd-reference", "references/gig-lifecycle.md")`.
@@ -72,7 +78,9 @@ For the deeper lifecycle detail, load
 - Don't quote a gig's payout/deadline from memory — look it up.
 - **Do not combine `list_active_gigs` and `get_user_gigs` when answering availability**
   questions — enrolled gigs belong on Home, not Explore. Use step 1 alone for "what's
-  available?" and step 3 alone for "what do I have?"
+  available?" and step 4 alone for "what active gigs do I have?"
+- **Waitlisted / pending approval** → step 3 (`get_waitlisted_gigs`) only. Do not use
+  `get_user_gigs` or `list_active_gigs` for those questions.
 - Always pass `user_id` to `list_active_gigs` when the member asks about available or new
   gigs — without it you may show gigs they've already joined.
 - **"Show me more" means paginate** — pass `offset = next_offset` from the last

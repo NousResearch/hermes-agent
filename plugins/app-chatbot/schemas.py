@@ -110,10 +110,33 @@ GET_USER_JOINED_GIGS = {
     },
 }
 
+GET_WAITLISTED_GIGS = {
+    "name": "get_waitlisted_gigs",
+    "description": (
+        "Gigs the user applied for but is not yet accepted into (isAccepted false / "
+        "pending approval). Joins membership rows to full gig documents."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "string",
+                "description": "MongoDB users._id (24-char hex). Defaults to APP_CHATBOT_DEFAULT_USER_ID from .env.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max rows to return (default 50, max 100).",
+            },
+        },
+        "required": [],
+    },
+}
+
 ALL_SCHEMAS = [
     GET_ACTIVE_GIGS,
     GET_USER_PROFILE_BY_ID,
     GET_GIG_DETAILS,
     GET_USER_GIG_HISTORY,
     GET_USER_JOINED_GIGS,
+    GET_WAITLISTED_GIGS,
 ]

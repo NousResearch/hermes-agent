@@ -18,6 +18,7 @@ screen fast.
 
 - **Home** — the member's **own gigs**, grouped by state:
   - **Active** — gigs they're approved for and currently working on
+  - **Pending / waitlisted** — gigs they applied for but aren't accepted yet
   - **Completed** — gigs they've finished/submitted
   - **Expired** — gigs whose window closed
 - **Explore** — the place to **browse available gigs**. Gigs are listed here; the member can
@@ -40,7 +41,8 @@ screen fast.
 2. Make it concrete for **their** account when they ask "what do I have?" — use `crwd_db`
    `get_user_gigs` with the authenticated `user_id` from the `[CRWD member]` context line
    (pass it straight through), and reflect their real active / completed gigs so it matches
-   what they see on Home.
+   what they see on Home. For **waitlisted / pending approval** gigs, use `get_waitlisted_gigs`
+   instead — those are applied-but-not-yet-accepted (`isAccepted: false`).
 3. If they're stuck opening a gig or the screen looks wrong, walk them to it step by step. If
    something appears **broken** (won't load, button does nothing), switch to
    `crwd-troubleshooting`.

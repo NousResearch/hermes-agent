@@ -283,6 +283,48 @@ class TestSendWithRetryFallback:
         assert not result.success
         assert len(adapter._send_calls) == 2  # original + fallback only
 
+    @pytest.mark.asyncio
+    async def test_adapter_content_guard_block_sends_visible_safe_notice(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="blocked_plamena_raw_quote_ambiguity"),
+            SendResult(success=True, message_id="notice_ok"),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "assistant answer", max_retries=2)
+
+        assert result.success
+        assert result.message_id == "notice_ok"
+        assert len(adapter._send_calls) == 2
+        notice = adapter._send_calls[-1][1]
+        assert "Не изпратих отговора" in notice
+        assert "content/route safety guard" in notice
+        assert "assistant answer" not in notice
+        assert "blocked_plamena_raw_quote_ambiguity" not in notice
+        assert "Plamena" not in notice
+        assert "Пламена" not in notice
+
+    @pytest.mark.asyncio
+    async def test_plaintext_fallback_content_guard_block_sends_visible_safe_notice(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="Bad Request: can't parse entities"),
+            SendResult(success=False, error="blocked_unresolved_text_teammate_mention"),
+            SendResult(success=True, message_id="notice_ok"),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "**bold**", max_retries=2)
+
+        assert result.success
+        assert len(adapter._send_calls) == 3
+        assert "plain text" in adapter._send_calls[1][1].lower()
+        notice = adapter._send_calls[-1][1]
+        assert "Не изпратих отговора" in notice
+        assert "**bold**" not in notice
+        assert "blocked_unresolved_text_teammate_mention" not in notice
+
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — retry_after honor

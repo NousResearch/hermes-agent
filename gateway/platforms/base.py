@@ -2148,6 +2148,31 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
+_VISIBLE_CONTENT_GUARD_ERROR_PREFIXES = ("blocked_",)
+
+
+def _visible_content_guard_notice(error: Optional[str]) -> Optional[str]:
+    """Build a safe user-visible notice for adapter content-safety blocks.
+
+    Some platform adapters perform final content linting immediately before
+    send. Retrying those failures with the original content, even as "plain
+    text", repeats the same blocked payload and leaves the conversation silent.
+    The notice deliberately avoids echoing the blocked text or exact internal
+    reason strings because those can themselves contain the unsafe pattern.
+    """
+    raw_error = str(error or "").strip()
+    if not raw_error:
+        return None
+    lowered = raw_error.lower()
+    if not any(lowered.startswith(prefix) for prefix in _VISIBLE_CONTENT_GUARD_ERROR_PREFIXES):
+        return None
+    return (
+        "Не изпратих отговора, защото content/route safety guard-ът блокира "
+        "съдържанието. Не изпращам оригиналния текст, за да не повторя риска. "
+        "Моля уточнете получателя, канала или формулировката и ще продължа."
+    )
+
+
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
@@ -4167,6 +4192,23 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
+        visible_block_notice = _visible_content_guard_notice(error_str)
+        if visible_block_notice:
+            logger.error(
+                "[%s] Send blocked by adapter content/route guard; sending visible safe notice",
+                self.name,
+            )
+            notice_result = await self.send(
+                chat_id=chat_id,
+                content=visible_block_notice,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if notice_result.success:
+                return notice_result
+            logger.error("[%s] Visible content-guard notice also failed: %s", self.name, notice_result.error)
+            return result
+
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
@@ -4177,6 +4219,17 @@ class BasePlatformAdapter(ABC):
         )
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+            visible_block_notice = _visible_content_guard_notice(fallback_result.error)
+            if visible_block_notice:
+                notice_result = await self.send(
+                    chat_id=chat_id,
+                    content=visible_block_notice,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if notice_result.success:
+                    return notice_result
+                logger.error("[%s] Visible content-guard notice also failed: %s", self.name, notice_result.error)
         return fallback_result
 
     @staticmethod

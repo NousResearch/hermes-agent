@@ -211,6 +211,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+        base_url_override="https://aiplatform.googleapis.com",
+        extra_env_vars=("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_PROJECT_ID", "VERTEX_REGION"),
+    ),
 }
 
 
@@ -335,6 +341,12 @@ ALIASES: Dict[str, str] = {
     "amazon-bedrock": "bedrock",
     "amazon": "bedrock",
 
+    # vertex
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -371,6 +383,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

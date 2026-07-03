@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _should_wrap_cron_response
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -553,8 +553,61 @@ class TestRoutingIntents:
             assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
 
 
+class TestShouldWrapCronResponse:
+    """#57647: no_agent jobs deliver script stdout verbatim — no header/footer."""
+
+    def test_agent_job_wraps_by_default(self):
+        assert _should_wrap_cron_response({"id": "j"}, None) is True
+        assert _should_wrap_cron_response({"id": "j"}, {"cron": {}}) is True
+
+    def test_no_agent_job_is_unwrapped_by_default(self):
+        assert _should_wrap_cron_response({"id": "j", "no_agent": True}, None) is False
+        # Even when the global default is on.
+        assert _should_wrap_cron_response(
+            {"id": "j", "no_agent": True}, {"cron": {"wrap_response": True}}
+        ) is False
+
+    def test_global_disable_still_honored_for_agent_jobs(self):
+        assert _should_wrap_cron_response(
+            {"id": "j"}, {"cron": {"wrap_response": False}}
+        ) is False
+
+    def test_global_disable_does_not_override_no_agent_default(self):
+        # no_agent stays unwrapped regardless of the global default value.
+        assert _should_wrap_cron_response(
+            {"id": "j", "no_agent": True}, {"cron": {"wrap_response": False}}
+        ) is False
+
+
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+
+    def test_no_agent_delivery_is_verbatim(self):
+        """#57647: a no_agent job's stdout is delivered without the cron wrapper."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "scan-1",
+                "name": "coin-scan",
+                "no_agent": True,
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "SIGNAL: BTC breakout")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "SIGNAL: BTC breakout"
+        assert "Cronjob Response" not in sent_content
+        assert "To stop or manage this job" not in sent_content
 
     def _safe_media_path(self, tmp_path, monkeypatch, name, data=b"media"):
         root = tmp_path / "media-cache"

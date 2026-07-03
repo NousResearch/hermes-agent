@@ -1402,6 +1402,25 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _should_wrap_cron_response(job: dict, user_cfg: Optional[dict]) -> bool:
+    """Whether to wrap cron delivery in the ``Cronjob Response`` header/footer.
+
+    Precedence:
+      1. ``no_agent`` jobs are delivered *unwrapped*. Their script stdout is
+         contractually delivered verbatim (see ``cron.jobs.create_job``), so
+         the cron header/footer must not pollute the payload — and the footer's
+         "send me a new message to manage this job" instruction implies an
+         agent conversation that a no_agent job doesn't have (#57647).
+      2. Otherwise fall back to the global ``cron.wrap_response`` (default True).
+    """
+    if job.get("no_agent"):
+        return False
+    try:
+        return bool((user_cfg or {}).get("cron", {}).get("wrap_response", True))
+    except Exception:
+        return True
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1440,14 +1459,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
-    wrap_response = True
+    # in config.yaml (or wrap_response: false on the job) for clean output, and
+    # no_agent jobs deliver their script stdout verbatim (see _should_wrap_cron_response).
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+    wrap_response = _should_wrap_cron_response(job, user_cfg)
 
     if wrap_response:
         task_name = job.get("name", job["id"])

@@ -298,6 +298,8 @@ cron:
   wrap_response: false
 ```
 
+**No-agent jobs are always unwrapped.** A [`no_agent`](#no-agent-mode-script-only-jobs) job's stdout is delivered verbatim regardless of `cron.wrap_response`, since the wrapper's header and "the agent cannot see this message" footer don't apply to a script-only job with no agent conversation behind it. The `cron.wrap_response` setting only affects agent-driven jobs.
+
 ### Continuable jobs (reply to a cron delivery)
 
 By default a cron delivery is fire-and-forget: the message is sent, but it does

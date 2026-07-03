@@ -13320,13 +13320,42 @@ def main():
     )
 
     sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to a JSONL file"
+        "export", help="Export sessions to a file"
     )
     sessions_export.add_argument(
-        "output", help="Output JSONL file path (use - for stdout)"
+        "output", help="Output file path (use - for stdout)"
     )
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
+    sessions_export.add_argument(
+        "--format",
+        choices=["jsonl", "markdown", "md"],
+        default="jsonl",
+        help="Export format (default: jsonl; markdown requires --only user-prompts)",
+    )
+    sessions_export.add_argument(
+        "--only",
+        choices=["user-prompts"],
+        help="Export only a filtered view of each session",
+    )
+
+    sessions_export_prompts = sessions_subparsers.add_parser(
+        "export-prompts",
+        help="Export only user prompts from one session",
+    )
+    sessions_export_prompts.add_argument("session_id", help="Session ID to export")
+    sessions_export_prompts.add_argument(
+        "--format",
+        choices=["jsonl", "markdown", "md"],
+        default="jsonl",
+        help="Export format (default: jsonl)",
+    )
+    sessions_export_prompts.add_argument(
+        "--output",
+        "-o",
+        default="-",
+        help="Output file path (use - for stdout)",
+    )
 
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
@@ -13401,8 +13430,6 @@ def main():
             return False
 
     def cmd_sessions(args):
-        import json as _json
-
         action = args.sessions_action
 
         # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
@@ -13462,6 +13489,33 @@ def main():
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
 
+        def _write_sessions_export(sessions, *, fmt, only, output):
+            from hermes_cli.session_export import (
+                export_record_count,
+                normalize_export_format,
+                render_sessions_export,
+            )
+
+            export_format = normalize_export_format(fmt)
+            if only is None and export_format != "jsonl":
+                print("Error: --format markdown currently requires --only user-prompts.")
+                return
+
+            rendered = render_sessions_export(
+                sessions,
+                fmt=export_format,
+                only=only,
+            )
+            if output == "-":
+                sys.stdout.write(rendered)
+                return
+
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(rendered)
+            count, noun = export_record_count(sessions, only=only)
+            suffix = "" if count == 1 else "s"
+            print(f"Exported {count} {noun}{suffix} to {output}")
+
         if action == "list":
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
@@ -13501,25 +13555,32 @@ def main():
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
-                line = _json.dumps(data, ensure_ascii=False) + "\n"
-                if args.output == "-":
-
-                    sys.stdout.write(line)
-                else:
-                    with open(args.output, "w", encoding="utf-8") as f:
-                        f.write(line)
-                    print(f"Exported 1 session to {args.output}")
+                sessions = [data]
             else:
                 sessions = db.export_all(source=args.source)
-                if args.output == "-":
 
-                    for s in sessions:
-                        sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                else:
-                    with open(args.output, "w", encoding="utf-8") as f:
-                        for s in sessions:
-                            f.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                    print(f"Exported {len(sessions)} sessions to {args.output}")
+            _write_sessions_export(
+                sessions,
+                fmt=args.format,
+                only=getattr(args, "only", None),
+                output=args.output,
+            )
+
+        elif action == "export-prompts":
+            resolved_session_id = db.resolve_session_id(args.session_id)
+            if not resolved_session_id:
+                print(f"Session '{args.session_id}' not found.")
+                return
+            data = db.export_session(resolved_session_id)
+            if not data:
+                print(f"Session '{args.session_id}' not found.")
+                return
+            _write_sessions_export(
+                [data],
+                fmt=args.format,
+                only="user-prompts",
+                output=args.output,
+            )
 
         elif action == "delete":
             resolved_session_id = db.resolve_session_id(args.session_id)

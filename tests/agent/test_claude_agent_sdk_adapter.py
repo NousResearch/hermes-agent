@@ -324,7 +324,10 @@ def test_hybrid_builds_mcp_and_allowed_tools(monkeypatch):
     adp.create_claude_agent_message(agent, kw)
     opts = capture["options"]
     assert "hermes" in opts.mcp_servers
-    assert opts.allowed_tools == ["mcp__hermes__read_file"]
+    # Hermes MCP tools + Claude's orchestration built-ins (so workflows work).
+    assert opts.allowed_tools == ["mcp__hermes__read_file"] + list(adp._SDK_ORCHESTRATION_TOOLS)
+    assert opts.tools == list(adp._SDK_ORCHESTRATION_TOOLS)
+    assert "Workflow" in opts.tools and "Agent" in opts.tools
     assert opts.max_turns == 5
 
 
@@ -347,8 +350,39 @@ def test_hybrid_prefers_agent_tools_and_strips_oauth_prefix(monkeypatch):
     )
     adp.create_claude_agent_message(agent, _api_kwargs())
     # Registry name is stripped clean; the fully-qualified MCP name uses it.
-    assert capture["options"].allowed_tools == ["mcp__hermes__read_file"]
+    assert capture["options"].allowed_tools == ["mcp__hermes__read_file"] + list(adp._SDK_ORCHESTRATION_TOOLS)
     assert "hermes" in capture["options"].mcp_servers
+
+
+def test_hybrid_enables_workflow_and_subagent_builtins(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(
+        _claude_agent_sdk_mode="hybrid",
+        _claude_agent_sdk_settings={"mode": "hybrid", "permission_mode": "bypassPermissions",
+                                    "max_turns": 24, "allowed_tools": []},
+    )
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    # Workflow (dynamic workflows) + Agent/Task (subagents) are enabled built-ins.
+    assert "Workflow" in capture["options"].tools
+    assert "Agent" in capture["options"].tools
+
+
+def test_hybrid_builtin_tools_override_can_strip(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(
+        _claude_agent_sdk_mode="hybrid",
+        # builtin_tools: [] restores the legacy strip-everything behaviour.
+        _claude_agent_sdk_settings={"mode": "hybrid", "permission_mode": "bypassPermissions",
+                                    "max_turns": 24, "allowed_tools": [], "builtin_tools": []},
+    )
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    assert capture["options"].tools == []
 
 
 def test_delegate_uses_builtin_tools(monkeypatch):

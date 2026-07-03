@@ -20,6 +20,7 @@ import {
   disconnectOAuthProvider,
   getAnthropicOAuth,
   getClaudeAgentSdk,
+  getGlobalModelInfo,
   listOAuthProviders,
   saveAnthropicOAuth,
   saveClaudeAgentSdk
@@ -30,7 +31,8 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import type { EnvVarInfo, InferenceBackendStatus, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -283,6 +285,16 @@ function AnthropicConnectionBlock({
 }) {
   const [enabled, setEnabled] = useState(true)
   const [method, setMethod] = useState<AnthropicMethod>('oauth')
+  const [backend, setBackend] = useState<InferenceBackendStatus | null>(null)
+
+  // Resolved runtime status: whether turns REALLY route through the Claude
+  // Agent SDK right now (vs the config flag). Refetched when the method changes
+  // so the badge reflects what was just saved.
+  const refreshBackend = useCallback(() => {
+    getGlobalModelInfo()
+      .then(info => setBackend(info.inference_backend ?? null))
+      .catch(() => setBackend(null))
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -303,11 +315,12 @@ function AnthropicConnectionBlock({
         }
       }
     )
+    refreshBackend()
 
     return () => {
       alive = false
     }
-  }, [])
+  }, [refreshBackend])
 
   // Persist one consistent state: provider off => SDK mode "off" AND the OAuth
   // kill switch set; provider on => OAuth allowed + the chosen method's mode.
@@ -319,17 +332,32 @@ function AnthropicConnectionBlock({
 
       try {
         const mode: ClaudeAgentSdkMode = nextEnabled && nextMethod !== 'oauth' ? nextMethod : 'off'
-        await Promise.all([
+        const [sdkRes, oauthRes] = await Promise.all([
           saveClaudeAgentSdk({ mode }),
           saveAnthropicOAuth({ disabled: !nextEnabled })
         ])
+        // The backend seeds a default Anthropic model when inference is enabled
+        // with none set (otherwise the method is inert / "inference not ready").
+        // Reflect it in the live UI immediately so the model pill and status
+        // banner recover without a reload.
+        const autoModel = sdkRes.auto_selected_model || oauthRes.auto_selected_model
+        if (autoModel) {
+          setCurrentProvider('anthropic')
+          setCurrentModel(autoModel)
+          notify({
+            kind: 'info',
+            title: 'Anthropic model selected',
+            message: `Set ${autoModel} so this connection can run inference.`
+          })
+        }
+        refreshBackend()
       } catch (err) {
         setEnabled(prev.enabled)
         setMethod(prev.method)
         notifyError(err, 'Failed to update Anthropic provider settings')
       }
     },
-    [enabled, method]
+    [enabled, method, refreshBackend]
   )
 
   return (
@@ -373,9 +401,46 @@ function AnthropicConnectionBlock({
             <span className="text-[0.68rem] leading-5 text-muted-foreground/70">
               {ANTHROPIC_METHODS.find(option => option.value === method)?.hint}
             </span>
+            {method !== 'oauth' && backend && <InferenceBackendBadge backend={backend} />}
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Resolved runtime status for the picked SDK method: confirms whether turns
+// ACTUALLY route through the Claude Agent SDK (`claude` CLI) right now, or
+// silently fall back to the native OAuth/API path (e.g. because no Anthropic
+// model is selected, so the provider isn't `anthropic`). Dispels the "I set
+// hybrid but is it really using Claude Code?" doubt.
+function InferenceBackendBadge({ backend }: { backend: InferenceBackendStatus }) {
+  const active = backend.active
+  return (
+    <div
+      className={cn(
+        'mt-1 grid gap-1 rounded-[5px] border px-2.5 py-2 text-xs leading-5',
+        active
+          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+          : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+      )}
+    >
+      <span className="flex items-center gap-1.5 font-semibold">
+        <span
+          aria-hidden
+          className={cn('inline-block size-2 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-amber-500')}
+        />
+        {active
+          ? `Active — turns run through the Claude Agent SDK (${backend.mode})`
+          : 'Inactive — turns are NOT using Claude Code right now'}
+      </span>
+      {backend.reason && <span className="text-[0.68rem] opacity-90">{backend.reason}</span>}
+      {backend.mode !== 'off' && (
+        <span className="font-mono text-[0.64rem] opacity-70">
+          backend={backend.backend} · claude CLI={backend.cli_path ? '✓' : '✗'} · sdk=
+          {backend.sdk_installed ? '✓' : '✗'}
+        </span>
+      )}
     </div>
   )
 }

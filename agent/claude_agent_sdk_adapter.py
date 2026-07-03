@@ -76,6 +76,17 @@ _VALID_MODES = ("inference", "delegate", "hybrid")
 # In-process MCP server name used to expose Hermes tools in hybrid mode.
 _HYBRID_SERVER = "hermes"
 
+# Claude Code built-in ORCHESTRATION tools (no Hermes-tool equivalent) that the
+# HYBRID loop enables alongside the Hermes MCP tools. Stripping every built-in
+# to force Hermes tools also removes Claude's whole orchestration system —
+# `Workflow` (dynamic workflows) and `Agent`/`Task` (subagents) — so the model
+# reports it "can't run workflows". These are re-enabled while file/shell work
+# still flows through Hermes' MCP tools (subagents inherit those; the guardrail
+# hook gates every call). Both the current `Agent` name and the legacy `Task`
+# alias are listed for cross-version compatibility. Override per config via
+# model.claude_agent_sdk.builtin_tools ([] restores the strip-everything legacy).
+_SDK_ORCHESTRATION_TOOLS = ("Workflow", "Agent", "Task", "TodoWrite", "Skill")
+
 # Prefix on the display label of a tool run by a nested SDK subagent (spawned
 # via the `Agent`/`Task` tool). Keeps subagent activity visible on UI/CLI
 # consumers that only render the tool name; richer consumers also get a
@@ -209,6 +220,10 @@ def resolve_claude_agent_sdk_settings(provider: Optional[str]) -> Optional[Dict[
         "max_turns": int(_get("max_turns", 1 if mode == "inference" else 24)),
         "allowed_tools": list(_get("allowed_tools", []) or []),
         "disallowed_tools": list(_get("disallowed_tools", []) or []),
+        # Which Claude Code built-in tools the HYBRID loop enables alongside the
+        # Hermes MCP tools. None => the orchestration default (Workflow +
+        # subagents + todos + skills); [] => strip all built-ins (legacy).
+        "builtin_tools": opts.get("builtin_tools"),
         "max_budget_usd": float(max_budget) if max_budget is not None else None,
         "cwd": _get("cwd", None),
         "system_prompt_preset": _get("system_prompt_preset", None),
@@ -1036,13 +1051,18 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         opt_kwargs["tools"] = []          # strip built-in Read/Edit/Bash
         opt_kwargs["permission_mode"] = settings.get("permission_mode", "dontAsk")
     elif mode == "delegate":
-        # SDK runs the whole task with its OWN built-in tools, governed by
-        # Hermes' guardrails via a PreToolUse hook.
+        # SDK runs the whole task with its OWN built-in tools (incl. Workflow +
+        # subagents by default), governed by Hermes' guardrails via a PreToolUse
+        # hook.
         opt_kwargs["permission_mode"] = settings.get("permission_mode", "bypassPermissions")
         opt_kwargs["max_turns"] = settings.get("max_turns", 24)
         extra_allowed = settings.get("allowed_tools") or []
         if extra_allowed:
-            opt_kwargs["allowed_tools"] = list(extra_allowed)
+            # A user whitelist would otherwise hide Workflow/Agent — keep the
+            # orchestration tools available so workflows still run.
+            opt_kwargs["allowed_tools"] = list(
+                dict.fromkeys(list(extra_allowed) + list(_SDK_ORCHESTRATION_TOOLS))
+            )
         disallowed = settings.get("disallowed_tools") or []
         if disallowed:
             opt_kwargs["disallowed_tools"] = list(disallowed)
@@ -1057,15 +1077,25 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         # Pin the MCP surface to exactly this server — no user/project MCP
         # config can add tools behind Hermes' back.
         opt_kwargs["strict_mcp_config"] = True
-        opt_kwargs["allowed_tools"] = allowed
-        opt_kwargs["tools"] = []          # Hermes tools only; strip built-ins
+        # Enable Claude's orchestration built-ins (Workflow + subagents + todos
+        # + skills) on top of the Hermes MCP tools, so dynamic workflows work in
+        # hybrid instead of being stripped away. `builtin_tools: []` in config
+        # restores the previous strip-everything behaviour.
+        builtins = settings.get("builtin_tools")
+        if builtins is None:
+            builtins = list(_SDK_ORCHESTRATION_TOOLS)
+        builtins = [str(t) for t in builtins]
+        opt_kwargs["allowed_tools"] = allowed + builtins
+        opt_kwargs["tools"] = builtins
         opt_kwargs["permission_mode"] = settings.get("permission_mode", "bypassPermissions")
         opt_kwargs["max_turns"] = settings.get("max_turns", 24)
         opt_kwargs["hooks"] = _build_guardrail_hook(sdk, agent)
         disallowed = settings.get("disallowed_tools") or []
         if disallowed:
             opt_kwargs["disallowed_tools"] = list(disallowed)
-        mcp_note = f" ({len(allowed)} hermes tools)"
+        mcp_note = f" ({len(allowed)} hermes tools" + (
+            f" + {len(builtins)} builtins)" if builtins else ")"
+        )
 
     # Spend cap (delegate/hybrid run multi-turn); the SDK ends the loop with
     # subtype error_max_budget_usd when exceeded.

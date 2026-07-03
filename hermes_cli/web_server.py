@@ -4131,6 +4131,181 @@ def _apply_claude_agent_sdk(
     return out
 
 
+def _claude_agent_sdk_runtime_status(provider: Any) -> Dict[str, Any]:
+    """Report whether inference actually routes through the Claude Agent SDK.
+
+    The configured ``model.claude_agent_sdk.mode`` is only a request — the SDK
+    path activates *only* on the native ``anthropic`` provider, needs the
+    ``claude-agent-sdk`` package, and spawns the ``claude`` CLI at turn time.
+    This surfaces the resolved truth (active or not, and why) so the UI/debug
+    view can confirm what's really handling a turn instead of guessing from the
+    config flag.
+    """
+    prov = (provider or "").strip().lower() if isinstance(provider, str) else ""
+    status: Dict[str, Any] = {
+        "mode": "off",
+        "active": False,
+        "reason": None,
+        "cli_path": None,
+        "sdk_installed": False,
+        "backend": "native",   # what actually runs turns: native | claude_agent_sdk
+    }
+
+    # Configured mode (independent of whether it resolves/activates).
+    try:
+        cfg = read_raw_config()
+        model_cfg = cfg.get("model")
+        raw = model_cfg.get("claude_agent_sdk") if isinstance(model_cfg, dict) else None
+        status["mode"] = _claude_agent_sdk_to_ui(raw)["mode"]
+    except Exception:
+        pass
+
+    if status["mode"] == "off":
+        status["reason"] = "Native OAuth / API — Claude Agent SDK is off."
+        return status
+
+    # Resolved activation — mirror the adapter's own gate exactly.
+    try:
+        from agent.claude_agent_sdk_adapter import (
+            resolve_claude_agent_sdk_settings,
+            _get_claude_agent_sdk,
+        )
+        import shutil
+
+        status["sdk_installed"] = _get_claude_agent_sdk() is not None
+        status["cli_path"] = shutil.which("claude")
+        resolved = resolve_claude_agent_sdk_settings(provider)
+        if resolved is None:
+            if prov != "anthropic":
+                status["reason"] = (
+                    f"Inactive — the Claude Agent SDK only runs on the native "
+                    f"'anthropic' provider, but the current provider is "
+                    f"'{prov or 'unset'}'. Select an Anthropic model to use it."
+                )
+            else:
+                status["reason"] = "Inactive — Claude Agent SDK settings did not resolve."
+        elif not status["sdk_installed"]:
+            status["reason"] = (
+                "Configured but the claude-agent-sdk package isn't installed; "
+                "turns fall back / error. Install hermes-agent[claude-agent-sdk]."
+            )
+        elif not status["cli_path"]:
+            status["reason"] = (
+                "Configured but the `claude` CLI wasn't found on PATH; turns will "
+                "fail until it's installed and logged in."
+            )
+        else:
+            status["active"] = True
+            status["backend"] = "claude_agent_sdk"
+            status["reason"] = f"Active — routing turns through the Claude Agent SDK ({status['mode']})."
+    except Exception as exc:  # noqa: BLE001
+        status["reason"] = f"Could not resolve SDK status: {exc}"
+    return status
+
+
+def _current_main_model_name(cfg: Any) -> str:
+    """The configured main model name ("" if none), mirroring get_model_info."""
+    mc = cfg.get("model") if isinstance(cfg, dict) else None
+    if isinstance(mc, dict):
+        return str(mc.get("default") or mc.get("name") or "").strip()
+    if isinstance(mc, str):
+        return mc.strip()
+    return ""
+
+
+_SONNET_VERSION_RE = re.compile(r"sonnet[-.]?(\d+)(?:[-.](\d+))?", re.IGNORECASE)
+_LEGACY_SONNET_RE = re.compile(r"(\d+)[-.](\d+)-sonnet", re.IGNORECASE)
+
+
+def _sonnet_version_key(model: str) -> Optional[Tuple[int, int, int]]:
+    """Sort key for a Sonnet model name, or None if it isn't a Sonnet.
+
+    Handles modern ``claude-sonnet-<major>[-<minor>]`` and legacy
+    ``claude-<major>-<minor>-sonnet`` naming, and ignores 8-digit date
+    snapshots (``claude-sonnet-4-20250514`` is 4.0-dated, not 4.20250514). The
+    trailing element prefers an undated alias over a pinned snapshot on a tie.
+    """
+    base = model.rsplit("/", 1)[-1]
+    m = _SONNET_VERSION_RE.search(base)
+    # A group of 8+ digits is a date stamp, not a version number.
+    if m and len(m.group(1)) < 8:
+        major = int(m.group(1))
+        minor_raw = m.group(2)
+        minor = int(minor_raw) if (minor_raw and len(minor_raw) < 8) else 0
+    else:
+        # "sonnet" followed by a bare date (legacy "claude-3-5-sonnet-<date>")
+        # or no trailing number — the version precedes "sonnet".
+        legacy = _LEGACY_SONNET_RE.search(base)
+        if not legacy:
+            return None
+        major = int(legacy.group(1))
+        minor = int(legacy.group(2))
+    undated = 0 if re.search(r"\d{8}", base) else 1
+    return (major, minor, undated)
+
+
+def _latest_sonnet(models: list) -> str:
+    """The highest-version Sonnet in *models*, or "" if there is none."""
+    best = ""
+    best_key: Optional[Tuple[int, int, int]] = None
+    for mdl in models:
+        if "sonnet" not in str(mdl).lower():
+            continue
+        key = _sonnet_version_key(str(mdl))
+        if key is None:
+            continue
+        if best_key is None or key > best_key:
+            best_key, best = key, str(mdl)
+    return best
+
+
+def _recommended_anthropic_model() -> str:
+    """Default Anthropic model for auto-seeding inference.
+
+    Prefers the latest Sonnet by version (a balanced default for coding/agent
+    work), falling back to the first curated Anthropic model when no Sonnet is
+    present. "" if nothing resolves.
+    """
+    try:
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        payload = build_models_payload(load_picker_context())
+        for row in payload.get("providers", []):
+            if str(row.get("slug", "")).lower() == "anthropic":
+                models = [str(m) for m in (row.get("models") or [])]
+                return _latest_sonnet(models) or (models[0] if models else "")
+    except Exception:
+        _log.exception("resolve default anthropic model failed")
+    return ""
+
+
+def _ensure_anthropic_main_model_if_unset() -> Optional[str]:
+    """Set a default Anthropic main model when none is configured.
+
+    Enabling Anthropic inference (an SDK mode, or re-enabling OAuth) is inert
+    unless the main model's provider is ``anthropic`` — otherwise the SDK gate
+    fails and the app shows "inference not ready". This fills ONLY the empty
+    case (no main model at all), so it never clobbers a model the user picked
+    for another provider. Returns the model it set, or ``None``.
+    """
+    cfg = read_raw_config()
+    if _current_main_model_name(cfg):
+        return None
+    model = _recommended_anthropic_model()
+    if not model:
+        return None
+    out = _model_cfg_as_dict(cfg.get("model"))
+    out["default"] = model
+    out["provider"] = "anthropic"
+    # Anthropic's URL is hardcoded by the runtime resolver; a stale base_url
+    # would contaminate routing.
+    out.pop("base_url", None)
+    cfg["model"] = out
+    save_config(cfg)
+    _log.info("auto-selected default Anthropic model %r (Anthropic inference enabled, none was set)", model)
+    return model
+
+
 @app.get("/api/model/claude-agent-sdk")
 async def get_claude_agent_sdk(profile: Optional[str] = None):
     with _profile_scope(profile):
@@ -4155,7 +4330,11 @@ async def put_claude_agent_sdk(body: ClaudeAgentSdkUpdate, profile: Optional[str
             max_budget_usd=body.max_budget_usd,
         )
         save_config(cfg)
-    return {"ok": True, "mode": mode}
+        # An SDK mode is inert unless the main model is on the anthropic
+        # provider — auto-pick a default Anthropic model if none is set so the
+        # mode actually takes effect (and the app leaves "inference not ready").
+        auto_model = _ensure_anthropic_main_model_if_unset() if mode != "off" else None
+    return {"ok": True, "mode": mode, "auto_selected_model": auto_model}
 
 
 def _apply_anthropic_oauth_disabled(model_cfg: Any, *, disabled: bool) -> Dict[str, Any]:
@@ -4184,7 +4363,10 @@ async def put_anthropic_oauth(body: AnthropicOAuthUpdate, profile: Optional[str]
         cfg = read_raw_config()
         cfg["model"] = _apply_anthropic_oauth_disabled(cfg.get("model"), disabled=bool(body.disabled))
         save_config(cfg)
-    return {"ok": True, "disabled": bool(body.disabled)}
+        # Re-enabling Anthropic inference with no main model set also lands in
+        # "inference not ready"; seed a default Anthropic model in that case.
+        auto_model = _ensure_anthropic_main_model_if_unset() if not body.disabled else None
+    return {"ok": True, "disabled": bool(body.disabled), "auto_selected_model": auto_model}
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -4223,7 +4405,11 @@ def get_model_info(profile: Optional[str] = None):
             config_ctx = None
 
         if not model_name:
-            return dict(_EMPTY_MODEL_INFO, provider=provider)
+            return dict(
+                _EMPTY_MODEL_INFO,
+                provider=provider,
+                inference_backend=_claude_agent_sdk_runtime_status(provider),
+            )
 
         # Resolve auto-detected context length (pass config_ctx=None to get
         # purely auto-detected value, then separately report the override)
@@ -4269,6 +4455,7 @@ def get_model_info(profile: Optional[str] = None):
             "config_context_length": config_ctx_int,
             "effective_context_length": effective_ctx,
             "capabilities": caps,
+            "inference_backend": _claude_agent_sdk_runtime_status(provider),
         }
     except HTTPException:
         # Unknown/invalid profile must surface as 404, not degrade into a

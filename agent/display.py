@@ -326,8 +326,11 @@ def summarize_shell_command(command: str) -> str:
     if len(core) == 1:
         return core[0]
 
-    count = len(core) - 1
-    return f"{core[0]} + {count} {'command' if count == 1 else 'commands'}"
+    # Show the actual commands that ran, joined with "; " (the plumbing —
+    # cd/export/echo boundaries, pipe tails — was already stripped above), so
+    # the chip reveals what was executed instead of collapsing it to a count.
+    # Length is bounded downstream by the caller's max_len truncation.
+    return "; ".join(core)
 
 
 def _read_file_line_label(args: dict) -> str:
@@ -421,7 +424,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         return None
     args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
-        "terminal": "command", "web_search": "query", "web_extract": "urls",
+        "terminal": "command", "Bash": "command",
+        "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
@@ -473,7 +477,9 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         else:
             return f"planning {len(todos_arg)} task(s)"
 
-    if tool_name in {"terminal", "execute_code"}:
+    if tool_name in {"terminal", "execute_code", "Bash"}:
+        # "Bash" is the Claude Agent SDK's built-in shell tool (delegate mode);
+        # it uses the same "command" arg key as Hermes' "terminal".
         key = "code" if tool_name == "execute_code" else "command"
         command = args.get(key)
         if command is None:

@@ -387,8 +387,10 @@ export function getClaudeAgentSdk(): Promise<ClaudeAgentSdkConfig> {
   })
 }
 
-export function saveClaudeAgentSdk(body: ClaudeAgentSdkConfig): Promise<{ ok: boolean; mode: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; mode: string }>({
+export function saveClaudeAgentSdk(
+  body: ClaudeAgentSdkConfig
+): Promise<{ ok: boolean; mode: string; auto_selected_model?: string | null }> {
+  return window.hermesDesktop.api<{ ok: boolean; mode: string; auto_selected_model?: string | null }>({
     ...profileScoped(),
     path: '/api/model/claude-agent-sdk',
     method: 'PUT',
@@ -410,8 +412,10 @@ export function getAnthropicOAuth(): Promise<AnthropicOAuthConfig> {
   })
 }
 
-export function saveAnthropicOAuth(body: AnthropicOAuthConfig): Promise<{ disabled: boolean; ok: boolean }> {
-  return window.hermesDesktop.api<{ disabled: boolean; ok: boolean }>({
+export function saveAnthropicOAuth(
+  body: AnthropicOAuthConfig
+): Promise<{ disabled: boolean; ok: boolean; auto_selected_model?: string | null }> {
+  return window.hermesDesktop.api<{ disabled: boolean; ok: boolean; auto_selected_model?: string | null }>({
     ...profileScoped(),
     path: '/api/model/anthropic-oauth',
     method: 'PUT',

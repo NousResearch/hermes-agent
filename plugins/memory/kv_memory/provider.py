@@ -1,28 +1,9 @@
-"""KVMemoryProvider — Model-native semantic memory via hidden states / KV-cache.
+"""KVMemoryProvider -- Q4-compressed semantic memory for Hermes Agent.
 
-Implements the MemoryProvider ABC for Hermes Agent's memory plugin system.
-
-Mode B (current): Hidden-state embeddings via sentence-transformers.
-  - Each turn's user+assistant text is encoded into a fixed-size embedding.
-  - Embeddings are Q4-quantized and stored in SQLite.
-  - Retrieval uses cosine similarity with temporal decay and MMR diversity.
-
-Mode A (Phase 2): Direct KV-cache capture from vLLM.
-  - Requires GPU and vLLM integration.
-  - KV-cache states are extracted post-inference, Q4-quantized, and stored.
-  - Retrieved KV blocks are injected directly into the model's attention.
-
-Architecture:
-  ┌─────────────┐     ┌──────────────┐     ┌───────────┐
-  │ MemoryProvider│────▶│ capture.py   │────▶│ quantize  │
-  │  (this file) │     │ (embeddings) │     │  (Q4)     │
-  └──────┬──────┘     └──────────────┘     └─────┬─────┘
-         │                                       │
-         ▼                                       ▼
-  ┌──────────────┐                        ┌───────────┐
-  │ retrieval.py │◀───────────────────────│ storage.py │
-  │  (search)    │                        │ (SQLite)   │
-  └──────────────┘                        └───────────┘
+Implements the MemoryProvider ABC. Each turn is encoded, Q4-quantized,
+and stored in SQLite. Retrieval uses cosine similarity with temporal decay
+and MMR diversity reranking. Pluggable backends: sentence-transformers
+(default), API-based, or future local-inference backends.
 """
 
 from __future__ import annotations
@@ -442,9 +423,9 @@ class KVMemoryProvider(MemoryProvider):
         return [
             {
                 "key": "embedding_backend",
-                "description": "Embedding backend: 'auto', 'sentence-transformers', 'vllm', or 'api'",
+                "description": "Embedding backend: 'auto', 'sentence-transformers', or 'api'",
                 "default": "auto",
-                "choices": ["auto", "sentence-transformers", "vllm", "api"],
+                "choices": ["auto", "sentence-transformers", "api"],
             },
             {
                 "key": "embedding_model",
@@ -532,7 +513,7 @@ class KVMemoryProvider(MemoryProvider):
             stats["backend"] = self._backend.backend_name if self._backend else "none"
             stats["embedding_dim"] = self._backend.embedding_dim if self._backend else 0
             stats["storage_mode"] = self._config.storage_mode
-            stats["mode"] = self._config.mode
+            stats["storage_mode"] = self._config.storage_mode
             return json.dumps(stats)
         except Exception as e:
             return json.dumps({"error": str(e)})

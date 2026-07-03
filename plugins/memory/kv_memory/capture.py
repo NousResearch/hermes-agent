@@ -1,15 +1,14 @@
 """Embedding capture backends for kv-memory.
 
 Pluggable architecture: each backend implements a simple interface.
-Swapping backends (e.g., sentence-transformers → vLLM hidden states)
-only requires changing the backend in config.
+The active backend is selected via config (embedding_backend key).
 
 Backends:
-  - SentenceTransformersBackend: Always available, CPU-friendly, 384-dim.
-    Uses all-MiniLM-L6-v2 by default.
-  - vLLMHiddenStateBackend (Phase 2): Captures hidden states from the
-    inference model's final transformer layers. Requires vLLM + GPU.
-  - APIEmbeddingBackend: Uses cloud provider embedding APIs (OpenAI, etc.)
+  - SentenceTransformersBackend: CPU-friendly, 384-dim, always available.
+    Uses all-MiniLM-L6-v2 by default (~80MB download).
+  - APIEmbeddingBackend: Uses cloud provider APIs (OpenAI, etc.).
+  - vLLMHiddenStateBackend: Future backend for local vLLM inference.
+    Reports unavailable until vLLM exposes hidden states via its HTTP API.
 """
 
 from __future__ import annotations

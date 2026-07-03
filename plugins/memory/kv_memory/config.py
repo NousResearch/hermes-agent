@@ -20,7 +20,7 @@ class KVMemoryConfig:
     storage_mode: str = "hybrid" # "hybrid" | "fp16" | "q4" — embedding precision
 
     # ── Model ─────────────────────────────────────────────────────
-    embedding_backend: str = "auto"  # "auto" | "sentence-transformers" | "vllm" | "api"
+    embedding_backend: str = "auto"  # "auto" | "sentence-transformers" | "api"
     embedding_model: str = ""        # model name for the embedding backend
     embedding_dim: int = 0           # embedding dimension (0 = auto-detect)
 
@@ -38,9 +38,6 @@ class KVMemoryConfig:
     max_stored_turns: int = 10000    # max turns before compaction triggers
     retention_days: int = 90         # auto-prune turns older than this
     auto_compact: bool = True        # run compaction on session end
-
-    # ── Mode ──────────────────────────────────────────────────────
-    mode: str = "B"                  # "A" (KV-cache) | "B" (hidden-state) | "auto"
 
     # ── Debug ─────────────────────────────────────────────────────
     log_level: str = "INFO"
@@ -70,7 +67,6 @@ class KVMemoryConfig:
             "max_stored_turns": self.max_stored_turns,
             "retention_days": self.retention_days,
             "auto_compact": self.auto_compact,
-            "mode": self.mode,
             "log_level": self.log_level,
             "store_fp16_fidelity_check": self.store_fp16_fidelity_check,
         }

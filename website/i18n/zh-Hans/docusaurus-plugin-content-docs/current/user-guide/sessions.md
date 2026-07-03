@@ -119,7 +119,7 @@ hermes chat --resume 20250305_091523_a1b2c3d4
 
 Session ID 在退出 CLI session 时显示，也可通过 `hermes sessions list` 查找。
 
-### 恢复时的对话摘要
+### 恢复时的对话摘要 {#conversation-recap-on-resume}
 
 恢复 session 时，Hermes 会在输入提示符前以样式化面板显示之前对话的紧凑摘要：
 
@@ -145,7 +145,7 @@ display:
 Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位十六进制后缀（例如 `20250305_091523_a1b2c3`），gateway session 使用 8 位后缀（例如 `20250305_091523_a1b2c3d4`）。可以按 ID（完整或唯一前缀）或按标题恢复——`-c` 和 `-r` 均支持两种方式。
 :::
 
-## 跨平台切换
+## 跨平台切换 {#cross-platform-handoff}
 
 在 CLI session 中使用 `/handoff <platform>` 将实时对话转移到消息平台的主频道。Agent 会从 CLI 停止的地方精确接续——相同的 session id、完整的角色感知对话记录、工具调用一并保留。
 
@@ -345,7 +345,7 @@ Database size: 12.4 MB
 
 如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](/reference/cli-commands#hermes-insights)。
 
-## Session 搜索工具
+## Session 搜索工具 {#session-search-tool}
 
 Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对所有历史对话进行全文搜索，并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
 

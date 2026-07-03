@@ -166,7 +166,7 @@ platforms:
 
 点击按钮即可内联完成审批，卡片会被替换为决策结果。
 
-### 会议摘要投递（Teams 会议 Pipeline）
+### 会议摘要投递（Teams 会议 Pipeline） {#meeting-summary-delivery-teams-meeting-pipeline}
 
 当 [Teams 会议 pipeline 插件](/user-guide/messaging/msgraph-webhook)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
@@ -199,7 +199,7 @@ platforms:
 
 ---
 
-## 生产部署
+## 生产部署 {#production-deployment}
 
 对于永久服务器，跳过 devtunnel，使用服务器的公开 HTTPS 端点注册机器人：
 

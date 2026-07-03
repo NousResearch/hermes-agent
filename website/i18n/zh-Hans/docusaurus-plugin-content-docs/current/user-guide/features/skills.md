@@ -53,7 +53,7 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 agent 只在真正需要时才加载完整的 skill 内容。
 
-## SKILL.md 格式
+## SKILL.md 格式 {#skillmd-format}
 
 ```markdown
 ---
@@ -107,7 +107,7 @@ platforms: [macos, linux]     # macOS and Linux
 
 设置后，该 skill 会在不兼容的平台上自动从系统提示词、`skills_list()` 和斜杠命令中隐藏。若省略，则在所有平台上加载。
 
-## Skill 输出与媒体传递
+## Skill 输出与媒体传递 {#skill-output-and-media-delivery}
 
 当 skill 响应（或任何 agent 响应）包含指向媒体文件的裸绝对路径时——例如 `/home/user/screenshots/diagram.png`——gateway 会自动检测到它，将其从可见文本中剥离，并以原生方式将文件传递给用户的聊天界面（Telegram 图片、Discord 附件等），而不是在消息中留下原始路径。
 
@@ -218,7 +218,7 @@ metadata:
 └── .bundled_manifest              # Tracks seeded bundled skills
 ```
 
-## 外部 Skill 目录
+## 外部 Skill 目录 {#external-skill-directories}
 
 如果你在 Hermes 之外维护 skills——例如，供多个 AI 工具使用的共享 `~/.agents/skills/` 目录——你可以告诉 Hermes 也扫描这些目录。
 
@@ -260,7 +260,7 @@ skills:
 
 所有四个 skills 都出现在你的 skill 索引中。如果你在本地创建一个名为 `my-custom-workflow` 的新 skill，它会遮蔽外部版本。
 
-## Skill 捆绑包
+## Skill 捆绑包 {#skill-bundles}
 
 Skill 捆绑包是将多个 skills 归组在单个斜杠命令下的小型 YAML 文件。当你运行 `/<bundle-name>` 时，捆绑包中列出的每个 skill 都会同时加载——当某个特定任务总是受益于同一组 skills 时非常有用。
 
@@ -345,7 +345,7 @@ hermes bundles reload
 
 捆绑包只是一个 YAML 别名——它不会为你安装 skills。Skills 本身必须已经存在（在 `~/.hermes/skills/` 或外部 skill 目录中）。否则捆绑包调用只会跳过缺失的 skills。
 
-## Agent 管理的 Skills（skill_manage 工具）
+## Agent 管理的 Skills（skill_manage 工具） {#agent-managed-skills-skill_manage-tool}
 
 agent 可以通过 `skill_manage` 工具创建、更新和删除自己的 skills。这是 agent 的**程序性记忆**——当它找到一个非平凡的工作流时，它会将该方法保存为 skill 以供将来复用。
 
@@ -598,7 +598,7 @@ hermes skills update react   # Update one specific installed hub skill
 Skills hub 操作使用 GitHub API，未认证用户的速率限制为每小时 60 次请求。如果在安装或搜索时看到速率限制错误，请在 `.env` 文件中设置 `GITHUB_TOKEN` 以将限制提高到每小时 5,000 次请求。发生此情况时，错误消息会包含可操作的提示。
 :::
 
-### 发布自定义 skill tap
+### 发布自定义 skill tap {#publishing-a-custom-skill-tap}
 
 如果你想分享一组精选的 skills——为你的团队、组织或公开分享——你可以将它们发布为 **tap**：其他 Hermes 用户通过 `hermes skills tap add <owner/repo>` 添加的 GitHub 仓库。无需服务器，无需注册表注册，无需发布流水线。只需一个包含 `SKILL.md` 文件的目录。
 

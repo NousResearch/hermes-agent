@@ -229,7 +229,7 @@ Report ALL issues found, including minor ones.
 
 ---
 
-## 转换为图片
+## 转换为图片 {#converting-to-images}
 
 将演示文稿转换为单张幻灯片图片以供视觉检查：
 

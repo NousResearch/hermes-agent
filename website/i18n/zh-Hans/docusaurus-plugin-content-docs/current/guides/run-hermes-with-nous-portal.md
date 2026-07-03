@@ -173,7 +173,7 @@ hermes cron add "Daily AI news summary" "every day at 9am" \
 
 对于多人共用一台机器的团队场景，每个人有自己的 Portal 账号 → 每个 home 目录保存各自的 `~/.hermes/auth.json` → 用户之间不共享 token。这是正确的边界划分。
 
-## 故障排查
+## 故障排查 {#troubleshooting}
 
 ### 运行 `hermes setup --portal` 后，`hermes portal info` 显示"not logged in"
 

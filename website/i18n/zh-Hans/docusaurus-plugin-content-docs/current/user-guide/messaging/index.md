@@ -207,7 +207,7 @@ GATEWAY_ALLOWED_USERS=123456789,987654321
 GATEWAY_ALLOW_ALL_USERS=true
 ```
 
-### 私信配对（白名单的替代方案）
+### 私信配对（白名单的替代方案） {#dm-pairing-alternative-to-allowlists}
 
 无需手动配置用户 ID，未知用户私信机器人时会收到一次性配对码：
 
@@ -304,7 +304,7 @@ display:
 🐍 execute_code...
 ```
 
-## 后台会话
+## 后台会话 {#background-sessions}
 
 在独立的后台会话中运行 prompt，让 agent 独立处理，同时保持主聊天响应：
 
@@ -390,7 +390,7 @@ journalctl -u hermes-gateway -f
 如果你在同一台机器上运行多个 Hermes 安装（使用不同的 `HERMES_HOME` 目录），每个安装都有自己的 systemd 服务名称。默认的 `~/.hermes` 使用 `hermes-gateway`；其他安装使用 `hermes-gateway-<hash>`。`hermes gateway` 命令会自动针对当前 `HERMES_HOME` 对应的正确服务。
 :::
 
-### macOS（launchd）
+### macOS（launchd） {#macos-launchd}
 
 ```bash
 hermes gateway install               # 安装为 launchd agent

@@ -150,7 +150,7 @@ Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（p
 
 在 `tools` 模式下，模型完全自主——它在需要时调用 `honcho_reasoning`，并自行选择 `reasoning_level`。Cadence 和预算设置仅适用于有自动注入的模式（`hybrid` 和 `context`）。
 
-## 观察模式（定向 vs. 统一）
+## 观察模式（定向 vs. 统一） {#observation-directional-vs-unified}
 
 Honcho 将对话建模为 peer 之间的消息交换。每个 peer 有两个观察开关，与 Honcho 的 `SessionPeerConfig` 一一对应：
 

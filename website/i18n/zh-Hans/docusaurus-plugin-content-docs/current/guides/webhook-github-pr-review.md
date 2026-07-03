@@ -140,7 +140,7 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
 
 ---
 
-## 使用 ngrok 进行本地测试
+## 使用 ngrok 进行本地测试 {#local-testing-with-ngrok}
 
 如果 Hermes 在你的笔记本上运行，使用 [ngrok](https://ngrok.com/) 将其暴露到公网：
 
@@ -269,7 +269,7 @@ GitLab 的 payload 字段与 GitHub 不同——例如，MR 标题使用 `{objec
 
 ---
 
-## 安全说明
+## 安全说明 {#security-notes}
 
 - **永远不要在生产环境中使用 `INSECURE_NO_AUTH`**——它会完全禁用签名验证。仅用于本地开发。
 - **定期轮换你的 webhook secret**，并在 GitHub（webhook 设置）和你的 `config.yaml` 中同步更新。

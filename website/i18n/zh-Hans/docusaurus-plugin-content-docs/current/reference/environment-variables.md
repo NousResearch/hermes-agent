@@ -413,7 +413,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `GATEWAY_ALLOWED_USERS` | 跨所有平台允许的逗号分隔用户 ID |
 | `GATEWAY_ALLOW_ALL_USERS` | 无需白名单允许所有用户（`true`/`false`，默认：`false`） |
 
-### Microsoft Graph（Teams 会议）
+### Microsoft Graph（Teams 会议） {#microsoft-graph-teams-meetings}
 
 用于即将推出的 Teams 会议摘要流水线的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration)。
 

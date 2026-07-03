@@ -258,7 +258,7 @@ docker run -d \
   nousresearch/hermes-agent gateway run
 ```
 
-## Dockerfile 说明
+## Dockerfile 说明 {#what-the-dockerfile-does}
 
 官方镜像基于 `debian:13.4`，包含：
 
@@ -289,7 +289,7 @@ docker run -d \
 除非你在命令链中保留 `/init`（或等效的旧版 `docker/entrypoint.sh` shim，它会转发到 stage2 hook），否则不要覆盖镜像入口点。s6-overlay 的 `/init` 以 root 运行，以便在首次启动时对卷执行 chown，然后通过 `s6-setuidgid` 为每个受监管的服务**以及**主程序降权至 `hermes` 用户。在官方镜像内以 root 启动 `hermes gateway run` 默认会被拒绝，因为这可能在 `/opt/data` 中留下 root 所有的文件，导致后续 dashboard 或 gateway 启动失败。仅在你有意接受该风险时才设置 `HERMES_ALLOW_ROOT_GATEWAY=1`。
 :::
 
-### Per-profile gateway 监管
+### Per-profile gateway 监管 {#per-profile-gateway-supervision}
 
 在容器内，每个通过 `hermes profile create <name>` 创建的 profile 都会自动在 `/run/service/gateway-<name>/` 注册一个受 s6 监管的 gateway 服务。你在宿主机上运行的生命周期命令在此同样适用：
 
@@ -417,7 +417,7 @@ networks:
 
 如果某个工具可能对大多数 Hermes Agent 用户有用，考虑将其贡献到上游，而不是在私有派生镜像中维护。在 [hermes-agent 仓库](https://github.com/NousResearch/hermes-agent)提交 issue 或 pull request，描述该工具及其使用场景。被纳入官方镜像的工具惠及所有用户，并避免了维护下游 fork 的开销。
 
-## 连接本地推理服务器（vLLM、Ollama 等）
+## 连接本地推理服务器（vLLM、Ollama 等） {#connecting-to-local-inference-servers-vllm-ollama-etc}
 
 在 Docker 中运行 Hermes 且推理服务器（vLLM、Ollama、text-generation-inference 等）也在宿主机或另一个容器中运行时，网络配置需要额外注意。
 

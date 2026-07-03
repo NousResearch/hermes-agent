@@ -43,7 +43,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 安装程序会自动重试不稳定的 git 拉取，并剥离下载的 `install.ps1` 内容中的 BOM，因此 HTTP 传输中携带的 UTF-8 BOM 不再会破坏 `[scriptblock]::Create((irm ...))` 形式。
 
-### 桌面安装程序（备选方案）
+### 桌面安装程序（备选方案） {#desktop-installer-alternative}
 
 也提供了一个轻量 GUI 安装程序——如果你更倾向于双击 `.exe` 而非打开 PowerShell，可以使用它。下载 Hermes Desktop，运行安装程序，首次启动时 GUI 会在后台调用 `install.ps1` 来配置 Python（通过 `uv`）、Node、PortableGit 以及下文描述的其余依赖引导流程。首次运行后，桌面应用与 PowerShell 安装的 `hermes` CLI 共享同一个 `%LOCALAPPDATA%\hermes\hermes-agent` 安装目录和 `%USERPROFILE%\.hermes` 数据目录——可以在 GUI 和 CLI 之间自由切换。
 
@@ -101,7 +101,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 Dashboard 的 `/chat` 标签页通过 POSIX PTY（`ptyprocess`）内嵌了真实终端。原生 Windows 没有等效的原语；Python 的 `pywinpty` / Windows ConPTY 可以实现，但需要单独的实现——视为未来工作。**dashboard 的其余部分均可原生运行**——只有该标签页会显示"请使用 WSL2"的提示横幅。
 
-## Hermes 在 Windows 上如何运行 shell 命令
+## Hermes 在 Windows 上如何运行 shell 命令 {#how-hermes-runs-shell-commands-on-windows}
 
 Hermes 的终端工具通过 **Git Bash** 运行命令，与 Claude Code 采用相同策略。这在不重写每个工具的情况下绕过了 POSIX 与 Windows 的差异。
 

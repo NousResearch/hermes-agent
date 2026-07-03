@@ -229,20 +229,34 @@ Codex requests approval before executing commands or applying patches. These get
 
 For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: /tmp/new.py, /tmp/old.py`) when codex provides the data via the corresponding `fileChange` item.
 
-## Permission profiles
+## Sandbox and writable roots
 
-Codex has three built-in permission profiles:
-- `:read-only` — no writes; every shell command requires approval
-- `:workspace` — writes within the current workspace allowed without prompts (Hermes' default when you enable the runtime)
-- `:danger-no-sandbox` — no sandbox at all (don't use this unless you understand it)
+Codex owns the filesystem sandbox for the `codex_app_server` runtime. Hermes forwards Codex's command/file-change approvals, but the sandbox still decides which paths can be written.
 
-You can override the default in `~/.codex/config.toml` outside Hermes' managed block:
+For normal coding work, configure Codex like this in `~/.codex/config.toml` outside Hermes' managed block:
 
 ```toml
-default_permissions = ":read-only"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = [
+  "/Users/you/src/primary-repo",
+  "/Users/you/src/related-repo",
+]
+network_access = true
 ```
 
-(Hermes will preserve your override on re-migration as long as it lives outside the `# managed by hermes-agent` markers.)
+Why this matters:
+
+- `apply_patch` needs file-write permission for the target repo.
+- Vite may write a timestamped config bundle next to `vite.config.ts`.
+- Playwright writes `test-results/` and `playwright-report/`.
+- Cross-repo work, such as editing `../related-repo`, needs that sibling repo in `writable_roots` or Codex will correctly deny it.
+
+Hermes now handles Codex `item/permissions/requestApproval` requests by asking the user when an approval callback is available. In non-interactive contexts, Hermes only auto-accepts permission grants rooted in the current session cwd or in `sandbox_workspace_write.writable_roots`; unknown roots still fail closed.
+
+If you want maximum prompting instead, use `sandbox_mode = "read-only"`. If you want no sandbox at all, Codex also supports `danger-full-access` / bypass flags, but do not use them unless the whole environment is externally sandboxed.
 
 ## Auxiliary tasks and ChatGPT subscription token cost
 

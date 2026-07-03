@@ -29,6 +29,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
@@ -154,6 +155,38 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
 )
 
 
+def _codex_configured_writable_roots() -> list[Path]:
+    """Return Codex sandbox writable roots from ~/.codex/config.toml.
+
+    This intentionally reads only the local Codex sandbox stanza and ignores
+    malformed config. It lets Hermes safely answer Codex app-server permission
+    requests for roots the operator has already marked writable.
+    """
+    config_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml"
+    try:
+        import tomllib
+    except Exception:  # pragma: no cover - Python < 3.11 fallback path
+        return []
+
+    try:
+        data = tomllib.loads(config_path.read_text())
+    except Exception:
+        return []
+
+    sandbox_cfg = data.get("sandbox_workspace_write")
+    if not isinstance(sandbox_cfg, dict):
+        return []
+    roots = sandbox_cfg.get("writable_roots")
+    if not isinstance(roots, list):
+        return []
+
+    out: list[Path] = []
+    for root in roots:
+        if isinstance(root, str) and root.strip():
+            out.append(Path(root).expanduser())
+    return out
+
+
 def _classify_oauth_failure(*parts: str) -> Optional[str]:
     """Return a user-friendly re-auth hint if any of the provided strings
     look like a codex OAuth/token-refresh failure; otherwise None.
@@ -250,6 +283,7 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            timeout=30.0,
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
@@ -661,11 +695,8 @@ class CodexAppServerSession:
             decision = self._decide_apply_patch_approval(params)
             self._client.respond(rid, {"decision": decision})
         elif method == "item/permissions/requestApproval":
-            # Codex sometimes asks to escalate permissions mid-turn. We
-            # always decline — the user already chose their permission
-            # profile in ~/.codex/config.toml and surprise escalations
-            # shouldn't be silently accepted.
-            self._client.respond(rid, {"decision": "decline"})
+            decision = self._decide_permissions_approval(params)
+            self._client.respond(rid, {"decision": decision})
         elif method == "mcpServer/elicitation/request":
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,
@@ -757,6 +788,76 @@ class CodexAppServerSession:
                 logger.exception("approval_callback raised on apply_patch")
                 return "decline"
         return "decline"
+
+    def _decide_permissions_approval(self, params: dict) -> str:
+        """Decide Codex mid-turn sandbox permission requests.
+
+        Codex asks for this when a command needs write access outside the
+        current sandbox or needs a broader workspace grant. Declining every
+        request made Hermes-created Codex turns unusable for normal agentic
+        coding flows: `apply_patch`, Playwright, Vite, and build tools can all
+        request a workspace grant after the turn has already started.
+
+        If an interactive Hermes approval callback exists, route the request to
+        the user. In non-interactive contexts, only auto-accept grants rooted in
+        the current session cwd or in Codex's configured
+        `sandbox_workspace_write.writable_roots`; everything else still fails
+        closed.
+        """
+        reason = params.get("reason") or params.get("description") or "Codex requests sandbox permissions"
+        grant_root = params.get("grantRoot") or params.get("root") or params.get("cwd")
+        permission_summary = self._format_permissions_request(params)
+
+        description_parts = [str(reason)]
+        if permission_summary:
+            description_parts.append(permission_summary)
+        if grant_root:
+            description_parts.append(f"grant root: {grant_root}")
+        description = "; ".join(description_parts)
+
+        if self._approval_callback is not None:
+            try:
+                choice = self._approval_callback(
+                    f"codex permissions: {grant_root or permission_summary or reason}",
+                    description,
+                    allow_permanent=False,
+                )
+                return _approval_choice_to_codex_decision(choice)
+            except Exception:
+                logger.exception("approval_callback raised on permissions request")
+                return "decline"
+
+        if grant_root and self._is_allowed_permission_root(str(grant_root)):
+            logger.info("auto-approved codex permission grant for configured root: %s", grant_root)
+            return "accept"
+
+        logger.warning("declined codex permission request without approval callback: %s", description)
+        return "decline"
+
+    def _format_permissions_request(self, params: dict) -> str:
+        permissions = params.get("permissions") or params.get("requestedPermissions") or params.get("permission")
+        if isinstance(permissions, list):
+            return "permissions: " + ", ".join(map(str, permissions))
+        if permissions:
+            return f"permissions: {permissions}"
+        return ""
+
+    def _is_allowed_permission_root(self, raw_root: str) -> bool:
+        try:
+            root = Path(raw_root).expanduser().resolve()
+        except Exception:
+            return False
+
+        allowed_roots = [Path(self._cwd).expanduser()]
+        allowed_roots.extend(_codex_configured_writable_roots())
+        for allowed in allowed_roots:
+            try:
+                allowed_resolved = allowed.resolve()
+            except Exception:
+                continue
+            if root == allowed_resolved or allowed_resolved in root.parents:
+                return True
+        return False
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Maintain self._pending_file_changes from item/started + item/completed

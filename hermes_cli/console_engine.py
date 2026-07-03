@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib
 import difflib
+import importlib
 import io
 import json
-import re
 import shlex
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 from urllib.parse import urlparse
+
+from tools.ansi_strip import strip_ansi as _strip_ansi
 
 
 ConsoleStatus = Literal["ok", "error", "confirm_required", "exit", "clear"]
@@ -71,13 +72,6 @@ def _capture_output(fn: Callable[[], object]) -> str:
     if code:
         raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
     return text.rstrip()
-
-
-_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
-
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
 
 
 def _is_status_footer_rule(line: str) -> bool:

@@ -177,7 +177,12 @@ def _auto_sso_response(request: Request) -> Response | None:
 
     # list_session_providers() already filters on supports_session=True, so
     # token-only credentials (drain/service providers) are never candidates.
-    providers = list_session_providers()
+    # Password-only providers mint sessions, but they do not support the OAuth
+    # redirect entrypoint at /auth/login; let /login render the password form.
+    providers = [
+        p for p in list_session_providers()
+        if not getattr(p, "supports_password", False)
+    ]
     if len(providers) != 1:
         # Zero → nothing to redirect to. Two+ → user must choose at /login.
         return None

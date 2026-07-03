@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from acp_adapter.edit_approval import (
     EditProposal,
@@ -20,6 +23,10 @@ def teardown_function() -> None:
     clear_edit_approval_requester()
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("acp") is None,
+    reason="agent-client-protocol optional dependency is not installed",
+)
 def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
     proposal = EditProposal(
         tool_name="write_file",

@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+from collections import deque
 import inspect
 import json
 import logging
@@ -145,6 +146,16 @@ try:
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
+_SLASH_WORKER_STDIO_TAIL_LINES = 80
+_SLASH_WORKER_OUTPUT_MAX_BYTES = 16384
+_SLASH_WORKER_SUMMARY_MAX_LINES = 12
+_SLASH_WORKER_STDOUT_QUEUE_MAX = 256
+_RPC_RESULT_CACHE_DEFAULT_TTL_S = 2.0
+_RPC_RESULT_CACHE_TTL_OVERRIDES = {
+    "model.options": 15.0,
+    "pet.info.meta": 5.0,
+    "setup.status": 5.0,
+}
 
 # When a WebSocket client (the dashboard's embedded-chat tab / desktop app)
 # disconnects, ``tui_gateway.ws`` detaches the transport but intentionally
@@ -270,6 +281,51 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 # the gateway in-process and captures stdout into logs, so stale JSON-RPC frames
 # must not fall through there while the session waits for resume or reap.
 _detached_ws_transport = _DropTransport()
+_local = threading.local()
+_rpc_result_cache_lock = threading.Lock()
+_rpc_result_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+def _drop_oldest_queue_item(q: queue.Queue) -> bool:
+    """Best-effort drop of one oldest queued item to preserve bounded memory."""
+    try:
+        q.get_nowait()
+        return True
+    except queue.Empty:
+        return False
+
+
+def _cacheable_rpc_params(params: dict | None) -> str:
+    try:
+        return json.dumps(params or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
+def _get_cached_rpc_result(method_name: str, params: dict | None) -> dict | None:
+    ttl = _RPC_RESULT_CACHE_TTL_OVERRIDES.get(method_name, _RPC_RESULT_CACHE_DEFAULT_TTL_S)
+    if ttl <= 0:
+        return None
+    key = (method_name, _cacheable_rpc_params(params))
+    now = time.monotonic()
+    with _rpc_result_cache_lock:
+        cached = _rpc_result_cache.get(key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _rpc_result_cache.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
+
+
+def _set_cached_rpc_result(method_name: str, params: dict | None, payload: dict) -> None:
+    ttl = _RPC_RESULT_CACHE_TTL_OVERRIDES.get(method_name, _RPC_RESULT_CACHE_DEFAULT_TTL_S)
+    if ttl <= 0:
+        return
+    key = (method_name, _cacheable_rpc_params(params))
+    with _rpc_result_cache_lock:
+        _rpc_result_cache[key] = (time.monotonic() + ttl, copy.deepcopy(payload))
 
 
 class _SlashWorker:
@@ -278,8 +334,14 @@ class _SlashWorker:
     def __init__(self, session_key: str, model: str):
         self._lock = threading.Lock()
         self._seq = 0
-        self.stderr_tail: list[str] = []
-        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
+        self.stderr_tail: deque[str] = deque(maxlen=_SLASH_WORKER_STDIO_TAIL_LINES)
+        self.stdout_tail: deque[str] = deque(maxlen=_SLASH_WORKER_STDIO_TAIL_LINES)
+        self.stdout_bytes = 0
+        self.stderr_bytes = 0
+        self.stdout_lines_dropped = 0
+        self.stderr_lines_dropped = 0
+        self.stdout_queue_dropped = 0
+        self.stdout_queue: queue.Queue[dict | None] = queue.Queue(maxsize=_SLASH_WORKER_STDOUT_QUEUE_MAX)
 
         argv = [
             sys.executable,
@@ -321,16 +383,73 @@ class _SlashWorker:
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
+            text = line.rstrip("\n")
+            if text:
+                self._record_stdio_line("stdout", text)
             try:
-                self.stdout_queue.put(json.loads(line))
+                msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
-        self.stdout_queue.put(None)
+            while True:
+                try:
+                    self.stdout_queue.put_nowait(msg)
+                    break
+                except queue.Full:
+                    if not _drop_oldest_queue_item(self.stdout_queue):
+                        break
+                    self.stdout_queue_dropped += 1
+        while True:
+            try:
+                self.stdout_queue.put_nowait(None)
+                break
+            except queue.Full:
+                if not _drop_oldest_queue_item(self.stdout_queue):
+                    break
+                self.stdout_queue_dropped += 1
 
     def _drain_stderr(self):
         for line in self.proc.stderr or []:
             if text := line.rstrip("\n"):
-                self.stderr_tail = (self.stderr_tail + [text])[-80:]
+                self._record_stdio_line("stderr", text)
+
+    def _record_stdio_line(self, stream: str, text: str) -> None:
+        tail = self.stdout_tail if stream == "stdout" else self.stderr_tail
+        attr_bytes = "stdout_bytes" if stream == "stdout" else "stderr_bytes"
+        attr_dropped = "stdout_lines_dropped" if stream == "stdout" else "stderr_lines_dropped"
+        encoded_len = len(text.encode("utf-8", errors="replace"))
+        current_bytes = getattr(self, attr_bytes)
+
+        while tail and current_bytes + encoded_len > _SLASH_WORKER_OUTPUT_MAX_BYTES:
+            removed = tail.popleft()
+            current_bytes -= len(removed.encode("utf-8", errors="replace"))
+            setattr(self, attr_dropped, getattr(self, attr_dropped) + 1)
+
+        if encoded_len > _SLASH_WORKER_OUTPUT_MAX_BYTES:
+            budget = max(0, _SLASH_WORKER_OUTPUT_MAX_BYTES - 3)
+            trimmed = text.encode("utf-8", errors="replace")[:budget].decode("utf-8", errors="ignore")
+            text = trimmed + ("..." if trimmed else "")
+            encoded_len = len(text.encode("utf-8", errors="replace"))
+            setattr(self, attr_dropped, getattr(self, attr_dropped) + 1)
+
+        tail.append(text)
+        setattr(self, attr_bytes, current_bytes + encoded_len)
+
+    def _format_stdio_summary(self, stream: str, *, limit: int = 8) -> str:
+        tail = list(self.stdout_tail if stream == "stdout" else self.stderr_tail)
+        dropped = self.stdout_lines_dropped if stream == "stdout" else self.stderr_lines_dropped
+        label = stream.upper()
+        lines = [f"[{label}] dropped {dropped} earlier line(s); showing last {min(limit, len(tail))}." ] if dropped else []
+        lines.extend(tail[-limit:])
+        return "\n".join(lines).strip()
+
+    def _format_queue_drop_summary(self) -> str:
+        dropped = getattr(self, "stdout_queue_dropped", 0)
+        if dropped <= 0:
+            return ""
+        return (
+            "[STDOUT] dropped "
+            f"{dropped} earlier JSON result message(s) due to slash-worker backlog."
+        )
 
     def run(self, command: str) -> str:
         if self.proc.poll() is not None:
@@ -352,11 +471,22 @@ class _SlashWorker:
                 if msg.get("id") != rid:
                     continue
                 if not msg.get("ok"):
-                    raise RuntimeError(msg.get("error", "slash worker failed"))
+                    summary = self._format_stdio_summary("stderr", limit=_SLASH_WORKER_SUMMARY_MAX_LINES)
+                    queue_summary = self._format_queue_drop_summary()
+                    detail = msg.get("error", "slash worker failed")
+                    extras = [part for part in (summary, queue_summary) if part]
+                    if extras:
+                        detail = f"{detail}\n{chr(10).join(extras)}"
+                    raise RuntimeError(detail)
                 return str(msg.get("output", "")).rstrip()
 
+            stderr_summary = self._format_stdio_summary("stderr", limit=_SLASH_WORKER_SUMMARY_MAX_LINES)
+            stdout_summary = self._format_stdio_summary("stdout", limit=4)
+            queue_summary = self._format_queue_drop_summary()
+            extras = [part for part in (stderr_summary, stdout_summary, queue_summary) if part]
             raise RuntimeError(
-                f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}"
+                "slash worker closed pipe"
+                + (f": {chr(10).join(extras)}" if extras else "")
             )
 
     def close(self):
@@ -6459,10 +6589,36 @@ def _(rid, params: dict) -> dict:
     on any error rather than erroring the surface.
     """
     try:
+        if not bool(params.get("force_full")):
+            meta = _methods["pet.info.meta"](rid, params)
+            meta_result = meta.get("result") if isinstance(meta, dict) else None
+            if isinstance(meta_result, dict):
+                requested_revision = str(params.get("revision") or "").strip()
+                current_revision = str(meta_result.get("spritesheetRevision") or "")
+                if not meta_result.get("enabled"):
+                    return _ok(rid, {"enabled": False})
+                if requested_revision and requested_revision == current_revision:
+                    return _ok(rid, {**meta_result, "unchanged": True})
+
         enabled, pet, scale = _pet_active_selection()
 
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
+
+        requested_revision = str(params.get("revision") or "").strip()
+        current_revision = _pet_sheet_revision(pet.spritesheet)
+        if requested_revision and requested_revision == current_revision:
+            return _ok(
+                rid,
+                {
+                    "enabled": True,
+                    "unchanged": True,
+                    "slug": pet.slug,
+                    "displayName": pet.display_name,
+                    "scale": scale,
+                    "spritesheetRevision": current_revision,
+                },
+            )
 
         return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
@@ -6474,11 +6630,16 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Cheap active-pet metadata used to avoid full payload refreshes."""
+    cached = _get_cached_rpc_result("pet.info.meta", params)
+    if cached is not None:
+        return cached
     try:
         enabled, pet, scale = _pet_active_selection()
         if not enabled or pet is None or not pet.exists:
-            return _ok(rid, {"enabled": False})
-        return _ok(
+            result = _ok(rid, {"enabled": False})
+            _set_cached_rpc_result("pet.info.meta", params, result)
+            return result
+        result = _ok(
             rid,
             {
                 "enabled": True,
@@ -6488,6 +6649,8 @@ def _(rid, params: dict) -> dict:
                 "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
             },
         )
+        _set_cached_rpc_result("pet.info.meta", params, result)
+        return result
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info.meta failed: %s", exc)
         return _ok(rid, {"enabled": False})
@@ -8236,15 +8399,22 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     started the process. Since all desktop sessions share one process-wide
     completion queue, each poller must skip events it doesn't own so a
     background job's completion surfaces in the session that launched it — not
-    whichever poller happened to dequeue first. Orphaned events (owner gone)
-    and global/system events (empty ``session_key``) return False so the
+    whichever poller happened to dequeue first. Orphaned process events (owner
+    gone) and global/system events (empty ``session_key``) return False so the
     current poller still handles them rather than losing them.
+
+    Async-delegation completions are user-visible agent turns, not disposable
+    terminal notifications. If they carry an explicit owner key, an unrelated
+    live session must never consume them as an orphan fallback; keep them queued
+    until the owner session is available.
     """
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
         return False
     if evt_key == str(session.get("session_key") or ""):
         return False
+    if evt.get("type") == "async_delegation":
+        return True
     try:
         with _sessions_lock:
             snapshot = list(_sessions.values())
@@ -10905,10 +11075,15 @@ def _(rid, params: dict) -> dict:
 
 @method("setup.status")
 def _(rid, params: dict) -> dict:
+    cached = _get_cached_rpc_result("setup.status", params)
+    if cached is not None:
+        return cached
     try:
         from hermes_cli.main import _has_any_provider_configured
 
-        return _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
+        result = _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
+        _set_cached_rpc_result("setup.status", params, result)
+        return result
     except Exception as e:
         return _err(rid, 5016, str(e))
 
@@ -12293,6 +12468,10 @@ def _(rid, params: dict) -> dict:
 
 @method("model.options")
 def _(rid, params: dict) -> dict:
+    if not bool(params.get("refresh")):
+        cached = _get_cached_rpc_result("model.options", params)
+        if cached is not None:
+            return cached
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
@@ -12326,7 +12505,10 @@ def _(rid, params: dict) -> dict:
             capabilities=True,
             refresh=bool(params.get("refresh")),
         )
-        return _ok(rid, payload)
+        result = _ok(rid, payload)
+        if not bool(params.get("refresh")):
+            _set_cached_rpc_result("model.options", params, result)
+        return result
     except Exception as e:
         return _err(rid, 5033, str(e))
 

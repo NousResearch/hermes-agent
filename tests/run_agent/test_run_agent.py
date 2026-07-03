@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import agent.model_metadata as model_metadata
 from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
@@ -45,6 +46,41 @@ def _make_tool_defs(*names: str) -> list:
         }
         for n in names
     ]
+
+
+@pytest.fixture(autouse=True)
+def _disable_model_metadata_network_probes(monkeypatch):
+    """Keep run_agent unit tests hermetic when AIAgent initializes compressors."""
+    monkeypatch.setattr(
+        model_metadata,
+        "_query_anthropic_context_length",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "fetch_model_metadata",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "_resolve_endpoint_context_length",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "_query_ollama_api_show",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "_query_local_context_length",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_codex_oauth_context_lengths",
+        lambda *_a, **_k: {},
+    )
 
 
 def test_is_destructive_command_treats_cp_as_mutating():
@@ -2349,6 +2385,38 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert messages[0]["tool_call_id"] == "c1"
 
+    def test_dispatch_cost_router_injects_parent_agent(self, agent):
+        with patch("tools.delegate_tool._handle_cost_router", return_value='{"results": []}') as mock_router:
+            result = agent._dispatch_cost_router({"profile": "worker-dsflash", "goal": "cluster"})
+
+        assert result == '{"results": []}'
+        mock_router.assert_called_once_with(
+            {"profile": "worker-dsflash", "goal": "cluster"},
+            parent_agent=agent,
+        )
+
+    def test_cost_router_tool_call_uses_agent_dispatch_path(self, agent):
+        tc = _mock_tool_call(
+            name="cost_router",
+            arguments='{"profile":"worker-dsflash","goal":"cluster"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with (
+            patch("run_agent.handle_function_call") as mock_hfc,
+            patch.object(agent, "_dispatch_cost_router", return_value='{"results": []}') as mock_dispatch,
+        ):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_hfc.assert_not_called()
+        mock_dispatch.assert_called_once_with({"profile": "worker-dsflash", "goal": "cluster"})
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "c1"
+        assert json.loads(messages[0]["content"]) == {"results": []}
+
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
@@ -2653,6 +2721,37 @@ class TestConcurrentToolExecution:
         assert "alpha" in messages[0]["content"]
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
+
+    def test_concurrent_cost_router_injects_parent_agent(self, agent):
+        """Parallel tool execution should route cost_router through the agent dispatch path."""
+        tc1 = _mock_tool_call(
+            name="cost_router",
+            arguments='{"profile":"worker-dsflash","goal":"cluster"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            assert name == "web_search"
+            return json.dumps({"result": args.get("q")})
+
+        with (
+            patch("tools.delegate_tool._handle_cost_router", return_value=json.dumps({"routed": True})) as mock_router,
+            patch("run_agent.handle_function_call", side_effect=fake_handle),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        mock_router.assert_called_once_with(
+            {"profile": "worker-dsflash", "goal": "cluster"},
+            parent_agent=agent,
+        )
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert json.loads(messages[0]["content"]) == {"routed": True}
+        assert messages[1]["tool_call_id"] == "c2"
+        assert json.loads(messages[1]["content"]) == {"result": "alpha"}
 
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""
@@ -3182,7 +3281,7 @@ class TestConcurrentToolExecution:
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task", "cost_router"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}

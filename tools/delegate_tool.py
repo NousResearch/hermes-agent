@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import shlex
 
 logger = logging.getLogger(__name__)
 import os
@@ -28,8 +29,10 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import get_default_hermes_root
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -2351,6 +2354,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    credential_overrides: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2426,10 +2430,21 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    if credential_overrides is not None:
+        creds = {
+            "model": credential_overrides.get("model"),
+            "provider": credential_overrides.get("provider"),
+            "base_url": credential_overrides.get("base_url"),
+            "api_key": credential_overrides.get("api_key"),
+            "api_mode": credential_overrides.get("api_mode"),
+            "command": credential_overrides.get("command"),
+            "args": credential_overrides.get("args"),
+        }
+    else:
+        try:
+            creds = _resolve_delegation_credentials(cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2984,6 +2999,16 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _normalize_acp_args(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return shlex.split(value)
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -3010,6 +3035,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    configured_command = str(
+        cfg.get("command") or cfg.get("acp_command") or ""
+    ).strip() or None
+    configured_args = _normalize_acp_args(cfg.get("args", cfg.get("acp_args")))
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
@@ -3065,6 +3094,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "command": configured_command,
+            "args": configured_args,
         }
 
     if not configured_provider:
@@ -3075,6 +3106,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "command": configured_command,
+            "args": configured_args,
         }
 
     # Provider is configured — resolve full credentials
@@ -3103,9 +3136,87 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
+        "command": configured_command or runtime.get("command"),
+        "args": configured_args or list(runtime.get("args") or []),
     }
+
+
+def _profile_config_path(profile: str) -> Path:
+    profile_name = str(profile or "").strip()
+    if not profile_name:
+        raise ValueError("cost_router requires a non-empty worker profile name.")
+    if profile_name in {".", ".."} or "/" in profile_name or "\\" in profile_name:
+        raise ValueError("worker profile must be a simple profile name, not a path.")
+
+    root = get_default_hermes_root()
+    path = root / "profiles" / profile_name / "config.yaml"
+    profiles_dir = (root / "profiles").resolve()
+    try:
+        path.resolve().relative_to(profiles_dir)
+    except ValueError as exc:
+        raise ValueError("worker profile path escapes the Hermes profiles directory.") from exc
+    return path
+
+
+def _load_worker_profile_config(profile: str) -> dict:
+    path = _profile_config_path(profile)
+    if not path.exists():
+        raise ValueError(f"worker profile '{profile}' has no config.yaml at {path}.")
+    try:
+        import yaml
+
+        with path.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as exc:
+        raise ValueError(f"cannot read worker profile '{profile}' config.yaml: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"worker profile '{profile}' config.yaml must contain a mapping.")
+    return data
+
+
+def _worker_profile_delegation_config(profile: str) -> dict:
+    profile_cfg = _load_worker_profile_config(profile)
+    model_cfg = profile_cfg.get("model") or {}
+    if not isinstance(model_cfg, dict):
+        raise ValueError(f"worker profile '{profile}' model config must be a mapping.")
+
+    provider = str(model_cfg.get("provider") or "").strip() or None
+    provider_cfg = {}
+    providers_cfg = profile_cfg.get("providers") or {}
+    if provider and isinstance(providers_cfg, dict):
+        raw_provider_cfg = providers_cfg.get(provider) or {}
+        if isinstance(raw_provider_cfg, dict):
+            provider_cfg = raw_provider_cfg
+
+    cfg = {
+        "model": model_cfg.get("default") or model_cfg.get("model"),
+        "provider": provider,
+        "base_url": model_cfg.get("base_url") or provider_cfg.get("base_url"),
+        "api_key": model_cfg.get("api_key") or provider_cfg.get("api_key"),
+        "api_mode": model_cfg.get("api_mode") or provider_cfg.get("api_mode"),
+        "command": (
+            model_cfg.get("command")
+            or model_cfg.get("acp_command")
+            or provider_cfg.get("command")
+            or provider_cfg.get("acp_command")
+        ),
+        "args": _normalize_acp_args(
+            model_cfg.get("args")
+            or model_cfg.get("acp_args")
+            or provider_cfg.get("args")
+            or provider_cfg.get("acp_args")
+        ),
+    }
+    return {k: v for k, v in cfg.items() if v is not None}
+
+
+def _resolve_worker_profile_credentials(profile: str, parent_agent) -> dict:
+    cfg = _worker_profile_delegation_config(profile)
+    if not (cfg.get("model") or cfg.get("provider") or cfg.get("base_url") or cfg.get("command")):
+        raise ValueError(
+            f"worker profile '{profile}' must define model.default, model.provider, base_url, or command."
+        )
+    return _resolve_delegation_credentials(cfg, parent_agent)
 
 
 def _load_config() -> dict:
@@ -3472,6 +3583,57 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
+COST_ROUTER_SCHEMA = {
+    "name": "cost_router",
+    "description": (
+        "Route a delegated subtask through a named Hermes worker profile. "
+        "Reads <Hermes root>/profiles/<worker>/config.yaml, resolves its "
+        "model/provider/base_url/api_mode/api_key settings into concrete "
+        "delegation overrides, then dispatches through the normal delegate_task "
+        "runtime. Use this instead of inventing delegate_task(profile=...)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "profile": {
+                "type": "string",
+                "description": "Worker profile name, e.g. worker-dsflash, worker-dspro, worker-gpt54, worker-gpt55.",
+            },
+            "goal": {
+                "type": "string",
+                "description": "The subtask for the worker profile to complete.",
+            },
+            "context": {
+                "type": "string",
+                "description": "Background information the worker needs. Include source paths, constraints, and requested output shape.",
+            },
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string"},
+                        "context": {"type": "string"},
+                        "role": {
+                            "type": "string",
+                            "enum": ["leaf", "orchestrator"],
+                        },
+                    },
+                    "required": ["goal"],
+                },
+                "description": "Optional batch of subtasks for the same worker profile. Omit when using goal/context.",
+            },
+            "role": {
+                "type": "string",
+                "enum": ["leaf", "orchestrator"],
+                "description": "Optional child role. Defaults to leaf unless config permits orchestrator nesting.",
+            },
+        },
+        "required": ["profile"],
+    },
+}
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -3492,6 +3654,25 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
+def _handle_cost_router(args: dict, **kw) -> str:
+    profile = str(args.get("profile") or "")
+    parent_agent = kw.get("parent_agent")
+    try:
+        creds = _resolve_worker_profile_credentials(profile, parent_agent)
+    except Exception as exc:
+        return tool_error(str(exc))
+
+    return delegate_task(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        tasks=args.get("tasks"),
+        role=args.get("role"),
+        background=_model_background_value(args, parent_agent),
+        parent_agent=parent_agent,
+        credential_overrides=creds,
+    )
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3510,4 +3691,13 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+)
+
+registry.register(
+    name="cost_router",
+    toolset="delegation",
+    schema=COST_ROUTER_SCHEMA,
+    handler=_handle_cost_router,
+    check_fn=check_delegate_requirements,
+    emoji="🧭",
 )

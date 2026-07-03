@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 
@@ -128,10 +129,8 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
 
 
 def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
-    """A write that times out because the event loop is stalled (GIL-heavy
-    agent turn) must NOT latch the transport closed — the frame is already
-    scheduled and flushes when the loop recovers. Latching here permanently
-    silenced live watch windows after one slow write."""
+    """A worker-thread write while the loop is stalled enqueues without latching
+    the transport closed. The single writer flushes after the loop breathes."""
     monkeypatch.setattr(ws_mod, "_WS_WRITE_TIMEOUT_S", 0.05)
     sent = []
 
@@ -142,16 +141,13 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
+    transport = None
     try:
         transport = ws_mod.WSTransport(FakeWS(), loop, peer="stall-test")
-        # Stall the loop well past the write timeout, then write from this
-        # (non-loop) thread: the wait times out but the send stays in flight.
         loop.call_soon_threadsafe(time.sleep, 0.3)
         assert transport.write({"a": 1}) is True
         assert transport._closed is False
 
-        # Once the loop breathes again, both the stalled frame and new writes
-        # must reach the socket.
         assert transport.write({"b": 2}) is True
         deadline = time.time() + 2
         while len(sent) < 2 and time.time() < deadline:
@@ -159,6 +155,142 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         assert len(sent) == 2
         assert transport._closed is False
     finally:
+        if transport is not None:
+            transport.close()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def _event(event_type, sid="sid", payload=None):
+    params = {"type": event_type, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload
+    return {"jsonrpc": "2.0", "method": "event", "params": params}
+
+
+async def _wait_until(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return predicate()
+
+
+def _frame_types(lines):
+    return [json.loads(line).get("params", {}).get("type") for line in lines]
+
+
+def test_ws_transport_overload_bounds_noncritical_queue(monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_NONCRITICAL_MAX_FRAMES", 8)
+    monkeypatch.setattr(ws_mod, "_TOKEN_COALESCE_S", 60.0)
+
+    class FakeWS:
+        async def send_text(self, line):
+            raise AssertionError("streaming frames should remain queued during this test")
+
+    async def scenario():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="bounded")
+        try:
+            for i in range(40):
+                assert transport.write(_event("message.delta", payload={"text": str(i)})) is True
+            with transport._lock:
+                queued = len(transport._streaming) + len(transport._normal) + len(transport._snapshots)
+                dropped = transport._dropped_noncritical
+            assert queued <= ws_mod._WS_NONCRITICAL_MAX_FRAMES
+            assert dropped > 0
+        finally:
+            transport.close()
+
+    asyncio.run(scenario())
+
+
+def test_ws_transport_coalesces_latest_only_snapshots(monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_SEND_BURST", 1000)
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    async def scenario():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="snapshots")
+        try:
+            for i in range(25):
+                assert transport.write(_event("status.update", payload={"kind": "run", "text": f"step {i}"})) is True
+            assert await _wait_until(lambda: len(sent) == 1)
+        finally:
+            transport.close()
+
+    asyncio.run(scenario())
+
+    assert _frame_types(sent) == ["status.update"]
+    assert json.loads(sent[0])["params"]["payload"]["text"] == "step 24"
+
+
+def test_ws_transport_preserves_critical_during_noncritical_overload(monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_NONCRITICAL_MAX_FRAMES", 4)
+    monkeypatch.setattr(ws_mod, "_TOKEN_COALESCE_S", 60.0)
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    async def scenario():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="critical")
+        try:
+            for i in range(30):
+                assert transport.write(_event("message.delta", payload={"text": str(i)})) is True
+            assert transport.write(_event("approval.request", payload={"id": "approve-1"})) is True
+            assert await _wait_until(lambda: "approval.request" in _frame_types(sent))
+        finally:
+            transport.close()
+
+    asyncio.run(scenario())
+
+    assert "approval.request" in _frame_types(sent)
+
+
+def test_ws_transport_critical_overflow_closes_explicitly(monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_CRITICAL_MAX_FRAMES", 2)
+
+    class FakeWS:
+        async def send_text(self, line):
+            raise AssertionError("critical overflow is checked before drain")
+
+    async def scenario():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="critical-overflow")
+        try:
+            assert transport.write(_event("approval.request", payload={"id": 1})) is True
+            assert transport.write(_event("approval.request", payload={"id": 2})) is True
+            assert transport.write(_event("approval.request", payload={"id": 3})) is False
+            assert transport._closed is True
+        finally:
+            transport.close()
+
+    asyncio.run(scenario())
+
+
+def test_ws_transport_close_cancels_writer_timer_and_clears_noncritical(monkeypatch):
+    monkeypatch.setattr(ws_mod, "_TOKEN_COALESCE_S", 60.0)
+
+    class FakeWS:
+        async def send_text(self, line):
+            raise AssertionError("close should cancel queued streaming send")
+
+    async def scenario():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="close")
+        assert transport.write(_event("message.delta", payload={"text": "queued"})) is True
+        await asyncio.sleep(0)
+        transport.close()
+        await asyncio.sleep(0)
+        with transport._lock:
+            assert not transport._streaming
+            assert not transport._normal
+            assert not transport._snapshots
+        assert transport._stream_flush_handle is None
+        assert transport._writer_task is None or transport._writer_task.done() or transport._writer_task.cancelled()
+
+    asyncio.run(scenario())

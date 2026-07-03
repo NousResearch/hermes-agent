@@ -2,8 +2,9 @@
 
 import sys
 
-import acp
 import pytest
+
+acp = pytest.importorskip("acp", reason="agent-client-protocol optional dependency is not installed")
 
 from acp_adapter import entry
 

@@ -16,6 +16,13 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+@pytest.fixture(autouse=True)
+def _clear_rpc_result_cache():
+    server._rpc_result_cache.clear()
+    yield
+    server._rpc_result_cache.clear()
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -2000,8 +2007,55 @@ def test_notification_event_routing_by_session_key(monkeypatch):
     assert server._notification_event_belongs_elsewhere(mine, {}) is False
     # Owned by another *live* session → defer to that session's poller.
     assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
-    # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
-    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+    # Async delegation completions are user-visible conversation turns. If the
+    # owner is temporarily not live, an unrelated session must NOT consume the
+    # event as a fallback; keep it queued until the owner is resumed.
+    assert server._notification_event_belongs_elsewhere(
+        mine, {"type": "async_delegation", "session_key": "ghost"}
+    ) is True
+    # Legacy process completions keep the historical fallback: without a live
+    # owner, surface them somewhere rather than losing the terminal notification.
+    assert server._notification_event_belongs_elsewhere(
+        mine, {"type": "completion", "session_key": "ghost"}
+    ) is False
+
+
+def test_notification_poller_does_not_inject_foreign_async_completion(monkeypatch):
+    """A poller for session B must not reinject session A's async delegation.
+
+    This reproduces the cross-chat leak: a detached async completion with an
+    explicit owner key was popped by whichever session poller woke first when
+    the owner was not currently live, then reinjected into that unrelated chat.
+    """
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    stop = threading.Event()
+    mine = _session(session_key="mine")
+    foreign_evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_foreign",
+        "session_key": "owner-not-live",
+        "goal": "foreign task",
+        "status": "completed",
+        "summary": "foreign result",
+    }
+    process_registry.completion_queue.put(foreign_evt)
+    monkeypatch.setattr(server, "_sessions", {"mine-sid": mine})
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: stop.set())
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *args, **kwargs: pytest.fail("foreign async completion was injected"),
+    )
+
+    server._notification_poller_loop(stop, "mine-sid", mine)
+
+    assert mine["running"] is False
+    assert process_registry.completion_queue.get_nowait() == foreign_evt
 
 
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
@@ -2998,6 +3052,24 @@ def test_setup_status_reports_provider_config(monkeypatch):
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
     assert resp["result"]["provider_configured"] is False
+
+
+def test_setup_status_uses_short_ttl_cache(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_has_any_provider_configured():
+        calls["count"] += 1
+        return True
+
+    server._rpc_result_cache.clear()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", fake_has_any_provider_configured)
+
+    first = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+    second = server.handle_request({"id": "2", "method": "setup.status", "params": {}})
+
+    assert first["result"]["provider_configured"] is True
+    assert second["result"]["provider_configured"] is True
+    assert calls["count"] == 1
 
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
@@ -5865,6 +5937,109 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "catalog blew up" in resp["error"]["message"]
 
 
+def test_model_options_uses_cached_payload_until_refresh(monkeypatch):
+    calls = {"count": 0}
+
+    class _Ctx:
+        def with_overrides(self, **kwargs):
+            return self
+
+    def fake_build_models_payload(*args, **kwargs):
+        calls["count"] += 1
+        return {
+            "providers": [{"slug": f"p{calls['count']}", "models": [], "total_models": 0}],
+            "provider": "demo",
+            "model": "m",
+        }
+
+    server._rpc_result_cache.clear()
+    monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: _Ctx())
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", fake_build_models_payload)
+
+    first = server._methods["model.options"]("1", {"session_id": ""})
+    second = server._methods["model.options"]("2", {"session_id": ""})
+    refreshed = server._methods["model.options"]("3", {"session_id": "", "refresh": True})
+
+    assert first["result"]["providers"][0]["slug"] == "p1"
+    assert second["result"]["providers"][0]["slug"] == "p1"
+    assert refreshed["result"]["providers"][0]["slug"] == "p2"
+    assert calls["count"] == 2
+
+
+def test_pet_info_uses_meta_fast_path_for_unchanged_revision(monkeypatch):
+    called = {"meta": 0, "full": 0}
+
+    def fake_meta(rid, params):
+        called["meta"] += 1
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "enabled": True,
+                "slug": "pet-1",
+                "displayName": "Pet One",
+                "scale": 1.0,
+                "spritesheetRevision": "rev-1",
+            },
+        }
+
+    def boom_selection():
+        called["full"] += 1
+        raise AssertionError("full pet selection should not run for unchanged revision")
+
+    monkeypatch.setitem(server._methods, "pet.info.meta", fake_meta)
+    monkeypatch.setattr(server, "_pet_active_selection", boom_selection)
+
+    resp = server._methods["pet.info"]("1", {"revision": "rev-1"})
+
+    assert resp["result"] == {
+        "enabled": True,
+        "slug": "pet-1",
+        "displayName": "Pet One",
+        "scale": 1.0,
+        "spritesheetRevision": "rev-1",
+        "unchanged": True,
+    }
+    assert called == {"meta": 1, "full": 0}
+
+
+def test_pet_info_force_full_bypasses_meta_fast_path(monkeypatch):
+    called = {"meta": 0, "full": 0}
+
+    def fake_meta(rid, params):
+        called["meta"] += 1
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "enabled": True,
+                "slug": "pet-1",
+                "displayName": "Pet One",
+                "scale": 1.0,
+                "spritesheetRevision": "rev-1",
+            },
+        }
+
+    class _Pet:
+        slug = "pet-1"
+        display_name = "Pet One"
+        exists = True
+        spritesheet = object()
+
+    def fake_selection():
+        called["full"] += 1
+        return True, _Pet(), 1.0
+
+    monkeypatch.setitem(server._methods, "pet.info.meta", fake_meta)
+    monkeypatch.setattr(server, "_pet_active_selection", fake_selection)
+    monkeypatch.setattr(server, "_pet_sprite_payload", lambda pet, *, scale: {"slug": pet.slug, "full": True})
+
+    resp = server._methods["pet.info"]("1", {"revision": "rev-1", "force_full": True})
+
+    assert resp["result"] == {"enabled": True, "slug": "pet-1", "full": True}
+    assert called == {"meta": 0, "full": 1}
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------
@@ -6625,7 +6800,8 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No supported Chromium-family browser executable was found" in line
+        "Start a Chromium-family browser with remote debugging" in line
+        or "No supported Chromium-family browser executable was found" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -7935,6 +8111,125 @@ def test_slash_worker_close_reaps_zombie_and_closes_fds():
     assert calls["kill"] == 1
     assert calls["wait"] >= 2  # reaped after both terminate and kill
     assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1
+
+
+def test_slash_worker_stdio_tail_is_byte_bounded_and_summarized():
+    worker = object.__new__(server._SlashWorker)
+    worker.stdout_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stderr_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stdout_bytes = 0
+    worker.stderr_bytes = 0
+    worker.stdout_lines_dropped = 0
+    worker.stderr_lines_dropped = 0
+
+    big = "x" * (server._SLASH_WORKER_OUTPUT_MAX_BYTES // 2)
+    worker._record_stdio_line("stderr", big)
+    worker._record_stdio_line("stderr", big)
+    worker._record_stdio_line("stderr", big)
+
+    assert worker.stderr_bytes <= server._SLASH_WORKER_OUTPUT_MAX_BYTES
+    assert worker.stderr_lines_dropped >= 1
+    summary = worker._format_stdio_summary("stderr", limit=2)
+    assert "dropped" in summary
+
+
+def test_slash_worker_run_appends_bounded_stderr_summary_on_failure():
+    worker = object.__new__(server._SlashWorker)
+    worker.proc = type("_Proc", (), {"poll": lambda self: None})()
+    worker._lock = server.threading.Lock()
+    worker._seq = 0
+    worker.stdout_queue = server.queue.Queue()
+    worker.stdout_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stderr_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stdout_bytes = 0
+    worker.stderr_bytes = 0
+    worker.stdout_lines_dropped = 0
+    worker.stderr_lines_dropped = 0
+    worker.stdout_queue_dropped = 0
+    worker._closed = False
+    worker.stderr_tail.append("trace 1")
+    worker.stderr_tail.append("trace 2")
+    worker.stderr_bytes = len("trace 1".encode()) + len("trace 2".encode())
+    worker.stdout_queue.put({"id": 1, "ok": False, "error": "boom"})
+
+    class _In:
+        def write(self, data):
+            return None
+
+        def flush(self):
+            return None
+
+    worker.proc.stdin = _In()
+
+    try:
+        worker.run("/boom")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "boom" in message
+        assert "trace 1" in message
+        assert "trace 2" in message
+
+
+def test_slash_worker_stdout_queue_is_bounded_and_drops_oldest_json_results():
+    worker = object.__new__(server._SlashWorker)
+    worker.stdout_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stderr_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stdout_bytes = 0
+    worker.stderr_bytes = 0
+    worker.stdout_lines_dropped = 0
+    worker.stderr_lines_dropped = 0
+    worker.stdout_queue_dropped = 0
+    worker.stdout_queue = server.queue.Queue(maxsize=2)
+
+    class _Proc:
+        stdout = iter([
+            '{"id": 1, "ok": true, "output": "one"}\n',
+            '{"id": 2, "ok": true, "output": "two"}\n',
+            '{"id": 3, "ok": true, "output": "three"}\n',
+        ])
+
+    worker.proc = _Proc()
+
+    worker._drain_stdout()
+
+    items = [worker.stdout_queue.get_nowait(), worker.stdout_queue.get_nowait()]
+    assert any(item is None for item in items)
+    payloads = [item for item in items if isinstance(item, dict)]
+    assert [item["id"] for item in payloads] == [3]
+    assert worker.stdout_queue_dropped >= 2
+    assert "dropped" in worker._format_queue_drop_summary()
+
+
+def test_slash_worker_closed_pipe_reports_queue_drop_summary():
+    worker = object.__new__(server._SlashWorker)
+    worker.proc = type("_Proc", (), {"poll": lambda self: None})()
+    worker._lock = server.threading.Lock()
+    worker._seq = 0
+    worker.stdout_queue = server.queue.Queue()
+    worker.stdout_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stderr_tail = server.deque(maxlen=server._SLASH_WORKER_STDIO_TAIL_LINES)
+    worker.stdout_bytes = 0
+    worker.stderr_bytes = 0
+    worker.stdout_lines_dropped = 0
+    worker.stderr_lines_dropped = 0
+    worker.stdout_queue_dropped = 3
+    worker._closed = False
+    worker.stdout_queue.put(None)
+
+    class _In:
+        def write(self, data):
+            return None
+
+        def flush(self):
+            return None
+
+    worker.proc.stdin = _In()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        worker.run("/closed")
+
+    assert "dropped 3 earlier JSON result message" in str(excinfo.value)
 
 
 def test_close_session_by_id_is_idempotent_and_full(monkeypatch):

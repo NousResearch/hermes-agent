@@ -11,14 +11,17 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
+    COST_ROUTER_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
     _LEGACY_EVENT_MAP,
@@ -32,6 +35,10 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_worker_profile_credentials,
+    _worker_profile_delegation_config,
+    _profile_config_path,
+    _handle_cost_router,
     _inherit_parent_base_url,
 )
 
@@ -128,6 +135,252 @@ class TestDelegateRequirements(unittest.TestCase):
         )
         self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
+
+
+class TestCostRouter(unittest.TestCase):
+    def test_schema_valid(self):
+        self.assertEqual(COST_ROUTER_SCHEMA["name"], "cost_router")
+        props = COST_ROUTER_SCHEMA["parameters"]["properties"]
+        self.assertIn("profile", props)
+        self.assertIn("goal", props)
+        self.assertIn("tasks", props)
+        self.assertNotIn("provider", props)
+        self.assertNotIn("base_url", props)
+        self.assertNotIn("api_key", props)
+        self.assertNotIn("api_mode", props)
+
+    def test_cost_router_exposed_in_agent_toolsets(self):
+        import tools.delegate_tool  # noqa: F401 - import registers tools
+        from tools.registry import registry
+        from toolsets import get_toolset
+
+        for toolset_name in ("delegation", "coding", "hermes-acp", "hermes-api-server"):
+            toolset = get_toolset(toolset_name)
+            self.assertIsNotNone(toolset)
+            tools = toolset["tools"] if toolset is not None else []
+            self.assertIn("cost_router", tools)
+
+        defs = registry.get_definitions({"cost_router"})
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(defs[0]["function"]["name"], "cost_router")
+
+    def test_profile_config_path_rejects_paths(self):
+        for profile in ("", ".", "..", "../worker", "worker/name", "worker\\name"):
+            with self.subTest(profile=profile):
+                with self.assertRaises(ValueError):
+                    _profile_config_path(profile)
+
+    def test_worker_profile_config_reads_model_and_provider_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profiles" / "worker-dsflash"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  provider: custom:deepseek",
+                        "  default: deepseek-v4-flash",
+                        "providers:",
+                        "  custom:deepseek:",
+                        "    base_url: https://deepseek.example/v1",
+                        "    api_key: test-key",
+                        "    api_mode: chat_completions",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("tools.delegate_tool.get_default_hermes_root", return_value=root):
+                cfg = _worker_profile_delegation_config("worker-dsflash")
+
+        self.assertEqual(cfg["model"], "deepseek-v4-flash")
+        self.assertEqual(cfg["provider"], "custom:deepseek")
+        self.assertEqual(cfg["base_url"], "https://deepseek.example/v1")
+        self.assertEqual(cfg["api_key"], "test-key")
+        self.assertEqual(cfg["api_mode"], "chat_completions")
+
+    def test_worker_profile_model_settings_override_provider_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profiles" / "worker-cli"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  provider: custom:worker",
+                        "  default: worker-model",
+                        "  base_url: https://model.example/v1",
+                        "  api_key: model-key",
+                        "  api_mode: responses",
+                        "  command: model-command",
+                        "  args:",
+                        "    - --model-arg",
+                        "providers:",
+                        "  custom:worker:",
+                        "    base_url: https://provider.example/v1",
+                        "    api_key: provider-key",
+                        "    api_mode: chat_completions",
+                        "    command: provider-command",
+                        "    args:",
+                        "      - --provider-arg",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("tools.delegate_tool.get_default_hermes_root", return_value=root):
+                cfg = _worker_profile_delegation_config("worker-cli")
+
+        self.assertEqual(cfg["model"], "worker-model")
+        self.assertEqual(cfg["provider"], "custom:worker")
+        self.assertEqual(cfg["base_url"], "https://model.example/v1")
+        self.assertEqual(cfg["api_key"], "model-key")
+        self.assertEqual(cfg["api_mode"], "responses")
+        self.assertEqual(cfg["command"], "model-command")
+        self.assertEqual(cfg["args"], ["--model-arg"])
+
+    def test_worker_profile_config_reads_codex_cli_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profiles" / "worker-codex"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  acp_command: codex",
+                        "  acp_args:",
+                        "    - --ask-for-approval",
+                        "    - never",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("tools.delegate_tool.get_default_hermes_root", return_value=root):
+                cfg = _worker_profile_delegation_config("worker-codex")
+
+        self.assertEqual(cfg["command"], "codex")
+        self.assertEqual(cfg["args"], ["--ask-for-approval", "never"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_worker_profile_credentials_reuse_delegation_resolver(self, mock_resolve):
+        mock_resolve.return_value = {
+            "model": "deepseek-v4-flash",
+            "provider": "custom:deepseek",
+            "base_url": "https://deepseek.example/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+        }
+        parent = _make_mock_parent()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profiles" / "worker-dsflash"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  provider: custom:deepseek",
+                        "  default: deepseek-v4-flash",
+                        "providers:",
+                        "  custom:deepseek:",
+                        "    base_url: https://deepseek.example/v1",
+                        "    api_key: test-key",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("tools.delegate_tool.get_default_hermes_root", return_value=root):
+                creds = _resolve_worker_profile_credentials("worker-dsflash", parent)
+
+        mock_resolve.assert_called_once()
+        resolved_cfg, resolved_parent = mock_resolve.call_args.args
+        self.assertEqual(resolved_parent, parent)
+        self.assertEqual(resolved_cfg["model"], "deepseek-v4-flash")
+        self.assertEqual(resolved_cfg["provider"], "custom:deepseek")
+        self.assertEqual(creds["base_url"], "https://deepseek.example/v1")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_worker_profile_credentials_allow_codex_cli_only_profile(self, mock_resolve):
+        mock_resolve.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": "codex",
+            "args": ["--model", "gpt-5.1-codex-max"],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profiles" / "worker-codex"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  command: codex",
+                        "  args: --model gpt-5.1-codex-max",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("tools.delegate_tool.get_default_hermes_root", return_value=root):
+                creds = _resolve_worker_profile_credentials("worker-codex", _make_mock_parent())
+
+        resolved_cfg, _ = mock_resolve.call_args.args
+        self.assertEqual(resolved_cfg["command"], "codex")
+        self.assertEqual(resolved_cfg["args"], ["--model", "gpt-5.1-codex-max"])
+        self.assertEqual(creds["args"], ["--model", "gpt-5.1-codex-max"])
+
+    @patch("tools.delegate_tool.delegate_task")
+    @patch("tools.delegate_tool._resolve_worker_profile_credentials")
+    def test_handle_cost_router_passes_concrete_overrides(self, mock_resolve, mock_delegate):
+        parent = _make_mock_parent()
+        creds = {
+            "model": "deepseek-v4-flash",
+            "provider": "custom:deepseek",
+            "base_url": "https://deepseek.example/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+        }
+        mock_resolve.return_value = creds
+        mock_delegate.return_value = '{"results": []}'
+
+        result = _handle_cost_router(
+            {"profile": "worker-dsflash", "goal": "cluster warnings", "context": "logs"},
+            parent_agent=parent,
+        )
+
+        self.assertEqual(result, '{"results": []}')
+        mock_resolve.assert_called_once_with("worker-dsflash", parent)
+        mock_delegate.assert_called_once()
+        kwargs = mock_delegate.call_args.kwargs
+        self.assertEqual(kwargs["goal"], "cluster warnings")
+        self.assertEqual(kwargs["context"], "logs")
+        self.assertEqual(kwargs["parent_agent"], parent)
+        self.assertEqual(kwargs["credential_overrides"], creds)
+
+    @patch("tools.delegate_tool._resolve_worker_profile_credentials")
+    def test_handle_cost_router_reports_profile_errors(self, mock_resolve):
+        mock_resolve.side_effect = ValueError("worker profile missing")
+
+        result = _handle_cost_router({"profile": "missing", "goal": "test"}, parent_agent=_make_mock_parent())
+        payload = json.loads(result)
+
+        self.assertIn("error", payload)
+        self.assertIn("worker profile missing", payload["error"])
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -388,7 +641,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("tools.delegate_tool._load_config", return_value={}), patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "ok",

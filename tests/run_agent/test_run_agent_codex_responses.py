@@ -9,16 +9,28 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
+import agent.model_metadata as model_metadata
 import run_agent
 
 
 @pytest.fixture(autouse=True)
 def _no_codex_backoff(monkeypatch):
     """Short-circuit retry backoff so Codex retry tests don't block on real
-    wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
+    wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop).
+
+    These tests build Codex OAuth agents with fake bearer tokens. Keep model
+    metadata hermetic too: otherwise AIAgent initialization may probe the live
+    ChatGPT Codex /models endpoint to discover context windows before the fake
+    response stream is installed.
+    """
     import time as _time
     monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_codex_oauth_context_lengths",
+        lambda *_a, **_k: {},
+    )
 
 
 def _patch_agent_bootstrap(monkeypatch):

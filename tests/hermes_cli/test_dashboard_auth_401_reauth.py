@@ -406,6 +406,26 @@ class TestAutoSsoRedirect:
         assert r.headers["location"].startswith("/login")
         assert "/auth/login" not in r.headers["location"]
 
+    def test_password_only_provider_renders_login_not_oauth(self, gated_app):
+        """Password-only providers mint sessions but cannot start OAuth."""
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+        class _PasswordOnlyStub(StubAuthProvider):
+            name = "password-only"
+            display_name = "Password Only"
+            supports_password = True
+
+            def start_login(self, *, redirect_uri: str):
+                raise NotImplementedError("password-only provider")
+
+        clear_providers()
+        register_provider(_PasswordOnlyStub())
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

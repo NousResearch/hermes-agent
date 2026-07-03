@@ -483,6 +483,9 @@ _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
     "/private/etc/", "/private/var/",
 )
+_NON_SENSITIVE_SYSTEM_TEMP_PREFIXES = (
+    "/private/var/folders/",
+)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 _hermes_config_resolved: str | None = None
@@ -509,23 +512,27 @@ def _get_hermes_config_resolved() -> str | None:
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved_path = _resolve_path_for_task(filepath, task_id)
+        resolved = str(resolved_path)
     except (OSError, ValueError):
+        resolved_path = None
         resolved = filepath
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    if resolved_path is not None and Path(filepath).expanduser().is_absolute():
+        normalized = os.path.normpath(str(Path(_expand_tilde(filepath)).resolve()))
+    else:
+        # Relative paths must be classified only after task-cwd resolution;
+        # normalizing them against the agent process cwd can incorrectly treat
+        # ordinary workspace files as /private/var on macOS test runners.
+        normalized = resolved
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file. Check this before generic system-prefix blocks so macOS
+    # realpaths under /private/var/folders still get the specific diagnostic.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
@@ -533,6 +540,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        resolved_sensitive = resolved.startswith(prefix) and not resolved.startswith(_NON_SENSITIVE_SYSTEM_TEMP_PREFIXES)
+        normalized_sensitive = normalized.startswith(prefix) and not normalized.startswith(_NON_SENSITIVE_SYSTEM_TEMP_PREFIXES)
+        if resolved_sensitive or normalized_sensitive:
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 
@@ -920,6 +934,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 # invalidating the stale cache entry (fixes #26211: silent
                 # file-creation failures in long-running conversations).
                 old_cwd = getattr(cached, "cwd", None)
+                if not old_cwd:
+                    old_cwd = getattr(getattr(cached, "env", None), "cwd", None)
                 if old_cwd:
                     with _file_ops_lock:
                         _last_known_cwd[task_id] = old_cwd

@@ -1,5 +1,8 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import pytest
+
+pytest.importorskip("acp", reason="agent-client-protocol optional dependency is not installed")
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (

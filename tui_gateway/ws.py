@@ -24,32 +24,28 @@ Mounting
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import logging
 import socket
 import threading
+import time
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from typing import Any
 
 from tui_gateway import server
 
 _log = logging.getLogger(__name__)
 
-# Max seconds a pool-dispatched handler will block waiting for the event loop
-# to flush a WS frame before we mark the transport dead. Protects handler
-# threads from a wedged socket.
+# Max seconds an inline WS response waits for its queued frame to reach the
+# socket before the caller resumes. Worker-thread writes enqueue only; the
+# single writer task owns all socket sends.
 _WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
-# Per-token streaming frames are coalesced: buffered and flushed as a batch on
-# a short timer instead of waking the event loop once per token. A model reply
-# emits hundreds of these in a burst, and each one is a loop wakeup competing
-# with the agent turn for the GIL — coalescing cuts that churn (CF-2). The task
-# that introduced this called them "agent.token"/"agent.thinking"; in this
-# codebase the per-token frames are the ``*.delta`` stream events below. Keep
-# this set to genuinely high-frequency, display-only events — anything a client
-# must see promptly (tool/approval/status/completion frames) is non-streaming
-# and flushes the buffer ahead of itself, so ordering is preserved.
+# Per-token streaming frames are coalesced: buffered and flushed on a fixed
+# cadence instead of waking/sending once per token. A model reply emits hundreds
+# of these in a burst, and each one used to create its own event-loop task.
 _STREAMING_EVENT_TYPES = frozenset({
     "message.delta",
     "reasoning.delta",
@@ -59,6 +55,43 @@ _STREAMING_EVENT_TYPES = frozenset({
 # enough to stay imperceptible to the live token cadence.
 _TOKEN_COALESCE_S = 0.033
 
+# Observation-plane backpressure bounds. The websocket sidecar is a UI/event
+# stream; it must never let arbitrary worker stdout/tool/progress storms create
+# unbounded send tasks or in-memory frame lists. Critical control/RPC frames are
+# kept on their own bounded priority lane; overload there means the connection is
+# no longer safe to use and is closed explicitly.
+_WS_NONCRITICAL_MAX_FRAMES = 256
+_WS_CRITICAL_MAX_FRAMES = 64
+_WS_SEND_BURST = 60
+_WS_SEND_INTERVAL_S = 1.0 / 30.0
+
+_CRITICAL_EVENT_TYPES = frozenset({
+    "approval.request",
+    "clarify.request",
+    "sudo.request",
+    "secret.request",
+    "terminal.read.request",
+    "terminal.write.request",
+    "gateway.ready",
+    "message.complete",
+    "error",
+})
+
+_LATEST_ONLY_EVENT_TYPES = frozenset({
+    "session.info",
+    "status.update",
+    "notification.show",
+    "notification.clear",
+    "pet.info",
+    "pet.info.meta",
+})
+
+_PROGRESS_EVENT_TYPES = frozenset({
+    "preview.restart.progress",
+    "pet.generate.progress",
+    "tool.generating",
+})
+
 # Keep starlette optional at import time; handle_ws uses the real class when
 # it's available and falls back to a generic Exception sentinel otherwise.
 try:
@@ -67,20 +100,21 @@ except ImportError:  # pragma: no cover - starlette is a required install path
     _WebSocketDisconnect = Exception  # type: ignore[assignment]
 
 
+@dataclass(slots=True)
+class _QueuedFrame:
+    line: str
+    waiter: asyncio.Future | None = None
+
+
 class WSTransport:
-    """Per-connection WS transport.
+    """Per-connection WS transport with a bounded single-writer queue.
 
-    ``write`` is safe to call from any thread *other than* the event loop
-    thread that owns the socket. Pool workers (the only real caller) run in
-    their own threads, so marshalling onto the loop via
-    :func:`asyncio.run_coroutine_threadsafe` + ``future.result()`` is correct
-    and deadlock-free there.
-
-    When called from the loop thread itself (e.g. by ``handle_ws`` for an
-    inline response) the same call would deadlock: we'd schedule work onto
-    the loop we're currently blocking. We detect that case and fire-and-
-    forget instead. Callers that need to know when the bytes are on the wire
-    should use :meth:`write_async` from the loop thread.
+    ``write`` is safe to call from any thread. It never sends directly and never
+    creates a per-frame send task; all frames flow through one writer task owned
+    by this transport. Non-critical UI frames are bounded/coalesced. Critical
+    JSON-RPC/control frames are preserved on a priority lane; if that lane
+    overflows, the transport closes explicitly instead of silently dropping
+    control events.
     """
 
     def __init__(
@@ -94,162 +128,330 @@ class WSTransport:
         self._loop = loop
         self._peer = peer
         self._closed = False
-        # Token-coalescing buffer (CF-2). Streamed token frames land here and a
-        # short timer flushes the batch. The lock guards the buffer + the
-        # "armed" flag against the worker threads that call write(); the timer
-        # handle is only ever touched on the loop thread.
-        self._token_lock = threading.Lock()
-        self._pending_tokens: list[str] = []
-        self._token_flush_handle: asyncio.TimerHandle | None = None
-        self._token_flush_armed = False
+        self._lock = threading.Lock()
+        self._critical: deque[_QueuedFrame] = deque()
+        self._streaming: deque[_QueuedFrame] = deque()
+        self._normal: deque[_QueuedFrame] = deque()
+        self._snapshots: OrderedDict[tuple[Any, ...], _QueuedFrame] = OrderedDict()
+        self._dropped_noncritical = 0
+        self._last_backpressure_event = 0.0
+        self._writer_task: asyncio.Task | None = None
+        self._wake_event: asyncio.Event | None = None
+        self._stream_flush_handle: asyncio.TimerHandle | None = None
+        self._next_stream_flush = 0.0
+        self._last_send_at = 0.0
+        self._sent_in_burst = 0
+        self._loop.call_soon_threadsafe(self._ensure_writer)
+
+    @staticmethod
+    def _event_type(obj: dict) -> str | None:
+        if not isinstance(obj, dict) or obj.get("method") != "event":
+            return None
+        params = obj.get("params")
+        if not isinstance(params, dict):
+            return None
+        event_type = params.get("type")
+        return event_type if isinstance(event_type, str) else None
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
         """True for high-frequency per-token frames eligible for coalescing."""
+        return WSTransport._event_type(obj) in _STREAMING_EVENT_TYPES
+
+    @staticmethod
+    def _snapshot_key(obj: dict, event_type: str) -> tuple[Any, ...]:
         params = obj.get("params") if isinstance(obj, dict) else None
-        if not isinstance(params, dict):
+        payload = params.get("payload") if isinstance(params, dict) else None
+        sid = params.get("session_id") if isinstance(params, dict) else None
+        if isinstance(payload, dict):
+            if event_type == "status.update":
+                return (event_type, sid, payload.get("kind"))
+            if event_type.startswith("notification."):
+                return (event_type, sid, payload.get("key"))
+            if event_type in _PROGRESS_EVENT_TYPES or event_type.endswith(".progress"):
+                return (
+                    "progress",
+                    event_type,
+                    sid,
+                    payload.get("task_id"),
+                    payload.get("token"),
+                    payload.get("name"),
+                )
+        return (event_type, sid)
+
+    @staticmethod
+    def _noncritical_size(
+        streaming: deque[_QueuedFrame],
+        normal: deque[_QueuedFrame],
+        snapshots: OrderedDict[tuple[Any, ...], _QueuedFrame],
+    ) -> int:
+        return len(streaming) + len(normal) + len(snapshots)
+
+    @staticmethod
+    def _finish_waiter(frame: _QueuedFrame, ok: bool) -> None:
+        waiter = frame.waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(ok)
+
+    def _ensure_writer(self) -> None:
+        if self._closed:
+            return
+        if self._wake_event is None:
+            self._wake_event = asyncio.Event()
+        if self._writer_task is None or self._writer_task.done():
+            self._writer_task = self._loop.create_task(self._writer_loop())
+
+    def _wake_writer(self) -> None:
+        if self._closed:
+            return
+        self._ensure_writer()
+        if self._wake_event is not None:
+            self._wake_event.set()
+
+    def _schedule_wake(self) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._wake_writer)
+        except RuntimeError:
+            self._closed = True
+
+    def _arm_stream_flush_locked(self) -> None:
+        if self._closed or not self._streaming:
+            return
+        now = time.monotonic()
+        if self._next_stream_flush <= now:
+            self._next_stream_flush = now + _TOKEN_COALESCE_S
+        if self._stream_flush_handle is None:
+            delay = max(0.0, self._next_stream_flush - now)
+            self._loop.call_soon_threadsafe(self._schedule_stream_flush, delay)
+
+    def _schedule_stream_flush(self, delay: float) -> None:
+        if self._closed or self._stream_flush_handle is not None:
+            return
+        self._stream_flush_handle = self._loop.call_later(delay, self._stream_flush_due)
+
+    def _stream_flush_due(self) -> None:
+        self._stream_flush_handle = None
+        self._wake_writer()
+
+    def _record_drop_locked(self, reason: str) -> None:
+        self._dropped_noncritical += 1
+        now = time.monotonic()
+        if now - self._last_backpressure_event < 1.0:
+            return
+        self._last_backpressure_event = now
+        line = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                    "type": "stream.backpressure",
+                    "payload": {
+                        "dropped": self._dropped_noncritical,
+                        "reason": reason,
+                        "max_frames": _WS_NONCRITICAL_MAX_FRAMES,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        self._snapshots[("stream.backpressure", None)] = _QueuedFrame(line)
+
+    def _drop_one_noncritical_locked(self) -> bool:
+        frame: _QueuedFrame | None = None
+        if self._streaming:
+            frame = self._streaming.popleft()
+        elif self._normal:
+            frame = self._normal.popleft()
+        elif self._snapshots:
+            _key, frame = self._snapshots.popitem(last=False)
+        if frame is None:
             return False
-        return params.get("type") in _STREAMING_EVENT_TYPES
+        self._finish_waiter(frame, False)
+        self._record_drop_locked("noncritical_queue_full")
+        return True
+
+    def _enqueue_locked(self, obj: dict, line: str, waiter: asyncio.Future | None = None) -> bool:
+        event_type = self._event_type(obj)
+        frame = _QueuedFrame(line, waiter)
+
+        # JSON-RPC replies/errors and blocking user-control prompts must never be
+        # silently dropped. If even this protected lane is full, explicitly
+        # degrade by closing the transport rather than pretending delivery is OK.
+        if event_type in _CRITICAL_EVENT_TYPES or (event_type is None and obj.get("id") is not None):
+            if len(self._critical) >= _WS_CRITICAL_MAX_FRAMES:
+                self._closed = True
+                self._finish_waiter(frame, False)
+                _log.error(
+                    "ws critical queue overflow peer=%s max=%d — closing transport",
+                    self._peer,
+                    _WS_CRITICAL_MAX_FRAMES,
+                )
+                return False
+            self._critical.append(frame)
+            return True
+
+        if self._is_streaming_frame(obj):
+            while self._noncritical_size(self._streaming, self._normal, self._snapshots) >= _WS_NONCRITICAL_MAX_FRAMES:
+                if not self._drop_one_noncritical_locked():
+                    break
+            self._streaming.append(frame)
+            self._arm_stream_flush_locked()
+            return True
+
+        if event_type in _LATEST_ONLY_EVENT_TYPES or event_type in _PROGRESS_EVENT_TYPES or (
+            isinstance(event_type, str) and event_type.endswith(".progress")
+        ):
+            key = self._snapshot_key(obj, event_type)
+            old = self._snapshots.pop(key, None)
+            if old is not None:
+                self._finish_waiter(old, False)
+            while self._noncritical_size(self._streaming, self._normal, self._snapshots) >= _WS_NONCRITICAL_MAX_FRAMES:
+                if not self._drop_one_noncritical_locked():
+                    break
+            self._snapshots[key] = frame
+            return True
+
+        while self._noncritical_size(self._streaming, self._normal, self._snapshots) >= _WS_NONCRITICAL_MAX_FRAMES:
+            if not self._drop_one_noncritical_locked():
+                break
+        self._normal.append(frame)
+        return True
 
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-
         line = json.dumps(obj, ensure_ascii=False)
-
-        try:
-            on_loop = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            on_loop = False
-
-        # Coalesce streamed token frames: buffer this frame and arm a short
-        # flush timer instead of waking the loop right now. Cheap and
-        # non-blocking — the worker returns immediately. Ordering is preserved
-        # because every non-streaming frame (below) drains the buffer ahead of
-        # itself.
-        if self._is_streaming_frame(obj):
-            with self._token_lock:
-                self._pending_tokens.append(line)
-                if not self._token_flush_armed:
-                    self._token_flush_armed = True
-                    # call_soon_threadsafe arms the call_later timer on the loop
-                    # thread and is safe to call from a worker or the loop.
-                    self._loop.call_soon_threadsafe(self._arm_token_flush)
-            return not self._closed
-
-        # Non-streaming frame (RPC response, control frame, non-token event):
-        # append it behind any buffered tokens and flush the whole batch NOW so
-        # it can never overtake the tokens that preceded it. The send is
-        # scheduled INSIDE the lock so the on-the-wire order matches the buffer
-        # order even if the coalesce timer fires on the loop at the same moment.
-        from agent.async_utils import safe_schedule_threadsafe
-        with self._token_lock:
-            self._pending_tokens.append(line)
-            batch = self._pending_tokens
-            self._pending_tokens = []
-            if on_loop:
-                # Fire-and-forget — don't block the loop waiting on itself.
-                self._loop.create_task(self._safe_send_many(batch))
-                return True
-            fut = safe_schedule_threadsafe(
-                self._safe_send_many(batch), self._loop
-            )
-            if fut is None:
-                self._closed = True
+        with self._lock:
+            if self._closed:
                 return False
-
-        try:
-            fut.result(timeout=_WS_WRITE_TIMEOUT_S)
-            return not self._closed
-        except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
-            # The event loop is stalled (GIL-heavy agent turn, delegation
-            # running N children), NOT the socket dead. The send coroutine is
-            # already scheduled and will flush once the loop breathes — latching
-            # _closed here permanently silenced live windows after one slow
-            # write (the "subagent window shows zero streaming" bug). Unblock
-            # the worker thread and keep the transport alive; _safe_send_many
-            # latches on a real socket error when the frame actually fails.
-            _log.warning(
-                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
-                _WS_WRITE_TIMEOUT_S, self._peer,
-            )
-            return not self._closed
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws write failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
-            return False
-
-    def _arm_token_flush(self) -> None:
-        """Arm the coalesce timer. Runs on the loop thread (call_soon_threadsafe)."""
-        if self._closed:
-            return
-        self._token_flush_handle = self._loop.call_later(
-            _TOKEN_COALESCE_S, self._flush_tokens
-        )
-
-    def _flush_tokens(self) -> None:
-        """Send buffered tokens as one batch. Runs on the loop thread (timer).
-
-        The send is scheduled under the lock so its wire order is fixed relative
-        to a concurrent non-streaming flush in :meth:`write`.
-        """
-        with self._token_lock:
-            self._token_flush_handle = None
-            self._token_flush_armed = False
-            if not self._pending_tokens or self._closed:
-                self._pending_tokens = []
-                return
-            batch = self._pending_tokens
-            self._pending_tokens = []
-            self._loop.create_task(self._safe_send_many(batch))
+            ok = self._enqueue_locked(obj, line)
+        if ok:
+            self._schedule_wake()
+        return ok and not self._closed
 
     async def write_async(self, obj: dict) -> bool:
-        """Send from the owning event loop. Awaits until the frame is on the wire."""
+        """Queue from the owning event loop and wait until the frame is sent."""
         if self._closed:
             return False
-        # Flush any buffered streamed tokens ahead of this frame (RPC response /
-        # control frame) so it can't overtake the tokens that preceded it.
-        with self._token_lock:
-            pending = self._pending_tokens
-            self._pending_tokens = []
-        if pending:
-            await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
-        return not self._closed
+        waiter = self._loop.create_future()
+        line = json.dumps(obj, ensure_ascii=False)
+        with self._lock:
+            if self._closed:
+                return False
+            ok = self._enqueue_locked(obj, line, waiter)
+        if not ok:
+            return False
+        self._wake_writer()
+        try:
+            return bool(await asyncio.wait_for(waiter, timeout=_WS_WRITE_TIMEOUT_S)) and not self._closed
+        except asyncio.TimeoutError:
+            _log.warning(
+                "ws async write slow (loop stalled >%ss) peer=%s — frame left queued",
+                _WS_WRITE_TIMEOUT_S,
+                self._peer,
+            )
+            return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
+    def _pop_next_frame_locked(self) -> tuple[_QueuedFrame | None, float | None]:
+        if self._critical:
+            return self._critical.popleft(), None
+        if self._snapshots:
+            _key, frame = self._snapshots.popitem(last=False)
+            return frame, None
+        now = time.monotonic()
+        if self._streaming:
+            if now < self._next_stream_flush:
+                return None, self._next_stream_flush - now
+            return self._streaming.popleft(), None
+        if self._normal:
+            return self._normal.popleft(), None
+        return None, None
+
+    async def _writer_loop(self) -> None:
+        assert self._wake_event is not None
+        try:
+            while not self._closed:
+                frame: _QueuedFrame | None
+                sleep_for: float | None
+                with self._lock:
+                    frame, sleep_for = self._pop_next_frame_locked()
+
+                if frame is None:
+                    if sleep_for is None:
+                        await self._wake_event.wait()
+                        self._wake_event.clear()
+                    else:
+                        try:
+                            await asyncio.wait_for(self._wake_event.wait(), timeout=sleep_for)
+                            self._wake_event.clear()
+                        except asyncio.TimeoutError:
+                            pass
+                    continue
+
+                if self._sent_in_burst >= _WS_SEND_BURST:
+                    elapsed = time.monotonic() - self._last_send_at
+                    if elapsed < _WS_SEND_INTERVAL_S:
+                        await asyncio.sleep(_WS_SEND_INTERVAL_S - elapsed)
+                    self._sent_in_burst = 0
+
+                ok = await self._safe_send(frame.line)
+                self._finish_waiter(frame, ok)
+                self._last_send_at = time.monotonic()
+                self._sent_in_burst += 1
+        except asyncio.CancelledError:
+            pass
+        finally:
+            with self._lock:
+                queued = [*self._critical, *self._streaming, *self._normal, *self._snapshots.values()]
+                self._critical.clear()
+                self._streaming.clear()
+                self._normal.clear()
+                self._snapshots.clear()
+            for frame in queued:
+                self._finish_waiter(frame, False)
+
+    async def _safe_send(self, line: str) -> bool:
         try:
             await self._ws.send_text(line)
+            return True
         except Exception as exc:
             self._closed = True
             _log.warning(
                 "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
+                self._peer,
+                type(exc).__name__,
+                exc,
             )
-
-    async def _safe_send_many(self, lines: list[str]) -> None:
-        """Send a batch of pre-serialized frames in order on the loop thread."""
-        try:
-            for line in lines:
-                await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
+            return False
 
     def close(self) -> None:
-        self._closed = True
-        # Cancel any pending coalesce flush. close() runs on the loop thread
-        # (the handle_ws finally), so touching the TimerHandle here is safe.
-        handle = self._token_flush_handle
-        if handle is not None:
-            handle.cancel()
-            self._token_flush_handle = None
+        with self._lock:
+            self._closed = True
+            queued = [*self._streaming, *self._normal, *self._snapshots.values()]
+            self._streaming.clear()
+            self._normal.clear()
+            self._snapshots.clear()
+        for frame in queued:
+            self._finish_waiter(frame, False)
+
+        def _cancel() -> None:
+            handle = self._stream_flush_handle
+            if handle is not None:
+                handle.cancel()
+                self._stream_flush_handle = None
+            task = self._writer_task
+            if task is not None and not task.done():
+                task.cancel()
+            if self._wake_event is not None:
+                self._wake_event.set()
+
+        try:
+            if asyncio.get_running_loop() is self._loop:
+                _cancel()
+            else:
+                self._loop.call_soon_threadsafe(_cancel)
+        except RuntimeError:
+            self._loop.call_soon_threadsafe(_cancel)
 
 
 def _ws_peer_label(ws: Any) -> str:

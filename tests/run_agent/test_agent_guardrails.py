@@ -5,7 +5,7 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
   - _cap_delegate_task_calls()  — Phase 2a: subagent concurrency limit
   - _deduplicate_tool_calls()   — Phase 2b: identical call deduplication
 """
-
+import json
 import types
 
 from run_agent import AIAgent
@@ -144,6 +144,51 @@ class TestCapDelegateTaskCalls:
         out = AIAgent._cap_delegate_task_calls(tcs)
         delegate_count = sum(1 for tc in out if tc.function.name == "delegate_task")
         assert delegate_count == MAX_CONCURRENT_CHILDREN
+
+    def test_excess_cost_router_calls_truncated(self):
+        tcs = [make_tc("cost_router") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        router_count = sum(1 for tc in out if tc.function.name == "cost_router")
+        assert router_count == MAX_CONCURRENT_CHILDREN
+
+    def test_delegate_and_cost_router_share_concurrency_cap(self):
+        tcs = (
+            [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
+            + [make_tc("cost_router"), make_tc("terminal")]
+        )
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        names = [tc.function.name for tc in out]
+        assert names.count("delegate_task") + names.count("cost_router") == MAX_CONCURRENT_CHILDREN
+        assert "terminal" in names
+        assert names[-1] == "terminal"
+
+    def test_task_batches_do_not_consume_extra_tool_call_budget(self):
+        args = json.dumps({"tasks": [{"goal": f"task {i}"} for i in range(MAX_CONCURRENT_CHILDREN)]})
+        tcs = [make_tc("delegate_task", args), make_tc("cost_router"), make_tc("terminal")]
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        assert out == tcs
+
+    def test_string_task_batches_do_not_consume_extra_tool_call_budget(self):
+        tasks = json.dumps([{"goal": f"task {i}"} for i in range(MAX_CONCURRENT_CHILDREN)])
+        args = json.dumps({"tasks": tasks})
+        tcs = [make_tc("delegate_task", args), make_tc("cost_router"), make_tc("terminal")]
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        assert out == tcs
+
+    def test_oversized_single_task_batch_passes_to_delegate_validation(self):
+        args = json.dumps({"tasks": [{"goal": f"task {i}"} for i in range(MAX_CONCURRENT_CHILDREN + 1)]})
+        tcs = [make_tc("delegate_task", args), make_tc("terminal")]
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        assert out == tcs
+
+    def test_oversized_task_batch_does_not_consume_followup_delegation_budget(self):
+        oversized_args = json.dumps(
+            {"tasks": [{"goal": f"task {i}"} for i in range(MAX_CONCURRENT_CHILDREN + 1)]}
+        )
+        tcs = [make_tc("delegate_task", oversized_args), make_tc("cost_router"), make_tc("terminal")]
+        out = AIAgent._cap_delegate_task_calls(tcs)
+        names = [tc.function.name for tc in out]
+        assert names == ["delegate_task", "cost_router", "terminal"]
 
     def test_non_delegate_calls_preserved(self):
         tcs = (

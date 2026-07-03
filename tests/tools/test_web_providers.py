@@ -401,6 +401,10 @@ class TestDispatchersTriggerPluginDiscovery:
                     web_search_registry.register_provider(FakeFirecrawl())
 
             mock_hook = MagicMock(wraps=_register_fake)
+
+            async def _safe_url(_url: str) -> bool:
+                return True
+
             # Patch the helper on ``tools.web_tools`` directly rather than the
             # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
             # the test stays valid even if the import inside the helper is
@@ -412,6 +416,7 @@ class TestDispatchersTriggerPluginDiscovery:
                 web_tools, "_load_web_config",
                 lambda: {"extract_backend": "firecrawl"},
             )
+            monkeypatch.setattr(web_tools, "async_is_safe_url", _safe_url)
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 

@@ -236,6 +236,7 @@ def test_pet_info_meta_avoids_full_payload(monkeypatch):
         lambda: {"display": {"pet": {"enabled": True, "slug": pet.slug, "scale": 0.7}}},
     )
 
+    server._rpc_result_cache.clear()
     resp = server._methods["pet.info.meta"]("r_meta", {})
     result = resp["result"]
     assert result["enabled"] is True
@@ -243,3 +244,25 @@ def test_pet_info_meta_avoids_full_payload(monkeypatch):
     assert result["displayName"] == "Meta Pet"
     assert result["scale"] == 0.7
     assert ":" in result["spritesheetRevision"]
+
+
+def test_pet_info_revision_short_circuits_full_payload(monkeypatch):
+    import hermes_cli.config as cli_config
+    from agent.pet import constants, store
+
+    sheet = Image.new("RGBA", (constants.FRAME_W * 8, constants.FRAME_H * 9), (80, 120, 220, 255))
+    pet = store.register_local_pet(sheet, slug="meta-pet-rev", display_name="Meta Pet Rev")
+    monkeypatch.setattr(
+        cli_config,
+        "load_config",
+        lambda: {"display": {"pet": {"enabled": True, "slug": pet.slug, "scale": 0.7}}},
+    )
+
+    revision = server._pet_sheet_revision(pet.spritesheet)
+    resp = server._methods["pet.info"]("r_info", {"revision": revision})
+    result = resp["result"]
+
+    assert result["enabled"] is True
+    assert result["unchanged"] is True
+    assert result["spritesheetRevision"] == revision
+    assert "spritesheetBase64" not in result

@@ -215,6 +215,7 @@ class TestWebExtractTavily:
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.async_is_safe_url", return_value=True), \
              patch("tools.web_tools.httpx.post", return_value=mock_response):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(

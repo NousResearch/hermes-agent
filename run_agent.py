@@ -3753,32 +3753,35 @@ class AIAgent:
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to max_concurrent_children.
+        """Truncate excess delegation calls to max_concurrent_children.
 
         The delegate_tool caps the task list inside a single call, but the
-        model can emit multiple separate delegate_task tool_calls in one
-        turn.  This truncates the excess, preserving all non-delegate calls.
+        model can emit multiple separate delegate_task/cost_router tool_calls
+        in one turn. This truncates the excess across all delegation surfaces,
+        preserving all non-delegation calls.
 
         Returns the original list if no truncation was needed.
         """
         from tools.delegate_tool import _get_max_concurrent_children
+
         max_children = _get_max_concurrent_children()
-        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
-        if delegate_count <= max_children:
+        delegation_tools = {"delegate_task", "cost_router"}
+        delegation_count = sum(1 for tc in tool_calls if tc.function.name in delegation_tools)
+        if delegation_count <= max_children:
             return tool_calls
-        kept_delegates = 0
+        kept_delegation_calls = 0
         truncated = []
         for tc in tool_calls:
-            if tc.function.name == "delegate_task":
-                if kept_delegates < max_children:
+            if tc.function.name in delegation_tools:
+                if kept_delegation_calls < max_children:
                     truncated.append(tc)
-                    kept_delegates += 1
+                    kept_delegation_calls += 1
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
+            "Truncated %d excess delegation call(s) to enforce "
             "max_concurrent_children=%d limit",
-            delegate_count - max_children, max_children,
+            delegation_count - max_children, max_children,
         )
         return truncated
 
@@ -5647,6 +5650,12 @@ class AIAgent:
             background=(not _is_subagent),
             parent_agent=self,
         )
+
+    def _dispatch_cost_router(self, function_args: dict) -> str:
+        """Single call site for model-facing cost_router dispatch."""
+        from tools.delegate_tool import _handle_cost_router
+
+        return _handle_cost_router(function_args, parent_agent=self)
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,

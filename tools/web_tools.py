@@ -143,6 +143,12 @@ def _load_web_config() -> dict:
 # web_search_registry (``is_available()``) instead. Kept as a single named
 # constant so the whitelist early-returns and the availability chokepoint
 # stay in sync.
+#
+# NOTE: this intentionally includes ``xai``, which the registry's
+# ``_LEGACY_PREFERENCE`` does NOT — xai availability is probed via
+# ``has_xai_credentials()`` (env var OR auth.json OAuth), not a registered
+# WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
+# a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
     {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
 )
@@ -230,10 +236,17 @@ def _get_backend() -> str:
     # Final fallback: walk plugin-registered providers so a custom backend
     # (with no built-in creds present) still resolves. Built-in names are
     # already covered above, so this only surfaces plugin-contributed
-    # providers via their own is_available() gate.
+    # providers via their own is_available() gate. We hold the provider
+    # object already, so probe it directly rather than round-tripping through
+    # _is_backend_available() (which would re-do the registry lookup).
     for provider in _list_registered_web_providers():
-        if provider.name not in _LEGACY_WEB_BACKENDS and _is_backend_available(provider.name):
-            return provider.name
+        if provider.name in _LEGACY_WEB_BACKENDS:
+            continue
+        try:
+            if provider.is_available():
+                return provider.name
+        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+            logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
 
     return "firecrawl"  # default (backward compat)
 
@@ -955,15 +968,27 @@ def check_web_api_key() -> bool:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured and _is_backend_available(configured):
         return True
-    # Any built-in backend with credentials present.
+    # Any built-in backend with credentials present. This is a boolean OR, so
+    # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
-    # Any plugin-registered provider that reports itself available.
-    return any(
-        _is_backend_available(provider.name)
-        for provider in _list_registered_web_providers()
-        if provider.name not in _LEGACY_WEB_BACKENDS
-    )
+    # Any plugin-registered provider the registry considers active for either
+    # capability. Delegating to the registry's own availability-filtered
+    # resolvers keeps a single authority for "is a custom provider usable"
+    # rather than re-implementing the walk here.
+    try:
+        from agent.web_search_registry import (
+            get_active_search_provider,
+            get_active_extract_provider,
+        )
+
+        return (
+            get_active_search_provider() is not None
+            or get_active_extract_provider() is not None
+        )
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry availability check failed: %s", exc)
+        return False
 
 
 if __name__ == "__main__":

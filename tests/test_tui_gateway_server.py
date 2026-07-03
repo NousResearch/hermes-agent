@@ -3840,6 +3840,71 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_slash_exec_compress_does_not_run_the_throwaway_worker(monkeypatch):
+    """Regression: desktop/TUI /compress is routed through slash.exec, which used
+    to run it BOTH in the throwaway slash worker (empty conversation_history, so
+    cli._manual_compress emits a bogus "(._.) Not enough conversation to compress")
+    AND on the live agent via _mirror_slash_side_effects. The two were returned as
+    {output, warning} and the client stitched them into one self-contradictory
+    reply. /compress must run ONLY the live-agent path and return a single coherent
+    output — never touching the worker.
+    """
+
+    class _BogusWorker:
+        def __init__(self):
+            self.called = False
+
+        def run(self, cmd):
+            self.called = True
+            return (
+                "(._.) Not enough conversation to compress "
+                "(need at least 4 messages)."
+            )
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        # Simulate a real compression on the live history: drop the head. The
+        # return value is ignored by the mirror path; the "4 → 2" output derives
+        # from the before/after history length.
+        with session["history_lock"]:
+            session["history"] = session["history"][-2:]
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    worker = _BogusWorker()
+    agent = types.SimpleNamespace()
+    server._sessions["sid"] = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+        slash_worker=worker,
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    out = resp["result"]["output"]
+    # The throwaway worker must never run /compress (empty-history guard is bogus).
+    assert worker.called is False
+    # No empty-history guard leak, and no split output/warning contradiction.
+    assert "Not enough conversation" not in out
+    assert "warning" not in resp["result"]
+    # The live-agent compression summary is the single, primary output.
+    assert "Compressed: 4 → 2 messages" in out
+
+
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     """When AIAgent._compress_context rotates session_id (compression split),
     the gateway session_key must follow so subsequent approval routing,

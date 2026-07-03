@@ -12629,6 +12629,16 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
+    # /compress must skip the throwaway slash worker: that subprocess never enters
+    # run()/_preload_resumed_session(), so its conversation_history is empty and
+    # cli._manual_compress emits a bogus "not enough conversation to compress". The
+    # real compression already runs on the live agent in _mirror_slash_side_effects,
+    # so running both returned a contradictory output+warning pair. Run only the
+    # live-agent path.
+    if _cmd_base == "compress":
+        result = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        return _ok(rid, {"output": result or "(no output)"})
+
     worker = session.get("slash_worker")
     if not worker:
         try:

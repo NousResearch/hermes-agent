@@ -517,7 +517,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     )
                     session["tab_id"] = None
                     session = _ensure_tab(task_id, browser_url)
-                    data = {"ok": True, "url": browser_url}
+                    data = {"ok": True, "url": session.get("_last_url") or browser_url}
                 else:
                     raise
         final_url = data.get("url", browser_url)

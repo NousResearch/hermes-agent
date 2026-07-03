@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import requests
+
 
 from tools.browser_camofox import (
     camofox_back,
@@ -221,6 +223,49 @@ class TestCamofoxNavigate:
         assert "private/internal address" in result["error"]
         assert mock_post.call_args_list[-1].kwargs["json"]["url"] == "about:blank"
         mock_get.assert_not_called()
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_blocks_stale_tab_recreate_metadata_redirect_before_auto_snapshot(
+        self,
+        mock_post,
+        mock_get,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        stale = _mock_response(status=404, json_data={"error": "gone"})
+        stale.raise_for_status.side_effect = requests.HTTPError(response=stale)
+        mock_post.side_effect = [
+            _mock_response(json_data={"tabId": "tab_stale", "url": "https://safe.test"}),
+            stale,
+            _mock_response(json_data={
+                "tabId": "tab_recreated",
+                "url": "http://169.254.169.254/latest/meta-data/",
+            }),
+            _mock_response(json_data={"ok": True, "url": "about:blank"}),
+        ]
+
+        def get_side_effect(url, *_args, **_kwargs):
+            if str(url).endswith("/health"):
+                return _mock_response(json_data={"ok": True})
+            if "/tabs/tab_stale/snapshot" in str(url):
+                return _mock_response(json_data={"snapshot": "- heading \"Safe\"", "refsCount": 1})
+            if "/tabs/tab_recreated/snapshot" in str(url):
+                raise AssertionError("Camofox auto-snapshot must not run after a blocked redirect")
+            return _mock_response(json_data={})
+
+        mock_get.side_effect = get_side_effect
+
+        camofox_navigate("https://safe.test", task_id="t_stale_meta")
+        result = json.loads(camofox_navigate("https://redirect.test", task_id="t_stale_meta"))
+
+        assert result["success"] is False
+        assert "cloud metadata endpoint" in result["error"]
+        assert mock_post.call_args_list[-1].kwargs["json"]["url"] == "about:blank"
+        assert not any(
+            "/tabs/tab_recreated/snapshot" in str(call.args[0])
+            for call in mock_get.call_args_list
+        )
 
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")

@@ -60,6 +60,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
+import { normalizeReplyContent } from "./reply-content.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -402,25 +403,30 @@ async function normalizeBinaryContent(content) {
 // Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
 // tapped back). The SDK only emits a reaction once it has resolved the full
 // target Message (toReactionMessages bails otherwise), so `target.content` is
-// hydrated here — no extra round trip. Handles plain text and our patched mixed
+// hydrated here — no extra round trip. Handles plain text, replies, and mixed
 // text+attachment groups (first text child); null for attachment/voice-only
 // targets. Capped so one long bubble can't balloon the NDJSON line.
 const REACTION_TARGET_TEXT_CAP = 2000;
-function reactionTargetText(target) {
-  const c = target && typeof target === "object" ? target.content : null;
+function contentTextPreview(c) {
   if (!c || typeof c !== "object") return null;
-  let text = null;
   if (c.type === "text") {
-    text = c.text;
-  } else if (c.type === "group") {
+    return typeof c.text === "string" && c.text ? c.text : null;
+  }
+  if (c.type === "reply") {
+    return contentTextPreview(c.content);
+  }
+  if (c.type === "group") {
     for (const item of Array.isArray(c.items) ? c.items : []) {
-      const ic = item && typeof item === "object" ? item.content : null;
-      if (ic && ic.type === "text" && ic.text) {
-        text = ic.text;
-        break;
-      }
+      const text = contentTextPreview(item?.content);
+      if (text) return text;
     }
   }
+  return null;
+}
+
+function reactionTargetText(target) {
+  const c = target && typeof target === "object" ? target.content : null;
+  const text = contentTextPreview(c);
   if (typeof text !== "string" || !text) return null;
   return text.length > REACTION_TARGET_TEXT_CAP
     ? text.slice(0, REACTION_TARGET_TEXT_CAP)
@@ -446,6 +452,13 @@ async function normalizeContent(content) {
       });
     }
     return { type: "group", items };
+  }
+  if (content.type === "reply") {
+    return await normalizeReplyContent(
+      content,
+      normalizeContent,
+      reactionTargetText
+    );
   }
   if (content.type === "reaction") {
     const target = content.target;

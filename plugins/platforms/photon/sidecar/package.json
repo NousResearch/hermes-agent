@@ -6,10 +6,11 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "spectrum-ts": "8.2.1"

@@ -650,6 +650,18 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        reply_to_message_id: Optional[str] = None
+        reply_to_text: Optional[str] = None
+        reply_to_is_own_message = False
+        if ctype == "reply":
+            reply_to_message_id = content.get("targetMessageId") or None
+            reply_to_text = content.get("targetText") or None
+            reply_to_is_own_message = content.get("targetDirection") == "outbound" or bool(
+                reply_to_message_id and reply_to_message_id in self._sent_message_ids
+            )
+            inner_content = content.get("content")
+            content = inner_content if isinstance(inner_content, dict) else {}
+            ctype = content.get("type")
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).
@@ -769,6 +781,9 @@ class PhotonAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
         )
         await self.handle_message(message_event)
 

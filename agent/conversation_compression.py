@@ -515,6 +515,31 @@ def compress_context(
         _release_lock()  # compression aborted — no rotation will happen
         return messages, _existing_sp
 
+    # If compression made no progress (compressed list has the same length as
+    # the input), the compressor's anti-thrashing guard will fire on the
+    # *next* turn but the current rotation still happens unconditionally,
+    # creating orphan child sessions on every preflight check that finds
+    # the post-compression tokens still above the threshold. Per the
+    # reproduction in issue #57771, this can fire 17+ times in 4 hours.
+    # Detect the no-op and short-circuit here, the same way the abort path
+    # does: return the input messages unchanged, skip rotation, let the
+    # caller's len() check see the no-op. The compressor's own
+    # _ineffective_compression_count will still accumulate and eventually
+    # trip should_compress() at the turn level — this just stops us from
+    # wasting that signal by writing back the same list under a new id.
+    if len(compressed) == _pre_msg_count:
+        logger.info(
+            "Compression yielded no message reduction (session=%s, %d -> %d) "
+            "— skipping session rotation to avoid the infinite compression "
+            "loop from #57771.",
+            agent.session_id or "none", _pre_msg_count, len(compressed),
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:

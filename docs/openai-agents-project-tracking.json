@@ -145,6 +145,21 @@
         "Quality gate compiles generator and validates source/tracking manifests."
       ],
       "approval_boundary": "local repo scripts/docs only; no push, no migration, no live model calls"
+    },
+    {
+      "id": "OASDK-HARDEN-009",
+      "title": "OpenAI/GitHub/Hermes streamlined routing policy",
+      "status": "in_progress",
+      "linked_commit_refs": [],
+      "linked_receipt_groups": [
+        "OASDK-RCPT-GATE"
+      ],
+      "acceptance": [
+        "Policy keeps the track on Hermes, OpenAI, and GitHub instead of introducing unnecessary providers.",
+        "Quality gate validates provider/routing anchors and live-smoke proof requirements.",
+        "Local/Ollama and foreign-origin routing remain blocked unless explicitly reauthorized."
+      ],
+      "approval_boundary": "local repo docs/scripts/tests only; no provider changes or auth mutation"
     }
   ],
   "receipt_groups": [
@@ -283,6 +298,19 @@
       "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-008"
+      ],
+      "required_approval_level": "normal_local_repo_change",
+      "destructive": false,
+      "privileged": false,
+      "external_side_effect": false,
+      "recurring_spend": false
+    },
+    {
+      "id": "OASDK-NEXT-008",
+      "title": "Encode streamlined OpenAI/GitHub/Hermes routing policy",
+      "status": "in_progress",
+      "linked_roadmap_items": [
+        "OASDK-HARDEN-009"
       ],
       "required_approval_level": "normal_local_repo_change",
       "destructive": false,

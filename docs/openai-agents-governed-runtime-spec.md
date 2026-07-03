@@ -123,6 +123,8 @@ scripts/check_openai_agents_quality.py
 scripts/generate_openai_agents_proof_bundle.py
 schemas/openai-agents-receipt.schema.json
 evals/openai_agents/governance_cases.json
+docs/openai-agents-governed-runtime-spec.md
+docs/openai-agents-cost-and-model-routing.md
 docs/openai-agents-project-tracking.json
 docs/openai-agents-source-manifest.json
 docs/openai-agents-git-workflow.md
@@ -139,6 +141,7 @@ The quality gate verifies:
 - project tracking manifest referential integrity across roadmap items, local commit refs, receipt groups, and next actions;
 - native git workflow fields: current branch, origin remote, local commit refs, explicit-scope external actions, and allowed untracked paths;
 - OpenAI Agents SDK source freshness manifest for official docs, package identity, local assumptions, and recheck triggers;
+- OpenAI/GitHub/Hermes routing policy anchors: no extra providers by default, deterministic-before-live, receipt/hash proof, and no local/foreign routing without explicit scope;
 - proof bundle generator compile/readiness;
 - recent current-shape receipt schema validation;
 - optional bounded live SDK smoke with `--live-smoke`.

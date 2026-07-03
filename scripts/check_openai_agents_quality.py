@@ -21,6 +21,7 @@ SCOPED_PATHS = [
     "plugins/openai_agents",
     "tests/plugins/test_openai_agents_bridge.py",
     "docs/openai-agents-governed-runtime-spec.md",
+    "docs/openai-agents-cost-and-model-routing.md",
     "docs/openai-agents-git-workflow.md",
     "docs/openai-agents-project-tracking.json",
     "docs/openai-agents-source-manifest.json",
@@ -335,6 +336,27 @@ def validate_source_manifest() -> None:
     print(f"source manifest: {len(sources)} official source(s), {len(assumptions)} local assumption(s) ok")
 
 
+def validate_routing_policy() -> None:
+    path = ROOT / "docs/openai-agents-cost-and-model-routing.md"
+    text = path.read_text(encoding="utf-8")
+    required_phrases = [
+        "Hermes = orchestrator",
+        "OpenAI = model/SDK/evals provider",
+        "GitHub = repo/issues/PR/CI control plane",
+        "No additional model/provider ecosystem",
+        "Chinese-origin models/providers/tools/packages/repos",
+        "Local Ollama/local LLM routing unless Scott explicitly reauthorizes it",
+        "Run deterministic local gates before live SDK calls",
+        "Every live smoke must produce a receipt path and SHA-256",
+        "proof bundle generated and hashed",
+        "source freshness manifest current",
+    ]
+    missing = [phrase for phrase in required_phrases if phrase not in text]
+    if missing:
+        raise RuntimeError(f"routing policy missing required anchors: {missing}")
+    print("routing policy: OpenAI/GitHub/Hermes stack anchors ok")
+
+
 def check_registration() -> None:
     from hermes_cli.plugins import discover_plugins
     from tools.registry import registry
@@ -395,6 +417,7 @@ def main() -> int:
     run_governance_evals()
     validate_project_tracking()
     validate_source_manifest()
+    validate_routing_policy()
     validate_recent_receipts()
     if args.live_smoke:
         live_smoke()

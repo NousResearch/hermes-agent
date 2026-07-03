@@ -1194,6 +1194,160 @@ class TestTakeoverMarker:
         assert not marker_path.exists()
 
 
+class TestPlannedServiceRestartMarker:
+    """Tests for planned service-restart markers.
+
+    A service-manager initiated restart (e.g. ``systemctl restart``) sends the
+    same SIGTERM as a bare external kill. The marker lets the target classify
+    it as a planned restart and exit cleanly, without reusing the ``--replace``
+    takeover marker (which is semantically different and produces misleading
+    operator logs).
+    """
+
+    def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        ok = status.write_planned_service_restart_marker(target_pid=12345)
+
+        assert ok is True
+        marker = tmp_path / ".gateway-planned-service-restart.json"
+        assert marker.exists()
+        payload = json.loads(marker.read_text())
+        assert payload["target_pid"] == 12345
+        assert payload["target_start_time"] == 42
+        assert payload["restarted_by_pid"] == os.getpid()
+        assert "written_at" in payload
+
+    def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_service_restart_marker(target_pid=os.getpid())
+        assert ok is True
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-planned-service-restart.json").exists()
+
+    def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_service_restart_marker(target_pid=os.getpid() + 9999)
+        assert ok is True
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is False
+        assert not (tmp_path / ".gateway-planned-service-restart.json").exists()
+
+    def test_consume_returns_false_for_stale_marker(self, tmp_path, monkeypatch):
+        from datetime import datetime, timezone, timedelta
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-service-restart.json"
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 123,
+            "restarted_by_pid": 99999,
+            "written_at": stale_time,
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is False
+        assert not marker_path.exists()
+
+    def test_consume_returns_true_when_start_time_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Planned-restart consume must recognise a self-marker on platforms
+        without ``/proc`` (macOS / native Windows).
+
+        ``consume_planned_service_restart_marker_for_self`` shares
+        ``_consume_pid_marker_for_self`` with the takeover/planned-stop paths,
+        so the same start_time fallback applies: with start_time unavailable on
+        both sides we fall back to PID equality alone, bounded by the TTL.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+
+        ok = status.write_planned_service_restart_marker(target_pid=os.getpid())
+        assert ok is True
+        payload = json.loads(
+            (tmp_path / ".gateway-planned-service-restart.json").read_text()
+        )
+        assert payload["target_start_time"] is None
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-planned-service-restart.json").exists()
+
+    def test_consume_rejects_start_time_mismatch_when_both_known(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        status.write_planned_service_restart_marker(target_pid=os.getpid())
+
+        # Simulate PID reuse: marker's start_time no longer matches us.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is False
+        assert not (tmp_path / ".gateway-planned-service-restart.json").exists()
+
+    def test_consume_handles_malformed_marker_gracefully(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-service-restart.json"
+        marker_path.write_text("not valid json{")
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is False
+
+    def test_consume_handles_marker_with_missing_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-service-restart.json"
+        marker_path.write_text(json.dumps({"only_restarted_by_pid": 99999}))
+
+        result = status.consume_planned_service_restart_marker_for_self()
+
+        assert result is False
+        assert not marker_path.exists()
+
+    def test_clear_planned_service_restart_marker_is_idempotent(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+
+        status.clear_planned_service_restart_marker()
+        status.write_planned_service_restart_marker(target_pid=12345)
+        assert (tmp_path / ".gateway-planned-service-restart.json").exists()
+
+        status.clear_planned_service_restart_marker()
+
+        assert not (tmp_path / ".gateway-planned-service-restart.json").exists()
+        status.clear_planned_service_restart_marker()
+
+    def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(status, "_write_json_file", raise_oserror)
+
+        ok = status.write_planned_service_restart_marker(target_pid=12345)
+
+        assert ok is False
+
+
 class TestPlannedStopMarker:
     """Tests for intentional service/manual gateway stop markers."""
 

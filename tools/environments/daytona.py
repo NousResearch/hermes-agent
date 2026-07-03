@@ -235,11 +235,39 @@ class DaytonaEnvironment(BaseEnvironment):
         else:
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
+        # Forward explicitly-allowlisted env vars into the remote sandbox.
+        # env_passthrough is otherwise only honored by the local / execute_code
+        # backends, so skill (``required_environment_variables``) and config
+        # (``terminal.env_passthrough``) declarations never reached commands run
+        # on the Daytona backend. Resolve the allowlist HERE in the calling
+        # context: ContextVar-based skill declarations do not propagate into the
+        # _ThreadedProcessHandle worker thread below.
+        sandbox_env = self._collect_passthrough_env()
+
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            response = sandbox.process.exec(
+                shell_cmd, env=sandbox_env or None, timeout=timeout)
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
+
+    @staticmethod
+    def _collect_passthrough_env() -> dict[str, str]:
+        """Env vars explicitly allowlisted for sandbox passthrough.
+
+        Only names allowed by ``is_env_passthrough`` (a skill's
+        ``required_environment_variables`` or ``terminal.env_passthrough``) are
+        forwarded — never the full host environment — so the remote sandbox
+        stays isolated by default. ``is_env_passthrough`` already refuses Hermes
+        provider credentials (GHSA-rhgp-j443-p4rf)."""
+        try:
+            from tools.env_passthrough import is_env_passthrough
+        except Exception:
+            return {}
+        return {
+            k: v for k, v in os.environ.items()
+            if v and is_env_passthrough(k)
+        }
 
     def cleanup(self):
         with self._lock:

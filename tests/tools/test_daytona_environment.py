@@ -440,3 +440,57 @@ class TestSyncSafety:
         assert "; touch" not in mkdir_cmd.replace(
             "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
         )
+
+
+# ---------------------------------------------------------------------------
+# env_passthrough forwarding (regression)
+# ---------------------------------------------------------------------------
+class TestEnvPassthroughForwarding:
+    """The Daytona backend must forward allowlisted env vars to sandbox exec.
+
+    Regression: daytona.py previously called ``sandbox.process.exec`` without
+    ``env=`` and never consulted ``is_env_passthrough`` (unlike local.py), so a
+    skill's ``required_environment_variables`` / ``terminal.env_passthrough``
+    silently never reached commands run on the Daytona backend.
+    """
+
+    def test_collect_only_forwards_allowlisted(self, monkeypatch):
+        from tools.environments.daytona import DaytonaEnvironment
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "sekret")
+        monkeypatch.setenv("UNRELATED_VAR", "nope")
+        register_env_passthrough(["PCLOUD_S3_TOKEN"])
+        try:
+            collected = DaytonaEnvironment._collect_passthrough_env()
+        finally:
+            clear_env_passthrough()
+
+        assert collected.get("PCLOUD_S3_TOKEN") == "sekret"
+        # Non-allowlisted vars must not leak into the isolated sandbox.
+        assert "UNRELATED_VAR" not in collected
+
+    def test_run_bash_passes_env_to_exec(self, make_env, monkeypatch):
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "sekret")
+        register_env_passthrough(["PCLOUD_S3_TOKEN"])
+        env = make_env()
+        sandbox = env._sandbox
+        sandbox.process.exec.reset_mock()  # drop the $HOME-detection call
+        try:
+            handle = env._run_bash("echo hi")
+            handle._done.wait(timeout=5)
+        finally:
+            clear_env_passthrough()
+
+        _, kwargs = sandbox.process.exec.call_args
+        assert kwargs.get("env", {}).get("PCLOUD_S3_TOKEN") == "sekret"

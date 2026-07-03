@@ -1,0 +1,29 @@
+{
+    "mcp.servers": {
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "--",
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "C:\\æ"
+            ]
+        },
+        "exec": {
+            "command": "npx",
+            "args": [
+                "--",
+                "-y",
+                "@modelcontextprotocol/server-exec"
+            ]
+        },
+        "search": {
+            "command": "npx",
+            "args": [
+                "--",
+                "-y",
+                "@modelcontextprotocol/server-search"
+            ]
+        }
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "files.autoSave": "afterDelay",
+    "terminal.integrated.defaultProfile.windows": "bash",
+    "terminal.integrated.profiles.windows": {
+        "bash": {
+            "path": "C:\\Program Files\\Git\\bin\\bash.exe",
+            "args": [],
+            "env": {}
+        }
+    },
+    "editor.minimap.enabled": true,
+    "chat.viewSessions.orientation": "stacked",
+    "window.commandCenter": true,
+    "telemetry.telemetryLevel": "off"
+}

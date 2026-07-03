@@ -1,0 +1,12 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker",
+        "eamodio.gitlens",
+        "rust-lang.rust-analyzer",
+        "github.vscode-github-actions",
+        "github.copilot",
+        "github.copilot-chat"
+    ]
+}

@@ -184,6 +184,28 @@ def _discord_naturalize_completion_summary(text: str) -> str:
     if not cleaned:
         return ""
 
+    skill_inventory = re.search(
+        r"(\d+)\s*個のスキルが有効",
+        cleaned,
+    )
+    if skill_inventory and "スキル" in cleaned:
+        parts = [f"確認しました。有効なスキルは{skill_inventory.group(1)}個です。"]
+        if re.search(r"skills\s+list|skills\s+search|一覧|検索|動作も確認", cleaned):
+            parts.append("一覧表示と検索も確認できています。")
+        category_labels = [
+            "AI Company",
+            "開発",
+            "GitHub",
+            "カンバン",
+            "Google Workspace",
+            "デザイン",
+            "調査",
+        ]
+        categories = [label for label in category_labels if label in cleaned]
+        if categories:
+            parts.append(f"主なカテゴリは{'、'.join(categories)}です。")
+        return "".join(parts)
+
     skill_audit = re.search(
         r"未使用候補\s*(\d+)\s*件.*?低使用候補\s*(\d+)\s*件",
         cleaned,

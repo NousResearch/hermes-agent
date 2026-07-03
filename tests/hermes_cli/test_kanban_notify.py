@@ -400,6 +400,70 @@ async def test_discord_completed_notification_naturalizes_worker_summary(kanban_
     assert "@operations-orchestrator" not in msg
 
 
+@pytest.mark.asyncio
+async def test_discord_completed_notification_compacts_skill_inventory_summary(kanban_home):
+    """Skill inventory completions should not dump command checks or definitions."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    summary = (
+        "Hermesスキルを再確認しました。現在この環境では102個のスキルが有効で、"
+        "`hermes skills list` と `hermes skills search test` の動作も確認済みです。"
+        "スキルは、作業手順・注意点・検証方法をAIが必要時に読み込むための再利用メモで、"
+        "AI Company用、開発、GitHub、カンバン、Google Workspace、デザイン、調査などのカテゴリがあります。"
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="Hermesスキルを再確認して",
+            assignee="operations-orchestrator",
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chat1")
+        kb.complete_task(conn, tid, summary=summary)
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    msg = fake_adapter.send.call_args[0][1]
+    assert msg == (
+        "確認しました。有効なスキルは102個です。"
+        "一覧表示と検索も確認できています。"
+        "主なカテゴリはAI Company、開発、GitHub、カンバン、Google Workspace、デザイン、調査です。"
+    )
+    assert "`hermes skills list`" not in msg
+    assert "`hermes skills search test`" not in msg
+    assert "再利用メモ" not in msg
+    assert "必要時に読み込む" not in msg
+    assert tid not in msg
+    assert "@operations-orchestrator" not in msg
+
+
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #

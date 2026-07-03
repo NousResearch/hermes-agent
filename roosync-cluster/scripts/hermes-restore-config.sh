@@ -515,6 +515,53 @@ else:
 fi
 
 
+# 5e. Idempotent: anti-false-positive health-check guardrail for cluster-tour.
+# 2026-07-03: Hermes escalated "vLLM:5002 DOWN ~13h" x5 (nearly triggered an
+# unnecessary ai-01 vLLM restart). Root cause: from inside its container the bot
+# curled 127.0.0.1:5002 (empty container loopback) instead of the real ai-01
+# endpoint 192.168.0.47:5002 (which was UP, HTTP 401). Firsthand host diagnosis.
+# We pin roosync_inventory type=health as the authoritative source and forbid
+# ad-hoc loopback curls at the job-prompt level so the false positive cannot recur.
+echo "  -> Checking health-source directive in cluster-tour prompt"
+if [ -f "$DATA/cron/jobs.json" ]; then
+python3 -c "
+import json
+path = '$DATA/cron/jobs.json'
+with open(path, 'r') as f:
+    data = json.load(f)
+MARKER = 'HEALTH-SOURCE 2026-07-03'
+BLOCK = (
+    '\n\n## DIRECTIVE HEALTH-SOURCE 2026-07-03\n\n'
+    '**Source autoritaire sante fleet.** roosync_inventory type=health est LA source '
+    'de verite pour etat des services. Ne lance JAMAIS de curl ad-hoc pour declarer un '
+    'service DOWN. Depuis ce container, 127.0.0.1 ne voit AUCUN service LAN : vLLM tourne '
+    'sur ai-01 (192.168.0.47:5002), embeddings sur host.docker.internal:8004. Un RST sur '
+    'loopback ne prouve JAMAIS une panne. HTTP 401 = service UP (auth-gated), pas DOWN. '
+    'Ne signale un service DOWN QUE si roosync_inventory type=health le rapporte '
+    'unreachable. Incident 2026-07-02 : faux positif vLLM:5002 escalade x5 via curl '
+    '127.0.0.1 (loopback container vide) alors que le vrai endpoint ai-01 etait UP.\n'
+)
+changed = False
+for job in data.get('jobs', []):
+    if job.get('name') == 'hermes-cluster-tour':
+        p = job.get('prompt', '')
+        if MARKER not in p:
+            if '\n## FORMAT OUTPUT' in p:
+                p = p.replace('\n## FORMAT OUTPUT', BLOCK + '\n## FORMAT OUTPUT', 1)
+            else:
+                p = p + BLOCK
+            job['prompt'] = p
+            changed = True
+if changed:
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    print('  -> health-source directive injected into cluster-tour prompt')
+else:
+    print('  -> health-source directive already present (no-op)')
+" 2>/dev/null || echo "  -> Warning: could not check health-source directive"
+fi
+
+
 # 6. Install croniter
 echo "  -> Checking croniter"
 /opt/hermes/.venv/bin/python3 -c 'import croniter' 2>/dev/null && echo "  -> croniter already installed" || {

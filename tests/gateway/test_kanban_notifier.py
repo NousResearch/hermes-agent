@@ -107,7 +107,8 @@ def test_discord_completion_strips_generic_no_op_safety_footer(tmp_path, monkeyp
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert adapter.sent[0]["text"] == "現在時刻を確認しました。2026-07-03 17:41:51 JST（+0900）です。"
+    assert adapter.sent[0]["text"] == "現在時刻は2026-07-03 17:41:51 JST（+0900）です。"
+    assert "確認しました" not in adapter.sent[0]["text"]
     assert "外部サービス変更" not in adapter.sent[0]["text"]
     assert "GitHub push" not in adapter.sent[0]["text"]
 
@@ -176,7 +177,34 @@ def test_discord_skill_inventory_summary_starts_with_result(tmp_path, monkeypatc
 
     assert len(adapter.sent) == 1
     assert adapter.sent[0]["text"].startswith("有効なスキルは102個です。")
-    assert not adapter.sent[0]["text"].startswith("確認しました。")
+    assert "再確認しました" not in adapter.sent[0]["text"]
+    assert "確認できています" not in adapter.sent[0]["text"]
+
+
+def test_discord_skill_audit_summary_starts_with_result(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-skill-audit-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "Hermesスキルの利用状況を調査し、未使用候補79件・低使用候補1件を抽出しました。"
+        "調査レポートとJSONをワークスペースに保存し、"
+        "今回は削除・archive・設定変更など外部影響のある操作は行っていません。"
+    )
+    _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["text"] == (
+        "未使用候補は79件、低使用候補は1件でした。"
+        "削除やアーカイブ、設定変更はしていません。"
+    )
+    assert "調査し" not in adapter.sent[0]["text"]
+    assert "抽出しました" not in adapter.sent[0]["text"]
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

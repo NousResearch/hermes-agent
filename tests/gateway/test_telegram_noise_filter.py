@@ -4,6 +4,7 @@ from pathlib import Path
 
 from gateway.config import Platform
 from gateway.run import (
+    _discord_kanban_terminal_message,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -124,6 +125,50 @@ def test_discord_final_response_strips_leading_acknowledgements_only():
         "たぶんHermesのスキルのことです。"
     )
     assert _sanitize_gateway_final_response(Platform.DISCORD, code) == code
+
+
+def test_discord_final_response_returns_result_without_work_report_prefixes():
+    skill_count = (
+        "Hermesスキルを再確認しました。現在この環境では102個のスキルが有効で、"
+        "`hermes skills list` と `hermes skills search test` の動作も確認済みです。"
+        "カテゴリはAI Company、GitHub、カンバン、Google Workspace、デザイン、調査です。"
+    )
+    skill_audit = (
+        "Hermesスキルの利用状況を調査し、未使用候補79件・低使用候補1件を抽出しました。"
+        "調査レポートとJSONをワークスペースに保存し、"
+        "今回は削除・archive・設定変更など外部影響のある操作は行っていません。"
+    )
+    orchestration = (
+        "依頼を3タスクに分解しました。Hermesスキル整理、"
+        "GootHands Web流入・検索状況調査を並行で進め、"
+        "その結果をbusiness-advisorが内田さん向けの短い回答に統合する流れにしました。"
+    )
+
+    assert _sanitize_gateway_final_response(Platform.DISCORD, skill_count).startswith(
+        "有効なスキルは102個です。"
+    )
+    assert "再確認しました" not in _sanitize_gateway_final_response(
+        Platform.DISCORD, skill_count
+    )
+    assert "確認できています" not in _sanitize_gateway_final_response(
+        Platform.DISCORD, skill_count
+    )
+    assert _sanitize_gateway_final_response(Platform.DISCORD, skill_audit) == (
+        "未使用候補は79件、低使用候補は1件でした。"
+        "削除やアーカイブ、設定変更はしていません。"
+    )
+    assert _sanitize_gateway_final_response(Platform.DISCORD, orchestration) == ""
+
+
+def test_discord_kanban_error_notifications_do_not_say_will_check():
+    event = type("Event", (), {"payload": {}})()
+
+    assert _discord_kanban_terminal_message(
+        "crashed", None, event, "テストタスク"
+    ) == "「テストタスク」の処理が途中で止まりました。再実行対象です。"
+    assert _discord_kanban_terminal_message(
+        "timed_out", None, event, "テストタスク"
+    ) == "「テストタスク」の処理に時間がかかりすぎました。再実行対象です。"
 
 
 def test_telegram_existing_status_display_is_preserved():

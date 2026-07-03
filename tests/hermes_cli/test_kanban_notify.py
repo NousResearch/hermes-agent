@@ -453,9 +453,9 @@ async def test_discord_completed_notification_compacts_skill_inventory_summary(k
     msg = fake_adapter.send.call_args[0][1]
     assert msg == (
         "有効なスキルは102個です。"
-        "一覧表示と検索も確認できています。"
         "主なカテゴリはAI Company、開発、GitHub、カンバン、Google Workspace、デザイン、調査です。"
     )
+    assert "確認できています" not in msg
     assert "`hermes skills list`" not in msg
     assert "`hermes skills search test`" not in msg
     assert "再利用メモ" not in msg

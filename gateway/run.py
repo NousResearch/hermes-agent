@@ -211,14 +211,20 @@ def _discord_naturalize_completion_summary(text: str) -> str:
     if not cleaned:
         return ""
 
+    time_answer = re.search(
+        r"現在時刻を確認しました[。.!！\s]*(.+?です。?)$",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    if time_answer:
+        return f"現在時刻は{time_answer.group(1).strip()}"
+
     skill_inventory = re.search(
         r"(\d+)\s*個のスキルが有効",
         cleaned,
     )
     if skill_inventory and "スキル" in cleaned:
         parts = [f"有効なスキルは{skill_inventory.group(1)}個です。"]
-        if re.search(r"skills\s+list|skills\s+search|一覧|検索|動作も確認", cleaned):
-            parts.append("一覧表示と検索も確認できています。")
         category_labels = [
             "AI Company",
             "開発",
@@ -287,9 +293,9 @@ def _discord_kanban_terminal_message(kind: str, task: object, event: object, tit
             return f"再確認が必要です。{detail}"
         return f"「{title}」は再確認が必要です。"
     if kind == "crashed":
-        return f"「{title}」の処理が途中で止まりました。こちらで再確認します。"
+        return f"「{title}」の処理が途中で止まりました。再実行対象です。"
     if kind == "timed_out":
-        return f"「{title}」の処理に時間がかかりすぎました。こちらで再確認します。"
+        return f"「{title}」の処理に時間がかかりすぎました。再実行対象です。"
     return ""
 
 
@@ -459,6 +465,24 @@ _DISCORD_LEADING_ACK_RE = re.compile(
     r"[。.!！、,\s]*",
 )
 
+_DISCORD_LEADING_WORK_CLAUSE_RE = re.compile(
+    r"^\s*"
+    r".{0,120}?"
+    r"(?:確認|調査|検索|調べ|見直|検証|テスト|チェック|整理|抽出)"
+    r"(?:し|して|しました)[、,\s]+",
+    re.DOTALL,
+)
+
+_DISCORD_LEADING_WORK_SENTENCE_RE = re.compile(
+    r"^\s*"
+    r".{0,180}?"
+    r"(?:確認|調査|検索|調べ|見直|検証|テスト|チェック|整理|抽出|登録|作成|保存|分解|割り振|完了|対応)"
+    r".{0,80}?"
+    r"(?:しました|しています|済みです|完了しました|進めます|進めています|流れにしました)"
+    r"[。.!！?\n]+",
+    re.DOTALL,
+)
+
 
 def _strip_discord_leading_acknowledgement(text: str) -> str:
     """Remove acknowledgement-only prefixes from Discord final answers."""
@@ -467,6 +491,37 @@ def _strip_discord_leading_acknowledgement(text: str) -> str:
     while cleaned and previous != cleaned:
         previous = cleaned
         cleaned = _DISCORD_LEADING_ACK_RE.sub("", cleaned, count=1).lstrip()
+    return cleaned
+
+
+def _discord_result_only_final_response(text: str) -> str:
+    """Keep Discord final replies focused on the result, not the work log."""
+    cleaned = _strip_discord_leading_acknowledgement(str(text or ""))
+    if not cleaned:
+        return cleaned
+    if cleaned.lstrip().startswith("```"):
+        return cleaned
+
+    naturalized = _discord_naturalize_completion_summary(cleaned)
+    if naturalized != cleaned:
+        return naturalized
+    if not naturalized:
+        return ""
+
+    cleaned = naturalized
+    previous = None
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        cleaned = _DISCORD_LEADING_ACK_RE.sub("", cleaned, count=1).lstrip()
+        cleaned = _DISCORD_LEADING_WORK_CLAUSE_RE.sub("", cleaned, count=1).lstrip()
+        maybe = _discord_naturalize_completion_summary(cleaned)
+        if maybe != cleaned:
+            cleaned = maybe
+            continue
+        cleaned = _DISCORD_LEADING_WORK_SENTENCE_RE.sub("", cleaned, count=1).lstrip()
+
+    if _DISCORD_INTERNAL_ORCHESTRATION_RE.search(cleaned):
+        return ""
     return cleaned
 
 
@@ -487,7 +542,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         redacted = _redact_gateway_user_facing_secrets(str(text))
         if _TELEGRAM_NOISY_STATUS_RE.search(redacted):
             return ""
-        return _strip_discord_leading_acknowledgement(
+        return _discord_result_only_final_response(
             _strip_discord_gateway_chrome_emoji(redacted)
         )
 

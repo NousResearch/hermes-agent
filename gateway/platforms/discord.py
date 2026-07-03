@@ -65,6 +65,8 @@ _TASK_MAINTENANCE_CONTEXT = (
 _TASK_FINAL_REPLY_CONTEXT = (
     "Discord最終回答ルール:\n"
     "- 最終回答は、依頼内容への結果だけを敬語で短く返す。\n"
+    "- 「確認します」「確認しました」「調べました」「調査しました」「再確認しました」から始めない。\n"
+    "- カンバン上の分解、割り振り、担当者名、進行方法、登録・完了だけの報告は書かない。\n"
     "- 「カンバンに登録しました」「完了しました」だけの報告は出さない。\n"
     "- 外部送信、公開、削除、GitHub push/PR、VPS変更、本番再起動などを実際に行った、"
     "またはユーザーがその有無を確認している場合だけ、その事実を短く書く。\n"
@@ -1005,7 +1007,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     try:
                         if not interaction.response.is_done():
                             await interaction.response.send_message(
-                                "記事確認ボタンの処理に失敗しました。リノ側で確認します。",
+                                "記事確認ボタンの処理に失敗しました。",
                                 ephemeral=True,
                             )
                     except Exception:
@@ -2752,7 +2754,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             await interaction.response.send_message(
-                "この操作は許可されていません。必要なら権限設定を確認します。",
+                "この操作は許可されていません。権限設定が必要です。",
                 ephemeral=True,
             )
         except Exception as e:
@@ -3408,6 +3410,7 @@ class DiscordAdapter(BasePlatformAdapter):
             "- 初期担当は operations-orchestrator。\n"
             "- 通常依頼は triage に固定せず、実行待ちとしてAI側で進める。\n"
             "- 回答が必要な依頼も、まずタスクとして整理してから必要な確認や調査を行い、その結果を返す。\n"
+            "- 最終返答では、登録・分解・割り振り・確認開始ではなく、依頼への結果だけを書く。\n"
         )
 
         return {

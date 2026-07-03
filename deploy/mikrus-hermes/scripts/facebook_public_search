@@ -1,0 +1,141 @@
+#!/opt/hermes/.venv/bin/python
+"""Search public Facebook pages/posts without logging in.
+
+This helper intentionally does not use Facebook credentials, cookies, or login
+workarounds. It asks Hermes' configured web backend for indexed public Facebook
+results and prints concise Markdown that an agent can cite or summarize.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+HERMES_ROOT = Path("/opt/hermes")
+DATA_ENV = Path("/opt/data/.env")
+
+if str(HERMES_ROOT) not in sys.path:
+    sys.path.insert(0, str(HERMES_ROOT))
+
+
+def _load_dotenv(path: Path = DATA_ENV) -> None:
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip('"').strip("'")
+
+
+def _facebook_site_from_text(text: str) -> str:
+    match = re.search(
+        r"https?://(?:www\.|m\.|mbasic\.)?facebook\.com/([^\s?#]+)",
+        text,
+        re.I,
+    )
+    if not match:
+        return "site:facebook.com"
+    path = match.group(1).strip("/")
+    if not path:
+        return "site:facebook.com"
+    if path in {"groups", "pages", "events", "posts", "photos", "videos", "watch"}:
+        return "site:facebook.com"
+    return f"site:facebook.com/{path}"
+
+
+def _coerce_results(payload):
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return [], payload
+    if not isinstance(payload, dict):
+        return [], str(payload)
+    if payload.get("error"):
+        return [], str(payload.get("error"))
+    data = payload.get("data") or {}
+    if isinstance(data, dict):
+        web = data.get("web") or data.get("results") or []
+    else:
+        web = payload.get("results") or []
+    if not isinstance(web, list):
+        return [], json.dumps(payload, ensure_ascii=False)[:1000]
+    return web, ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Search indexed public Facebook posts/pages without logging in."
+    )
+    parser.add_argument(
+        "query",
+        nargs="+",
+        help="Topic, city/page name, or a public facebook.com URL",
+    )
+    parser.add_argument("--limit", type=int, default=8, help="Maximum results to return")
+    args = parser.parse_args()
+
+    _load_dotenv()
+    query_text = " ".join(args.query).strip()
+    site = _facebook_site_from_text(query_text)
+    cleaned = re.sub(r"https?://\S+", "", query_text).strip()
+    if not cleaned:
+        cleaned = query_text
+    search_query = f"{site} {cleaned} aktualnosci wydarzenia posty".strip()
+
+    try:
+        from tools.web_tools import web_search_tool
+
+        payload = web_search_tool(search_query, limit=max(1, min(args.limit, 20)))
+    except Exception as exc:
+        print(f"ERROR: facebook_public_search failed: {exc}")
+        return 2
+
+    results, error = _coerce_results(payload)
+    print("# Public Facebook results without login")
+    print(f"Query: `{search_query}`")
+    print(
+        "Source: public indexed Facebook results via the configured web_search "
+        "backend; no cookies and no login.\n"
+    )
+    if error:
+        print(f"Error: {error}")
+        return 1
+    if not results:
+        print("No public indexed Facebook results were found for this query.")
+        return 0
+
+    seen = set()
+    count = 0
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url or "facebook.com" not in url.lower() or url in seen:
+            continue
+        seen.add(url)
+        title = re.sub(r"\s+", " ", str(item.get("title") or "Facebook")).strip()
+        desc = re.sub(r"\s+", " ", str(item.get("description") or "")).strip()
+        count += 1
+        print(f"{count}. {title}")
+        if desc:
+            print(f"   {desc}")
+        print(f"   {url}")
+        if count >= args.limit:
+            break
+    if count == 0:
+        print("Backend returned results, but no public facebook.com URLs.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

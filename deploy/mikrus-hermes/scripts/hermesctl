@@ -1,0 +1,66 @@
+#!/bin/sh
+set -eu
+
+cmd=${1:-status}
+shift || true
+
+case "$cmd" in
+  status)
+    /opt/hermes/bin/hermes gateway status || true
+    cat /opt/data/gateway_state.json 2>/dev/null || true
+    ;;
+  restart|gateway-restart|reload|reload-env)
+    /opt/hermes/bin/hermes gateway restart
+    ;;
+  logs)
+    tail -n "${1:-120}" /opt/data/logs/gateways/default/current 2>/dev/null || \
+      tail -n "${1:-120}" /opt/data/logs/gateway.log 2>/dev/null || true
+    ;;
+  model-test)
+    /opt/hermes/bin/hermes -z 'Odpowiedz dokladnie: OK'
+    ;;
+  firecrawl-test)
+    . /opt/hermes/.venv/bin/activate
+    python - <<'PY'
+from hermes_cli.env_loader import load_hermes_dotenv
+
+load_hermes_dotenv()
+
+import json
+import os
+import urllib.request
+
+key = os.environ.get("FIRECRAWL_API_KEY", "")
+print("key_len", len(key))
+req = urllib.request.Request(
+    "https://api.firecrawl.dev/v1/scrape",
+    data=json.dumps(
+        {
+            "url": "https://example.com",
+            "formats": ["markdown"],
+            "onlyMainContent": True,
+        }
+    ).encode(),
+    headers={
+        "Authorization": "Bearer " + key,
+        "Content-Type": "application/json",
+    },
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=30) as r:
+    body = json.loads(r.read().decode())
+    print(
+        "status",
+        r.status,
+        "success",
+        body.get("success"),
+        "has_markdown",
+        bool((body.get("data") or {}).get("markdown")),
+    )
+PY
+    ;;
+  *)
+    echo "Usage inside Hermes: hermesctl {status|restart|reload-env|logs [n]|model-test|firecrawl-test}" >&2
+    exit 2
+    ;;
+esac

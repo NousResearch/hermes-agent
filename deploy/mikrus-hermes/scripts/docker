@@ -1,0 +1,33 @@
+#!/bin/sh
+# Safe in-container shim: Hermes cannot and should not control the host Docker
+# daemon. Map common self-management commands to gateway operations that reload
+# /opt/data/.env.
+
+case "${1:-}" in
+  --version|version)
+    echo "Docker host daemon is not exposed inside Hermes. Use hermesctl inside the container, or host hermesctl over SSH."
+    exit 0
+    ;;
+  restart)
+    if [ "${2:-}" = "hermes" ] || [ "${2:-}" = "gateway" ] || [ -z "${2:-}" ]; then
+      exec hermesctl restart
+    fi
+    ;;
+  logs)
+    exec hermesctl logs "${2:-120}"
+    ;;
+  ps)
+    exec hermesctl status
+    ;;
+  compose)
+    shift
+    case "${1:-}" in
+      restart) exec hermesctl restart ;;
+      logs) exec hermesctl logs "${2:-120}" ;;
+      ps|status) exec hermesctl status ;;
+    esac
+    ;;
+esac
+
+echo "Docker daemon is unavailable inside Hermes. Supported safe commands: docker restart hermes, docker logs, docker ps, docker compose restart." >&2
+exit 2

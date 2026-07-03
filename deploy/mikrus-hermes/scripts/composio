@@ -1,0 +1,4 @@
+#!/bin/sh
+export HOME=/opt/data
+export COMPOSIO_INSTALL_DIR=/opt/composio-cli
+exec /opt/composio-cli/composio "$@"

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+case "${1:-}" in
+  restart) exec hermesctl restart ;;
+  logs) exec hermesctl logs "${2:-120}" ;;
+  ps|status) exec hermesctl status ;;
+  --version|version)
+    echo "docker-compose shim inside Hermes: use hermesctl; host compose is available over SSH."
+    exit 0
+    ;;
+esac
+
+echo "docker-compose is a safe shim inside Hermes. Supported: restart, logs, ps/status." >&2
+exit 2

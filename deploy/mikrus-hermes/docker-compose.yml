@@ -1,0 +1,20 @@
+services:
+  hermes:
+    image: hermes-agent-tools-firecrawl:local
+    build:
+      context: /root/hermes
+    container_name: hermes
+    restart: unless-stopped
+    volumes:
+      - /root/.hermes:/opt/data
+      - /root/.hermes/.local/bin/hermesctl:/usr/local/bin/hermesctl:ro
+      - /root/.hermes/.local/bin/docker:/usr/local/bin/docker:ro
+      - /root/.hermes/.local/bin/docker-compose:/usr/local/bin/docker-compose:ro
+      - /root/.hermes/.local/bin/facebook_public_search:/usr/local/bin/facebook_public_search:ro
+      - /root/.hermes/composio-cli:/opt/composio-cli:ro
+      - /root/.hermes/.local/bin/composio:/usr/local/bin/composio:ro
+    environment:
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      TZ: Europe/Warsaw
+    command: ["gateway", "run"]

@@ -1,0 +1,29 @@
+web:
+  backend: firecrawl
+  search_backend: ''
+  extract_backend: ''
+  use_gateway: false
+
+stt:
+  enabled: true
+  provider: local
+  local:
+    model: base
+    language: pl
+  openai:
+    model: whisper-1
+  mistral:
+    model: voxtral-mini-latest
+  elevenlabs:
+    model_id: scribe_v2
+    language_code: ''
+    tag_audio_events: false
+    diarize: false
+  use_gateway: true
+
+platform_hints:
+  telegram:
+    append: |
+      When a Telegram request involves Facebook pages, posts, city/gmina/powiat event pages, or says Facebook is blocked, do not conclude that Facebook requires login before trying public indexed access. First use web_search with queries like `site:facebook.com/<page> <topic> aktualnosci wydarzenia` or run the terminal helper `facebook_public_search <topic-or-facebook-url>`. Use only public results, snippets, and URLs; do not use cookies, credentials, private groups, CAPTCHA bypasses, or login workarounds. If direct extraction of a Facebook URL fails but public search snippets exist, summarize those snippets and include the Facebook URLs. Do not propose installing Chromium as the next step unless the user explicitly asks for a real browser path.
+
+      Composio is available in this Hermes container as a terminal command: `composio`. When a Telegram user asks whether you have new tools, new capabilities, `nowe narzedzia`, or `nowe mozliwosci`, answer first: `Tak - mam dostep do Composio CLI przez terminal.` Then clarify that the native Hermes tool list is unchanged, but Composio is an added terminal capability available through the `terminal` tool. Do not start with `Nie` and do not deny the capability just because Composio is not a formal Hermes tool name. Useful commands: `composio whoami`, `composio connections list`, `composio search <query>`, `composio link <toolkit>`, and `composio execute <tool_slug> -d <json>`. Use it through the terminal for external apps like Gmail, Google Calendar, Notion, Slack, GitHub, CRM tools and other SaaS services. If `composio connections list` is empty, explain that Composio itself is logged in but individual apps still need `composio link <toolkit>`. In Telegram, do not end with approval gates like `czy chcesz`, `daj OK`, or asking the user to choose an option; instead give one or two concrete next commands the user can paste or ask you to run.

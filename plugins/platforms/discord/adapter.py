@@ -3227,6 +3227,18 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return bool(channel_ids & allowed)
 
+    def _is_pairing_approved_user(self, user_id: str) -> bool:
+        """True when the Discord user has an explicit Hermes pairing grant."""
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            return False
+        try:
+            from gateway.pairing import PairingStore
+
+            return bool(PairingStore().is_approved("discord", user_id))
+        except Exception:
+            return False
+
     def _is_allowed_user(
         self,
         user_id: str,
@@ -3267,6 +3279,14 @@ class DiscordAdapter(BasePlatformAdapter):
         allowed_roles = getattr(self, "_allowed_role_ids", set())
         has_users = bool(allowed_users)
         has_roles = bool(allowed_roles)
+
+        # Pairing is a first-class auth grant in the gateway auth union and in
+        # Discord component buttons. Honor it here too so normal guild/DM text
+        # messages do not get dropped at the adapter before the pairing-aware
+        # gateway layer can see them.
+        if self._is_pairing_approved_user(user_id):
+            return True
+
         if not has_users and not has_roles:
             if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
                 return True

@@ -84,6 +84,55 @@ const HAPTIC_INTENTS: Record<HapticIntent, HapticConfig> = {
 
 export type HapticTrigger = (input?: HapticInput, options?: TriggerOptions) => Promise<void> | undefined
 
+export const HAPTICS_DEBUG_STORAGE_KEY = 'hermes.desktop.hapticsDebug'
+
+export interface HapticTelemetrySnapshot {
+  attempted: number
+  failed: number
+  fired: number
+  missingTrigger: number
+  muted: number
+  rateLimited: number
+}
+
+const hapticTelemetry: HapticTelemetrySnapshot = {
+  attempted: 0,
+  failed: 0,
+  fired: 0,
+  missingTrigger: 0,
+  muted: 0,
+  rateLimited: 0
+}
+
+export function hapticsDebugEnabled(): boolean {
+  if (!import.meta.env.DEV || typeof window === 'undefined') {
+    return false
+  }
+
+  return window.localStorage.getItem(HAPTICS_DEBUG_STORAGE_KEY) === 'true'
+}
+
+function recordHapticTelemetry(key: keyof HapticTelemetrySnapshot) {
+  if (!hapticsDebugEnabled()) {
+    return
+  }
+
+  hapticTelemetry[key] += 1
+}
+
+export function getHapticTelemetrySnapshot(): HapticTelemetrySnapshot {
+  return { ...hapticTelemetry }
+}
+
+export function resetHapticTelemetryForTests() {
+  for (const key of Object.keys(hapticTelemetry) as Array<keyof HapticTelemetrySnapshot>) {
+    hapticTelemetry[key] = 0
+  }
+
+  recentFires = []
+  lastSelectionAt = 0
+}
+
 let registeredTrigger: HapticTrigger | null = null
 let lastSelectionAt = 0
 
@@ -101,7 +150,17 @@ export function registerHapticTrigger(trigger: HapticTrigger | null) {
 }
 
 export function triggerHaptic(intent: HapticIntent = 'selection') {
-  if ($hapticsMuted.get() || !registeredTrigger) {
+  recordHapticTelemetry('attempted')
+
+  if ($hapticsMuted.get()) {
+    recordHapticTelemetry('muted')
+
+    return
+  }
+
+  if (!registeredTrigger) {
+    recordHapticTelemetry('missingTrigger')
+
     return
   }
 
@@ -118,6 +177,8 @@ export function triggerHaptic(intent: HapticIntent = 'selection') {
   recentFires = recentFires.filter(t => now - t < RATE_WINDOW)
 
   if (recentFires.length >= RATE_LIMIT) {
+    recordHapticTelemetry('rateLimited')
+
     return
   }
 
@@ -125,5 +186,6 @@ export function triggerHaptic(intent: HapticIntent = 'selection') {
 
   const config = HAPTIC_INTENTS[intent]
 
-  void registeredTrigger(config.pattern, config.options)?.catch(() => undefined)
+  recordHapticTelemetry('fired')
+  void registeredTrigger(config.pattern, config.options)?.catch(() => recordHapticTelemetry('failed'))
 }

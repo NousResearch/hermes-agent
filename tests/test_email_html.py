@@ -88,11 +88,10 @@ class TestAttachBody:
     def _make_adapter(self, html_format=True):
         """Create a minimal EmailAdapter mock with html_format config."""
         from plugins.platforms.email.adapter import EmailAdapter
-        from gateway.config import PlatformConfig, Platform
+        from gateway.config import PlatformConfig
 
-        config = PlatformConfig(
-            platform=Platform.EMAIL,
-            extra={"address": "test@test.com", "html_format": html_format},
+        config = PlatformConfig.from_dict(
+            {"extra": {"address": "test@test.com", "html_format": html_format}},
         )
         # Mock the __init__ to skip env var resolution
         with patch.object(EmailAdapter, '__init__', lambda self, *a, **kw: None):
@@ -112,6 +111,13 @@ class TestAttachBody:
         assert len(parts) == 1
         assert parts[0].get_content_type() == "multipart/alternative"
 
+    def _decode_payload(self, part):
+        """Decode a MIME part's payload, handling base64 encoding."""
+        decoded = part.get_payload(decode=True)
+        if decoded:
+            return decoded.decode("utf-8", errors="replace")
+        return part.get_payload()
+
     def test_attach_body_with_html_disabled(self):
         """With html_format=False, alternative part has only text/plain."""
         adapter = self._make_adapter(html_format=False)
@@ -122,7 +128,7 @@ class TestAttachBody:
         payloads = alt.get_payload()
         assert len(payloads) == 1
         assert payloads[0].get_content_type() == "text/plain"
-        assert payloads[0].get_payload() == "Hello **world**"
+        assert self._decode_payload(payloads[0]) == "Hello **world**"
 
     def test_attach_body_with_html_enabled(self):
         """With html_format=True, alternative part has text/plain + text/html."""
@@ -135,9 +141,8 @@ class TestAttachBody:
         assert len(payloads) == 2
         assert payloads[0].get_content_type() == "text/plain"
         assert payloads[1].get_content_type() == "text/html"
-        # HTML should contain the styled output
-        html_content = payloads[1].get_payload()
-        assert "<strong>" in html_content or "**world**" in html_content
+        html_content = self._decode_payload(payloads[1])
+        assert "<strong" in html_content
 
 
 class TestCreateBodyPart:

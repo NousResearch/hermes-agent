@@ -2407,12 +2407,27 @@ class MCPServerTask:
                     if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
-                            "%d attempts, giving up: %s",
+                            "%d attempts, parking until a reconnect is requested: %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
                         )
                         self._error = exc
                         self._ready.set()
-                        return
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown()
+                        if parked == "shutdown":
+                            return
+                        logger.info(
+                            "MCP server '%s': reconnect requested after initial "
+                            "connection failures; rebuilding transport.",
+                            self.name,
+                        )
+                        initial_retries = 0
+                        retries = 0
+                        backoff = 1.0
+                        self._error = None
+                        self._ready.clear()
+                        continue
 
                     logger.warning(
                         "MCP server '%s' initial connection failed "

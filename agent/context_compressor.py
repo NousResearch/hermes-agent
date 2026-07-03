@@ -2608,7 +2608,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
-    def _effective_protect_first_n(self) -> int:
+    def _effective_protect_first_n(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
         """``protect_first_n`` decayed across compression cycles.
 
         ``protect_first_n`` keeps the first N non-system messages verbatim so
@@ -2620,9 +2623,22 @@ This compaction should PRIORITISE preserving all information related to the focu
         once, the early turns are already captured in the handoff summary, so
         there's no need to keep re-protecting them: decay to 0 (the system
         prompt is still always protected separately by _protect_head_size).
+        After a restart, infer that decayed state from any persisted handoff
+        summary that would otherwise sit inside the protected head.
         """
         if self.compression_count >= 1 or self._previous_summary:
             return 0
+        if messages and self.protect_first_n > 0:
+            first_non_system = 1 if messages[0].get("role") == "system" else 0
+            protected = messages[
+                first_non_system:first_non_system + self.protect_first_n
+            ]
+            if any(
+                self._has_compressed_summary_metadata(msg)
+                or self._is_context_summary_content(msg.get("content"))
+                for msg in protected
+            ):
+                return 0
         return self.protect_first_n
 
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
@@ -2648,7 +2664,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         head = 0
         if messages and messages[0].get("role") == "system":
             head = 1
-        return head + self._effective_protect_first_n()
+        return head + self._effective_protect_first_n(messages)
 
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a

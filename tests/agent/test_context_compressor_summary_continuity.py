@@ -85,3 +85,24 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_resume_handoff_in_protected_head_is_not_preserved_as_fossil():
+    """After restart, a persisted handoff summary should decay head protection."""
+    compressor = _compressor()
+    old_summary = "RESTART-FOSSIL-SUMMARY durable facts from before restart"
+
+    with patch.object(compressor, "_generate_summary", return_value="fresh summary"):
+        result = compressor.compress(_messages_with_handoff(old_summary))
+
+    assert compressor._previous_summary == old_summary
+    summary_messages = [
+        msg for msg in result
+        if ContextCompressor._has_compressed_summary_metadata(msg)
+        or ContextCompressor._is_context_summary_content(msg.get("content"))
+    ]
+    assert len(summary_messages) == 1
+    assert all(
+        old_summary not in str(msg.get("content", ""))
+        for msg in result
+    )

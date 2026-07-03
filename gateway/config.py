@@ -925,13 +925,15 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
             # Multiplexing flag: accept both the top-level key and the nested
-            # gateway.multiplex_profiles form (from_dict resolves the nested
-            # fallback, but surface the top-level key here for parity with the
-            # other session-scope flags above).
+            # gateway.multiplex_profiles form. Top-level config keeps
+            # precedence; nested is honored when the top-level key is absent,
+            # matching the documented ``hermes config set gateway.*`` path.
+            gateway_section = yaml_cfg.get("gateway")
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+            elif isinstance(gateway_section, dict) and "multiplex_profiles" in gateway_section:
+                gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
 
-            gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 
@@ -1116,9 +1118,22 @@ def load_gateway_config() -> GatewayConfig:
                             if isinstance(ov_data, dict)
                         }
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit and not has_channel_overrides:
+                platform_extra_raw = platform_cfg.get("extra")
+                platform_extra = platform_extra_raw if isinstance(platform_extra_raw, dict) else {}
+                if (
+                    not bridged
+                    and not enabled_was_explicit
+                    and not has_channel_overrides
+                    and not platform_extra
+                ):
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
+                if platform_extra:
+                    # Preserve top-level ``<platform>.extra`` with the same
+                    # precedence as top-level shared keys: it overlays nested
+                    # ``gateway.platforms`` / ``platforms`` defaults, while
+                    # explicit bridgeable keys below still win over ``extra``.
+                    extra.update(platform_extra)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
                     # Mark the explicit enable/disable so the registry-driven

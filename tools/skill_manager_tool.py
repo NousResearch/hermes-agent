@@ -990,6 +990,15 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     _add_description_prompt_preview(result, content)
     return result
 
+    # ── post_skill_edit hook (observer only) ──
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_post_hook
+        _invoke_post_hook("post_skill_edit", name=name, path=str(existing["path"]), success=True)
+    except Exception:
+        pass
+
+    return result
+
 
 def _patch_skill(
     name: str,

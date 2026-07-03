@@ -182,9 +182,13 @@ def _auto_sso_response(request: Request) -> Response | None:
         # Zero → nothing to redirect to. Two+ → user must choose at /login.
         return None
 
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
     provider = providers[0]
+    # If the sole provider is password-only, don't auto-redirect to /auth/login
+    # as it has no OAuth redirect flow. Fall through to /login interstitial.
+    if getattr(provider, "supports_password", False):
+        return None
+
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

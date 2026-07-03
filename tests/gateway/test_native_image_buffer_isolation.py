@@ -77,3 +77,20 @@ async def test_native_image_buffer_not_cleared_by_other_sessions_without_images(
 
     assert runner._consume_pending_native_image_paths(build_session_key(source_a)) == ["/tmp/a.png"]
     assert runner._consume_pending_native_image_paths(build_session_key(source_b)) == []
+
+
+@pytest.mark.asyncio
+async def test_native_image_buffer_uses_resolved_session_key_when_provided():
+    runner = _make_runner()
+    source = _source("chat-a")
+    runner._session_key_for_source = lambda _source: "source-derived-key"
+
+    await runner._prepare_inbound_message_text(
+        event=_image_event(source, "/tmp/a.png"),
+        source=source,
+        history=[],
+        session_key="canonical-session-key",
+    )
+
+    assert runner._consume_pending_native_image_paths("source-derived-key") == []
+    assert runner._consume_pending_native_image_paths("canonical-session-key") == ["/tmp/a.png"]

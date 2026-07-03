@@ -49,4 +49,23 @@ function guardLinkTitleSession(partitionSession) {
   }
 }
 
-module.exports = { createLinkTitleWindow, guardLinkTitleSession, linkTitleWindowOptions }
+// Read the page title from a title-fetch window. Callers schedule this from
+// timers that can fire after finish() destroys the window, so every access must
+// guard isDestroyed and swallow Electron's "Object has been destroyed" throws.
+function readLinkTitleWindowTitle(window) {
+  try {
+    if (!window || window.isDestroyed()) return ''
+    const contents = window.webContents
+    if (!contents || contents.isDestroyed()) return ''
+    return contents.getTitle() || ''
+  } catch {
+    return ''
+  }
+}
+
+module.exports = {
+  createLinkTitleWindow,
+  guardLinkTitleSession,
+  linkTitleWindowOptions,
+  readLinkTitleWindowTitle
+}

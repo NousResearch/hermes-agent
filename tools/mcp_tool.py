@@ -4687,6 +4687,14 @@ def refresh_agent_mcp_tools(
     # published. ``registry._generation`` bumps on every (de)register.
     snapshot_generation = registry._generation
 
+    # Scale the tool-search auto-gate to THIS agent's model. By refresh time
+    # the context compressor holds the fully-resolved context length; without
+    # the hint the gate falls back to the config-default model's window (see
+    # get_tool_definitions docstring). None keeps the legacy fallback.
+    _gate_context_length = getattr(
+        getattr(agent, "context_compressor", None), "context_length", None
+    )
+
     # Registry-derived tools (built-ins + MCP), filtered to the agent's toolsets.
     # Computed OUTSIDE the lock (get_tool_definitions can be slow); the diff and
     # publish below happen together in ONE critical section so two concurrent
@@ -4696,6 +4704,7 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            context_length=_gate_context_length,
         )
         or []
     )

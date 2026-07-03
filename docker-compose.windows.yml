@@ -21,6 +21,7 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      - GATEWAY_ALLOW_ALL_USERS=true
     command: ["gateway", "run"]
 
   dashboard:

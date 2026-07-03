@@ -187,6 +187,18 @@ def test_clusters_expose_ownership():
     assert "peoplelooker" in cl.get("beenverified", [])
 
 
+def test_blocked_pass_records_and_cluster_coverage():
+    # Records added from the blocked-tail pass load, resolve, and dedupe correctly.
+    ids = {b["id"] for b in brokers.load_all()}
+    assert {"addresses", "socialcatfish"} <= ids
+    # addresses.com is a PeopleConnect/Intelius front-end -> covered by the intelius cluster (deduped).
+    assert "addresses" in brokers.clusters().get("intelius", [])
+    for bid in ("addresses", "socialcatfish"):
+        b = brokers.get(bid)
+        assert tiers.select_tier(b) in {"T0", "T1", "T2", "T3"}
+        assert b["optout"]["method"]
+
+
 # --- tier selection -----------------------------------------------------------
 
 def test_every_broker_resolves_to_valid_tier():

@@ -168,6 +168,23 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   record's `deletion.prefer`: **PeopleConnect is the exception** (`prefer: false`), where deleting
   your user data removes your suppressions and does not stop public-records re-listing, so you
   suppress-and-maintain instead.
+- **Blind opt-out is the DEFAULT, not a fallback.** Submit an opt-out/deletion on **every site with an
+  accessible removal channel, even when a listing was not first confirmed** - it discloses only the
+  subject's own identifiers to the broker's own official channel, so it does not violate
+  least-disclosure. Two corollaries: (1) a guided flow that matches email+DOB+name and says "no results"
+  is a **stronger `not_found`** than any scrape - the opt-out flow doubles as the search; (2) when a form
+  is automation-hostile (hard CAPTCHA, Cloudflare/DataDome, slide-to-verify slider), **default to the
+  broker's cited rights-request email** (name+state+contact-email only) rather than recording `blocked`.
+  CAPTCHA policy: never defeat behavioral/token/slider challenges; OK to read a static distorted-text or
+  plain-arithmetic CAPTCHA on the subject's own opt-out, but stop if the site rejects the whole
+  submission after a correct answer (it is fingerprinting the automation). Third-party/indirect records
+  are the exception - still confirm those before acting. Per-site game plans + the meta-search no-op
+  skip-list are in `references/site-playbooks.md`; the full policy is in `references/methods.md`.
+- **PeopleConnect delete-wipes-suppression (permanent rule).** A PeopleConnect *deletion* wipes the
+  suppression and the subject re-lists across the whole affiliate cluster. If a "Your deletion request
+  for PeopleConnect.us is Complete" email ever appears, the suppression is gone -> **re-run suppression
+  and re-verify** the Control step reads "suppressed". Never leave this cluster on a completed deletion
+  (see `references/brokers/intelius.json`).
 
 Subagent reports are self-reports: the parent re-verifies key claims (listing URLs, match basis) before
 recording `found` and before any deletion.

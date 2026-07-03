@@ -548,6 +548,137 @@ class TestProfileScopedTelegramOnboarding:
 
 
 class TestProfileScopedChatPty:
+    class _OneFrameBridge:
+        @classmethod
+        def spawn(cls, *args, **kwargs):
+            return cls()
+
+        def __init__(self):
+            self._sent = False
+
+        def read(self, timeout):
+            if not self._sent:
+                self._sent = True
+                return b"ready"
+            return None
+
+        def resize(self, *, cols, rows):
+            pass
+
+        def write(self, raw):
+            pass
+
+        def close(self):
+            pass
+
+    @staticmethod
+    def _write_session(home, session_id, **kwargs):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            db.create_session(session_id=session_id, source=kwargs.pop("source", "telegram"), **kwargs)
+        finally:
+            db.close()
+
+    def test_pty_infers_profile_from_unscoped_resume_session(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from starlette.testclient import TestClient
+
+        self._write_session(isolated_profiles["worker_beta"], "worker-session-123")
+
+        captured = {}
+
+        async def fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return (["fake-hermes-tui"], None, None)
+
+        monkeypatch.setattr(web_server, "_resolve_chat_argv_async", fake_resolve)
+        monkeypatch.setattr(web_server.PtyBridge, "spawn", self._OneFrameBridge.spawn)
+        web_server.app.state.pty_active_session_files = {}
+
+        client = TestClient(web_server.app)
+        with client.websocket_connect(
+            f"/api/pty?token={web_server._SESSION_TOKEN}&resume=worker-session-123&channel=infer-profile"
+        ) as conn:
+            assert conn.receive_bytes() == b"ready"
+
+        assert captured["resume"] == "worker-session-123"
+        assert captured["profile"] == "worker_beta"
+
+    def test_latest_descendant_reads_requested_profile(self, client, isolated_profiles):
+        self._write_session(isolated_profiles["worker_beta"], "worker-parent")
+        self._write_session(
+            isolated_profiles["worker_beta"],
+            "worker-child",
+            parent_session_id="worker-parent",
+        )
+
+        resp = client.get(
+            "/api/sessions/worker-parent/latest-descendant",
+            params={"profile": "worker_beta"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "worker-child"
+
+    def test_owner_profile_endpoint_resolves_named_profile(
+        self, client, isolated_profiles
+    ):
+        self._write_session(isolated_profiles["worker_beta"], "worker-session-123")
+
+        resp = client.get("/api/sessions/worker-session-123/owner-profile")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"profile": "worker_beta"}
+
+    def test_owner_profile_endpoint_resolves_default_profile(
+        self, client, isolated_profiles
+    ):
+        self._write_session(isolated_profiles["default"], "default-session-123")
+
+        resp = client.get("/api/sessions/default-session-123/owner-profile")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"profile": "default"}
+
+    def test_resume_profile_inference_keeps_legacy_on_missing_or_ambiguous(
+        self, isolated_profiles
+    ):
+        import hermes_cli.web_server as web_server
+
+        assert web_server._infer_profile_for_resume_session("missing-session") is None
+
+        worker_gamma = isolated_profiles["default"] / "profiles" / "worker_gamma"
+        worker_gamma.mkdir(parents=True, exist_ok=True)
+        self._write_session(isolated_profiles["worker_beta"], "ambiguous-session")
+        self._write_session(worker_gamma, "ambiguous-session")
+
+        assert web_server._infer_profile_for_resume_session("ambiguous-session") is None
+
+    def test_chat_argv_profile_current_keeps_legacy_resume_lookup(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        self._write_session(isolated_profiles["default"], "current-session")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv(
+            resume="current-session",
+            profile="current",
+        )
+
+        assert env is not None
+        assert env["HERMES_TUI_RESUME"] == "current-session"
+        assert env.get("HERMES_HOME") != str(isolated_profiles["worker_beta"])
+
     def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
         import hermes_cli.web_server as web_server
 

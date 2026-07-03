@@ -55,6 +55,11 @@ function rowLabel(session: SessionInfo, untitled: string): string {
   return untitled;
 }
 
+function ownerProfileParam(session: SessionInfo): string {
+  const profile = session.profile?.trim();
+  return profile;
+}
+
 export function ChatSessionList({
   activeSessionId,
   profile,
@@ -113,13 +118,16 @@ export function ChatSessionList({
   // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
   // the terminal is a no-op (avoids a needless PTY teardown).
   const pick = useCallback(
-    (id: string) => {
+    (session: SessionInfo) => {
       onPicked?.();
-      if (id === activeSessionId) return;
+      if (session.id === activeSessionId) return;
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
-          next.set("resume", id);
+          next.set("resume", session.id);
+          const owner = ownerProfileParam(session);
+          if (owner) next.set("profile", owner);
+          else next.delete("profile");
           return next;
         },
         { replace: false },
@@ -184,7 +192,7 @@ export function ChatSessionList({
           return (
             <ListItem
               key={s.id}
-              onClick={() => pick(s.id)}
+              onClick={() => pick(s)}
               aria-current={isActive ? "true" : undefined}
               className={cn(
                 "flex-col items-start gap-0.5 rounded px-2 py-1.5",

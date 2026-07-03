@@ -215,7 +215,7 @@ async def test_disallowed_user_rejected_with_ephemeral(adapter, caplog):
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
     assert kwargs.get("ephemeral") is True
-    assert "not authorized" in (args[0] if args else kwargs.get("content", "")).lower()
+    assert "許可されていません" in (args[0] if args else kwargs.get("content", ""))
     assert any("Unauthorized slash attempt" in r.message for r in caplog.records)
     assert any("DISCORD_ALLOWED_USERS" in r.message for r in caplog.records)
 
@@ -683,9 +683,9 @@ async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
     assert kwargs.get("ephemeral") is True
-    assert "not authorized" in (
+    assert "許可されていません" in (
         args[0] if args else kwargs.get("content", "")
-    ).lower()
+    )
     # Critically: nothing was dispatched, and the auth message did NOT
     # mention the skill name "alpha" (no catalog leak).
     assert dispatched == []

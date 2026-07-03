@@ -129,6 +129,42 @@ def _kanban_completion_handoff(task: object, event: object, task_title: str) -> 
     result = getattr(task, "result", None)
     return _clean_kanban_user_text(result, task_title=task_title, limit=500)
 
+
+def _clean_kanban_reason(reason: object, *, task_title: str = "", limit: int = 240) -> str:
+    text = _clean_kanban_user_text(reason, task_title=task_title, limit=limit)
+    text = re.sub(
+        r"^(?:内田さん確認待ち|代表確認待ち|確認待ち|技術停止|技術的に実行不能)\s*[:：]\s*",
+        "",
+        text,
+    ).strip()
+    return text
+
+
+def _discord_kanban_terminal_message(kind: str, task: object, event: object, title: str) -> str:
+    payload = getattr(event, "payload", None)
+    reason = ""
+    if isinstance(payload, dict) and payload.get("reason"):
+        reason = _clean_kanban_reason(payload.get("reason"), task_title=title)
+    error = ""
+    if isinstance(payload, dict) and payload.get("error"):
+        error = _clean_kanban_reason(payload.get("error"), task_title=title)
+
+    if kind == "blocked":
+        if reason:
+            return reason
+        return f"確認が必要です。対象は「{title}」です。"
+    if kind == "gave_up":
+        detail = error or reason
+        if detail:
+            return f"再確認が必要です。{detail}"
+        return f"「{title}」は再確認が必要です。"
+    if kind == "crashed":
+        return f"「{title}」の処理が途中で止まりました。こちらで再確認します。"
+    if kind == "timed_out":
+        return f"「{title}」の処理に時間がかかりすぎました。こちらで再確認します。"
+    return ""
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -4849,6 +4885,10 @@ class GatewayRunner:
                         if kind == "completed":
                             handoff = _kanban_completion_handoff(task, ev, title)
                             msg = handoff or f"「{title}」が完了しました。"
+                        elif platform_str == "discord":
+                            msg = _discord_kanban_terminal_message(kind, task, ev, title)
+                            if not msg:
+                                continue
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):

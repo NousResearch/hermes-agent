@@ -3913,3 +3913,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_compression_made_progress = True
 
         return compressed
+
+
+def is_compaction_summary_message(message: Any) -> bool:
+    """Return True when *message* is a context-compaction handoff summary.
+
+    Public API for consumers outside the compressor (memory providers,
+    frontends) that must not treat compaction summaries as real user or
+    assistant turns — e.g. fact extraction harvesting the compactor's own
+    output as user statements (#57682).
+
+    Prefers the in-process ``COMPRESSED_SUMMARY_METADATA_KEY`` marker and
+    falls back to the content heuristics in ``_is_context_summary_content``
+    (which cover the merged-into-tail and historical-prefix cases), because
+    the metadata key is stripped by the wire sanitizers and does not survive
+    all session-store round-trips.
+    """
+    if isinstance(message, dict):
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            return True
+        content = message.get("content")
+    else:
+        content = message
+    return ContextCompressor._is_context_summary_content(content)

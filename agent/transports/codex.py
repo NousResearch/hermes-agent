@@ -13,6 +13,23 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _prompt_cache_retention_for_model(model: str) -> Optional[str]:
+    """Return the OpenAI Responses prompt-cache retention policy for models
+    that require an explicit policy.
+
+    OpenAI documents GPT-5.5 / GPT-5.5 Pro as extended-cache-only
+    (``prompt_cache_retention: "24h"``).  Sending the field only for
+    those model families keeps older/OpenAI-compatible relays on their
+    default behavior.
+    """
+    normalized = str(model or "").lower().replace("_", "-")
+    # Custom relays commonly prefix provider namespaces, e.g.
+    # ``openai.gpt-5.5``.  Match both bare and namespaced model ids.
+    if normalized.endswith("gpt-5.5") or "gpt-5.5-" in normalized:
+        return "24h"
+    return None
+
+
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Content-address the prompt cache key from the static request prefix.
 
@@ -261,6 +278,15 @@ class ResponsesApiTransport(ProviderTransport):
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
+
+        cache_retention = _prompt_cache_retention_for_model(model)
+        if (
+            cache_retention
+            and not is_github_responses
+            and not is_xai_responses
+            and not is_codex_backend
+        ):
+            kwargs.setdefault("prompt_cache_retention", cache_retention)
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort

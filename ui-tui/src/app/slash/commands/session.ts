@@ -7,6 +7,7 @@ import type {
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
+  SessionCwdSetResponse,
   SessionUsageResponse,
   SlashExecResponse,
   VoiceToggleResponse
@@ -473,6 +474,49 @@ export const sessionCommands: SlashCommand[] = [
         })
       )
     }
+  },
+
+  {
+    help: 'show current working directory',
+    name: 'cwd',
+    run: (_arg, ctx) => {
+      if (!ctx.ui.info?.cwd) {
+        return ctx.transcript.sys('cwd: unknown')
+      }
+
+      ctx.transcript.sys(`cwd: ${ctx.ui.info.cwd}`)
+    }
+  },
+
+  {
+    help: 'change working directory',
+    name: 'cd',
+    run: (arg, ctx) => {
+      if (!arg.trim()) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'terminal.cwd' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r => {
+              ctx.transcript.sys(`cwd: ${r.value || ctx.ui.info?.cwd || 'unknown'}`)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<SessionCwdSetResponse>('session.cwd.set', { session_id: ctx.sid, cwd: arg.trim() })
+        .then(
+          ctx.guarded<SessionCwdSetResponse>(r => {
+            if (!r.cwd) {
+              return
+            }
+
+            ctx.transcript.sys(`cwd → ${r.cwd}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    },
+    usage: '/cd <path>'
   },
 
   {

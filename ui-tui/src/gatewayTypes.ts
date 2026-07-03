@@ -372,6 +372,13 @@ export interface SessionSteerResponse {
   text?: string
 }
 
+export interface SessionCwdSetResponse {
+  cwd?: string
+  branch?: string | null
+  lazy?: boolean
+  warning?: string
+}
+
 // ── Prompt / submission ──────────────────────────────────────────────
 
 export interface PromptSubmitResponse {

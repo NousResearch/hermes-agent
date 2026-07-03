@@ -188,11 +188,33 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
 
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
-    # No profile → unchanged fallback to the launch env var.
+    # No profile and no launch config → unchanged fallback to the launch env var.
     assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_prefers_launch_config_over_process_env(monkeypatch, tmp_path):
+    """Dashboard /chat's launch-profile in-memory gateway must honor config.
+
+    The embedded Node TUI child gets TERMINAL_CWD from the dashboard PTY bridge,
+    but the default-profile chat attaches to the dashboard process's already
+    running in-memory gateway. That process may not have TERMINAL_CWD in its own
+    environment, so config.yaml must be read directly before falling back to the
+    process env or launch directory.
+    """
+    configured = tmp_path / "omni"
+    configured.mkdir()
+    stale = tmp_path / "hermes-agent"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_profile_home", lambda _name: None)
+
+    assert server._completion_cwd({}) == str(configured)
 
 
 def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):

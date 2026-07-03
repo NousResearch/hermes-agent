@@ -812,15 +812,13 @@ class TeamsAdapter(BasePlatformAdapter):
         SSRF guard and follows redirects through the shared redirect guard,
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
 
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
-        import httpx
-
-        async with httpx.AsyncClient(
+        async with create_ssrf_safe_async_client(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},

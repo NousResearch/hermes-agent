@@ -552,6 +552,21 @@
   }
 }
 
+/* Interactive list-row hover — the sessions-list interaction, shared by every
+   row list (sessions, capabilities, messaging, file trees, timeline): the
+   highlight lands instantly on hover-in and fades out over 100ms on leave. */
+@utility row-hover {
+  cursor: pointer;
+  transition:
+    color 100ms ease-out,
+    background-color 100ms ease-out;
+
+  &:hover {
+    background-color: var(--ui-row-hover-background);
+    transition: none;
+  }
+}
+
 @keyframes arc-border {
   0% {
     background-position: 15% 15%;

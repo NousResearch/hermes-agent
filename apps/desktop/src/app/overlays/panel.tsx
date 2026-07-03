@@ -92,6 +92,8 @@ interface PanelListProps {
   onSearchChange?: (value: string) => void
   searchLabel?: string
   searchPlaceholder?: string
+  /** Data-derived rotating placeholder nudges (see SearchField.hints). */
+  searchHints?: string[]
   searchValue?: string
 }
 
@@ -104,6 +106,7 @@ export function PanelList({
   onSearchChange,
   searchLabel,
   searchPlaceholder,
+  searchHints,
   searchValue
 }: PanelListProps) {
   return (
@@ -112,6 +115,7 @@ export function PanelList({
         <SearchField
           aria-label={searchLabel ?? searchPlaceholder ?? ''}
           containerClassName="mb-1 w-full shrink-0"
+          hints={searchHints}
           onChange={onSearchChange}
           placeholder={searchPlaceholder ?? ''}
           value={searchValue ?? ''}
@@ -156,10 +160,8 @@ export function PanelListRow({
   return (
     <div
       className={cn(
-        'group/row relative flex h-7 w-full items-center rounded-md text-[0.78rem] transition-colors duration-100 ease-out',
-        active
-          ? 'bg-(--ui-row-active-background) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
+        'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
+        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       data-panel-row={rowKey}
     >

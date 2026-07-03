@@ -336,6 +336,70 @@ async def test_discord_blocked_notification_is_human_facing(kanban_home):
     assert "対象が特定できません" in msg
 
 
+@pytest.mark.asyncio
+async def test_discord_completed_notification_naturalizes_worker_summary(kanban_home):
+    """Discord completion replies should read like Rino, not worker logs."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    summary = (
+        "Hermesスキルの利用状況を調査し、未使用候補79件・低使用候補1件を抽出しました。"
+        "調査レポートとJSONをワークスペースに保存し、"
+        "今回は削除・archive・設定変更など外部影響のある操作は行っていません。"
+        "\n成果物:\n"
+        "/home/hermes/.hermes/kanban/boards/ai-company-2-0/workspaces/t_d868b9af/skill_usage_audit.md\n"
+        "/home/hermes/.hermes/kanban/boards/ai-company-2-0/workspaces/t_d868b9af/skill_usage_audit.json"
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="いまあんまり使われてないスキルがないか調べて",
+            assignee="operations-orchestrator",
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chat1")
+        kb.complete_task(conn, tid, summary=summary)
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    msg = fake_adapter.send.call_args[0][1]
+    assert msg == "見ました。未使用候補は79件、低使用候補は1件でした。削除やアーカイブ、設定変更はしていません。"
+    assert "調査レポートとJSON" not in msg
+    assert "ワークスペース" not in msg
+    assert "/home/hermes" not in msg
+    assert "task_runs" not in msg
+    assert "外部影響" not in msg
+    assert "archive" not in msg
+    assert tid not in msg
+    assert "@operations-orchestrator" not in msg
+
+
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #

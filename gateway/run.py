@@ -130,6 +130,83 @@ def _kanban_completion_handoff(task: object, event: object, task_title: str) -> 
     return _clean_kanban_user_text(result, task_title=task_title, limit=500)
 
 
+_KANBAN_COMPLETION_INTERNAL_DETAIL_RE = re.compile(
+    r"("
+    r"(?:^|\s)/(?:home|Users|tmp|var|usr|opt|mnt|workspace)/"
+    r"|kanban/boards/"
+    r"|/workspaces/"
+    r"|task_runs"
+    r"|^\s*(?:成果物|保存先)\s*[:：]"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _discord_sanitize_completion_summary(text: str) -> str:
+    """Keep Discord completion summaries human-facing while preserving facts."""
+    kept_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _KANBAN_COMPLETION_INTERNAL_DETAIL_RE.search(line):
+            continue
+        kept_lines.append(line)
+
+    cleaned = "\n".join(kept_lines).strip()
+    if not cleaned:
+        return ""
+
+    cleaned = re.sub(
+        r"調査レポートとJSONをワークスペースに保存し、?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"調査レポートとJSONをワークスペースに保存しました。?",
+        "",
+        cleaned,
+    )
+    cleaned = cleaned.replace(
+        "今回は削除・archive・設定変更など外部影響のある操作は行っていません。",
+        "削除やアーカイブ、設定変更はしていません。",
+    )
+    cleaned = cleaned.replace(
+        "削除・archive・設定変更など外部影響のある操作は行っていません。",
+        "削除やアーカイブ、設定変更はしていません。",
+    )
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned[:500].rstrip()
+
+
+def _discord_naturalize_completion_summary(text: str) -> str:
+    cleaned = _discord_sanitize_completion_summary(text)
+    if not cleaned:
+        return ""
+
+    skill_audit = re.search(
+        r"未使用候補\s*(\d+)\s*件.*?低使用候補\s*(\d+)\s*件",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    if skill_audit:
+        parts = [
+            f"見ました。未使用候補は{skill_audit.group(1)}件、低使用候補は{skill_audit.group(2)}件でした。"
+        ]
+        if re.search(r"削除|アーカイブ|archive|設定変更|外部影響", cleaned, re.IGNORECASE):
+            parts.append("削除やアーカイブ、設定変更はしていません。")
+        return "".join(parts)
+
+    return cleaned
+
+
+def _discord_kanban_completion_message(task: object, event: object, title: str) -> str:
+    handoff = _kanban_completion_handoff(task, event, title)
+    if not handoff:
+        return f"「{title}」が完了しました。"
+    return _discord_naturalize_completion_summary(handoff) or f"「{title}」が完了しました。"
+
+
 def _clean_kanban_reason(reason: object, *, task_title: str = "", limit: int = 240) -> str:
     text = _clean_kanban_user_text(reason, task_title=task_title, limit=limit)
     text = re.sub(
@@ -149,6 +226,8 @@ def _discord_kanban_terminal_message(kind: str, task: object, event: object, tit
     if isinstance(payload, dict) and payload.get("error"):
         error = _clean_kanban_reason(payload.get("error"), task_title=title)
 
+    if kind == "completed":
+        return _discord_kanban_completion_message(task, event, title)
     if kind == "blocked":
         if reason:
             return reason
@@ -4882,13 +4961,13 @@ class GatewayRunner:
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
-                        if kind == "completed":
-                            handoff = _kanban_completion_handoff(task, ev, title)
-                            msg = handoff or f"「{title}」が完了しました。"
-                        elif platform_str == "discord":
+                        if platform_str == "discord":
                             msg = _discord_kanban_terminal_message(kind, task, ev, title)
                             if not msg:
                                 continue
+                        elif kind == "completed":
+                            handoff = _kanban_completion_handoff(task, ev, title)
+                            msg = handoff or f"「{title}」が完了しました。"
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):

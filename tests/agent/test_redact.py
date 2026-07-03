@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import redact_cdp_url, redact_pii_text, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -956,3 +956,59 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestRedactPiiText:
+    """redact_pii_text is a narrowly-scoped helper for the session-transcript
+    export boundary (run_agent.py::_redact_message_content) -- NOT wired into
+    redact_sensitive_text, which backs terminal output / tool output / file
+    reads / logging.
+    """
+
+    def test_email_redacted(self):
+        result = redact_pii_text("Contact me at joao.silva@example.com please")
+        assert "joao.silva@example.com" not in result
+        assert "«redacted-email»" in result
+
+    def test_ssn_redacted(self):
+        result = redact_pii_text("My SSN is 123-45-6789")
+        assert "123-45-6789" not in result
+        assert "«redacted-ssn»" in result
+
+    def test_both_redacted_together(self):
+        text = "SSN 123-45-6789, email joao@example.com, phone +15551234567"
+        result = redact_pii_text(text)
+        assert "123-45-6789" not in result
+        assert "joao@example.com" not in result
+        # redact_pii_text only handles email/SSN -- phone is redact_sensitive_text's job
+        assert "+15551234567" in result
+
+    def test_plain_text_passes_through(self):
+        text = "no PII here, just regular prose"
+        assert redact_pii_text(text) == text
+
+    def test_none_returns_none(self):
+        assert redact_pii_text(None) is None
+
+    def test_empty_returns_empty(self):
+        assert redact_pii_text("") == ""
+
+    def test_respects_redact_secrets_toggle(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        text = "email joao@example.com"
+        assert redact_pii_text(text) == text
+
+    def test_force_bypasses_toggle(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        text = "email joao@example.com"
+        result = redact_pii_text(text, force=True)
+        assert "joao@example.com" not in result
+
+    def test_sensitive_text_does_not_redact_email_or_ssn(self):
+        """redact_sensitive_text (terminal/tool-output/file-read path) must
+        NOT redact generic PII -- an agent reading a file with contact info
+        must still be able to show it to the user."""
+        text = "email joao@example.com, ssn 123-45-6789"
+        result = redact_sensitive_text(text)
+        assert "joao@example.com" in result
+        assert "123-45-6789" in result

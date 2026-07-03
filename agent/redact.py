@@ -257,6 +257,20 @@ _JWT_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# Email addresses — generic match sufficient for redaction purposes (not
+# full RFC-5322 validation). Used only by ``redact_pii_text``, NOT wired
+# into ``redact_sensitive_text``: that function backs terminal output, tool
+# output, file reads, and general logging, where blanket email redaction
+# would hide information the user explicitly asked to see (e.g. reading a
+# file that legitimately contains contact info). ``redact_pii_text`` is a
+# narrowly-scoped helper for the session-transcript export boundary only.
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
+# US Social Security Number: NNN-NN-NNNN. Other national-ID formats vary
+# too widely by country/checksum to pattern-match without heavy false
+# positives, so only this common, unambiguous shape is covered.
+_SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
@@ -654,6 +668,42 @@ def redact_sensitive_text(
             return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
+    return text
+
+
+def redact_pii_text(text: str, *, force: bool = False) -> str:
+    """Redact generic PII (email addresses, US SSNs) from text.
+
+    Deliberately separate from :func:`redact_sensitive_text`, which backs
+    terminal output, tool output, file reads, and general logging — surfaces
+    where blanket email/ID redaction would hide information the user
+    explicitly asked to see. This helper exists for the session-transcript
+    export boundary only (see ``run_agent.py::_redact_message_content``,
+    used by the opt-in ``sessions.write_json_snapshots`` JSON writer):
+    defense-in-depth for conversation content that leaves the canonical
+    SQLite store as a human/tool-readable file on disk. The canonical
+    store itself (``hermes_state.py`` / ``state.db``) is intentionally left
+    untouched — the agent needs full-fidelity content to resume sessions,
+    answer ``session_search`` queries, and complete tasks that reference
+    PII the user shared earlier in the conversation.
+
+    Respects the same ``HERMES_REDACT_SECRETS`` toggle as
+    :func:`redact_sensitive_text` (no separate config surface): an operator
+    who disabled secret redaction for this export path has already opted
+    into full-fidelity persistence there.
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
+    if not text:
+        return text
+    if not (force or _REDACT_ENABLED):
+        return text
+    if "@" in text:
+        text = _EMAIL_RE.sub("«redacted-email»", text)
+    if re.search(r"\d{3}-\d{2}-\d{4}", text):
+        text = _SSN_RE.sub("«redacted-ssn»", text)
     return text
 
 

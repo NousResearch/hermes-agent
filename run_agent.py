@@ -147,7 +147,7 @@ from tools.browser_tool import cleanup_browser
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_text, redact_pii_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
@@ -2493,30 +2493,31 @@ class AIAgent:
 
     @staticmethod
     def _redact_message_content(content):
-        """Apply secret redaction to message content (str or list-of-parts).
+        """Apply secret + PII redaction to message content (str or list-of-parts).
 
         Handles both plain-string content and the OpenAI/Anthropic multimodal
         shape where ``content`` is a list of ``{"type": "text", "text": ...}``
         / ``{"type": "image_url", ...}`` / ``{"type": "input_text", "content": ...}``
         parts. Image / binary parts are left untouched; only text fields are
-        passed through ``redact_sensitive_text``.
+        passed through ``redact_sensitive_text`` (secrets) and
+        ``redact_pii_text`` (emails / US SSNs).
 
-        Respects ``HERMES_REDACT_SECRETS`` via ``redact_sensitive_text`` —
-        when disabled the helper is effectively a no-op.
+        Respects ``HERMES_REDACT_SECRETS`` via both helpers — when disabled
+        this is effectively a no-op.
         """
         if content is None:
             return content
         if isinstance(content, str):
-            return redact_sensitive_text(content)
+            return redact_pii_text(redact_sensitive_text(content))
         if isinstance(content, list):
             redacted = []
             for part in content:
                 if isinstance(part, dict):
                     part = dict(part)
                     if isinstance(part.get("text"), str):
-                        part["text"] = redact_sensitive_text(part["text"])
+                        part["text"] = redact_pii_text(redact_sensitive_text(part["text"]))
                     if isinstance(part.get("content"), str):
-                        part["content"] = redact_sensitive_text(part["content"])
+                        part["content"] = redact_pii_text(redact_sensitive_text(part["content"]))
                 redacted.append(part)
             return redacted
         return content
@@ -2564,11 +2565,15 @@ class AIAgent:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
-                # Defence-in-depth: redact credentials from every message
-                # content before persistence. Catches PATs / API keys / Bearer
-                # tokens that may have leaked into assistant responses, tool
-                # output, or user paste. Respects HERMES_REDACT_SECRETS via
-                # redact_sensitive_text — no-op when disabled. (#19798, #19845)
+                # Defence-in-depth: redact credentials AND generic PII (emails,
+                # US SSNs) from every message content before this JSON export.
+                # Catches PATs / API keys / Bearer tokens that may have leaked
+                # into assistant responses, tool output, or user paste, plus
+                # PII the user shared in conversation. This is the export
+                # path only (sessions.write_json_snapshots) — the canonical
+                # state.db store is left at full fidelity so the agent can
+                # still use that content on resume / session_search. Respects
+                # HERMES_REDACT_SECRETS — no-op when disabled. (#19798, #19845)
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))

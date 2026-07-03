@@ -306,6 +306,35 @@ async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_runtime_auth_resolution_failure_marks_run_failed(monkeypatch, tmp_path):
+    """Credential/runtime failures must be retryable failed runs, not completed
+    turns carrying an error string as their final answer."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    def fail_runtime_resolution(**_kwargs):
+        raise RuntimeError("missing provider credentials")
+
+    runner._resolve_session_agent_runtime = fail_runtime_resolution
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert "Provider authentication failed" in result["final_response"]
+    assert result.get("failed") is True
+
+
+@pytest.mark.asyncio
 async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_path):
     """Adapters that inherit the base-class delete_message no-op are
     detected up front — the cleanup path never registers its callback so

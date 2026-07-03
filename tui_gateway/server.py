@@ -2829,6 +2829,14 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         )
 
 
+class CompressionLockHeld(Exception):
+    """Raised by _compress_session_history when compression skipped due
+    to a concurrent lock on the session's compression_locks row."""
+    def __init__(self, holder: str | None = None):
+        self.holder = holder
+        super().__init__(f"Compression lock held: {holder or 'unknown'}")
+
+
 def _compress_session_history(
     session: dict,
     focus_topic: str | None = None,
@@ -2870,6 +2878,17 @@ def _compress_session_history(
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
+
+    # If _compress_context returned unchanged because a concurrent
+    # compression lock is held, raise so callers can surface a clear
+    # message instead of the misleading "No changes from compression" text.
+    _lock_skipped = getattr(agent, "_compression_skipped_due_to_lock", None)
+    if _lock_skipped:
+        agent._compression_skipped_due_to_lock = None
+        raise CompressionLockHeld(
+            _lock_skipped if isinstance(_lock_skipped, str) else None
+        )
+
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
@@ -7690,6 +7709,14 @@ def _(rid, params: dict) -> dict:
             # reverts to neutral whether compaction succeeded, was a
             # no-op, or raised.
             _status_update(sid, "ready")
+    except CompressionLockHeld as e:
+        _status_update(sid, "ready")
+        holder_msg = f" (holder: {e.holder})" if e.holder else ""
+        return _ok(rid, {
+            "compressed": False,
+            "lock_held": True,
+            "message": f"Compression already in progress for this session{holder_msg}. Please wait for it to finish."
+        })
     except Exception as e:
         return _err(rid, 5005, str(e))
 
@@ -12516,7 +12543,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
-            _compress_session_history(session, arg)
+            try:
+                _compress_session_history(session, arg)
+            except CompressionLockHeld as e:
+                holder_msg = f" (holder: {e.holder})" if e.holder else ""
+                return f"⏳ Compression already in progress for this session{holder_msg}. Please wait for it to finish."
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:

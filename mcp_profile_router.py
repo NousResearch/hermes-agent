@@ -8808,10 +8808,15 @@ def _git_mutation_audit(tool_name: str, workspace: WorkspaceMetadata, action: st
 
 
 def _git_credential_env() -> dict[str, str]:
+    path_value = os.environ.get("PATH", "/usr/bin:/bin")
+    for extra_path in ("/opt/homebrew/bin", "/usr/local/bin"):
+        if extra_path not in path_value.split(os.pathsep):
+            path_value = path_value + os.pathsep + extra_path
     env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": path_value,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        "HOME": os.environ.get("HOME") or str(Path.home()),
     }
     for key in (
         "HOME",

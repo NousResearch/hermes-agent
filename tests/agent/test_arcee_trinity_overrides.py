@@ -157,3 +157,28 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_is_silent_runtime_override() -> None:
+    """The 85% autoraise is internal state, not a gateway lifecycle warning.
+
+    The configured global threshold remains 50%, so every new gateway agent used
+    to recompute the Codex gpt-5.5 override and replay a non-actionable
+    ``_compression_warning`` into Telegram/Discord/Weixin/etc. Keep the useful
+    runtime override, but do not store it as a user-visible warning.
+    """
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        model="gpt-5.5",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-token",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent.context_compressor.threshold_percent == 0.85
+    assert agent._compression_warning is None

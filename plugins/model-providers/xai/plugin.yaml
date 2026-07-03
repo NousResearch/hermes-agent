@@ -3,3 +3,14 @@ kind: model-provider
 version: 1.0.0
 description: xAI Grok (Responses API)
 author: Nous Research
+profile:
+  name: xai
+  aliases:
+  - grok
+  - x-ai
+  - x.ai
+  api_mode: codex_responses
+  env_vars:
+  - XAI_API_KEY
+  base_url: https://api.x.ai/v1
+  auth_type: api_key

@@ -24,7 +24,7 @@ def _discover_platform_plugins() -> list[str]:
         return []
     names = []
     for child in sorted(PLATFORMS_DIR.iterdir()):
-        if child.is_dir() and (child / "__init__.py").exists():
+        if child.is_dir() and (child / "plugin.yaml").exists():
             names.append(child.name)
     return names
 
@@ -83,6 +83,8 @@ def _import_platform_module(name: str) -> ModuleType:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     module = importlib.import_module(f"plugins.platforms.{name}")
+    if not hasattr(module, "register"):
+        module = importlib.import_module(f"plugins.platforms.{name}.adapter")
     return module
 
 

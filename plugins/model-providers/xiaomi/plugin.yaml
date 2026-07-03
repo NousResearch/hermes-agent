@@ -3,3 +3,14 @@ kind: model-provider
 version: 1.0.0
 description: Xiaomi MiMo
 author: Nous Research
+profile:
+  name: xiaomi
+  aliases:
+  - mimo
+  - xiaomi-mimo
+  env_vars:
+  - XIAOMI_API_KEY
+  base_url: https://api.xiaomimimo.com/v1
+  supports_health_check: false
+  supports_vision: true
+  supports_vision_tool_messages: false

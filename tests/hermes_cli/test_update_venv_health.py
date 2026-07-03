@@ -249,6 +249,55 @@ def test_detect_venv_python_catches_outside_venv_trampoline(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_ignores_windows_system_processes(_winp, tmp_path):
+    """Windows pseudo/system processes may expose noisy cwd/cmdline metadata.
+
+    The venv-holder guard should only block update on user-space Python/Hermes
+    processes, not Registry/Memory Compression style system processes.
+    """
+    system_exe = "C:\\Windows\\System32\\svchost.exe"
+    root = str(tmp_path)
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(
+                    401,
+                    system_exe,
+                    "Registry",
+                    [system_exe, venv_py],
+                    cwd=root,
+                ),
+                _proc(
+                    402,
+                    system_exe,
+                    "MemCompression",
+                    [system_exe, "-m", "hermes_cli.main", "serve"],
+                    cwd=root,
+                ),
+                _proc(
+                    403,
+                    "C:\\Python311\\python.exe",
+                    "python.exe",
+                    ["python.exe", "-m", "hermes_cli.main", "serve"],
+                    cwd=root,
+                ),
+            ]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [m[0] for m in matches] == [403]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_detect_venv_hermes_cli_cmdline_outside_install_not_matched(_winp, tmp_path):
     """A hermes_cli.main process belonging to a DIFFERENT install (neither
     install root in cmdline nor cwd under it) must not be flagged."""

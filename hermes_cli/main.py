@@ -9041,6 +9041,30 @@ def _detect_venv_python_processes(
     except OSError:
         root_prefix = str(PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
 
+    def _is_windows_system_process(name: object, exe: object) -> bool:
+        name_low = str(name or "").lower()
+        exe_raw = str(exe or "").lower().replace("\\", "/")
+        system_names = {
+            "registry",
+            "memcompression",
+            "memory compression",
+            "system",
+            "idle",
+        }
+        if name_low in system_names:
+            return True
+        if (
+            "/windows/system32/" in exe_raw
+            or exe_raw.startswith("c:/windows/")
+            or exe_raw.startswith("c:/winnt/")
+        ):
+            executable = Path(exe_raw).name
+            return not (
+                executable.startswith("python")
+                or executable in {"py.exe", "hermes.exe", "hermes-gateway.exe"}
+            )
+        return False
+
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
     try:
@@ -9062,6 +9086,8 @@ def _detect_venv_python_processes(
         pid = info.get("pid")
         exe = info.get("exe")
         if not exe or pid is None or int(pid) in skip:
+            continue
+        if _is_windows_system_process(info.get("name"), exe):
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()

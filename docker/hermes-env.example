@@ -22,6 +22,8 @@
 # WEIXIN_ACCOUNT_ID=
 # WEIXIN_TOKEN=
 # WEIXIN_BASE_URL=
+# Required by v0.18.0 security change: dm_policy:open needs explicit opt-in
+WEIXIN_ALLOW_ALL_USERS=1
 
 # ── Messaging platforms (optional) ────────────────────────────────────────────
 # TELEGRAM_BOT_TOKEN=

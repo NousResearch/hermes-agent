@@ -586,6 +586,52 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     ), f"s6-svscanctl -a not invoked; saw: {fake_subprocess_run}"
 
 
+def test_s6_register_staging_dir_is_dotfile_hidden_from_svscan(
+    s6_scandir, fake_subprocess_run, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mid-build staging dir MUST be dot-prefixed so s6-svscan
+    ignores it while it is half-populated.
+
+    s6-svscan skips any scandir entry whose name begins with ``.``. If
+    the staging dir were a plain ``gateway-<p>.tmp`` (a non-dotfile),
+    a concurrent ``s6-svscanctl -a`` rescan would supervise it the
+    moment it has a valid ``type``/``run`` — spawning s6-supervise AS
+    ROOT, which mkdir's a root-owned ``supervise/`` and makes the
+    in-flight ``_seed_supervise_skeleton`` EACCES on
+    ``mkdir supervise/event``. That was the arm64-only CI flake on
+    ``test_s6_unregister_removes_service_dir_in_live_container``.
+
+    We capture the directory passed to ``_seed_supervise_skeleton``
+    (called mid-build, BEFORE the atomic rename to the live name) and
+    assert its basename starts with ``.`` and still lives in the
+    scandir as a sibling of the live slot.
+    """
+    import hermes_cli.service_manager as sm
+
+    seen: list[str] = []
+    real_seed = sm._seed_supervise_skeleton
+
+    def _capturing_seed(svc_dir, *a, **kw):
+        seen.append(str(svc_dir))
+        return real_seed(svc_dir, *a, **kw)
+
+    monkeypatch.setattr(sm, "_seed_supervise_skeleton", _capturing_seed)
+
+    S6ServiceManager(scandir=s6_scandir).register_profile_gateway("coder")
+
+    assert seen, "_seed_supervise_skeleton was never called during register"
+    staging = seen[0]
+    staging_name = staging.rsplit("/", 1)[-1]
+    assert staging_name.startswith("."), (
+        f"staging dir must be a dotfile so s6-svscan skips it mid-build; "
+        f"got {staging_name!r}"
+    )
+    # Sibling of the live slot, in the same scandir.
+    assert staging == str(s6_scandir / ".gateway-coder.tmp")
+    # And the published (renamed) live slot is the dotless canonical name.
+    assert (s6_scandir / "gateway-coder").is_dir()
+
+
 def test_s6_register_start_now_false_writes_down_marker(
     s6_scandir, fake_subprocess_run,
 ) -> None:
@@ -671,6 +717,30 @@ def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
     assert all("--replace" in line for line in named_execs), (
         f"a named-profile gateway run line is missing --replace: {named_execs}"
     )
+
+
+def test_render_finish_script_exits_125_on_ex_config() -> None:
+    """The finish script must translate exit 78 (EX_CONFIG) into exit 125
+    (permanent failure) so s6 stops restarting on fatal config errors.
+    See #51228."""
+    text = S6ServiceManager._render_finish_script()
+    assert '[ "$1" = "78" ]' in text
+    assert "exit 125" in text
+    assert "exit 0" in text
+
+
+def test_s6_register_writes_finish_script(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """The finish script must be written alongside the run script."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    finish_path = s6_scandir / "gateway-coder" / "finish"
+    assert finish_path.is_file()
+    assert finish_path.stat().st_mode & 0o111  # executable
+    assert "78" in finish_path.read_text()
+    assert "125" in finish_path.read_text()
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:

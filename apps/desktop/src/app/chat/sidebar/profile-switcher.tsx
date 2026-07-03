@@ -24,8 +24,10 @@ import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -55,6 +57,11 @@ import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
+
+// Past this many profiles the strip of colored squares stops scaling (tiny
+// drag targets, endless horizontal scroll), so the rail collapses to a compact
+// select. Drag-reorder and long-press-recolor live only on the squares path.
+const PROFILE_DROPDOWN_THRESHOLD = 13
 
 // easeOutBack — a little overshoot so squares spring into their new slot rather
 // than sliding in flat. Neighbors reflow on RAIL_TRANSITION; the dragged square
@@ -101,6 +108,10 @@ export function ProfileRail() {
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // Too many profiles for the square strip → collapse to the select. Declared
+  // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
+  const condensed = profiles.length > PROFILE_DROPDOWN_THRESHOLD
+
   // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
   // rail is navigable without a trackpad. Trackpad x-scroll (deltaX) passes
   // through. Native + non-passive so we can preventDefault and not bleed the
@@ -124,14 +135,19 @@ export function ProfileRail() {
     el.addEventListener('wheel', onWheel, { passive: false })
 
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+    // `condensed` swaps the strip out for the dropdown (ref goes null/back).
+  }, [condensed])
 
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
-  const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const named = sortByProfileOrder(
+    profiles.filter(profile => !profile.is_default),
+    order
+  )
+
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -195,7 +211,7 @@ export function ProfileRail() {
   }, [createRequest])
 
   return (
-    <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
+    <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -223,51 +239,57 @@ export function ProfileRail() {
         />
       )}
 
-      <div
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        ref={scrollRef}
-      >
-        {multiProfile && (
-          <DndContext
-            collisionDetection={closestCenter}
-            modifiers={[stepThroughCells]}
-            onDragEnd={handleDragEnd}
-            onDragOver={handleDragOver}
-            onDragStart={handleDragStart}
-            sensors={sensors}
-          >
-            <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-              {/* relative → the strip is the dragged square's offsetParent, so the
-                  clamp modifier bounds drags to the occupied cells (not the +). */}
-              <div className="relative flex items-center gap-1">
-                {named.map(profile => (
-                  <ProfileSquare
-                    active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                    color={resolveProfileColor(profile.name, colors)}
-                    key={profile.name}
-                    label={profile.name}
-                    onDelete={() => setPendingDelete(profile)}
-                    onRecolor={color => setProfileColor(profile.name, color)}
-                    onRename={() => setPendingRename(profile)}
-                    onSelect={() => selectProfile(profile.name)}
-                  />
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
-        )}
+      {condensed ? (
+        // Condensed path: one compact dropdown instead of N squares. No drag
+        // reorder, no long-press recolor, no per-square context menu — Manage
+        // covers rename/delete at this scale.
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <ProfileDropdown
+            activeKey={isAll ? null : activeKey}
+            colors={colors}
+            onSelect={selectProfile}
+            profiles={named}
+          />
+          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+        </div>
+      ) : (
+        <div
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          ref={scrollRef}
+        >
+          {multiProfile && (
+            <DndContext
+              collisionDetection={closestCenter}
+              modifiers={[stepThroughCells]}
+              onDragEnd={handleDragEnd}
+              onDragOver={handleDragOver}
+              onDragStart={handleDragStart}
+              sensors={sensors}
+            >
+              <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+                {/* relative → the strip is the dragged square's offsetParent, so the
+                    clamp modifier bounds drags to the occupied cells (not the +). */}
+                <div className="relative flex items-center gap-1">
+                  {named.map(profile => (
+                    <ProfileSquare
+                      active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      color={resolveProfileColor(profile.name, colors)}
+                      key={profile.name}
+                      label={profile.name}
+                      onDelete={() => setPendingDelete(profile)}
+                      onRecolor={color => setProfileColor(profile.name, color)}
+                      onRename={() => setPendingRename(profile)}
+                      onSelect={() => selectProfile(profile.name)}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
 
-        <Tip label={p.newProfile}>
-          <button
-            aria-label={p.newProfile}
-            className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
-            onClick={() => setCreateOpen(true)}
-            type="button"
-          >
-            <Codicon name="add" size="0.75rem" />
-          </button>
-        </Tip>
-      </div>
+          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+        </div>
+      )}
 
       {/* Always reachable, even with only the default profile: the manage
           overlay is the only place to edit a profile's SOUL.md, and a
@@ -301,6 +323,71 @@ export function ProfileRail() {
         profile={pendingDelete}
       />
     </div>
+  )
+}
+
+// The "+" create button, shared by both rail render paths.
+function AddProfileButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </button>
+    </Tip>
+  )
+}
+
+// The condensed rail: every named profile in one compact select. The trigger
+// shows the active profile (tinted initial + name); on default/all scope it
+// falls back to the placeholder since the left toggle pill carries that state.
+function ProfileDropdown({
+  activeKey,
+  colors,
+  onSelect,
+  profiles
+}: {
+  activeKey: null | string
+  colors: Record<string, string>
+  onSelect: (name: string) => void
+  profiles: ProfileInfo[]
+}) {
+  const { t } = useI18n()
+  const p = t.profiles
+
+  const value = activeKey ? (profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
+
+  return (
+    <Select onValueChange={name => name && onSelect(name)} value={value}>
+      <SelectTrigger aria-label={p.title} className="min-w-0 flex-1" size="xs">
+        <SelectValue placeholder={p.title} />
+      </SelectTrigger>
+      <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
+        {profiles.map(profile => {
+          const color = resolveProfileColor(profile.name, colors)
+          const hue = color ?? 'var(--ui-text-quaternary)'
+
+          return (
+            <SelectItem key={profile.name} value={profile.name}>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+                  style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
+                >
+                  {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                </span>
+                <span className="truncate">{profile.name}</span>
+              </span>
+            </SelectItem>
+          )
+        })}
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -481,7 +568,11 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             <Codicon name="edit" size="0.875rem" />
             <span>{p.rename}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={onDelete}
+            variant="destructive"
+          >
             <Codicon name="trash" size="0.875rem" />
             <span>{t.common.delete}</span>
           </ContextMenuItem>
@@ -494,30 +585,14 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"
       >
-        <div className="grid grid-cols-6 gap-1.5">
-          {PROFILE_SWATCHES.map(swatch => (
-            <button
-              aria-label={p.setColor(swatch)}
-              className="size-5 rounded-full transition-transform hover:scale-110"
-              key={swatch}
-              onClick={() => pickColor(swatch)}
-              style={{
-                backgroundColor: swatch,
-                boxShadow: swatch === color ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
-                color: swatch
-              }}
-              type="button"
-            />
-          ))}
-        </div>
-        <button
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground"
-          onClick={() => pickColor(null)}
-          type="button"
-        >
-          <Codicon name="sync" size="0.75rem" />
-          {p.autoColor}
-        </button>
+        <ColorSwatches
+          clearIcon="sync"
+          clearLabel={p.autoColor}
+          onChange={pickColor}
+          swatches={PROFILE_SWATCHES}
+          swatchLabel={p.setColor}
+          value={color}
+        />
       </PopoverContent>
     </Popover>
   )

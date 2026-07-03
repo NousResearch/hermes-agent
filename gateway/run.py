@@ -8768,6 +8768,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            # When the user replies to a clarify prompt with a voice/audio
+            # message, ``event.text`` is empty because STT hasn't run yet.
+            # Transcribe the audio now so the clarify can be resolved
+            # without forcing the user to re-type as text.  (Fixes #56739)
+            if not _raw_clarify_reply and getattr(event, "media_urls", None):
+                _clarify_audio_paths = [
+                    p for i, p in enumerate(event.media_urls)
+                    if _event_media_is_audio(event, i)
+                ]
+                if _clarify_audio_paths:
+                    try:
+                        _tx_text, _tx_ok = await self._enrich_message_with_transcription(
+                            "", _clarify_audio_paths,
+                        )
+                        # _enrich_message_with_transcription wraps
+                        # transcripts in quotes — strip them.  If STT
+                        # failed the text will be a bracketed note like
+                        # "[voice message could not be transcribed]";
+                        # only resolve clarify with actual transcript
+                        # content.
+                        _candidate = _tx_text.strip().strip('"').strip()
+                        if _candidate and not _candidate.startswith("["):
+                            _raw_clarify_reply = _candidate
+                            logger.info(
+                                "Transcribed voice reply for clarify (session=%s): %s",
+                                _quick_key, _raw_clarify_reply[:120],
+                            )
+                        else:
+                            logger.debug(
+                                "Voice clarify reply: STT produced no usable transcript (session=%s)",
+                                _quick_key,
+                            )
+                    except Exception as _tx_exc:
+                        logger.debug(
+                            "Voice transcription for clarify response failed: %s",
+                            _tx_exc,
+                        )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks

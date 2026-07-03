@@ -1058,7 +1058,10 @@ class _CodexCompletionsAdapter:
         # key in extra_body (not top-level) and GitHub/Copilot Responses opts
         # out of cache-key routing entirely — for those hosts, skip it here.
         try:
-            from agent.transports.codex import _content_cache_key
+            from agent.transports.codex import (
+                _content_cache_key,
+                _prompt_cache_retention_for_model,
+            )
             from utils import base_url_host_matches
 
             _host_src = str(getattr(self._client, "base_url", "") or "")
@@ -1068,6 +1071,10 @@ class _CodexCompletionsAdapter:
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
+            if not _is_xai and not _is_github and "prompt_cache_retention" not in resp_kwargs:
+                _cache_retention = _prompt_cache_retention_for_model(model)
+                if _cache_retention:
+                    resp_kwargs["prompt_cache_retention"] = _cache_retention
         except Exception:
             logger.debug(
                 "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True

@@ -1233,20 +1233,48 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
 
 def test_stored_session_runtime_overrides_skips_bare_billing_provider():
-    """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
-    provider identity on resume. A custom endpoint that never used `/model` persists only
-    `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
-    configured" (agent_init treats it as non-routable). A real provider, or an explicit
-    `model_config.provider`, is still restored.
+    """A bare billing bucket must not be restored as the provider identity on resume.
+
+    A custom endpoint that never used ``/model`` persists only
+    ``billing_provider="custom"``; restoring that previously broke
+    ``session.resume`` with "No LLM provider configured" (agent_init treats it
+    as non-routable). The ``"auto"`` sentinel is the global-default fallback —
+    restoring it would force every resume onto whatever the user most
+    recently configured, defeating session-scoped restore.
+
+    NB: ``openrouter`` is NOT a bare billing bucket — it owns the session's
+    API key, base_url, and live model catalog, so dropping it on resume
+    silently redirected the restored model through the user's config
+    default (any newly-added custom endpoint), probed the wrong vendor for
+    context length, and surfaced as
+    "context window … below the minimum 64,000 required by Hermes Agent"
+    (#57588). Pin OpenRouter IS restored.
     """
     # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
     ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
     assert "provider_override" not in ov
-    assert ov["model_override"]["provider"] is None
+    # model_override["provider"] is None in this case (heal path also returns ""),
+    # so resume falls back to the configured default. Keep the assertion
+    # strictly about provider_override absence — model_override is exhaustively
+    # tested in test_custom_provider_session_persistence.py::test_restore_*.
+    if "model_override" in ov:
+        # Either absent or with provider=None is acceptable for bare "custom"
+        # without a matching entry.
+        assert ov.get("model_override", {}).get("provider") in (None, "")
 
-    for bare in ("auto", "openrouter", "custom"):
+    for bare in ("auto", "custom"):
         ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
-        assert "provider_override" not in ov
+        assert "provider_override" not in ov, (
+            f"bare billing_provider {bare!r} leaked into provider_override: {ov!r}"
+        )
+
+    # OpenRouter IS a routable provider and MUST be restored (#57588).
+    ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "openrouter"})
+    assert ov["provider_override"] == "openrouter", (
+        f"openrouter billing_provider was dropped on resume — "
+        f"regression for #57588: {ov!r}"
+    )
+    assert ov["model_override"]["provider"] == "openrouter"
 
     # A real provider in billing_provider is still restored.
     ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "anthropic"})

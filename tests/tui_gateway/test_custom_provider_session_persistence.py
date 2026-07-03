@@ -351,4 +351,71 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
         persisted = captured.get("model_config") or {}
         assert persisted.get("provider") == "custom:mimo-v2.5-pro"
 
+    def test_restore_preserves_openrouter_billing_provider(self, monkeypatch):
+        """Regression — #57588.
+
+        OpenRouter is a fully routable provider with its own API key, base_url,
+        and live model catalog. Treated it as a "bare" billing bucket
+        historically meant the provider override was DROPPED on resume, so
+        the restored model fell through to the config default — typically a
+        recently-added custom endpoint (e.g. Featherless). That endpoint then
+        probed its own /v1/models for the restored Opus model's context length,
+        didn't find Opus, and surfaced as
+        "context window of 2,048 tokens, which is below the minimum 64,000
+        required by Hermes Agent."
+
+        Pin: with billing_provider='openrouter' stored on the row, the
+        provider_override MUST come through so resume restores the OpenRouter
+        provider alongside the model — not silently rebind the model to the
+        user's most recent config default.
+        """
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "anthropic/claude-opus-4-8",
+            "billing_provider": "openrouter",
+            # model_config intentionally empty — most realistic scenario for a
+            # session persisted before session-level overrides were added.
+            "model_config": json.dumps({"model": "anthropic/claude-opus-4-8"}),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        # Pin the actual bug — the OpenRouter restore was the broken path.
+        assert overrides.get("provider_override") == "openrouter", (
+            "OpenRouter provider_override dropped on resume — restores the "
+            "model with no provider, so the restored Opus falls through to "
+            "the config default (any new custom endpoint), which then probes "
+            "the wrong vendor for context length and fails the 64K guard. "
+            f"Got overrides={overrides!r}"
+        )
+        # And the model_override carries the same provider so _make_agent
+        # remains consistent with the bare-bucket treatment.
+        assert overrides["model_override"]["provider"] == "openrouter"
+        assert overrides["model_override"]["model"] == "anthropic/claude-opus-4-8"
+
+    def test_restore_drops_auto_billing_provider(self, monkeypatch):
+        """Companion check: the SENTINEL "auto" must still be filtered.
+
+        ``auto`` is the global-default fallback in resolve_runtime_provider —
+        restoring it as the session's provider override would force every
+        resume onto whatever the user most recently configured, defeating the
+        session-scoped restore. The bare-bucket filter must keep it filtered
+        even though it now mistakenly co-exists with ``openrouter`` in the
+        hand-written comments above.
+        """
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "anthropic/claude-opus-4-8",
+            "billing_provider": "auto",
+            "model_config": json.dumps({"model": "anthropic/claude-opus-4-8"}),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        # Stays filtered (matches pre-fix behaviour for this billing bucket).
+        assert "provider_override" not in overrides
+        # Restore falls through to the configured default (resume behaviour
+        # for the bare "auto" sentinel).
+        assert overrides["model_override"]["provider"] is None
+
 

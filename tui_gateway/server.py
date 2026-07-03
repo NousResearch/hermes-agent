@@ -2008,7 +2008,21 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 
 # Bare billing buckets are not routable provider identities (kept in parity with the
 # provider gate in agent_init). Restoring one as a session provider override breaks resume.
-_BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
+#
+# ``auto`` is the global-default sentinel — restoring it would force every resume
+# onto whatever the user picked most recently in another chat, defeating the
+# session-scoped model restore. ``custom`` is the bare billing class for a configured
+# custom endpoint; restore it as the provider override and agent_init has no routable
+# identity to dispatch on, surfacing as "No LLM provider configured".
+#
+# NB: ``openrouter`` is NOT in this set even though it is bare-billed. OpenRouter is
+# a fully routable provider — it owns the session's API key, base_url, and live model
+# catalog — so dropping its billing_provider on resume would silently redirect the
+# restored model through whatever the user's current config.default is (e.g. a custom
+# Featherless endpoint), which then probes the wrong vendor's /v1/models for context
+# length and fails with "context window … below the minimum 64,000 required". Fixes
+# #57588.
+_BARE_BILLING_PROVIDERS = {"auto", "custom"}
 
 
 def _stored_session_runtime_overrides(row: dict | None) -> dict:

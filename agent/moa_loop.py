@@ -173,6 +173,49 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+def _maybe_apply_advisor_cache_control(
+    messages: list[dict[str, Any]],
+    runtime: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Decorate an advisor request with cache_control when its route honors it.
+
+    Reuses the SAME policy function as the main agent loop
+    (``anthropic_prompt_cache_policy``) resolved against the advisor slot's
+    own provider/base_url/api_mode/model, and the SAME breakpoint layout
+    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor
+    calls decorated exactly like an acting agent on that provider would be —
+    no MoA-specific caching logic to drift.
+
+    Returns the messages unchanged on any resolution error or when the
+    policy says the route doesn't honor markers.
+    """
+    try:
+        from types import SimpleNamespace
+
+        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        # The policy function reads agent.* only as fallbacks for kwargs we
+        # don't pass; provide a stub so an advisor slot is judged purely on
+        # its own resolved runtime.
+        stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+        should_cache, native_layout = anthropic_prompt_cache_policy(
+            stub,
+            provider=runtime.get("provider") or "",
+            base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "",
+            model=runtime.get("model") or "",
+        )
+        if not should_cache:
+            return messages
+        return apply_anthropic_cache_control(
+            messages, native_anthropic=native_layout
+        )
+    except Exception as exc:  # pragma: no cover - decoration must never break a call
+        logger.debug("advisor cache_control decoration skipped: %s", exc)
+        return messages
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
@@ -214,6 +257,18 @@ def _run_reference(
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
         messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        # Apply the same Anthropic-style prompt-caching decoration the main
+        # agent loop applies (system_and_3 breakpoints). The advisory view is
+        # append-only across iterations (new turns append before the trailing
+        # synthetic marker), so on cache-honoring routes (Claude via
+        # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
+        # replays iteration N's cached prefix. Without this, Claude advisors
+        # served ZERO cache reads across an entire benchmark run (measured:
+        # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
+        # caching is opt-in per request. OpenAI-family advisors are untouched
+        # (their caching is automatic; markers are ignored harmlessly, but we
+        # only decorate when the policy says the route honors them).
+        messages = _maybe_apply_advisor_cache_control(messages, runtime)
         response = call_llm(
             task="moa_reference",
             messages=messages,

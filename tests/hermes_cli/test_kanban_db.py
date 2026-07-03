@@ -426,7 +426,6 @@ def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
 
 
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
-    import signal
     import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
@@ -450,7 +449,7 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
-        assert killed == [signal.SIGTERM]
+        assert killed == []
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
@@ -1420,6 +1419,33 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
         assert kb.get_task(conn, child).status == "ready"
+
+
+def test_create_with_parents_inherits_parent_notify_subscriptions(kanban_home):
+    """Child tasks created by workers must notify the parent's subscribers."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat-1",
+            user_id="kj",
+            notifier_profile="main",
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+
+        parent_subs = kb.list_notify_subs(conn, parent)
+        child_subs = kb.list_notify_subs(conn, child)
+
+    assert len(parent_subs) == 1
+    assert len(child_subs) == 1
+    assert child_subs[0]["platform"] == "telegram"
+    assert child_subs[0]["chat_id"] == "chat-1"
+    assert child_subs[0]["user_id"] == "kj"
+    assert child_subs[0]["notifier_profile"] == "main"
 
 
 def test_unblock_with_pending_parents_goes_to_todo(kanban_home):

@@ -354,8 +354,23 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
+                                h = payload_summary.strip()
+                                prefix = (
+                                    f"✔ {tag}Kanban {sub['task_id']} done"
+                                    f" — {title}\n"
+                                )
+                                try:
+                                    platform_limit = int(
+                                        getattr(adapter, "MAX_MESSAGE_LENGTH", 4000)
+                                        or 4000
+                                    )
+                                except (TypeError, ValueError):
+                                    platform_limit = 4000
+                                marker = "... [truncated]"
+                                max_handoff = max(200, platform_limit - len(prefix))
+                                if len(h) > max_handoff:
+                                    keep = max(0, max_handoff - len(marker))
+                                    h = h[:keep].rstrip() + marker
                                 handoff = f"\n{h}"
                             elif task and task.result:
                                 lines = task.result.strip().splitlines()

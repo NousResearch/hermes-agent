@@ -478,6 +478,38 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_skips_telegram_bot_self_target():
+    """A stale/self session key must not make Telegram send to the bot itself."""
+    runner, adapter = make_restart_runner()
+    adapter._bot = MagicMock(id=999)
+    adapter.send = AsyncMock()
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_channel_skips_telegram_bot_self_target():
+    """A misconfigured home channel pointing at the bot id is ignored on shutdown."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    adapter._bot = MagicMock(id=999)
+    adapter.send = AsyncMock()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="999",
+        name="Bot self",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_suppressed_when_flag_disabled():
     """Active-session ping is muted when gateway_restart_notification=False on the platform."""
     from gateway.config import Platform

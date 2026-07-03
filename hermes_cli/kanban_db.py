@@ -2666,6 +2666,32 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                if parents:
+                    parent_subs = conn.execute(
+                        """
+                        SELECT DISTINCT platform, chat_id, thread_id, user_id, notifier_profile
+                        FROM kanban_notify_subs
+                        WHERE task_id IN (""" + ",".join("?" * len(parents)) + ")",
+                        parents,
+                    ).fetchall()
+                    for sub in parent_subs:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO kanban_notify_subs
+                                (task_id, platform, chat_id, thread_id, user_id,
+                                 notifier_profile, created_at, last_event_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                            """,
+                            (
+                                task_id,
+                                sub["platform"],
+                                sub["chat_id"],
+                                sub["thread_id"] or "",
+                                sub["user_id"],
+                                sub["notifier_profile"],
+                                now,
+                            ),
+                        )
                 _append_event(
                     conn,
                     task_id,
@@ -5194,6 +5220,37 @@ def decompose_triage_task(
             },
         )
 
+        # Keep the originating user/channel in the loop after fan-out.
+        # A ClawOps or gateway-created root task can block, get unblocked,
+        # decompose into children, and only later wake the root for final
+        # summary. Inheriting the root subscriptions means child terminal
+        # events and the eventual root completion still route back to the
+        # same chat instead of leaving progress only in the kanban DB.
+        root_subs = conn.execute(
+            "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+            "FROM kanban_notify_subs WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        for sub in root_subs:
+            for cid in child_ids:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO kanban_notify_subs
+                        (task_id, platform, chat_id, thread_id, user_id,
+                         notifier_profile, created_at, last_event_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        cid,
+                        sub["platform"],
+                        sub["chat_id"],
+                        sub["thread_id"] or "",
+                        sub["user_id"],
+                        sub["notifier_profile"],
+                        now,
+                    ),
+                )
+
     # Outside the write_txn: promote parent-free children to 'ready'
     # so the dispatcher picks them up on its next tick. Same pattern
     # specify_triage_task uses.  When auto_promote is False children
@@ -5942,6 +5999,10 @@ def _terminate_reclaimed_worker(
     if kill is None:
         return info
 
+    if not _pid_alive(pid):
+        info["terminated"] = True
+        return info
+
     info["termination_attempted"] = True
     try:
         kill(int(pid), signal.SIGTERM)
@@ -6523,6 +6584,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 error=error_text,
                 outcome="crashed",
                 failure_limit=1 if (protocol_violation or is_systemic) else None,
+                force_failure_limit=bool(protocol_violation or is_systemic),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -6547,6 +6609,7 @@ def _record_task_failure(
     *,
     outcome: str,
     failure_limit: int = None,
+    force_failure_limit: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -6580,10 +6643,12 @@ def _record_task_failure(
     context (e.g. pid on crash, elapsed on timeout).
 
     Resolution order for the effective threshold:
-      1. per-task ``max_retries`` if set (nothing else overrides)
-      2. caller-supplied ``failure_limit`` (gateway passes the config
+      1. caller-supplied ``failure_limit`` when ``force_failure_limit=True``
+         (used for deterministic protocol/systemic failures)
+      2. per-task ``max_retries`` if set
+      3. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
-      3. ``DEFAULT_FAILURE_LIMIT``
+      4. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -6603,7 +6668,10 @@ def _record_task_failure(
         task_override = (
             row["max_retries"] if "max_retries" in row.keys() else None
         )
-        if task_override is not None:
+        if force_failure_limit:
+            effective_limit = int(failure_limit)
+            limit_source = "forced"
+        elif task_override is not None:
             effective_limit = int(task_override)
             limit_source = "task"
         else:
@@ -7646,7 +7714,10 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         token = set_hermes_home_override(hermes_home)
         try:
             cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
+            toolsets_set = set(_get_platform_tools(cfg, "cli"))
+            if "browser" in toolsets_set:
+                toolsets_set.add("browser-cdp")
+            toolsets = sorted(toolsets_set)
         finally:
             reset_hermes_home_override(token)
         return toolsets or None

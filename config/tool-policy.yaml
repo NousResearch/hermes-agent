@@ -1,0 +1,26 @@
+AUTO_ALLOW:
+  - read_obsidian
+  - write_audit_log
+  - write_proactive_state
+  - status_check
+  - create_local_report
+  - create_draft
+  - create_issue_draft
+  - delegate_low_risk
+
+CONFIRM_FIRST:
+  - external_message
+  - production_change
+  - deploy
+  - delete_data
+  - money_movement
+  - secret_change
+  - permission_change
+  - publish_external_content
+
+DENY:
+  - leak_secrets
+  - bypass_approval
+  - disable_audit
+  - unauthorized_financial_access
+  - unconfirmed_trade

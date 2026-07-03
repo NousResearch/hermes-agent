@@ -49,6 +49,15 @@ logger = logging.getLogger(__name__)
 _STDERR_TAIL_LINES = 12
 
 
+def _codex_app_server_initialize_timeout() -> float:
+    raw = os.environ.get("HERMES_CODEX_APP_SERVER_INITIALIZE_TIMEOUT", "90")
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        timeout = 90.0
+    return max(timeout, 10.0)
+
+
 # Permission profile mapping mirrors the docstring in PR proposal:
 # Hermes' tools.terminal.security_mode → Codex's permissions profile id.
 # Defaults if config is missing → workspace-write (matches Codex's own default).
@@ -250,6 +259,7 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            timeout=_codex_app_server_initialize_timeout(),
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):

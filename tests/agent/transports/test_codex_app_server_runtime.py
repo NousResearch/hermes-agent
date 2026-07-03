@@ -7,6 +7,8 @@ covered by a separate live test gated on `codex --version`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from hermes_cli.runtime_provider import (
@@ -141,6 +143,266 @@ class TestCodexAppServerModule:
         assert isinstance(err, RuntimeError)
         assert "boom" in str(err)
         assert "-32600" in str(err)
+
+
+class TestCodexAppServerRuntimeRetry:
+    def test_startup_failure_retries_once_with_fresh_session(self, monkeypatch):
+        import agent.codex_runtime as runtime
+
+        class FakeSession:
+            instances = []
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.closed = False
+                FakeSession.instances.append(self)
+
+            def run_turn(self, *, user_input):
+                if len(FakeSession.instances) == 1:
+                    return SimpleNamespace(
+                        final_text="",
+                        projected_messages=[],
+                        tool_iterations=0,
+                        interrupted=False,
+                        error=(
+                            "codex app-server startup failed: codex app-server "
+                            "method 'initialize' timed out after 30.0s"
+                        ),
+                        should_retire=True,
+                        thread_id=None,
+                        turn_id=None,
+                    )
+                return SimpleNamespace(
+                    final_text="recovered",
+                    projected_messages=[{"role": "assistant", "content": "recovered"}],
+                    tool_iterations=0,
+                    interrupted=False,
+                    error=None,
+                    should_retire=False,
+                    thread_id="thread-2",
+                    turn_id="turn-2",
+                )
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_record_codex_app_server_usage",
+            lambda agent, turn: {},
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_should_retry_codex_app_server_startup",
+            lambda agent: True,
+        )
+
+        synced = {"called": False}
+        agent = SimpleNamespace(
+            session_cwd="/tmp",
+            _codex_session=None,
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **kwargs: synced.update(called=True),
+            _spawn_background_review=lambda **kwargs: None,
+        )
+        messages = [{"role": "user", "content": "hi"}]
+
+        result = runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            effective_task_id="task-1",
+        )
+
+        assert len(FakeSession.instances) == 2
+        assert FakeSession.instances[0].closed is True
+        assert FakeSession.instances[1].closed is False
+        assert result["completed"] is True
+        assert result["final_response"] == "recovered"
+        assert result["codex_thread_id"] == "thread-2"
+        assert synced["called"] is True
+        assert messages[-1] == {"role": "assistant", "content": "recovered"}
+
+    def test_startup_failure_does_not_retry_by_default(self, monkeypatch):
+        import agent.codex_runtime as runtime
+
+        class FakeSession:
+            instances = []
+
+            def __init__(self, **kwargs):
+                self.closed = False
+                FakeSession.instances.append(self)
+
+            def run_turn(self, *, user_input):
+                return SimpleNamespace(
+                    final_text="",
+                    projected_messages=[],
+                    tool_iterations=0,
+                    interrupted=False,
+                    error=(
+                        "codex app-server startup failed: codex app-server "
+                        "method 'initialize' timed out after 30.0s"
+                    ),
+                    should_retire=True,
+                    thread_id=None,
+                    turn_id=None,
+                )
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_record_codex_app_server_usage",
+            lambda agent, turn: {},
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_codex_app_server_startup_retry_enabled",
+            lambda: False,
+        )
+
+        agent = SimpleNamespace(
+            session_cwd="/tmp",
+            _codex_session=None,
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **kwargs: None,
+            _spawn_background_review=lambda **kwargs: None,
+        )
+
+        result = runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="task-1",
+        )
+
+        assert len(FakeSession.instances) == 1
+        assert FakeSession.instances[0].closed is True
+        assert result["completed"] is False
+        assert result["error"] and "startup failed" in result["error"]
+
+    def test_startup_retry_suppressed_when_orchestration_active(self, monkeypatch):
+        import agent.codex_runtime as runtime
+
+        monkeypatch.setattr(
+            runtime,
+            "_codex_app_server_startup_retry_enabled",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_codex_app_server_retry_allowed_during_orchestration",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_has_active_kanban_orchestration",
+            lambda: True,
+        )
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        assert runtime._should_retry_codex_app_server_startup(object()) is False
+
+    def test_startup_retry_allowed_when_enabled_and_no_orchestration(self, monkeypatch):
+        import agent.codex_runtime as runtime
+
+        monkeypatch.setattr(
+            runtime,
+            "_codex_app_server_startup_retry_enabled",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_codex_app_server_retry_allowed_during_orchestration",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_has_active_kanban_orchestration",
+            lambda: False,
+        )
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        assert runtime._should_retry_codex_app_server_startup(object()) is True
+
+    def test_non_startup_retire_does_not_retry(self, monkeypatch):
+        import agent.codex_runtime as runtime
+
+        class FakeSession:
+            instances = []
+
+            def __init__(self, **kwargs):
+                self.closed = False
+                FakeSession.instances.append(self)
+
+            def run_turn(self, *, user_input):
+                return SimpleNamespace(
+                    final_text="",
+                    projected_messages=[],
+                    tool_iterations=0,
+                    interrupted=True,
+                    error="turn timed out after 600s",
+                    should_retire=True,
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                )
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_record_codex_app_server_usage",
+            lambda agent, turn: {},
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_should_retry_codex_app_server_startup",
+            lambda agent: True,
+        )
+
+        agent = SimpleNamespace(
+            session_cwd="/tmp",
+            _codex_session=None,
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **kwargs: None,
+            _spawn_background_review=lambda **kwargs: None,
+        )
+
+        result = runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="task-1",
+        )
+
+        assert len(FakeSession.instances) == 1
+        assert FakeSession.instances[0].closed is True
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert result["error"] == "turn timed out after 600s"
 
 
 class TestSpawnEnvIsolation:

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DelegatedResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "status",
+    "summary",
+    "artifacts",
+    "tool_calls",
+    "audit_log",
+    "errors",
+    "requires_human_review",
+    "recommended_next_action"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["queued", "running", "succeeded", "failed", "blocked"] },
+    "summary": { "type": "string" },
+    "artifacts": { "type": "array" },
+    "tool_calls": { "type": "array" },
+    "audit_log": { "type": "array" },
+    "errors": { "type": "array" },
+    "requires_human_review": { "type": "boolean" },
+    "recommended_next_action": { "type": "string" }
+  }
+}
+

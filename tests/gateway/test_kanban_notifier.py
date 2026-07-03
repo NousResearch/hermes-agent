@@ -105,6 +105,26 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
+def test_kanban_notifier_completed_message_preserves_long_summary(tmp_path, monkeypatch):
+    db_path = tmp_path / "long-summary.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "已完成 Facebook 二手刊登實際狀態只讀核對："
+        + "前置說明" * 35
+        + "Listed on Marketplace and at least 1 group（5 clicks on listing）。"
+    )
+    _create_completed_subscription(summary=summary)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "Listed on Marketplace and at least 1 group" in text
+
+
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

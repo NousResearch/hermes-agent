@@ -1070,6 +1070,28 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryProviderConfig: (provider: string) =>
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
+  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
+  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1524,13 +1546,73 @@ export interface CredentialPoolProvider {
 export interface MemoryProviderInfo {
   name: string;
   description: string;
+  available: boolean;
   configured: boolean;
+  status: "ready" | "needs_config" | "unavailable" | "missing";
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+export interface MemoryProviderExternalDependency {
+  name: string;
+  install: string;
+  check: string;
+}
+
+export interface MemoryProviderSetupInfo {
+  pip_dependencies: string[];
+  external_dependencies: MemoryProviderExternalDependency[];
+  required_env: string[];
+  dependencies_installed: boolean;
+}
+
+export interface MemoryProviderSetupResult {
+  kind: string;
+  name: string;
+  status: string;
+  command: string;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface MemoryProviderSetupResponse {
+  ok: boolean;
+  provider: string;
+  results: MemoryProviderSetupResult[];
+  status?: MemoryProviderInfo | null;
+}
+
+export interface MemoryProviderFieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface MemoryProviderField {
+  key: string;
+  label: string;
+  kind: "text" | "secret" | "select" | "boolean";
+  description: string;
+  placeholder: string;
+  required: boolean;
+  value: string | boolean;
+  is_set: boolean;
+  options: MemoryProviderFieldOption[];
+  url: string;
+  when?: Record<string, string | boolean | number> | null;
+}
+
+export interface MemoryProviderConfig {
+  name: string;
+  label: string;
+  fields: MemoryProviderField[];
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface HookEntry {
@@ -2317,7 +2399,7 @@ export interface HubAgentPluginRow {
 
 export interface PluginsHubProviders {
   memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
+  memory_options: MemoryProviderInfo[];
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
 }

@@ -16699,7 +16699,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from agent.redact import RedactingFormatter
 
-            log_dir = _hermes_home / "logs"
+            # get_hermes_home() (not the import-time-frozen ``_hermes_home``
+            # module global) so a multiplexed secondary-profile turn writes
+            # into its own profile's logs/ dir, not the default profile's.
+            # Calling it fresh here picks up _profile_runtime_scope's
+            # set_hermes_home_override ContextVar for the current task.
+            log_dir = get_hermes_home() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             file_handler = RotatingFileHandler(
                 log_dir / "tool_calls.log",

@@ -1887,23 +1887,18 @@ def init_agent(
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
+        # exact opt-back-out command. Keep it CLI-only: gateway replay would send
+        # this lifecycle hint as a chat/status message every time an agent is
+        # constructed, which is noisy for Telegram/Discord bot profiles.
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
         if _autoraise and compression_enabled:
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
-    # Check immediately so CLI users see the warning at startup.
-    # Gateway status_callback is not yet wired, so any warning is stored
-    # in _compression_warning and replayed in the first run_conversation().
+    # Check immediately so CLI users see real compression warnings at startup.
+    # Gateway status_callback is not yet wired, so feasibility warnings store
+    # in _compression_warning and replay in the first run_conversation(). The
+    # Codex gpt-5.5 autoraise notice intentionally does not use this slot.
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

@@ -1604,6 +1604,14 @@ function findGitBash() {
     return findOnPath('bash')
   }
 
+  // HERMES_GIT_BASH_PATH — set by install.ps1 or manually by users who
+  // installed Git via scoop/choco/package-manager. Checked first so a
+  // known-good bash is picked up regardless of where it lives on disk.
+  const bashEnvPath = process.env.HERMES_GIT_BASH_PATH
+  if (bashEnvPath && fileExists(bashEnvPath)) {
+    return bashEnvPath
+  }
+
   // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
   // first so users who installed via install.ps1 are detected before we
   // start probing system-wide locations.
@@ -1620,6 +1628,14 @@ function findGitBash() {
   if (localAppData) {
     candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
   }
+
+  // Scoop git — installs git-for-windows at apps/git/current/ but only shims
+  // git.exe, NOT bash.exe. Without explicit paths here the agent's terminal
+  // tool won't find bash even though `git` works fine on the command line.
+  const scoopRoot = process.env.SCOOP || path.join(os.homedir(), 'scoop')
+  const scoopGitRoot = path.join(scoopRoot, 'apps', 'git', 'current')
+  candidates.push(path.join(scoopGitRoot, 'usr', 'bin', 'bash.exe'))
+  candidates.push(path.join(scoopGitRoot, 'mingw64', 'bin', 'bash.exe'))
 
   for (const candidate of candidates) {
     if (fileExists(candidate)) return candidate
@@ -3216,7 +3232,9 @@ async function ensureRuntime(backend) {
     throw new Error(
       'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
         "which the agent's terminal tool uses). Install it from " +
-        'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
+        'https://git-scm.com/download/win, run `winget install -e --id Git.Git`, ' +
+        'or `scoop install git`. If Git Bash is already installed, set the ' +
+        'HERMES_GIT_BASH_PATH environment variable to the full path of bash.exe, ' +
         'then relaunch Hermes.'
     )
   }

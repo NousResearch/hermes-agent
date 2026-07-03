@@ -1282,6 +1282,12 @@ def compress_context(
     _try_acquire_lock = None
     _lock_lookup_error: Optional[Exception] = None
     _legacy_session_db_without_lock_api = False
+    # Clear any stale lock-skip signal from a prior call so this call's
+    # outcome alone determines what callers see.  Without this an
+    # auto-compress lock-skip followed by a successful manual /compress
+    # would falsely report "Compression already in progress" and discard
+    # the compression results.
+    agent._compression_skipped_due_to_lock = None
     if _lock_db is not None:
         try:
             _legacy_session_db_without_lock_api = _lock_api_is_absent_on_session_db(

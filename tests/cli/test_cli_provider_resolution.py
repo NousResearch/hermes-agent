@@ -754,9 +754,10 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
     monkeypatch.setattr(
         "hermes_cli.main._save_custom_provider",
-        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None, key_env="": captured_provider.update(
             {
                 "base_url": base_url,
                 "api_key": api_key,
@@ -764,6 +765,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
                 "context_length": context_length,
                 "name": name,
                 "api_mode": api_mode,
+                "key_env": key_env,
             }
         ),
     )
@@ -784,9 +786,11 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
 
     assert saved_cfg["model"]["provider"] == "custom"
     assert saved_cfg["model"]["base_url"] == "https://codex.example.com/v1"
-    assert saved_cfg["model"]["api_key"] == "test-key"
+    # API key is now stored as env var reference, not raw value (#57547)
+    assert saved_cfg["model"]["api_key"] == "${CODEX_EXAMPLE_API_KEY}"
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
+    assert captured_provider["key_env"] == "CODEX_EXAMPLE_API_KEY"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
@@ -882,3 +886,17 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+def test_derive_custom_endpoint_env_var():
+    """_derive_custom_endpoint_env_var strips prefix/TLD and uppercases."""
+    from hermes_cli.model_setup_flows import _derive_custom_endpoint_env_var
+
+    assert _derive_custom_endpoint_env_var("https://api.featherless.ai/v1") == "FEATHERLESS_API_KEY"
+    assert _derive_custom_endpoint_env_var("https://api.openai.com/v1") == "OPENAI_API_KEY"
+    assert _derive_custom_endpoint_env_var("https://openrouter.ai/api/v1") == "OPENROUTER_API_KEY"
+    assert _derive_custom_endpoint_env_var("http://localhost:11434/v1") == "LOCALHOST_11434_API_KEY"
+    assert _derive_custom_endpoint_env_var("https://together.xyz/v1") == "TOGETHER_API_KEY"
+    assert _derive_custom_endpoint_env_var("https://api.groq.com/openai/v1") == "GROQ_API_KEY"
+    assert _derive_custom_endpoint_env_var("http://127.0.0.1:8080/v1") == "127_0_0_1_8080_API_KEY"
+    assert _derive_custom_endpoint_env_var("https://custom.endpoint.dev/v1") == "CUSTOM_ENDPOINT_API_KEY"
+

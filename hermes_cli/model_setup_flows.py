@@ -27,6 +27,45 @@ import subprocess
 from hermes_cli.config import clear_model_endpoint_credentials
 
 
+def _derive_custom_endpoint_env_var(base_url: str) -> str:
+    """Derive an environment variable name from a custom endpoint URL.
+
+    Examples:
+        ``https://api.featherless.ai/v1`` => ``FEATHERLESS_API_KEY``
+        ``https://api.openai.com/v1``     => ``OPENAI_API_KEY``
+        ``http://localhost:11434/v1``      => ``LOCALHOST_11434_API_KEY``
+    """
+    import re
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    hostname = (parsed.hostname or "").lower()
+
+    # Include port for non-standard ports (e.g. localhost:11434)
+    if parsed.port and parsed.port not in (80, 443):
+        hostname = f"{hostname}_{parsed.port}"
+
+    # Strip common prefixes
+    for prefix in ("api.", "api-", "openai."):
+        if hostname.startswith(prefix):
+            hostname = hostname[len(prefix):]
+            break
+
+    # Strip common TLDs
+    for tld in (".ai", ".com", ".io", ".dev", ".org", ".net", ".xyz"):
+        if hostname.endswith(tld):
+            hostname = hostname[: -len(tld)]
+            break
+
+    # Replace remaining dots/colons/hyphens with underscores
+    hostname = re.sub(r"[^a-z0-9]+", "_", hostname).strip("_")
+
+    if not hostname:
+        hostname = "custom"
+
+    return f"{hostname.upper()}_API_KEY"
+
+
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
 
@@ -732,7 +771,7 @@ def _model_flow_custom(config):
     """
     from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
@@ -767,6 +806,14 @@ def _model_flow_custom(config):
         return
 
     effective_key = api_key or current_key
+
+    # Save API key to .env instead of config.yaml to prevent credential
+    # leakage when Hermes edits its own config (#57547).
+    _custom_key_env = ""
+    if effective_key:
+        _custom_key_env = _derive_custom_endpoint_env_var(effective_url)
+        save_env_value(_custom_key_env, effective_key)
+        print(f"  🔑 API key saved to .env as {_custom_key_env}")
 
     # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
     # in the base URL for OpenAI-compatible chat completions.  Prompt the
@@ -898,7 +945,9 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
-        if effective_key:
+        if _custom_key_env:
+            model["api_key"] = f"${{{_custom_key_env}}}"
+        elif effective_key:
             model["api_key"] = effective_key
         if api_mode:
             model["api_mode"] = api_mode
@@ -924,7 +973,9 @@ def _model_flow_custom(config):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
-        if effective_key:
+        if _custom_key_env:
+            _caller_model["api_key"] = f"${{{_custom_key_env}}}"
+        elif effective_key:
             _caller_model["api_key"] = effective_key
         if api_mode:
             _caller_model["api_mode"] = api_mode
@@ -941,6 +992,7 @@ def _model_flow_custom(config):
         context_length=context_length,
         name=display_name,
         api_mode=api_mode,
+        key_env=_custom_key_env,
     )
 
 def _model_flow_azure_foundry(config, current_model=""):

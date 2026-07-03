@@ -3726,7 +3726,8 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
+    base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
+    key_env="",
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
@@ -3764,6 +3765,12 @@ def _save_custom_provider(
             elif "api_mode" in entry:
                 entry.pop("api_mode", None)
                 changed = True
+            # Update key_env if provided (key stored in .env, not config)
+            if key_env and entry.get("key_env") != key_env:
+                entry["key_env"] = key_env
+                # Remove any stale raw api_key — the env var is authoritative
+                entry.pop("api_key", None)
+                changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
@@ -3774,7 +3781,9 @@ def _save_custom_provider(
         name = _auto_provider_name(base_url)
 
     entry = {"name": name, "base_url": base_url}
-    if api_key:
+    if key_env:
+        entry["key_env"] = key_env
+    elif api_key:
         entry["api_key"] = api_key
     if model:
         entry["model"] = model

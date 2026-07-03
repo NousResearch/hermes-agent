@@ -221,6 +221,39 @@ class TestProviderListFlag:
 
 
 class TestPasswordLoginRoute:
+    def test_password_only_provider_html_load_renders_login_not_oauth_start(
+        self, gated_app
+    ):
+        """A single password provider must not be auto-started as OAuth.
+
+        Auto-SSO is only valid for redirect/OAuth providers. With only a
+        username/password provider registered, an unauthenticated HTML
+        navigation must fall back to the /login credential form. Otherwise the
+        gate redirects to /auth/login?provider=<password-provider>, which calls
+        start_login() on a password-only provider and 500s.
+        """
+        resp = gated_app.get("/sessions", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+        assert "/auth/login" not in resp.headers["location"]
+
+    def test_direct_auth_login_for_password_provider_redirects_to_form(
+        self, gated_app
+    ):
+        """Stale /auth/login links for password providers are safe.
+
+        The login page itself posts credentials to /auth/password-login; if an
+        old auto-SSO redirect or bookmark hits the OAuth-start route with a
+        password provider, redirect back to the form instead of surfacing a
+        server error.
+        """
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2Fsessions",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
     def test_valid_credentials_set_session_cookies_and_return_next(
         self, gated_app
     ):

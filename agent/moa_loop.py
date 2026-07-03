@@ -773,13 +773,33 @@ class MoAChatCompletions:
         reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
 
+        # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
+        # the advisory view changes — i.e. every tool iteration, since the
+        # view grows with each tool result. "user_turn": advisors run ONCE per
+        # user turn; subsequent tool iterations reuse that turn's advice and
+        # the aggregator acts alone (the original MoA shape: synthesize at the
+        # start, then let the acting model work). Implemented by hashing only
+        # the prefix up to the LAST USER message so mid-turn growth doesn't
+        # change the signature — iteration 2+ becomes a cache HIT.
+        fanout_mode = str(preset.get("fanout") or "per_iteration").strip().lower()
+        sig_messages = ref_messages
+        if fanout_mode == "user_turn":
+            last_user_idx = None
+            for _i in range(len(ref_messages) - 1, -1, -1):
+                if ref_messages[_i].get("role") == "user":
+                    last_user_idx = _i
+                    break
+            if last_user_idx is not None:
+                sig_messages = ref_messages[: last_user_idx + 1]
+
         # Turn-scoped cache: only run + display references when the advisory
         # view changed (i.e. a new user turn). Within one turn the agent loop
-        # calls create() once per tool iteration with the same advisory view;
-        # reuse the cached outputs and skip both the re-run and the re-emit.
+        # calls create() once per tool iteration; in user_turn mode the
+        # signature is stable across those iterations (prefix hash above), so
+        # the fan-out runs once per user turn and iterations reuse the advice.
         _sig = hashlib.sha256(
             "\u0000".join(
-                f"{m.get('role')}:{m.get('content')}" for m in ref_messages
+                f"{m.get('role')}:{m.get('content')}" for m in sig_messages
             ).encode("utf-8", "replace")
         ).hexdigest()
         _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))

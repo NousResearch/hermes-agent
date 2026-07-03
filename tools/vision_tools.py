@@ -848,6 +848,8 @@ async def _vision_analyze_native(
         local_path = Path(os.path.expanduser(resolved_url))
 
         if local_path.is_file():
+            from agent.file_safety import raise_if_read_blocked
+            raise_if_read_blocked(str(local_path))
             temp_image_path = local_path
             should_cleanup = False
         elif await _validate_image_url_async(image_url):
@@ -1005,6 +1007,8 @@ async def vision_analyze_tool(
         local_path = Path(os.path.expanduser(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
+            from agent.file_safety import raise_if_read_blocked
+            raise_if_read_blocked(str(local_path))
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
@@ -1527,6 +1531,8 @@ async def video_analyze_tool(
         local_path = Path(os.path.expanduser(resolved_url))
 
         if local_path.is_file():
+            from agent.file_safety import raise_if_read_blocked
+            raise_if_read_blocked(str(local_path))
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False

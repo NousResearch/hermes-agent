@@ -157,6 +157,35 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     )
 
 
+def test_tail_summary_marker_does_not_decay_first_compaction_head():
+    """A live tail summary-looking message should not mimic a resumed handoff."""
+    compressor = _compressor(protect_first_n=3)
+    tail_summary = "TAIL-SUMMARY-LIKE message belongs to current protected tail"
+    msgs = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "HEAD-ONE original request"},
+        {"role": "assistant", "content": "HEAD-TWO original answer"},
+        {"role": "user", "content": "HEAD-THREE original follow-up"},
+        {"role": "assistant", "content": "middle answer one"},
+        {"role": "user", "content": "middle request two"},
+        {"role": "assistant", "content": "middle answer two"},
+        {"role": "user", "content": "middle request three"},
+        {"role": "assistant", "content": "middle answer three"},
+        {"role": "user", "content": "middle request four"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{tail_summary}"},
+        {"role": "user", "content": "final active request stays in protected tail"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+        result = compressor.compress(msgs)
+
+    result_text = "\n".join(str(msg.get("content", "")) for msg in result)
+    assert "HEAD-ONE original request" in result_text
+    assert "HEAD-TWO original answer" in result_text
+    assert "HEAD-THREE original follow-up" in result_text
+    assert tail_summary in result_text
+
+
 def test_restart_stacked_handoffs_fold_stray_head_and_collapse_to_single_summary():
     """Stacked restart summaries should keep stray head turns as new input."""
     compressor = _compressor(protect_first_n=3)

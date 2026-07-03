@@ -2483,7 +2483,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             if msg.get("role") != "user":
                 continue
             content = msg.get("content")
-            if cls._is_context_summary_content(content):
+            if cls._is_context_summary_message(msg):
                 continue
             text = redact_sensitive_text(_content_text_for_contains(content).strip())
             if not text:
@@ -2649,17 +2649,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         once, the early turns are already captured in the handoff summary, so
         there's no need to keep re-protecting them: decay to 0 (the system
         prompt is still always protected separately by _protect_head_size).
-        After a restart, infer that decayed state from any persisted handoff
-        summary in the transcript; disk-persisted restarts rely on the content
-        prefix, while the metadata branch covers in-process handoff messages.
+        After a restart, infer that decayed state from handoff summaries in the
+        resumed-head region; disk-persisted restarts rely on the content prefix,
+        while the metadata branch covers in-process handoff messages.
         """
         if self.compression_count >= 1 or self._previous_summary:
             return 0
         if messages and self.protect_first_n > 0:
             first_non_system = 1 if messages[0].get("role") == "system" else 0
+            # Probe only the early handoff shape created by a resumed compacted
+            # session. Summary-looking tail content should keep normal tail
+            # semantics and not decay the initial first-compaction protection.
+            restart_probe_end = min(
+                len(messages),
+                first_non_system + self.protect_first_n + 4,
+            )
             if any(
                 self._is_context_summary_message(msg)
-                for msg in messages[first_non_system:]
+                for msg in messages[first_non_system:restart_probe_end]
             ):
                 return 0
         return self.protect_first_n
@@ -2732,9 +2739,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         """
         for i in range(len(messages) - 1, head_end - 1, -1):
             msg = messages[i]
-            if msg.get("role") == "user" and not self._is_context_summary_content(
-                msg.get("content")
-            ):
+            if msg.get("role") == "user" and not self._is_context_summary_message(msg):
                 return i
         return -1
 

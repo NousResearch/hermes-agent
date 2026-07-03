@@ -1678,9 +1678,16 @@ class APIServerAdapter(BasePlatformAdapter):
         limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
+        exclude_source_raw = request.query.get("exclude_source") or None
+        exclude_sources = (
+            [s.strip() for s in exclude_source_raw.split(",") if s.strip()]
+            if exclude_source_raw
+            else None
+        )
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
         sessions = db.list_sessions_rich(
             source=source,
+            exclude_sources=exclude_sources,
             limit=limit,
             offset=offset,
             include_children=include_children,

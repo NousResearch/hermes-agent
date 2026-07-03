@@ -98,6 +98,16 @@ def _to_image_url_part(ref: str) -> Optional[str]:
         return ref
     path = Path(ref)
     try:
+        from agent.file_safety import get_read_block_error
+
+        blocked = get_read_block_error(ref)
+        if blocked:
+            raise ValueError(blocked)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - keep local image refs best-effort
+        logger.debug("OpenRouter image input read guard unavailable: %s", exc)
+    try:
         raw = path.read_bytes()
     except OSError as exc:
         logger.debug("could not read reference image %s: %s", ref, exc)

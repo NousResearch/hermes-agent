@@ -461,3 +461,72 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_stream_event_translation_separates_parallel_calls_across_events():
+    """Two distinct parallel calls to the same tool arrive in separate SSE
+    events, each with part_index=0 and the same name — they must become two
+    tool calls, not one slot with concatenated JSON arguments."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event_a = {
+        "candidates": [
+            {"content": {"parts": [{"functionCall": {"name": "read_file", "args": {"path": "A"}}}]}}
+        ]
+    }
+    event_b = {
+        "candidates": [
+            {"content": {"parts": [{"functionCall": {"name": "read_file", "args": {"path": "B"}}}]}},
+        ]
+    }
+
+    first = translate_stream_event(event_a, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    second = translate_stream_event(event_b, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+
+    call_a = first[0].choices[0].delta.tool_calls[0]
+    call_b = second[0].choices[0].delta.tool_calls[0]
+    assert call_a.index == 0
+    assert call_b.index == 1
+    assert call_a.id != call_b.id
+    assert call_a.function.arguments == '{"path": "A"}'
+    assert call_b.function.arguments == '{"path": "B"}'
+
+
+def test_stream_event_translation_chains_three_parallel_calls_across_events():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    calls = []
+    for path in ("A", "B", "C"):
+        event = {
+            "candidates": [
+                {"content": {"parts": [{"functionCall": {"name": "read_file", "args": {"path": path}}}]}}
+            ]
+        }
+        chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+        calls.append(chunks[0].choices[0].delta.tool_calls[0])
+
+    assert [c.index for c in calls] == [0, 1, 2]
+    assert len({c.id for c in calls}) == 3
+    assert [c.function.arguments for c in calls] == ['{"path": "A"}', '{"path": "B"}', '{"path": "C"}']
+
+
+def test_stream_event_translation_still_dedups_resent_identical_call_across_events():
+    """Identical re-sends of the same call across events must still dedup
+    (emit empty arguments the second time) instead of opening a new slot."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event = {
+        "candidates": [
+            {"content": {"parts": [{"functionCall": {"name": "search", "args": {"q": "abc"}}}]}}
+        ]
+    }
+
+    first = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    second = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+
+    assert first[0].choices[0].delta.tool_calls[0].index == 0
+    assert second[0].choices[0].delta.tool_calls[0].index == 0
+    assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""

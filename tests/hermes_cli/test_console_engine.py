@@ -271,6 +271,37 @@ def test_console_status_hides_cli_next_step_footer(
     assert "\u2500" not in result.output
 
 
+def test_console_status_hides_osc_linked_cli_next_step_footer(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_hermes_home,
+):
+    import hermes_cli.status as status_mod
+
+    def osc_link(text: str) -> str:
+        return f"\x1b]8;;https://example.test\x1b\\{text}\x1b]8;;\x1b\\"
+
+    def fake_show_status(_args):
+        print("◆ Sessions")
+        print("Active: 3 session(s)")
+        print()
+        print(osc_link("\u2500" * 60))
+        print(osc_link("  Run 'hermes doctor' for detailed diagnostics"))
+        print(osc_link("  Run 'hermes setup' to configure"))
+        print()
+
+    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
+
+    result = HermesConsoleEngine().execute("status")
+
+    assert result.status == "ok"
+    assert "Sessions" in result.output
+    assert "Active: 3 session(s)" in result.output
+    assert "hermes doctor" not in result.output
+    assert "hermes setup" not in result.output
+    assert "https://example.test" not in result.output
+    assert "\u2500" not in result.output
+
+
 def test_console_help_uses_cli_subcommand_summaries():
     help_text = HermesConsoleEngine().help_text()
 

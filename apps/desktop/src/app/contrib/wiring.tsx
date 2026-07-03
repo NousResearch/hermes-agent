@@ -75,6 +75,7 @@ import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
+import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
 import { useContextSuggestions } from '../session/hooks/use-context-suggestions'
 import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
@@ -534,6 +535,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  // Runs outside the selected ChatBar so queues belonging to background
+  // sessions continue once those sessions are idle.
+  useBackgroundQueueDrain({
+    enabled: gatewayState === 'open',
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId,
+    submitText
   })
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs

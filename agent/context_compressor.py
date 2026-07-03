@@ -3440,27 +3440,38 @@ This compaction should PRIORITISE preserving all information related to the focu
                 continue
             msg = _fresh_compaction_message_copy(messages[i])
             if _merge_summary_into_tail and i == tail_start:
-                # Merge the summary into the first tail message, but place
-                # the END MARKER at the very end so the model sees an
-                # unambiguous boundary. Old tail content is preserved as
-                # reference material BEFORE the summary, clearly delimited
-                # so it is not mistaken for a new message to respond to.
-                # Uses _append_text_to_content to safely handle both
-                # string and multimodal-list content types.
-                # Fixes ghost-message leakage across compaction boundaries
-                # where old head messages survived verbatim and appeared
-                # before the summary.
                 old_content = msg.get("content", "")
-                suffix = (
-                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
-                    + summary + "\n\n"
-                    + _SUMMARY_END_MARKER
-                )
-                msg["content"] = _append_text_to_content(
-                    _append_text_to_content(old_content, suffix, prepend=False),
-                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
-                    prepend=True,
-                )
+                if _force_user_leading and summary_role == "user":
+                    # The summary must be part of the first user-visible
+                    # message for Anthropic/Bedrock, but the real tail request
+                    # still has to appear *after* the summary boundary.
+                    prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                    msg["content"] = _append_text_to_content(
+                        old_content,
+                        prefix,
+                        prepend=True,
+                    )
+                else:
+                    # Merge the summary into the first tail message, but place
+                    # the END MARKER at the very end so the model sees an
+                    # unambiguous boundary. Old tail content is preserved as
+                    # reference material BEFORE the summary, clearly delimited
+                    # so it is not mistaken for a new message to respond to.
+                    # Uses _append_text_to_content to safely handle both
+                    # string and multimodal-list content types.
+                    # Fixes ghost-message leakage across compaction boundaries
+                    # where old head messages survived verbatim and appeared
+                    # before the summary.
+                    suffix = (
+                        "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+                        + summary + "\n\n"
+                        + _SUMMARY_END_MARKER
+                    )
+                    msg["content"] = _append_text_to_content(
+                        _append_text_to_content(old_content, suffix, prepend=False),
+                        _MERGED_PRIOR_CONTEXT_HEADER + "\n",
+                        prepend=True,
+                    )
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True

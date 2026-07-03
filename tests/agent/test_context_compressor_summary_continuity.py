@@ -7,6 +7,7 @@ from agent.context_compressor import (
     ContextCompressor,
     SUMMARY_PREFIX,
     _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES,
+    _SUMMARY_END_MARKER,
 )
 
 
@@ -262,6 +263,7 @@ def test_zero_protect_first_n_still_folds_restart_fossil():
 
     result_text = "\n".join(str(msg.get("content", "")) for msg in result)
     assert old_summary not in result_text
+    assert result_text.index(_SUMMARY_END_MARKER) < result_text.index("active request")
     assert sum(
         1 for msg in result if ContextCompressor._is_context_summary_message(msg)
     ) == 1

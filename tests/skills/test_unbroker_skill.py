@@ -954,13 +954,32 @@ def test_cluster_parents_have_playbook_and_deletion_lane():
                 assert addr in emailer.broker_addresses(b), f"{bid}: {addr} not sendable"
 
 
-def test_curated_intelius_playbook_prefers_deletion():
+def test_curated_intelius_suppress_first_not_delete():
+    # PeopleConnect is the EXCEPTION to deletion-beats-suppression: deleting user data wipes
+    # your suppressions and does not stop public-records re-listing, so suppress-and-maintain.
     b = brokers.get("intelius")
-    steps = " ".join(b["optout"]["playbook"])
-    assert "SUPPRESSION != DELETION" in steps          # the trap, encoded in the data
-    assert "DELETE MY USER DATA" in steps              # the actual deletion control
-    assert "privacy@peopleconnect.us" in steps         # the email fallback lane
-    assert b["optout"]["deletion"]["via"] == "in_flow"
+    d = b["optout"]["deletion"]
+    assert d["prefer"] is False and d["via"] == "in_flow"
+    assert d["email"] == "privacy@peopleconnect.us"     # rights-request address for the data-purge path
+    steps = " ".join(b["optout"]["playbook"]).upper()
+    assert "SUPPRESS" in steps                          # the recommended action
+    assert "DELETE MY USER DATA" in steps               # names the trap to avoid
+
+
+def test_deletion_prefer_flag_controls_autopilot_note():
+    with temp_env():
+        d = _consenting()
+        pc = _mini_broker("pc", owns=["kid"])
+        pc["optout"]["deletion"] = {"via": "in_flow", "prefer": False,
+                                    "email": "privacy@pc.example", "notes": "delete undoes suppression"}
+        q = autopilot.next_actions(d, [pc, _mini_broker("kid")], _auto_cfg(), {"pc": {"state": "found"}}, env={})
+        act = next(a for a in q["actions"] if a.get("broker_id") == "pc" and a["type"] == "optout_web_form")
+        assert "prefer_suppression" in act and "prefer_deletion" not in act
+        dd = _mini_broker("dd")
+        dd["optout"]["deletion"] = {"via": "email_followup", "email": "p@dd.example"}
+        q2 = autopilot.next_actions(d, [dd], _auto_cfg(), {"dd": {"state": "found"}}, env={})
+        act2 = next(a for a in q2["actions"] if a["type"] == "optout_web_form")
+        assert "prefer_deletion" in act2 and "prefer_suppression" not in act2
 
 
 def test_curated_whitepages_email_lane_is_autonomous():

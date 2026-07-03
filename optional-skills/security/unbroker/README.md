@@ -92,9 +92,10 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
   viable tier and escalates to a human task only when genuinely blocked.
 - **Cluster parents first.** Many brokers are resold shells of a few parents, so one removal can
   clear a dozen child sites. The planner orders parents ahead of standalone listings and ships
-  field-verified, per-parent playbooks that prefer the **right-to-delete** lane over mere suppression
-  (for example PeopleConnect's "delete my user data", or Whitepages' privacy email, which sidesteps
-  the phone-callback tool entirely).
+  field-verified, per-parent playbooks that usually prefer the **right-to-delete** lane over mere
+  suppression (for example Whitepages' privacy email, which sidesteps the phone-callback tool), with
+  per-broker exceptions where the record says otherwise (PeopleConnect: deleting your user data wipes
+  your suppressions and does not stop public-records re-listing, so suppress-and-maintain instead).
 - **Multi-identifier fan-out.** A person is indexed under every name/alias, phone, email, and
   address. The planner expands all of them (filtered by what each broker supports) so listings under
   a maiden name or an old address are found, not just "primary name plus current city".

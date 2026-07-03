@@ -152,9 +152,11 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   CCPA/GDPR delete-my-PII emails (`send-email --kind ccpa_indirect`), and defer `blocked` to the
   stealth-browser pass. Opt-outs hit CAPTCHAs, email-verification loops, and session binding - work
   them **one at a time, carefully** (this is the opposite of fan-out), but do NOT stop to ask
-  permission per submission in `autonomy=full`; in `assisted`, confirm each one. **Prefer deletion
-  over suppression** where a broker offers both (e.g. PeopleConnect's "Right to Delete / DELETE MY
-  USER DATA" actually removes data; the suppression flow only hides it).
+  permission per submission in `autonomy=full`; in `assisted`, confirm each one. **Usually prefer
+  deletion over suppression** where a broker offers both (Spokeo/BeenVerified) - but follow the
+  record's `deletion.prefer`: **PeopleConnect is the exception** (`prefer: false`), where deleting
+  your user data removes your suppressions and does not stop public-records re-listing, so you
+  suppress-and-maintain instead.
 
 Subagent reports are self-reports: the parent re-verifies key claims (listing URLs, match basis) before
 recording `found` and before any deletion.
@@ -200,9 +202,11 @@ recording `found` and before any deletion.
    The parent re-verifies key `found` claims from subagents before trusting them.
 5. **Opt-outs (when `next` says so).** Actions come pre-ordered parents-first with `steps` from each
    broker record's own `optout.playbook` (field-verified; cluster parents like PeopleConnect,
-   Whitepages, BeenVerified, Spokeo have exact, live-checked recipes). **Deletion beats
-   suppression**: when an action carries `prefer_deletion`, complete the record's DELETION lane (e.g.
-   PeopleConnect's "DELETE MY USER DATA"), never just the hide-my-listing flow. Per method:
+   Whitepages, BeenVerified, Spokeo have exact, live-checked recipes). **Deletion usually beats
+   suppression**: when an action carries `prefer_deletion`, complete the record's DELETION lane, not
+   just the hide-my-listing flow. When it carries `prefer_suppression` instead (**PeopleConnect** -
+   deleting removes your suppressions and does not stop re-listing), do the suppression flow and keep
+   it maintained; use their Delete button only for a deliberate data-purge. Per method:
    - **web_form** → drive `optout_url` with `browser_navigate`/`browser_type`/`browser_click`, submit
      only `disclosure_fields`, screenshot the confirmation, then the action's `after` record command.
      Playbooks may end with a right-to-delete `send-email` follow-up - do it (full erasure, not just

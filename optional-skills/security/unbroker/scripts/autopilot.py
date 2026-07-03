@@ -185,9 +185,16 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
                  f"--disclosed <field>... --channel web_form",
     }
     if deletion:
-        action["prefer_deletion"] = ("this record has a right-to-delete lane -- complete the DELETION "
-                                     "flow, not just suppression" + (f" ({deletion.get('notes')})"
-                                                                     if deletion.get("notes") else ""))
+        if deletion.get("prefer", True):
+            action["prefer_deletion"] = ("this record has a right-to-delete lane -- complete the "
+                                         "DELETION flow, not just suppression"
+                                         + (f" ({deletion.get('notes')})" if deletion.get("notes") else ""))
+        else:
+            # Some brokers invert the usual rule: deleting the account removes suppressions and
+            # does not stop public-records re-listing (e.g. PeopleConnect). Suppress and maintain.
+            action["prefer_suppression"] = (deletion.get("notes")
+                                            or "suppression (maintained) is what removes you here; "
+                                               "deleting undoes it and does not stop re-listing")
     if req.get("captcha"):
         action["note"] = ("CAPTCHA-gated: attempt with the configured browser backend once; if it "
                           "does not clear, record blocked (do NOT retry-loop or bypass)")

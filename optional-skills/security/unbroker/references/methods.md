@@ -192,12 +192,14 @@ covered. `pdd.py plan <subject> --batch` **orders the `found` group parents-firs
 source of truth, field-verified, updated as live runs discover mechanics. What follows is the
 operating doctrine; the exact steps are in `references/brokers/<id>.json`.
 
-**Deletion beats suppression, email lanes beat forms.** Each parent record carries a structured
-`optout.deletion` lane (`via: in_flow | email | email_followup`, plus the privacy address). The
-autopilot routes accordingly:
+**Deletion USUALLY beats suppression, email lanes beat forms -- but check the record.** Each parent
+record carries a structured `optout.deletion` lane (`via: in_flow | email | email_followup`, a
+privacy address, and `prefer`). The autopilot routes accordingly, and when `deletion.prefer` is
+false it emits `prefer_suppression` instead of `prefer_deletion`:
 
-- **`in_flow`** (PeopleConnect): the deletion control lives INSIDE the web flow - complete the flow
-  and use the **Right to Delete / DELETE MY USER DATA** control, never just the suppression step.
+- **`in_flow`** (PeopleConnect, `prefer: false`): the deletion control lives inside the web flow, but
+  for this cluster it is the WRONG lever for search-visibility (see the exception below). Complete the
+  **suppression** flow and maintain it; do not press Delete unless the goal is a data-purge.
 - **`via: email`** (Whitepages): the fully-autonomous lane - `send-email` the request (residency-picked
   kind: CCPA for US-CA, GDPR for EU/UK, generic otherwise), then `poll-verification` for their reply
   and answer identity questions with least-disclosure. This is also the **rescue lane**: any broker
@@ -206,12 +208,15 @@ autopilot routes accordingly:
 - **`email_followup`** (BeenVerified, Spokeo): the opt-out form is the fast primary (it clears the
   listing), and the playbook then sends a right-to-delete email for full erasure beyond suppression.
 
-Verified parent facts (live-checked 2026-07-01; details + steps in the records):
+Verified parent facts (live-checked 2026-07-02; details + steps in the records):
 
-- **Intelius/PeopleConnect** (~15+ sites in one flow): portal entry asks only email + consent →
-  verify link is **session-bound to the browser that opens it** → guided-mode → **DELETE MY USER
-  DATA** at the bottom (suppression alone re-lists). Fallback `privacy@peopleconnect.us` - their own
-  published metrics: 33.5k deletion requests, median response < 1 day.
+- **Intelius/PeopleConnect** (~15+ sites in one flow) -- **EXCEPTION to deletion-beats-suppression.**
+  Portal entry asks only email + consent → verify link is **session-bound to the browser that opens
+  it** → guided-mode. Complete the **SUPPRESSION** flow and keep the account on file: suppression is
+  the do-not-display list that removes you. Per their privacy-center, **'DELETE MY USER DATA' deletes
+  your suppressions and does NOT stop the sites from showing you** (public records re-list), so use it
+  only for a deliberate data-purge. `privacy@peopleconnect.us` is the rights-request address for that
+  path; published metrics: 33.5k deletion requests, median response < 1 day.
 - **Whitepages**: `privacyrequest@whitepages.com` (or the Zendesk form) handles removal + CCPA
   deletion **without the phone-callback tool** - that phone call is only required by the automated
   tool. One removal also drops "all known connected listings". ≤15 days; check 411.com + Premium.

@@ -13,13 +13,19 @@ import type {
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
+  CuratorStatusResponse,
+  DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  McpCatalogResponse,
+  McpServerSummary,
+  McpServerTestResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
+  MemoryStatusResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -40,11 +46,16 @@ import type {
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
+  SkillHubPreview,
+  SkillHubScanResult,
+  SkillHubSearchResponse,
+  SkillHubSourcesResponse,
   SkillInfo,
   StarmapGraph,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  ToolsetModelsResponse
 } from '@/types/hermes'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -93,6 +104,8 @@ export type {
   CronJobCreatePayload,
   CronJobSchedule,
   CronJobUpdates,
+  CuratorStatusResponse,
+  DebugShareResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -100,8 +113,13 @@ export type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  McpCatalogEntry,
+  McpCatalogResponse,
+  McpServerSummary,
+  McpServerTestResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
+  MemoryStatusResponse,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -133,12 +151,21 @@ export type {
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,
+  SkillHubInstalledEntry,
+  SkillHubPreview,
+  SkillHubResult,
+  SkillHubScanResult,
+  SkillHubSearchResponse,
+  SkillHubSource,
+  SkillHubSourcesResponse,
   SkillInfo,
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  ToolsetModel,
+  ToolsetModelsResponse
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -591,6 +618,28 @@ export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
   })
 }
 
+export function getToolsetModels(name: string, provider?: string): Promise<ToolsetModelsResponse> {
+  const suffix = provider ? `?provider=${encodeURIComponent(provider)}` : ''
+
+  return window.hermesDesktop.api<ToolsetModelsResponse>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/models${suffix}`
+  })
+}
+
+export function selectToolsetModel(
+  name: string,
+  model: string,
+  provider?: string
+): Promise<{ ok: boolean; name: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; name: string; model: string }>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/model`,
+    method: 'PUT',
+    body: { model, provider }
+  })
+}
+
 export function selectToolsetProvider(
   name: string,
   provider: string
@@ -901,5 +950,202 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
 export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices'
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Skills hub — search / preview / scan / install (parity with `hermes skills`
+// and the dashboard's Browse-hub tab). Installs spawn background actions whose
+// logs are tailed via getActionStatus().
+// ---------------------------------------------------------------------------
+
+const HUB_REQUEST_TIMEOUT_MS = 45_000
+
+export function getSkillHubSources(): Promise<SkillHubSourcesResponse> {
+  return window.hermesDesktop.api<SkillHubSourcesResponse>({
+    ...profileScoped(),
+    path: '/api/skills/hub/sources',
+    timeoutMs: HUB_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function searchSkillsHub(query: string, source = 'all', limit = 20): Promise<SkillHubSearchResponse> {
+  const params = new URLSearchParams({ q: query, source, limit: String(limit) })
+
+  return window.hermesDesktop.api<SkillHubSearchResponse>({
+    ...profileScoped(),
+    path: `/api/skills/hub/search?${params.toString()}`,
+    timeoutMs: HUB_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function previewSkillHub(identifier: string): Promise<SkillHubPreview> {
+  return window.hermesDesktop.api<SkillHubPreview>({
+    path: `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
+    timeoutMs: HUB_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function scanSkillHub(identifier: string): Promise<SkillHubScanResult> {
+  return window.hermesDesktop.api<SkillHubScanResult>({
+    path: `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
+    timeoutMs: HUB_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function installSkillFromHub(identifier: string): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/skills/hub/install',
+    method: 'POST',
+    body: { identifier }
+  })
+}
+
+export function uninstallSkillFromHub(name: string): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/skills/hub/uninstall',
+    method: 'POST',
+    body: { name }
+  })
+}
+
+export function updateSkillsFromHub(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/skills/hub/update',
+    method: 'POST',
+    body: {}
+  })
+}
+
+// ---------------------------------------------------------------------------
+// MCP servers — structured list / test / enable toggle / catalog (parity with
+// `hermes mcp` and the dashboard MCP page). Raw JSON editing stays in
+// config.yaml via saveHermesConfig.
+// ---------------------------------------------------------------------------
+
+export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
+  return window.hermesDesktop.api<{ servers: McpServerSummary[] }>({
+    ...profileScoped(),
+    path: '/api/mcp/servers'
+  })
+}
+
+export function testMcpServer(name: string): Promise<McpServerTestResponse> {
+  return window.hermesDesktop.api<McpServerTestResponse>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+    method: 'POST',
+    // Connect + list tools can be slow for stdio servers that boot a process.
+    timeoutMs: 60_000
+  })
+}
+
+export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+    method: 'PUT',
+    body: { enabled }
+  })
+}
+
+export function getMcpCatalog(): Promise<McpCatalogResponse> {
+  return window.hermesDesktop.api<McpCatalogResponse>({
+    ...profileScoped(),
+    path: '/api/mcp/catalog'
+  })
+}
+
+export function installMcpCatalogEntry(
+  name: string,
+  env: Record<string, string> = {}
+): Promise<{ ok: boolean; name?: string; pid?: number; action?: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string }>({
+    ...profileScoped(),
+    path: '/api/mcp/catalog/install',
+    method: 'POST',
+    body: { name, env, enable: true },
+    timeoutMs: 60_000
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Memory data + curator (parity with `hermes memory` / `hermes curator`).
+// ---------------------------------------------------------------------------
+
+export function getMemoryStatus(): Promise<MemoryStatusResponse> {
+  return window.hermesDesktop.api<MemoryStatusResponse>({
+    ...profileScoped(),
+    path: '/api/memory'
+  })
+}
+
+export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: boolean; deleted: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; deleted: string[] }>({
+    ...profileScoped(),
+    path: '/api/memory/reset',
+    method: 'POST',
+    body: { target }
+  })
+}
+
+export function getCuratorStatus(): Promise<CuratorStatusResponse> {
+  return window.hermesDesktop.api<CuratorStatusResponse>({
+    ...profileScoped(),
+    path: '/api/curator'
+  })
+}
+
+export function setCuratorPaused(paused: boolean): Promise<{ ok: boolean; paused: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; paused: boolean }>({
+    ...profileScoped(),
+    path: '/api/curator/paused',
+    method: 'PUT',
+    body: { paused }
+  })
+}
+
+export function runCurator(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/curator/run',
+    method: 'POST',
+    body: {}
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance operations (parity with `hermes doctor` / `hermes security
+// audit` / `hermes backup` / `hermes debug share` and the dashboard System
+// page). All except debug share are spawn-based background actions tailed via
+// getActionStatus().
+// ---------------------------------------------------------------------------
+
+export function runDoctor(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({ path: '/api/ops/doctor', method: 'POST', body: {} })
+}
+
+export function runSecurityAudit(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({ path: '/api/ops/security-audit', method: 'POST', body: {} })
+}
+
+export function runBackup(): Promise<ActionResponse & { archive?: string }> {
+  return window.hermesDesktop.api<ActionResponse & { archive?: string }>({
+    path: '/api/ops/backup',
+    method: 'POST',
+    body: {}
+  })
+}
+
+export function runDebugShare(): Promise<DebugShareResponse> {
+  return window.hermesDesktop.api<DebugShareResponse>({
+    path: '/api/ops/debug-share',
+    method: 'POST',
+    body: {},
+    // Synchronous upload of report + logs to the paste service.
+    timeoutMs: 120_000
   })
 }

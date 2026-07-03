@@ -767,6 +767,13 @@ let connectionPromise = null
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+// Profiles discovered from a remote backend's `/api/profiles` roster. This is
+// the fleet-command case: the operator may configure one VPS profile (for
+// example `zeus`) as a per-profile remote, but that backend can enumerate and
+// serve sibling profiles (`athena`, `argus`, …) through profile-scoped REST/RPC
+// calls. Remember the roster source so selecting a discovered sibling routes to
+// the same remote host instead of spawning a local laptop profile backend.
+const remoteRosterSources = new Map() // discovered profile -> configured remote source profile
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -4915,6 +4922,21 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(override.url, override.authMode, token, 'profile')
   }
 
+  // 1b. Remote roster discovery. If `/api/profiles` was fetched through a
+  // configured remote profile and it advertised sibling profiles from the same
+  // host, route those siblings back through the roster source. REST paths keep a
+  // `?profile=<target>` query (see pathWithGlobalRemoteProfile call site), and
+  // JSON-RPC session.create carries `profile` in params, so one remote backend
+  // can serve the whole fleet without hand-configuring every profile override.
+  const rosterSource = remoteRosterSourceForProfile(profile, config)
+  if (rosterSource) {
+    const rosterOverride = profileRemoteOverride(config, rosterSource)
+    if (rosterOverride) {
+      const token = rosterOverride.authMode === 'oauth' ? null : decryptDesktopSecret(rosterOverride.token)
+      return buildRemoteConnection(rosterOverride.url, rosterOverride.authMode, token, 'profile-roster')
+    }
+  }
+
   // 2. Env override (global, token-auth only).
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
@@ -4945,9 +4967,28 @@ function profileHasRemoteOverride(profile) {
   return Boolean(profileRemoteOverride(readDesktopConnectionConfig(), profile))
 }
 
+function remoteRosterSourceForProfile(profile, config = readDesktopConnectionConfig()) {
+  const key = connectionScopeKey(profile)
+  if (!key) return null
+  if (profileRemoteOverride(config, key)) return null
+  const source = remoteRosterSources.get(key)
+  if (!source || source === key) return null
+  return profileRemoteOverride(config, source) ? source : null
+}
+
+function profileUsesRemoteRosterSource(profile) {
+  return Boolean(remoteRosterSourceForProfile(profile))
+}
+
 function configuredRemoteProfileNames() {
   const config = readDesktopConnectionConfig()
-  return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
+  const names = new Set(Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name)))
+  for (const name of remoteRosterSources.keys()) {
+    if (remoteRosterSourceForProfile(name, config)) {
+      names.add(name)
+    }
+  }
+  return [...names]
 }
 
 // True when the app is in app-global remote mode (Settings → "All profiles" →
@@ -5035,6 +5076,29 @@ async function probeRemoteAuthMode(rawUrl) {
     providers,
     version: status?.version || null,
     error: null
+  }
+}
+
+function rememberRemoteProfileRoster(request, routeProfile, connection, response) {
+  if (!response || typeof response !== 'object' || !Array.isArray(response.profiles)) return
+  if (String(request?.method || 'GET').toUpperCase() !== 'GET') return
+
+  let pathname
+  try {
+    pathname = new URL(String(request?.path || ''), 'http://x').pathname
+  } catch {
+    return
+  }
+  if (pathname !== '/api/profiles') return
+  if (connection?.mode !== 'remote') return
+
+  const source = connectionScopeKey(routeProfile) || connectionScopeKey(connection?.profile) || primaryProfileKey()
+  if (!source || !profileRemoteOverride(readDesktopConnectionConfig(), source)) return
+
+  for (const profile of response.profiles) {
+    const name = connectionScopeKey(profile?.name)
+    if (!name || (name !== 'default' && !PROFILE_NAME_RE.test(name))) continue
+    remoteRosterSources.set(name, source)
   }
 }
 
@@ -6383,6 +6447,15 @@ async function interceptSessionRequestForRemote(request) {
       if (body) delete body.profile
       return requestJsonForProfile(profile, pathname, method, body)
     }
+    if (profileUsesRemoteRosterSource(profile)) {
+      const sep = pathname.includes('?') ? '&' : '?'
+      const path = `${pathname}${sep}profile=${encodeURIComponent(profile)}`
+      if (method === 'GET') {
+        return fetchJsonForProfile(profile, path)
+      }
+      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
+      return requestJsonForProfile(profile, path, method, body)
+    }
     if (globalRemoteActive()) {
       // Single global backend: keep ?profile= so it opens the right state.db.
       const sep = pathname.includes('?') ? '&' : '?'
@@ -6405,7 +6478,11 @@ const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 // desktop-facing profile name (the remote's /api/sessions doesn't know it).
 async function remoteSessionList(profile, searchParams) {
   const qs = new URLSearchParams(searchParams)
-  qs.delete('profile') // remote serves its own db; no cross-profile read there
+  if (profileUsesRemoteRosterSource(profile) || globalRemoteActive()) {
+    qs.set('profile', profile)
+  } else {
+    qs.delete('profile') // remote serves its own db; no cross-profile read there
+  }
   const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
   for (const s of rowsOf(data)) {
     s.profile = profile
@@ -6481,7 +6558,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
-    globalRemote: globalRemoteActive(),
+    globalRemote: globalRemoteActive() || profileUsesRemoteRosterSource(profile),
     profileRemoteOverride: profileHasRemoteOverride(profile)
   })
   const url = `${connection.baseUrl}${requestPath}`
@@ -6490,17 +6567,21 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // session so the cookie attaches automatically. Token/local modes keep using
   // the static session-token header.
   if (connection.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, {
+    const response = await fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
+    rememberRemoteProfileRoster(request, routeProfile, connection, response)
+    return response
   }
-  return fetchJson(url, connection.token, {
+  const response = await fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
     timeoutMs
   })
+  rememberRemoteProfileRoster(request, routeProfile, connection, response)
+  return response
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {

@@ -702,6 +702,7 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
+    ...profileScoped(),
     path: '/api/profiles'
   })
 }

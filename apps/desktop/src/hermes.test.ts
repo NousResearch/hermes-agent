@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getProfiles, getSessionMessages, listAllProfileSessions, listSessions, setApiRequestProfile } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -21,6 +21,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -55,6 +56,18 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('routes profile roster reads through the active gateway profile', async () => {
+    api.mockResolvedValue({ profiles: [] })
+    setApiRequestProfile('zeus')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/profiles',
+      profile: 'zeus'
     })
   })
 })

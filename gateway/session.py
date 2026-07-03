@@ -1264,6 +1264,37 @@ class SessionStore:
 
         return False
 
+    def is_session_finalizable(self, entry: SessionEntry) -> bool:
+        """Return True if the expiry watcher will *ever* finalize this session.
+
+        The expiry watcher (``GatewayRunner._session_expiry_watcher``) only
+        tears an agent down — and only then fires ``on_session_end`` — for
+        sessions whose reset policy eventually expires. A ``mode == "none"``
+        session never expires (``_is_session_expired`` returns ``False``
+        forever), so the watcher will never finalize it.
+
+        This distinction matters for the agent-cache idle sweep: deferring
+        idle eviction to "let the watcher finalize it later" is only correct
+        when the watcher WILL run for this session. For a ``mode == "none"``
+        session, deferring pins the cached agent in memory for the gateway's
+        entire lifetime with no finalization ever coming — the exact leak the
+        idle sweep exists to relieve. Callers use this predicate to decide
+        whether the session store owns the eviction boundary (finalizable) or
+        the idle sweep must still reap the agent itself (not finalizable).
+
+        Public wrapper so callers don't reach into policy internals. Errors
+        resolving the policy are treated as "not finalizable" (safe: the idle
+        sweep falls back to reaping the agent rather than pinning it).
+        """
+        try:
+            policy = self.config.get_reset_policy(
+                platform=entry.platform,
+                session_type=entry.chat_type,
+            )
+            return policy.mode != "none"
+        except Exception:
+            return False
+
     def _is_session_ended_in_db(self, session_id: str) -> bool:
         """Return True iff state.db has this session with a non-null end_reason.
 
@@ -1338,6 +1369,48 @@ class SessionStore:
         
         return None
     
+    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Return the latest compression continuation for *session_id*.
+
+        When an agent compresses context mid-turn the transcript moves to a
+        child session, but a restart or failed send can leave the SessionStore
+        mapping pointing at the compressed parent.  Heal that on read so the
+        next inbound message resumes the child instead of reloading the parent.
+        """
+        if not session_id or self._db is None:
+            return session_id
+        try:
+            return self._db.get_compression_tip(session_id) or session_id
+        except Exception:
+            logger.debug(
+                "Compression-tip lookup failed for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return session_id
+
+    def _heal_compression_tip_locked(
+        self,
+        entry: "SessionEntry",
+        original_session_id: Optional[str],
+        canonical_session_id: Optional[str],
+    ) -> bool:
+        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        if (
+            not original_session_id
+            or not canonical_session_id
+            or entry.session_id != original_session_id
+            or canonical_session_id == original_session_id
+        ):
+            return False
+        logger.info(
+            "SessionStore healed compressed session mapping: %s -> %s",
+            entry.session_id,
+            canonical_session_id,
+        )
+        entry.session_id = canonical_session_id
+        return True
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1378,12 +1451,30 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        existing_session_id = None
+
+        if not force_new:
+            with self._lock:
+                self._ensure_loaded_locked()
+                entry = self._entries.get(session_key)
+                if entry is not None:
+                    existing_session_id = entry.session_id
+
+        # Look up the compression continuation outside the lock (DB I/O).
+        canonical_existing_session_id = (
+            self._compression_tip_for_session_id(existing_session_id)
+            if existing_session_id
+            else None
+        )
 
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
+                self._heal_compression_tip_locked(
+                    entry, existing_session_id, canonical_existing_session_id
+                )
 
                 # Self-heal stale routing: if this session_key still points at
                 # a session that has ALREADY been ended in state.db (end_reason
@@ -1887,6 +1978,22 @@ class SessionStore:
                 if entry.session_id == session_id:
                     return entry
         return None
+
+    def peek_session_id(self, session_key: str) -> Optional[str]:
+        """Return the persisted session_id currently bound to a session key.
+
+        Public, lock-held accessor for the key→session_id mapping. Callers that
+        need to resolve the session row for a source (e.g. the webhook
+        delivery-close path) should use this rather than reaching into the
+        private ``_entries`` dict without holding ``self._lock``. Returns None
+        when the key is unknown or has no session_id yet.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return getattr(entry, "session_id", None) if entry else None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).

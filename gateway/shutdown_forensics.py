@@ -367,15 +367,29 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                [
+                    "systemctl", *flag, "show", unit_name,
+                    "--property=LoadState",
+                    "--property=TimeoutStopUSec",
+                ],
                 capture_output=True, text=True, timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
+
+        lines = result.stdout.splitlines()
+        load_state = None
+        for line in lines:
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+                break
+        if load_state in {"not-found", "masked", "error"}:
+            continue
+
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines():
+        for line in lines:
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 # Try numeric microseconds first

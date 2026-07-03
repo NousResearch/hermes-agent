@@ -560,17 +560,26 @@ class GitHubSource(SkillSource):
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        """Search all taps for skills matching the query."""
+        """Search all taps for skills matching the query.
+
+        Multi-word queries use AND semantics — every word must match
+        somewhere, regardless of order.
+        """
         results: List[SkillMeta] = []
         query_lower = query.lower()
+        query_words = query_lower.split()
 
         for tap in self.taps:
             try:
                 skills = self._list_skills_in_repo(tap["repo"], tap.get("path", ""))
                 for skill in skills:
                     searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)}".lower()
-                    if query_lower in searchable:
-                        results.append(skill)
+                    if len(query_words) > 1:
+                        if not all(w in searchable for w in query_words):
+                            continue
+                    elif query_lower not in searchable:
+                        continue
+                    results.append(skill)
             except Exception as e:
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
@@ -2729,6 +2738,7 @@ class LobeHubSource(SkillSource):
             return []
 
         query_lower = query.lower()
+        query_words = query_lower.split()
         results: List[SkillMeta] = []
 
         agents = index.get("agents", index) if isinstance(index, dict) else index
@@ -2742,7 +2752,11 @@ class LobeHubSource(SkillSource):
             tags = meta.get("tags", [])
 
             searchable = f"{title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
-            if query_lower in searchable:
+            if len(query_words) > 1:
+                if not all(w in searchable for w in query_words):
+                    continue
+            elif query_lower not in searchable:
+                continue
                 identifier = agent.get("identifier", title.lower().replace(" ", "-"))
                 results.append(SkillMeta(
                     name=identifier,
@@ -3772,6 +3786,11 @@ class HermesIndexSource(SkillSource):
         truncated at the first ``limit`` hits — that earlier break-at-limit
         behaviour returned an arbitrary file-order slice and buried the most
         relevant skills.
+
+        Multi-word queries use AND semantics — every word must match
+        somewhere in the haystack, in any order.  This fixes searches like
+        ``disk cleanup`` failing to find skills with description
+        ``clean up disk space``.
         """
         index = self._ensure_loaded()
         skills = index.get("skills", [])
@@ -3783,7 +3802,12 @@ class HermesIndexSource(SkillSource):
             return [self._to_meta(s) for s in skills[:limit]]
 
         query_lower = query.lower()
-        scored: List[Tuple[int, int, dict]] = []
+        # Split into words for AND search.  A single-word query behaves
+        # exactly like the old substring check.  Multi-word queries require
+        # every word to appear anywhere in the haystack (order-independent).
+        query_words = query_lower.split()
+
+        scored: List[Tuple[float, int, dict]] = []
         for i, s in enumerate(skills):
             name = str(s.get("name", "")).lower()
             provider = str((s.get("extra") or {}).get("provider", "")).lower()
@@ -3794,11 +3818,39 @@ class HermesIndexSource(SkillSource):
                 str(s.get("identifier", "")).lower(),
                 provider,
             ])
-            if query_lower not in haystack:
+
+            # AND search: all query words must match somewhere
+            if query_words and len(query_words) > 1:
+                if not all(w in haystack for w in query_words):
+                    continue
+            elif query_lower not in haystack:
                 continue
-            # Lower score sorts first.
+
+            # Lower score sorts first.  For multi-word queries the per-word
+            # matching quality is averaged so that a skill matching all words
+            # well (e.g. name match for one and description match for another)
+            # scores better than one matching them all poorly.
             if name == query_lower:
                 score = 0
+            elif len(query_words) > 1:
+                # Multi-word scoring: average the per-word match quality.
+                # This rewards skills that match each word solidly over those
+                # that barely scrape by on a substring.
+                total = 0
+                for w in query_words:
+                    if name == w:
+                        total += 0
+                    elif name.startswith(w):
+                        total += 1
+                    elif provider == w:
+                        total += 2
+                    elif w in name.split() or w in provider.split():
+                        total += 3
+                    elif w in name:
+                        total += 4
+                    else:
+                        total += 5
+                score = total / len(query_words)
             elif name.startswith(query_lower):
                 score = 1
             elif provider == query_lower:

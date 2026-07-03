@@ -6,6 +6,7 @@ import {
   appendReasoningPart,
   chatMessageText,
   preserveLocalAssistantErrors,
+  replaceReasoningPart,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
@@ -67,6 +68,17 @@ describe('toChatMessages', () => {
     expect(assistantMessages[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
     expect(chatMessageText(assistantMessages[0])).toContain("Let me also check if there's a top-level lint workflow.")
     expect(chatMessageText(assistantMessages[0])).toContain('Now let me check git status and commit.')
+  })
+
+  it('coalesces consecutive stored assistant reasoning rows into one thought part', () => {
+    const messages = toChatMessages([
+      { role: 'assistant', content: '', reasoning_content: 'first thought ', timestamp: 1 },
+      { role: 'assistant', content: '', reasoning_content: 'second thought', timestamp: 2 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual(['reasoning'])
+    expect((messages[0].parts[0] as { text: string }).text).toBe('first thought second thought')
   })
 
   it('hides attached context payloads from user message display', () => {
@@ -219,6 +231,31 @@ describe('interleaved reasoning/text coalescing', () => {
     expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
     expect((parts[0] as { text: string }).text).toBe('before tool')
     expect((parts[2] as { text: string }).text).toBe('after tool')
+  })
+
+  it('replaces reasoning fragments in the current stream segment in place', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'The complete thought')
+    parts = appendAssistantTextPart(parts, 'Answer in progress.')
+    parts = appendReasoningPart(parts, 'The complete ')
+    parts = appendReasoningPart(parts, 'thought')
+
+    parts = replaceReasoningPart(parts, 'The complete thought.')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text'])
+    expect((parts[0] as { text: string }).text).toBe('The complete thought.')
+    expect((parts[1] as { text: string }).text).toBe('Answer in progress.')
+  })
+
+  it('does not replace reasoning from a previous tool-bounded segment', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'before tool')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'complete')
+    parts = appendReasoningPart(parts, 'partial after tool')
+
+    parts = replaceReasoningPart(parts, 'settled after tool')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('before tool')
+    expect((parts[2] as { text: string }).text).toBe('settled after tool')
   })
 })
 

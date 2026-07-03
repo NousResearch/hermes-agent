@@ -234,6 +234,61 @@ export function appendReasoningPart(parts: ChatMessagePart[], delta: string): Ch
   return appendStreamPart(parts, 'reasoning', delta).parts
 }
 
+export function replaceReasoningPart(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
+  const next: ChatMessagePart[] = []
+  let inserted = false
+  let boundary = -1
+
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]
+
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      boundary = i
+      break
+    }
+  }
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+
+    if (i <= boundary) {
+      next.push(part)
+      continue
+    }
+
+    if (part.type === 'reasoning') {
+      if (!inserted) {
+        next.push(reasoningPart(text))
+        inserted = true
+      }
+
+      continue
+    }
+
+    next.push(part)
+  }
+
+  if (!inserted) {
+    next.push(reasoningPart(text))
+  }
+
+  return next
+}
+
+function appendAssistantParts(parts: ChatMessagePart[], incoming: ChatMessagePart[]): ChatMessagePart[] {
+  return incoming.reduce<ChatMessagePart[]>((next, part) => {
+    if (part.type === 'reasoning') {
+      return appendReasoningPart(next, part.text)
+    }
+
+    if (part.type === 'text') {
+      return appendAssistantTextPart(next, part.text)
+    }
+
+    return [...next, part]
+  }, parts)
+}
+
 export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
   const { index, parts: next } = appendStreamPart(parts, 'text', delta)
   const part = next[index]
@@ -720,7 +775,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return false
     }
 
-    active.parts = [...active.parts, ...parts]
+    active.parts = appendAssistantParts(active.parts, parts)
     active.timestamp = timestamp ?? active.timestamp
 
     return true
@@ -820,9 +875,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       const currentHasToolCall = parts.some(part => part.type === 'tool-call')
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
+      const currentHasReasoning = parts.some(part => part.type === 'reasoning')
+      const activeHasReasoning = Boolean(activeAssistant?.parts.some(part => part.type === 'reasoning'))
 
-      if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        activeAssistant.parts = [...activeAssistant.parts, ...parts]
+      if (activeAssistant && (currentHasToolCall || activeHasToolCall || currentHasReasoning || activeHasReasoning)) {
+        activeAssistant.parts = appendAssistantParts(activeAssistant.parts, parts)
         activeAssistant.timestamp = message.timestamp ?? activeAssistant.timestamp
 
         return

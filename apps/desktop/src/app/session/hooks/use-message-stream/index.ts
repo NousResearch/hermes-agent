@@ -11,6 +11,7 @@ import {
   chatMessageText,
   type GatewayEventPayload,
   reasoningPart,
+  replaceReasoningPart,
   renderMediaTags,
   upsertToolPart
 } from '@/lib/chat-messages'
@@ -273,7 +274,7 @@ export function useMessageStream({
           }
 
           if (replace) {
-            return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta)]
+            return replaceReasoningPart(parts, delta)
           }
 
           return appendReasoningPart(parts, delta)

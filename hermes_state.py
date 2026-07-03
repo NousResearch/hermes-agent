@@ -140,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -841,6 +841,22 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
 );
 
+CREATE TABLE IF NOT EXISTS session_moa_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    preset TEXT,
+    role TEXT NOT NULL,
+    slot_index INTEGER,
+    provider TEXT,
+    model TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    cost_usd REAL
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -909,6 +925,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_session_moa_usage_session
+    ON session_moa_usage(session_id, role, model);
 """
 
 FTS_SQL = """
@@ -2851,6 +2869,35 @@ class SessionDB:
                 now,
             ),
         )
+
+    def add_session_moa_usage(self, session_id: str, moa_breakdown: List[Dict[str, Any]], preset: str = "") -> None:
+        """Add MoA reference and aggregator usage to the detailed breakdown table."""
+        if not moa_breakdown:
+            return
+
+        sql = """INSERT INTO session_moa_usage
+                 (session_id, preset, role, slot_index, provider, model, input_tokens, output_tokens,
+                  cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+
+        def _do(conn):
+            for entry in moa_breakdown:
+                usage = entry.get("usage")
+                conn.execute(sql, (
+                    session_id,
+                    preset,
+                    entry.get("role", "reference"),
+                    entry.get("slot_index"),
+                    entry.get("provider") or "",
+                    entry.get("model") or "",
+                    getattr(usage, "input_tokens", 0) if usage else 0,
+                    getattr(usage, "output_tokens", 0) if usage else 0,
+                    getattr(usage, "cache_read_tokens", 0) if usage else 0,
+                    getattr(usage, "cache_write_tokens", 0) if usage else 0,
+                    getattr(usage, "reasoning_tokens", 0) if usage else 0,
+                    entry.get("cost_usd")
+                ))
+        self._execute_write(_do)
 
     def ensure_session(
         self,

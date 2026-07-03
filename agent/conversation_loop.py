@@ -2112,9 +2112,13 @@ def run_conversation(
                     # the bulk of a MoA turn — is invisible in token counts.
                     _moa_ref_cost = None
                     _moa_client = getattr(agent, "client", None)
+                    _ref_details = []
                     if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
                         try:
-                            _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
+                            if hasattr(_moa_client, "consume_reference_details"):
+                                _ref_usage, _moa_ref_cost, _ref_details = _moa_client.consume_reference_details()
+                            else:
+                                _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
                             if _ref_usage is not None:
                                 canonical_usage = canonical_usage + _ref_usage
                         except Exception as _moa_acct_exc:  # pragma: no cover - defensive
@@ -2282,6 +2286,30 @@ def run_conversation(
                                 model=agent.model,
                                 api_call_count=1,
                             )
+                            if _moa_client is not None and hasattr(agent._session_db, "add_session_moa_usage"):
+                                # Add the aggregator and reference models to the MoA detailed tracking
+                                _agg_cost_amount = None
+                                try:
+                                    if cost_result.amount_usd is not None:
+                                        _agg_cost_amount = float(cost_result.amount_usd)
+                                except (TypeError, ValueError):
+                                    pass
+                                
+                                _moa_breakdown = list(_ref_details)
+                                _moa_breakdown.append({
+                                    "role": "aggregator",
+                                    "slot_index": len(_ref_details),
+                                    "provider": _agg_cost_provider,
+                                    "model": _agg_cost_model,
+                                    "usage": aggregator_usage,
+                                    "cost_usd": _agg_cost_amount
+                                })
+                                agent._session_db.add_session_moa_usage(
+                                    agent.session_id,
+                                    _moa_breakdown,
+                                    preset=getattr(_moa_client, "preset_name", "")
+                                )
+
                         except Exception as e:
                             # Log token persistence failures so they're
                             # visible in agent.log — silent loss here is

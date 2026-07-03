@@ -50,6 +50,20 @@ from mcp_profile_router import (
     file_search,
     file_write,
     git_branch,
+    git_add,
+    git_commit,
+    git_push,
+    git_checkout,
+    git_restore,
+    git_rebase,
+    git_merge,
+    github_pr_status,
+    github_pr_create,
+    github_pr_update,
+    github_pr_ready,
+    github_pr_merge,
+    github_issue_view,
+    github_issue_comment,
     git_diff,
     git_log,
     git_status,
@@ -84,6 +98,13 @@ from mcp_profile_router import (
     telegram_send,
     terminal_run,
     workspace_python_run,
+    workspace_production_action_list,
+    workspace_production_action_status,
+    workspace_production_action_run,
+    server_alias_list,
+    server_status_check,
+    server_command_run,
+    workspace_web_fetch,
     viking_read,
     viking_search,
     workspace_close,
@@ -153,7 +174,7 @@ def hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _write_router_config(hermes_home, *, profiles=None, host_roots=None, context=None):
+def _write_router_config(hermes_home, *, profiles=None, host_roots=None, context=None, extra_profile_router=None):
     host_roots = host_roots or [str(hermes_home)]
     profiles = profiles or {
         "local:main-bot": {
@@ -173,6 +194,8 @@ def _write_router_config(hermes_home, *, profiles=None, host_roots=None, context
     }
     if context is not None:
         profile_router["context"] = context
+    if extra_profile_router:
+        profile_router.update(extra_profile_router)
     config = {"profile_router": profile_router}
     (hermes_home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     return config
@@ -343,6 +366,20 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "git_diff",
         "git_log",
         "git_branch",
+        "git_add",
+        "git_commit",
+        "git_push",
+        "git_checkout",
+        "git_restore",
+        "git_rebase",
+        "git_merge",
+        "github_pr_status",
+        "github_pr_create",
+        "github_pr_update",
+        "github_pr_ready",
+        "github_pr_merge",
+        "github_issue_view",
+        "github_issue_comment",
         "cron_list",
         "cron_pause",
         "cron_resume",
@@ -350,7 +387,20 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "cron_create_script_only",
         "message_send",
         "telegram_send",
+        "workspace_production_action_list",
+        "workspace_production_action_status",
+        "workspace_production_action_run",
+        "workspace_web_fetch",
         "workspace_python_run",
+    }
+    profile_server_tools = {
+        "server_alias_list",
+        "server_status_check",
+        "server_service_logs",
+        "server_docker_ps",
+        "server_docker_logs",
+        "server_port_check",
+        "server_command_run",
     }
     profile_action_tools = {
         "profile_skill_create",
@@ -365,7 +415,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "profile_memory_list",
     }
     blocked_catalog_tools = set(HERMES_CATALOG_BLOCKED_TOOL_NAMES)
-    assert set(metadata) == public_tools | disabled_power_tools | profile_action_tools | blocked_catalog_tools
+    assert set(metadata) == public_tools | disabled_power_tools | profile_server_tools | profile_action_tools | blocked_catalog_tools
     assert {"delegate_task", "image_generate", "vision_analyze"}.issubset(blocked_catalog_tools)
     assert set(HERMES_REGISTRY_TOOL_NAMES).issubset(set(metadata))
     workspace_required_tools = {
@@ -398,6 +448,20 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "git_diff",
         "git_log",
         "git_branch",
+        "git_add",
+        "git_commit",
+        "git_push",
+        "git_checkout",
+        "git_restore",
+        "git_rebase",
+        "git_merge",
+        "github_pr_status",
+        "github_pr_create",
+        "github_pr_update",
+        "github_pr_ready",
+        "github_pr_merge",
+        "github_issue_view",
+        "github_issue_comment",
         "cron_list",
         "cron_pause",
         "cron_resume",
@@ -405,6 +469,10 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "cron_create_script_only",
         "message_send",
         "telegram_send",
+        "workspace_production_action_list",
+        "workspace_production_action_status",
+        "workspace_production_action_run",
+        "workspace_web_fetch",
         "workspace_python_run",
     }
     for name, tool in metadata.items():
@@ -448,6 +516,14 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["requires_context"] is True
         assert tool["execution_status"] == "executable_no_model"
 
+    for name in profile_server_tools:
+        tool = metadata[name]
+        assert tool["cost_class"] == COST_CLASS_NO_MODEL
+        assert tool["enabled_by_default"] is False
+        assert tool["requires_profile_ref"] is True
+        assert tool["requires_context"] is False
+        assert tool["execution_status"] == "executable_no_model"
+
     for name in blocked_catalog_tools:
         tool = metadata[name]
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
@@ -486,11 +562,11 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["mutates_state"] is False
         assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
-    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_kill", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove"}:
+    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_kill", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_comment", "message_send", "telegram_send", "workspace_production_action_run", "server_command_run", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove"}:
         assert metadata[name]["mutates_state"] is True
-    for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch", "profile_memory_list"}:
+    for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch", "github_pr_status", "github_issue_view", "workspace_production_action_list", "workspace_production_action_status", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "workspace_web_fetch", "profile_memory_list"}:
         assert metadata[name]["mutates_state"] is False
-    for name in {"git_status", "git_diff", "git_log", "git_branch"}:
+    for name in {"git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment"}:
         assert metadata[name]["capability_group"] == "git"
     for name in {"message_send", "telegram_send"}:
         assert metadata[name]["capability_group"] == "messaging"
@@ -885,6 +961,67 @@ def test_profile_router_profile_defaults_and_auto_profiles_cover_future_profiles
     assert metadata_only_policy.allow_skills_write is True
     assert metadata_only_policy.allow_memory_write is True
 
+
+
+def test_profile_router_project_discovery_adds_safe_child_repos_without_home_roots(hermes_home, tmp_path):
+    container = tmp_path / "project-containers"
+    repo = container / "alpha-app"
+    repo_git = repo / ".git"
+    not_repo = container / "notes"
+    repo_git.mkdir(parents=True)
+    not_repo.mkdir(parents=True)
+
+    config = {
+        "profile_router": {
+            "hosts": {"local": {"enabled": True, "allowed_roots": [str(container)]}},
+            "project_discovery": {
+                "enabled": True,
+                "containers": [{"label": "worktrees", "path": str(container)}],
+            },
+            "profiles": {
+                "local:main-bot": {
+                    "enabled": True,
+                    "allowed_roots": [],
+                    "filesystem": {"read": True},
+                }
+            },
+        }
+    }
+
+    policy = load_profile_router_policy(config=config)
+    route_policy = policy.get_profile_policy(parse_profile_ref("local:main-bot"))
+
+    assert route_policy.allowed_roots == (str(repo.resolve()),)
+    context = mcp_profile_router._public_policy_context(route_policy, policy)
+    assert context["allowed_roots_count"] == 1
+    assert context["project_discovery"] == {
+        "enabled": True,
+        "mode": "owner",
+        "container_count": 1,
+        "attach_to_profiles": True,
+        "root_exposed": False,
+    }
+    root = context["workspace_roots"][0]
+    assert root["root_label"] == "alpha-app"
+    assert root["root_index"] == 0
+    assert root["container_label"] is None
+    assert root["git_repo"] is True
+    assert root["root_exposed"] is False
+    assert "path" not in root
+    assert str(container) not in json.dumps(root)
+
+    with pytest.raises(ProfileRouterError, match="project container"):
+        load_profile_router_policy(
+            config={
+                "profile_router": {
+                    "hosts": {"local": {"enabled": True, "allowed_roots": ["/"]}},
+                    "project_discovery": {
+                        "enabled": True,
+                        "containers": [{"label": "root", "path": "/"}],
+                    },
+                }
+            }
+        )
 
 def test_profile_router_auto_profile_root_patterns_must_be_profile_scoped(tmp_path):
     with pytest.raises(ProfileRouterError, match="must include"):
@@ -3131,6 +3268,162 @@ def test_messaging_tools_are_context_gated_allowlisted_dry_run_only(hermes_home,
     assert "telegram_send" in server._tool_manager._tools
 
 
+def test_messaging_real_send_requires_delivery_policy_and_redacts_payload(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "messaging": {
+                    "enabled": True,
+                    "allowed_recipients": ["telegram:-1001234567890"],
+                    "delivery": {
+                        "enabled": True,
+                        "command_argv": [
+                            sys.executable,
+                            "-c",
+                            "import sys; print(sys.argv[1]); print(sys.argv[2])",
+                            "{destination}",
+                            "{message}",
+                        ],
+                    },
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    sent = json.loads(message_send(workspace_id, "telegram:-1001234567890", "safe status", context_token=token, dry_run=False))
+    assert sent["ok"] is True
+    messaging = sent["messaging"]
+    assert messaging["status"] == "delivery_attempted"
+    assert messaging["delivery_attempted"] is True
+    assert messaging["external_delivery_enabled"] is True
+    assert messaging["delivery_result"]["status"] == "success"
+    dumped = json.dumps(sent)
+    assert "safe status" not in dumped
+    assert "-1001234567890" not in dumped
+    assert str(workspace_root) not in dumped
+    assert sent["llm_calls"] == 0
+
+
+def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
+    hermes_home,
+    tmp_path,
+    monkeypatch,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        extra_profile_router={
+            "server_aliases": {
+                "local_ops": {
+                    "transport": "local",
+                    "allowed_ports": [9],
+                    "command_groups": {
+                        "status": [sys.executable, "-c", "print('status-ok')"],
+                        "deploy_echo": [sys.executable, "-c", "print('command-ok')"],
+                    },
+                }
+            }
+        },
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "deploy": {
+                    "enabled": True,
+                    "actions": {
+                        "smoke_deploy": {
+                            "argv": [sys.executable, "-c", "print('deploy-ok')"],
+                            "rollback_action": "smoke_rollback",
+                        }
+                    },
+                },
+                "server": {
+                    "enabled": True,
+                    "allowed_aliases": ["local_ops"],
+                    "allow_status": True,
+                    "allow_commands": True,
+                },
+                "web": {
+                    "enabled": True,
+                    "allowed_domains": ["example.com"],
+                    "max_bytes": 2000,
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    actions = json.loads(workspace_production_action_list(workspace_id, context_token=token))
+    assert actions["ok"] is True
+    assert actions["production_actions"]["actions"][0]["name"] == "smoke_deploy"
+    ran = json.loads(workspace_production_action_run(workspace_id, "smoke_deploy", context_token=token))
+    assert ran["ok"] is True
+    assert ran["production_action"]["result"]["status"] == "success"
+    assert ran["production_action"]["result"]["audit"]["llm_calls"] == 0
+    assert str(workspace_root) not in json.dumps(ran)
+
+    status = json.loads(workspace_production_action_status(workspace_id, "smoke_deploy", context_token=token))
+    assert status["ok"] is True
+    assert status["production_action_status"]["action"]["rollback_action"] == "smoke_rollback"
+
+    aliases = json.loads(server_alias_list("local:main-bot"))
+    assert aliases["ok"] is True
+    assert aliases["servers"]["aliases"][0]["ssh_target_exposed"] is False
+    server_status = json.loads(server_status_check("local:main-bot", "local_ops"))
+    assert server_status["ok"] is True
+    assert server_status["server_status"]["result"]["status"] == "success"
+    command = json.loads(server_command_run("local:main-bot", "local_ops", "deploy_echo"))
+    assert command["ok"] is True
+    assert command["server_command"]["result"]["audit"]["llm_calls"] == 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "text/plain"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, _limit):
+            return b"TOKEN=*** public-ok"
+
+    monkeypatch.setattr(
+        mcp_profile_router.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(mcp_profile_router.socket.AF_INET, mcp_profile_router.socket.SOCK_STREAM, 0, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(mcp_profile_router, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    fetched = json.loads(workspace_web_fetch(workspace_id, "https://example.com/status?secret=hidden", context_token=token))
+    assert fetched["ok"] is True
+    assert fetched["web_fetch"]["fetch"]["hostname"] == "example.com"
+    dumped_fetch = json.dumps(fetched)
+    assert "secret=hidden" not in dumped_fetch
+    assert fetched["web_fetch"]["audit"]["llm_calls"] == 0
+
+
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     hermes_home,
     tmp_path,
@@ -3522,6 +3815,167 @@ def test_git_read_only_wrappers_require_context_and_git_policy_and_filter_secret
     dumped = json.dumps([status, diff, log, branches])
     assert str(workspace_root) not in dumped
     assert "should-not-leak" not in dumped
+
+
+def test_git_owner_write_wrappers_require_context_and_explicit_policy(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha\n", encoding="utf-8")
+    _git(workspace_root, "init")
+    _git(workspace_root, "config", "user.email", "router-test@example.invalid")
+    _git(workspace_root, "config", "user.name", "Router Test")
+    _git(workspace_root, "add", "AGENTS.md", "notes.md")
+    _git(workspace_root, "commit", "-m", "initial")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "git": {"enabled": True, "protected_branches": ["production"]},
+            }
+        },
+    )
+    workspace_id = json.loads(workspace_open("local:main-bot", str(workspace_root)))["workspace"]["workspace_id"]
+    no_context = json.loads(git_add(workspace_id, ["notes.md"]))
+    assert no_context["ok"] is False
+    assert no_context["error"]["code"] == "context_not_loaded"
+    assert no_context["llm_calls"] == 0
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    denied = json.loads(git_add(workspace_id, ["notes.md"], context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "git_write_not_allowed"
+    assert denied["llm_calls"] == 0
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "git": {"enabled": True, "write": True, "protected_branches": ["production"]},
+            }
+        },
+    )
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    notes.write_text("beta\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("SECRET=should-not-leak\n", encoding="utf-8")
+
+    secret_denied = json.loads(git_add(workspace_id, [".env"], context_token=token))
+    assert secret_denied["ok"] is False
+    assert secret_denied["error"]["code"] == "git_path_denied"
+    assert secret_denied["llm_calls"] == 0
+
+    add = json.loads(git_add(workspace_id, ["notes.md"], context_token=token))
+    assert add["ok"] is True
+    assert add["llm_calls"] == 0
+    assert add["git_add"]["audit"]["llm_calls"] == 0
+    assert add["git_add"]["audit"]["uses_shell"] is False
+
+    commit = json.loads(git_commit(workspace_id, "owner mode git write", context_token=token))
+    assert commit["ok"] is True
+    assert commit["llm_calls"] == 0
+    assert commit["git_commit"]["message_returned"] is False
+    assert commit["git_commit"]["audit"]["git_mutation_allowed"] is True
+
+    checkout = json.loads(git_checkout(workspace_id, "feature/router-owner-mode", context_token=token, create=True))
+    assert checkout["ok"] is True
+    assert checkout["git_checkout"]["created"] is True
+    notes.write_text("gamma\n", encoding="utf-8")
+    restored = json.loads(git_restore(workspace_id, ["notes.md"], context_token=token))
+    assert restored["ok"] is True
+    assert notes.read_text(encoding="utf-8") == "beta\n"
+
+    dump = json.dumps([add, commit, checkout, restored])
+    assert str(workspace_root) not in dump
+    assert "should-not-leak" not in dump
+    assert "GITHUB_TOKEN" not in dump
+    assert "GH_TOKEN" not in dump
+
+
+def test_github_pr_wrappers_are_policy_gated_and_hide_tokens(hermes_home, tmp_path, monkeypatch):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    _git(workspace_root, "init")
+    _git(workspace_root, "config", "user.email", "router-test@example.invalid")
+    _git(workspace_root, "config", "user.name", "Router Test")
+    _git(workspace_root, "remote", "add", "origin", "https://github.com/example/private-repo.git")
+    (workspace_root / "README.md").write_text("readme\n", encoding="utf-8")
+    _git(workspace_root, "add", "AGENTS.md", "README.md")
+    _git(workspace_root, "commit", "-m", "initial")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "git": {"enabled": True},
+                "github_pr": {"enabled": True, "allow_merge": True, "allow_issue_comment": True},
+            }
+        },
+    )
+    workspace_id = json.loads(workspace_open("local:main-bot", str(workspace_root)))["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    calls = []
+
+    def fake_gh(workspace, args, *, timeout=60):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args=["gh", *args],
+            returncode=0,
+            stdout=json.dumps({"url": "https://github.com/example/private-repo/pull/1", "number": 1}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(mcp_profile_router, "_run_workspace_gh", fake_gh)
+    payloads = [
+        json.loads(github_pr_status(workspace_id, context_token=token)),
+        json.loads(github_pr_create(workspace_id, "Add owner mode wrappers", context_token=token, body="Safe body", draft=True)),
+        json.loads(github_pr_update(workspace_id, 1, context_token=token, labels=["safe-label"])),
+        json.loads(github_pr_ready(workspace_id, 1, context_token=token)),
+        json.loads(github_pr_merge(workspace_id, 1, context_token=token, method="merge")),
+        json.loads(github_issue_view(workspace_id, 2, context_token=token)),
+        json.loads(github_issue_comment(workspace_id, 2, "Safe comment", context_token=token)),
+    ]
+    assert calls
+    assert all(payload["ok"] is True and payload["llm_calls"] == 0 for payload in payloads)
+    dumped = json.dumps(payloads)
+    assert str(workspace_root) not in dumped
+    assert "GH_TOKEN" not in dumped
+    assert "GITHUB_TOKEN" not in dumped
+    assert "Safe comment" not in dumped
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "git": {"enabled": True},
+                "github_pr": {"enabled": False},
+            }
+        },
+    )
+    denied = json.loads(github_pr_status(workspace_id, context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "github_pr_not_allowed"
+    assert denied["llm_calls"] == 0
 
 
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
@@ -4286,7 +4740,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
+    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     assert set(tools) == expected_public_tools | private_action_tools
     assert expected_public_tools == metadata_public_tools
     assert not (set(tools) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
@@ -4612,7 +5066,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
+    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765

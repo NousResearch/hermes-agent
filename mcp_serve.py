@@ -961,6 +961,17 @@ def create_profile_router_mcp_server(
         cron_run as _cron_run,
         message_send as _message_send,
         telegram_send as _telegram_send,
+        workspace_production_action_list as _workspace_production_action_list,
+        workspace_production_action_status as _workspace_production_action_status,
+        workspace_production_action_run as _workspace_production_action_run,
+        server_alias_list as _server_alias_list,
+        server_status_check as _server_status_check,
+        server_service_logs as _server_service_logs,
+        server_docker_ps as _server_docker_ps,
+        server_docker_logs as _server_docker_logs,
+        server_port_check as _server_port_check,
+        server_command_run as _server_command_run,
+        workspace_web_fetch as _workspace_web_fetch,
         workspace_python_run as _workspace_python_run,
         profile_skill_create as _profile_skill_create,
         profile_skill_delete as _profile_skill_delete,
@@ -979,6 +990,20 @@ def create_profile_router_mcp_server(
         file_patch as _file_patch,
         file_write as _file_write,
         git_branch as _git_branch,
+        git_add as _git_add,
+        git_commit as _git_commit,
+        git_push as _git_push,
+        git_checkout as _git_checkout,
+        git_restore as _git_restore,
+        git_rebase as _git_rebase,
+        git_merge as _git_merge,
+        github_pr_status as _github_pr_status,
+        github_pr_create as _github_pr_create,
+        github_pr_update as _github_pr_update,
+        github_pr_ready as _github_pr_ready,
+        github_pr_merge as _github_pr_merge,
+        github_issue_view as _github_issue_view,
+        github_issue_comment as _github_issue_comment,
         git_diff as _git_diff,
         git_log as _git_log,
         git_status as _git_status,
@@ -1475,6 +1500,76 @@ def create_profile_router_mcp_server(
         )
 
     @mcp.tool()
+    def git_add(workspace_id: str, paths: list[str], context_token: str | None = None, update: bool = False) -> str:
+        """Private direct owner-mode Git add wrapper."""
+        return _call_tool("git_add", "workspace:write", _git_add, audit_workspace_id=workspace_id, workspace_id=workspace_id, paths=paths, context_token=context_token, update=update)
+
+    @mcp.tool()
+    def git_commit(workspace_id: str, message: str, context_token: str | None = None) -> str:
+        """Private direct owner-mode Git commit wrapper."""
+        return _call_tool("git_commit", "workspace:write", _git_commit, audit_workspace_id=workspace_id, workspace_id=workspace_id, message=message, context_token=context_token)
+
+    @mcp.tool()
+    def git_push(workspace_id: str, context_token: str | None = None, remote: str = "origin", branch: str | None = None, force_with_lease: bool = False) -> str:
+        """Private direct owner-mode Git push wrapper."""
+        return _call_tool("git_push", "workspace:write", _git_push, audit_workspace_id=workspace_id, workspace_id=workspace_id, context_token=context_token, remote=remote, branch=branch, force_with_lease=force_with_lease)
+
+    @mcp.tool()
+    def git_checkout(workspace_id: str, branch: str, context_token: str | None = None, create: bool = False, start_point: str | None = None) -> str:
+        """Private direct owner-mode Git checkout wrapper."""
+        return _call_tool("git_checkout", "workspace:write", _git_checkout, audit_workspace_id=workspace_id, workspace_id=workspace_id, branch=branch, context_token=context_token, create=create, start_point=start_point)
+
+    @mcp.tool()
+    def git_restore(workspace_id: str, paths: list[str], context_token: str | None = None, staged: bool = False, worktree: bool = True) -> str:
+        """Private direct owner-mode Git restore wrapper."""
+        return _call_tool("git_restore", "workspace:write", _git_restore, audit_workspace_id=workspace_id, workspace_id=workspace_id, paths=paths, context_token=context_token, staged=staged, worktree=worktree)
+
+    @mcp.tool()
+    def git_rebase(workspace_id: str, upstream: str, context_token: str | None = None) -> str:
+        """Private direct owner-mode Git rebase wrapper."""
+        return _call_tool("git_rebase", "workspace:write", _git_rebase, audit_workspace_id=workspace_id, workspace_id=workspace_id, upstream=upstream, context_token=context_token)
+
+    @mcp.tool()
+    def git_merge(workspace_id: str, ref: str, context_token: str | None = None, no_ff: bool = False) -> str:
+        """Private direct owner-mode Git merge wrapper."""
+        return _call_tool("git_merge", "workspace:write", _git_merge, audit_workspace_id=workspace_id, workspace_id=workspace_id, ref=ref, context_token=context_token, no_ff=no_ff)
+
+    @mcp.tool()
+    def github_pr_status(workspace_id: str, context_token: str | None = None, selector: str | int | None = None) -> str:
+        """Private direct GitHub PR status wrapper."""
+        return _call_tool("github_pr_status", "workspace:write", _github_pr_status, audit_workspace_id=workspace_id, workspace_id=workspace_id, context_token=context_token, selector=selector)
+
+    @mcp.tool()
+    def github_pr_create(workspace_id: str, title: str, context_token: str | None = None, body: str | None = None, base: str | None = None, head: str | None = None, draft: bool = False, labels: list[str] | None = None) -> str:
+        """Private direct GitHub PR create wrapper."""
+        return _call_tool("github_pr_create", "workspace:write", _github_pr_create, audit_workspace_id=workspace_id, workspace_id=workspace_id, title=title, context_token=context_token, body=body, base=base, head=head, draft=draft, labels=labels)
+
+    @mcp.tool()
+    def github_pr_update(workspace_id: str, selector: str | int, context_token: str | None = None, title: str | None = None, body: str | None = None, labels: list[str] | None = None) -> str:
+        """Private direct GitHub PR update wrapper."""
+        return _call_tool("github_pr_update", "workspace:write", _github_pr_update, audit_workspace_id=workspace_id, workspace_id=workspace_id, selector=selector, context_token=context_token, title=title, body=body, labels=labels)
+
+    @mcp.tool()
+    def github_pr_ready(workspace_id: str, selector: str | int, context_token: str | None = None) -> str:
+        """Private direct GitHub PR ready wrapper."""
+        return _call_tool("github_pr_ready", "workspace:write", _github_pr_ready, audit_workspace_id=workspace_id, workspace_id=workspace_id, selector=selector, context_token=context_token)
+
+    @mcp.tool()
+    def github_pr_merge(workspace_id: str, selector: str | int, context_token: str | None = None, method: str = "merge", delete_branch: bool = False) -> str:
+        """Private direct GitHub PR merge wrapper."""
+        return _call_tool("github_pr_merge", "workspace:write", _github_pr_merge, audit_workspace_id=workspace_id, workspace_id=workspace_id, selector=selector, context_token=context_token, method=method, delete_branch=delete_branch)
+
+    @mcp.tool()
+    def github_issue_view(workspace_id: str, issue: str | int, context_token: str | None = None) -> str:
+        """Private direct GitHub issue view wrapper."""
+        return _call_tool("github_issue_view", "workspace:write", _github_issue_view, audit_workspace_id=workspace_id, workspace_id=workspace_id, issue=issue, context_token=context_token)
+
+    @mcp.tool()
+    def github_issue_comment(workspace_id: str, issue: str | int, body: str, context_token: str | None = None) -> str:
+        """Private direct GitHub issue comment wrapper."""
+        return _call_tool("github_issue_comment", "workspace:write", _github_issue_comment, audit_workspace_id=workspace_id, workspace_id=workspace_id, issue=issue, body=body, context_token=context_token)
+
+    @mcp.tool()
     def cron_list(
         workspace_id: str,
         context_token: str | None = None,
@@ -1610,6 +1705,61 @@ def create_profile_router_mcp_server(
             context_token=context_token,
             dry_run=dry_run,
         )
+
+    @mcp.tool()
+    def workspace_production_action_list(workspace_id: str, context_token: str | None = None) -> str:
+        """Private direct list of explicit production action groups."""
+        return _call_tool("workspace_production_action_list", PROFILE_ROUTER_TERMINAL_SCOPE, _workspace_production_action_list, audit_workspace_id=workspace_id, workspace_id=workspace_id, context_token=context_token)
+
+    @mcp.tool()
+    def workspace_production_action_status(workspace_id: str, action_name: str, context_token: str | None = None) -> str:
+        """Private direct status for one explicit production action group."""
+        return _call_tool("workspace_production_action_status", PROFILE_ROUTER_TERMINAL_SCOPE, _workspace_production_action_status, audit_workspace_id=workspace_id, workspace_id=workspace_id, action_name=action_name, context_token=context_token)
+
+    @mcp.tool()
+    def workspace_production_action_run(workspace_id: str, action_name: str, context_token: str | None = None, args: dict | None = None) -> str:
+        """Private direct execution for one explicit production action group."""
+        return _call_tool("workspace_production_action_run", PROFILE_ROUTER_TERMINAL_SCOPE, _workspace_production_action_run, audit_workspace_id=workspace_id, workspace_id=workspace_id, action_name=action_name, context_token=context_token, args=args)
+
+    @mcp.tool()
+    def server_alias_list(profile_ref: str) -> str:
+        """Private direct server alias list without exposing SSH targets."""
+        return _call_tool("server_alias_list", PROFILE_ROUTER_TERMINAL_SCOPE, _server_alias_list, audit_profile_ref=profile_ref, profile_ref=profile_ref)
+
+    @mcp.tool()
+    def server_status_check(profile_ref: str, alias: str) -> str:
+        """Private direct server status check through an explicit alias."""
+        return _call_tool("server_status_check", PROFILE_ROUTER_TERMINAL_SCOPE, _server_status_check, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias)
+
+    @mcp.tool()
+    def server_service_logs(profile_ref: str, alias: str, service: str, lines: int | None = 100) -> str:
+        """Private direct bounded service logs through an explicit alias."""
+        return _call_tool("server_service_logs", PROFILE_ROUTER_TERMINAL_SCOPE, _server_service_logs, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, service=service, lines=lines)
+
+    @mcp.tool()
+    def server_docker_ps(profile_ref: str, alias: str) -> str:
+        """Private direct docker ps through an explicit alias."""
+        return _call_tool("server_docker_ps", PROFILE_ROUTER_TERMINAL_SCOPE, _server_docker_ps, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias)
+
+    @mcp.tool()
+    def server_docker_logs(profile_ref: str, alias: str, container: str, lines: int | None = 100) -> str:
+        """Private direct bounded docker logs through an explicit alias."""
+        return _call_tool("server_docker_logs", PROFILE_ROUTER_TERMINAL_SCOPE, _server_docker_logs, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, container=container, lines=lines)
+
+    @mcp.tool()
+    def server_port_check(profile_ref: str, alias: str, port: int) -> str:
+        """Private direct allowlisted port check through an explicit alias."""
+        return _call_tool("server_port_check", PROFILE_ROUTER_TERMINAL_SCOPE, _server_port_check, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, port=port)
+
+    @mcp.tool()
+    def server_command_run(profile_ref: str, alias: str, command_name: str) -> str:
+        """Private direct named server command group through an explicit alias."""
+        return _call_tool("server_command_run", PROFILE_ROUTER_TERMINAL_SCOPE, _server_command_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command_name=command_name)
+
+    @mcp.tool()
+    def workspace_web_fetch(workspace_id: str, url: str, context_token: str | None = None, method: str = "GET") -> str:
+        """Private deterministic allowlisted web/API fetch with SSRF guards."""
+        return _call_tool("workspace_web_fetch", PROFILE_ROUTER_TERMINAL_SCOPE, _workspace_web_fetch, audit_workspace_id=workspace_id, workspace_id=workspace_id, url=url, context_token=context_token, method=method)
 
     @mcp.tool()
     def file_patch(

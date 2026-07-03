@@ -21,6 +21,7 @@ import os
 import posixpath
 import re
 import shlex
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -84,6 +85,19 @@ CONTEXT_SESSIONS_SEARCH_POLICY = "context.sessions.search"
 CONTEXT_VIKING_READ_POLICY = "profile_router.context.viking.read"
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "production")
 DEFAULT_ALLOWED_COST_CLASSES = (COST_CLASS_NO_MODEL,)
+DEFAULT_PROJECT_DISCOVERY_EXCLUDE_NAMES = (
+    ".git",
+    ".hermes",
+    ".ssh",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+)
+MAX_PROJECT_DISCOVERY_DEPTH = 3
+MAX_PROJECT_DISCOVERY_ROOTS = 500
+ROOT_ID_HASH_CHARS = 12
 
 
 def _default_profile_capability_groups() -> dict[str, bool]:
@@ -153,6 +167,21 @@ PROCESS_TERMINATE_GRACE_SECONDS = 2
 MAX_GIT_STATUS_ENTRIES = 100
 MAX_GIT_LOG_COUNT = 50
 MAX_GIT_BRANCH_COUNT = 100
+MAX_GIT_MUTATION_OUTPUT_CHARS = 8_000
+MAX_GIT_COMMIT_MESSAGE_CHARS = 2_000
+MAX_GIT_PATHS_PER_MUTATION = 100
+MAX_GITHUB_PR_TITLE_CHARS = 300
+MAX_GITHUB_PR_BODY_CHARS = 20_000
+MAX_GITHUB_PR_LABELS = 20
+MAX_GITHUB_PR_LABEL_CHARS = 80
+MAX_PRODUCTION_ACTION_NAME_CHARS = 80
+MAX_PRODUCTION_ACTION_TIMEOUT_SECONDS = 300
+MAX_PRODUCTION_ACTION_OUTPUT_CHARS = 40_000
+MAX_SERVER_ALIAS_OUTPUT_CHARS = 40_000
+MAX_SERVER_LOG_LINES = 500
+MAX_SERVER_COMMAND_TIMEOUT_SECONDS = 60
+MAX_WEB_FETCH_BYTES = 120_000
+MAX_WEB_FETCH_TIMEOUT_SECONDS = 20
 MAX_CRON_LIST_RESULTS = 50
 MAX_CRON_JOB_NAME_CHARS = 160
 MAX_CRON_SCHEDULE_CHARS = 120
@@ -233,6 +262,8 @@ PROTECTED_WORKSPACE_DIFF_DIRS = frozenset({".hermes"})
 SAFE_WORKSPACE_PLAN_DIR = ".hermes/plans"
 SAFE_WORKSPACE_PLAN_SUFFIXES = (".md",)
 SAFE_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
+GIT_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+GITHUB_PR_SELECTOR_RE = re.compile(r"^(?:\d{1,12}|[A-Za-z0-9_.:/#-]{1,240})$")
 SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "|&", "&", "(", ")"})
 CHATGPT_SCRATCH_SMOKE_DIR = "tmp"
 CHATGPT_SCRATCH_SMOKE_BASENAME_PREFIX = "chatgpt-hermes-action-smoke-"
@@ -415,6 +446,155 @@ class CronPolicy:
 
 
 @dataclass(frozen=True)
+class MessagingDeliveryPolicy:
+    """Explicit command-backed real messaging delivery policy.
+
+    The connector never calls Hermes chat or model-backed messaging paths. Real
+    delivery is disabled unless a profile config provides one deterministic argv
+    template; responses redact destination/message and never expose argv values.
+    """
+
+    enabled: bool = False
+    command_argv: tuple[str, ...] = ()
+    timeout_seconds: int = 10
+
+
+@dataclass(frozen=True)
+class GitWritePolicy:
+    """Explicit owner-mode Git mutation policy for a selected workspace root."""
+
+    enabled: bool = False
+    allow_add: bool = False
+    allow_commit: bool = False
+    allow_push: bool = False
+    allow_checkout: bool = False
+    allow_restore: bool = False
+    allow_rebase: bool = False
+    allow_merge: bool = False
+    allow_force_push: bool = False
+    allow_protected_branch_mutation: bool = False
+
+
+@dataclass(frozen=True)
+class GithubPRPolicy:
+    """Explicit server-side GitHub CLI policy for PR/issue wrappers."""
+
+    enabled: bool = False
+    allow_status: bool = False
+    allow_create: bool = False
+    allow_update: bool = False
+    allow_ready: bool = False
+    allow_merge: bool = False
+    allow_issue_view: bool = False
+    allow_issue_comment: bool = False
+
+
+@dataclass(frozen=True)
+class ProductionActionPolicy:
+    """One root-scoped owner-mode production action group."""
+
+    name: str
+    argv: tuple[str, ...]
+    enabled: bool = True
+    working_directory: str = "."
+    timeout_seconds: int = 60
+    category: str = "production"
+    rollback_action: str | None = None
+
+
+@dataclass(frozen=True)
+class ServerAliasPolicy:
+    """One named server/SSH alias with allowlisted command groups."""
+
+    alias: str
+    enabled: bool = True
+    transport: str = "ssh"
+    ssh_target: str | None = None
+    allowed_services: tuple[str, ...] = ()
+    allowed_containers: tuple[str, ...] = ()
+    allowed_ports: tuple[int, ...] = ()
+    command_groups: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ServerOperationsPolicy:
+    """Profile-scoped allowlist of server aliases and operation families."""
+
+    enabled: bool = False
+    allowed_aliases: tuple[str, ...] = ()
+    allow_status: bool = False
+    allow_logs: bool = False
+    allow_docker: bool = False
+    allow_ports: bool = False
+    allow_commands: bool = False
+
+
+@dataclass(frozen=True)
+class WebFetchPolicy:
+    """Workspace-scoped deterministic web/API fetch policy."""
+
+    enabled: bool = False
+    allowed_domains: tuple[str, ...] = ()
+    allow_http: bool = False
+    max_bytes: int = MAX_WEB_FETCH_BYTES
+
+
+@dataclass(frozen=True)
+class ProjectDiscoveryContainer:
+    """One approved container that can safely expose child project roots."""
+
+    label: str
+    path: str
+    recursive_depth: int = 1
+    include_git_repos: bool = True
+    include_worktrees: bool = True
+
+
+@dataclass(frozen=True)
+class ProjectDiscoveryPolicy:
+    """Owner-mode dynamic project discovery policy.
+
+    Discovery never means broad home/root access.  It only scans explicit
+    project containers, rejects secret-looking paths and symlink escapes, and
+    exposes stable root ids/labels while keeping absolute host paths server-side.
+    """
+
+    enabled: bool = False
+    mode: str = "owner"
+    containers: tuple[ProjectDiscoveryContainer, ...] = ()
+    exclude_names: tuple[str, ...] = DEFAULT_PROJECT_DISCOVERY_EXCLUDE_NAMES
+    deny_secret_paths: bool = True
+    symlink_policy: str = "reject_escapes"
+    attach_to_profiles: bool = True
+
+
+@dataclass(frozen=True)
+class WorkspaceRootDescriptor:
+    """Server-side mapping from a stable public root id to a private root path."""
+
+    root_id: str
+    root_label: str
+    root_index: int
+    source: str
+    container_label: str | None
+    path: str
+    git_repo: bool = False
+    git_worktree: bool = False
+
+    def to_public_dict(self) -> dict:
+        return {
+            "root_id": self.root_id,
+            "root_label": self.root_label,
+            "root_index": self.root_index,
+            "source": self.source,
+            "container_label": self.container_label,
+            "git_repo": self.git_repo,
+            "git_worktree": self.git_worktree,
+            "root_exposed": False,
+        }
+
+
+@dataclass(frozen=True)
 class TerminalSubprocessPlan:
     """Internal no-shell execution scaffold for future terminal_run support.
 
@@ -477,6 +657,12 @@ class ProfileRoutePolicy:
         default_factory=TerminalExecutionPolicy
     )
     cron_policy: CronPolicy = field(default_factory=CronPolicy)
+    messaging_delivery_policy: MessagingDeliveryPolicy = field(default_factory=MessagingDeliveryPolicy)
+    git_write_policy: GitWritePolicy = field(default_factory=GitWritePolicy)
+    github_pr_policy: GithubPRPolicy = field(default_factory=GithubPRPolicy)
+    production_actions: Mapping[str, ProductionActionPolicy] = field(default_factory=dict)
+    server_policy: ServerOperationsPolicy = field(default_factory=ServerOperationsPolicy)
+    web_fetch_policy: WebFetchPolicy = field(default_factory=WebFetchPolicy)
 
     def capability_enabled(self, group: str) -> bool:
         """Return whether an explicit no-model capability group is enabled."""
@@ -502,6 +688,8 @@ class ProfileRouterPolicy:
     hosts: Mapping[str, HostRoutePolicy]
     profiles: Mapping[str, ProfileRoutePolicy]
     allow_global_viking_read: bool = False
+    project_discovery: ProjectDiscoveryPolicy = field(default_factory=ProjectDiscoveryPolicy)
+    server_aliases: Mapping[str, ServerAliasPolicy] = field(default_factory=dict)
 
     def is_profile_exposed(self, policy: ProfileRoutePolicy) -> bool:
         host_policy = self.hosts.get(policy.ref.host)
@@ -611,6 +799,259 @@ def _policy_root_patterns(value: Any, field: str) -> tuple[str, ...]:
             )
         patterns.append(posixpath.normpath(pattern))
     return tuple(dict.fromkeys(patterns))
+
+
+def _policy_slug(value: str, *, field: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_.-]+", "-", text).strip("-._")
+    if not text or len(text) > 80:
+        raise ProfileRouterError("invalid_policy", f"{field} must be a safe label")
+    if _is_secret_path(text):
+        raise ProfileRouterError("secret_path_denied", f"{field} is blocked by the secret denylist")
+    return text
+
+
+def _policy_bounded_depth(value: Any, field: str, *, default: int = 1) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfileRouterError("invalid_policy", f"{field} must be an integer")
+    if value < 0 or value > MAX_PROJECT_DISCOVERY_DEPTH:
+        raise ProfileRouterError(
+            "invalid_policy",
+            f"{field} must be between 0 and {MAX_PROJECT_DISCOVERY_DEPTH}",
+        )
+    return value
+
+
+def _is_broad_host_root(path: str) -> bool:
+    normalized = posixpath.normpath(path)
+    if normalized in {"/", "/Users", "/home"}:
+        return True
+    try:
+        home = str(Path.home().resolve())
+    except OSError:
+        home = str(Path.home())
+    home_norm = posixpath.normpath(home)
+    return normalized == home_norm
+
+
+def _parse_project_discovery_container(value: Any, field: str) -> ProjectDiscoveryContainer:
+    policy = _policy_mapping(value, field)
+    raw_path = policy.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ProfileRouterError("invalid_policy", f"{field}.path is required")
+    path = _normalize_absolute_host_path(raw_path, f"{field}.path")
+    if _is_broad_host_root(path):
+        raise ProfileRouterError(
+            "project_discovery_broad_root_denied",
+            f"{field}.path must be a project container, not a broad host/home root",
+        )
+    if _is_secret_path(path):
+        raise ProfileRouterError("secret_path_denied", f"{field}.path is blocked by the secret denylist")
+    label = _policy_slug(str(policy.get("label") or Path(path).name), field=f"{field}.label")
+    return ProjectDiscoveryContainer(
+        label=label,
+        path=path,
+        recursive_depth=_policy_bounded_depth(
+            policy.get("recursive_depth"), f"{field}.recursive_depth", default=1
+        ),
+        include_git_repos=_policy_bool(
+            policy.get("include_git_repos"), f"{field}.include_git_repos", default=True
+        ),
+        include_worktrees=_policy_bool(
+            policy.get("include_worktrees"), f"{field}.include_worktrees", default=True
+        ),
+    )
+
+
+def _parse_project_discovery_policy(value: Any, field: str) -> ProjectDiscoveryPolicy:
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled")
+    raw_mode = str(policy.get("mode") or "owner").strip().lower()
+    if raw_mode != "owner":
+        raise ProfileRouterError("invalid_policy", f"{field}.mode must be owner")
+    raw_containers = policy.get("containers") or ()
+    if isinstance(raw_containers, MappingABC) or isinstance(raw_containers, (str, bytes)):
+        raise ProfileRouterError("invalid_policy", f"{field}.containers must be a list")
+    containers = tuple(
+        _parse_project_discovery_container(container, f"{field}.containers[{index}]")
+        for index, container in enumerate(raw_containers)
+    )
+    if enabled and not containers:
+        raise ProfileRouterError(
+            "invalid_policy",
+            f"{field}.containers must not be empty when project discovery is enabled",
+        )
+    exclude_names = _policy_string_tuple(
+        policy.get("exclude_names"),
+        f"{field}.exclude_names",
+        default=DEFAULT_PROJECT_DISCOVERY_EXCLUDE_NAMES,
+    )
+    symlink_policy = str(policy.get("symlink_policy") or "reject_escapes").strip().lower()
+    if symlink_policy != "reject_escapes":
+        raise ProfileRouterError("invalid_policy", f"{field}.symlink_policy must be reject_escapes")
+    return ProjectDiscoveryPolicy(
+        enabled=enabled,
+        mode=raw_mode,
+        containers=containers,
+        exclude_names=tuple(dict.fromkeys(exclude_names)),
+        deny_secret_paths=_policy_bool(
+            policy.get("deny_secret_paths"), f"{field}.deny_secret_paths", default=True
+        ),
+        symlink_policy=symlink_policy,
+        attach_to_profiles=_policy_bool(
+            policy.get("attach_to_profiles"), f"{field}.attach_to_profiles", default=True
+        ),
+    )
+
+
+def _git_root_kind(path: Path) -> tuple[bool, bool]:
+    marker = path / ".git"
+    if marker.is_dir():
+        return True, False
+    if marker.is_file():
+        return True, True
+    return False, False
+
+
+def _root_slug_part(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", str(value or "").strip().lower()).strip("-._")
+    return slug[:48] or "project"
+
+
+def _stable_root_id(container_label: str | None, root_label: str, relative_key: str) -> str:
+    base = _root_slug_part("-".join(part for part in (container_label, root_label) if part))
+    digest = hashlib.sha256(
+        f"{container_label or 'explicit'}:{relative_key}".encode("utf-8")
+    ).hexdigest()[:ROOT_ID_HASH_CHARS]
+    return f"{base}-{digest}"
+
+
+def _project_root_descriptor(
+    *,
+    path: Path,
+    root_index: int,
+    source: str,
+    container_label: str | None = None,
+    relative_key: str | None = None,
+) -> WorkspaceRootDescriptor:
+    git_repo, git_worktree = _git_root_kind(path)
+    label = _root_slug_part(path.name)
+    key = relative_key or label
+    return WorkspaceRootDescriptor(
+        root_id=_stable_root_id(container_label, label, key),
+        root_label=label,
+        root_index=root_index,
+        source=source,
+        container_label=container_label,
+        path=str(path),
+        git_repo=git_repo,
+        git_worktree=git_worktree,
+    )
+
+
+def _discover_project_roots(
+    discovery: ProjectDiscoveryPolicy,
+    hosts: Mapping[str, HostRoutePolicy],
+) -> tuple[str, ...]:
+    if not discovery.enabled or not discovery.attach_to_profiles:
+        return ()
+    local_host_policy = hosts.get(LOCAL_HOST)
+    host_allowed_roots = local_host_policy.allowed_roots if local_host_policy else ()
+    if not host_allowed_roots:
+        return ()
+    discovered: list[str] = []
+    seen: set[str] = set()
+    exclude_names = {name.lower() for name in discovery.exclude_names}
+    for container in discovery.containers:
+        if not any(_path_within_root(container.path, host_root) for host_root in host_allowed_roots):
+            continue
+        try:
+            container_root = Path(container.path).resolve(strict=True)
+        except OSError:
+            continue
+        if not container_root.is_dir() or container_root.is_symlink():
+            continue
+        if _is_broad_host_root(str(container_root)):
+            continue
+        for current, depth in _iter_project_discovery_dirs(container_root, max_depth=container.recursive_depth):
+            if len(discovered) >= MAX_PROJECT_DISCOVERY_ROOTS:
+                return tuple(discovered)
+            if current == container_root and depth == 0:
+                # A container may itself be a repo, but owner-mode discovery is
+                # about child project roots rather than granting a container root.
+                continue
+            rel = current.relative_to(container_root).as_posix()
+            parts_lower = [part.lower() for part in rel.split("/") if part]
+            if any(part in exclude_names for part in parts_lower):
+                continue
+            if discovery.deny_secret_paths and _is_secret_path(rel):
+                continue
+            git_repo, git_worktree = _git_root_kind(current)
+            if not git_repo:
+                continue
+            if git_worktree and not container.include_worktrees:
+                continue
+            if not git_worktree and not container.include_git_repos:
+                continue
+            resolved = str(current)
+            if resolved not in seen:
+                seen.add(resolved)
+                discovered.append(resolved)
+    return tuple(discovered)
+
+
+def _iter_project_discovery_dirs(root: Path, *, max_depth: int):
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        yield current, depth
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted(current.iterdir(), key=lambda child: child.name.lower())
+        except OSError:
+            continue
+        for child in reversed(children):
+            if not child.is_dir() or child.is_symlink():
+                continue
+            stack.append((child, depth + 1))
+
+
+def _workspace_root_descriptors(route_policy: ProfileRoutePolicy) -> list[WorkspaceRootDescriptor]:
+    descriptors: list[WorkspaceRootDescriptor] = []
+    for index, root in enumerate(route_policy.allowed_roots):
+        try:
+            resolved = Path(root).resolve(strict=True)
+        except OSError:
+            resolved = Path(root)
+        descriptors.append(
+            _project_root_descriptor(
+                path=resolved,
+                root_index=index,
+                source="policy_allowed_root",
+            )
+        )
+    return descriptors
+
+
+def _root_descriptor_for_path(
+    route_policy: ProfileRoutePolicy,
+    resolved_root: Path,
+) -> WorkspaceRootDescriptor:
+    for descriptor in _workspace_root_descriptors(route_policy):
+        try:
+            descriptor_path = Path(descriptor.path).resolve(strict=True)
+        except OSError:
+            descriptor_path = Path(descriptor.path)
+        if descriptor_path == resolved_root:
+            return descriptor
+    return _project_root_descriptor(
+        path=resolved_root,
+        root_index=-1,
+        source="ad_hoc_policy_allowed_root",
+    )
 
 
 def _deep_merge_policy(defaults: MappingABC, override: MappingABC) -> dict[str, Any]:
@@ -842,6 +1283,212 @@ def _policy_messaging_destination_tuple(value: Any, field: str) -> tuple[str, ..
     return tuple(destinations)
 
 
+def _policy_argv_tuple(value: Any, field: str, *, required: bool = True) -> tuple[str, ...]:
+    argv = _policy_string_tuple(value, field)
+    if required and not argv:
+        raise ProfileRouterError("invalid_policy", f"{field} must include at least one argv entry")
+    for item in argv:
+        if "\x00" in item or "\n" in item or "\r" in item:
+            raise ProfileRouterError("invalid_policy", f"{field} entries must be single-line strings")
+        lowered = item.strip().lower()
+        if any(marker in lowered for marker in ("api_key=", "token=", "password=", "secret=")):
+            raise ProfileRouterError("invalid_policy", f"{field} entries must not inline secrets")
+    executable = posixpath.basename(argv[0]).lower() if argv else ""
+    if executable in FORBIDDEN_MODEL_LOOP_TOOL_NAMES or executable in {"claude", "codex", "gemini", "openai"}:
+        raise ProfileRouterError(
+            "model_loop_tool_exposure_forbidden",
+            f"{field} cannot invoke model-backed CLIs or Hermes chat loops",
+        )
+    return argv
+
+
+def _policy_timeout_seconds(
+    value: Any,
+    field: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfileRouterError("invalid_policy", f"{field} must be an integer")
+    if value < 1 or value > maximum:
+        raise ProfileRouterError("invalid_policy", f"{field} must be between 1 and {maximum}")
+    return value
+
+
+def _policy_port_tuple(value: Any, field: str) -> tuple[int, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or isinstance(value, MappingABC):
+        raise ProfileRouterError("invalid_policy", f"{field} must be an integer list")
+    ports: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item < 1 or item > 65535:
+            raise ProfileRouterError("invalid_policy", f"{field} entries must be TCP port integers")
+        if item not in ports:
+            ports.append(item)
+    return tuple(ports)
+
+
+def _policy_workspace_relative_dir(value: Any, field: str) -> str:
+    text = str(value or ".").strip()
+    if text == ".":
+        return "."
+    if not text or text.startswith("/") or "\x00" in text or "\\" in text:
+        raise ProfileRouterError("invalid_policy", f"{field} must be a safe workspace-relative directory")
+    normalized = posixpath.normpath(text)
+    if normalized in {"", ".", ".."} or normalized.startswith("../") or _is_secret_path(normalized):
+        raise ProfileRouterError("invalid_policy", f"{field} must be a safe workspace-relative directory")
+    if any(part in {"", ".", ".."} or part.startswith(".") for part in normalized.split("/")):
+        raise ProfileRouterError("invalid_policy", f"{field} must not contain hidden or traversal path segments")
+    return normalized
+
+
+def _policy_domain_tuple(value: Any, field: str) -> tuple[str, ...]:
+    domains: list[str] = []
+    for raw_domain in _policy_string_tuple(value, field):
+        domain = raw_domain.strip().lower().rstrip(".")
+        if "://" in domain or "/" in domain or "@" in domain or not domain:
+            raise ProfileRouterError("invalid_policy", f"{field} entries must be hostnames, not URLs")
+        if domain.startswith("*."):
+            domain = domain[2:]
+        if not re.fullmatch(r"[a-z0-9.-]{1,253}", domain) or ".." in domain or domain in {"localhost", "local"}:
+            raise ProfileRouterError("invalid_policy", f"{field} entries must be public DNS hostnames")
+        if domain not in domains:
+            domains.append(domain)
+    return tuple(domains)
+
+
+def _parse_messaging_delivery_policy(value: Any, field: str) -> MessagingDeliveryPolicy:
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled")
+    argv = _policy_argv_tuple(
+        policy.get("command_argv", policy.get("argv")),
+        f"{field}.command_argv",
+        required=enabled,
+    )
+    timeout_seconds = _policy_timeout_seconds(
+        policy.get("timeout_seconds"),
+        f"{field}.timeout_seconds",
+        default=10,
+        maximum=MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+    )
+    if enabled and "{message}" not in "\0".join(argv):
+        raise ProfileRouterError("invalid_policy", f"{field}.command_argv must include a {{message}} placeholder")
+    if enabled and "{destination}" not in "\0".join(argv):
+        raise ProfileRouterError("invalid_policy", f"{field}.command_argv must include a {{destination}} placeholder")
+    return MessagingDeliveryPolicy(enabled=enabled, command_argv=argv, timeout_seconds=timeout_seconds)
+
+
+def _parse_production_action_policy(name: str, value: Any, field: str) -> ProductionActionPolicy:
+    action_name = _policy_slug(name, field=f"{field}.name")
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled", default=True)
+    argv = _policy_argv_tuple(policy.get("argv", policy.get("command_argv")), f"{field}.argv")
+    working_directory = _policy_workspace_relative_dir(policy.get("working_directory", policy.get("cwd", ".")), f"{field}.working_directory")
+    timeout_seconds = _policy_timeout_seconds(
+        policy.get("timeout_seconds"),
+        f"{field}.timeout_seconds",
+        default=60,
+        maximum=MAX_PRODUCTION_ACTION_TIMEOUT_SECONDS,
+    )
+    category = _policy_slug(str(policy.get("category") or "production"), field=f"{field}.category")
+    rollback_action = policy.get("rollback_action")
+    if rollback_action is not None:
+        rollback_action = _policy_slug(str(rollback_action), field=f"{field}.rollback_action")
+    return ProductionActionPolicy(
+        name=action_name,
+        argv=argv,
+        enabled=enabled,
+        working_directory=working_directory,
+        timeout_seconds=timeout_seconds,
+        category=category,
+        rollback_action=rollback_action,
+    )
+
+
+def _parse_production_actions(value: Any, field: str) -> Mapping[str, ProductionActionPolicy]:
+    if value is None:
+        return {}
+    raw_actions = _policy_mapping(value, field)
+    actions: dict[str, ProductionActionPolicy] = {}
+    for raw_name, raw_action in raw_actions.items():
+        action = _parse_production_action_policy(str(raw_name), raw_action, f"{field}.{raw_name}")
+        actions[action.name] = action
+    return actions
+
+
+def _parse_server_alias_policy(alias_name: str, value: Any, field: str) -> ServerAliasPolicy:
+    alias = _policy_slug(alias_name, field=f"{field}.alias")
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled", default=True)
+    transport = str(policy.get("transport") or "ssh").strip().lower()
+    if transport not in {"ssh", "local"}:
+        raise ProfileRouterError("invalid_policy", f"{field}.transport must be ssh or local")
+    ssh_target = None
+    if transport == "ssh":
+        raw_target = str(policy.get("ssh_target") or policy.get("host") or "").strip()
+        if not raw_target or "\x00" in raw_target or "\n" in raw_target or "\r" in raw_target or raw_target.startswith("-"):
+            raise ProfileRouterError("invalid_policy", f"{field}.ssh_target is required for ssh aliases")
+        ssh_target = raw_target
+    raw_command_groups = _policy_mapping(policy.get("command_groups", policy.get("commands")), f"{field}.command_groups")
+    command_groups: dict[str, tuple[str, ...]] = {}
+    for command_name, command_argv in raw_command_groups.items():
+        safe_name = _policy_slug(str(command_name), field=f"{field}.command_groups.{command_name}")
+        command_groups[safe_name] = _policy_argv_tuple(command_argv, f"{field}.command_groups.{command_name}")
+    return ServerAliasPolicy(
+        alias=alias,
+        enabled=enabled,
+        transport=transport,
+        ssh_target=ssh_target,
+        allowed_services=_policy_string_tuple(policy.get("allowed_services"), f"{field}.allowed_services"),
+        allowed_containers=_policy_string_tuple(policy.get("allowed_containers"), f"{field}.allowed_containers"),
+        allowed_ports=_policy_port_tuple(policy.get("allowed_ports"), f"{field}.allowed_ports"),
+        command_groups=command_groups,
+    )
+
+
+def _parse_server_aliases(value: Any, field: str) -> Mapping[str, ServerAliasPolicy]:
+    raw_aliases = _policy_mapping(value, field)
+    aliases: dict[str, ServerAliasPolicy] = {}
+    for alias_name, alias_policy in raw_aliases.items():
+        alias = _parse_server_alias_policy(str(alias_name), alias_policy, f"{field}.{alias_name}")
+        aliases[alias.alias] = alias
+    return aliases
+
+
+def _parse_server_operations_policy(value: Any, field: str) -> ServerOperationsPolicy:
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled")
+    return ServerOperationsPolicy(
+        enabled=enabled,
+        allowed_aliases=tuple(_policy_slug(item, field=f"{field}.allowed_aliases") for item in _policy_string_tuple(policy.get("allowed_aliases"), f"{field}.allowed_aliases")),
+        allow_status=_policy_bool(policy.get("allow_status"), f"{field}.allow_status", default=enabled),
+        allow_logs=_policy_bool(policy.get("allow_logs"), f"{field}.allow_logs"),
+        allow_docker=_policy_bool(policy.get("allow_docker"), f"{field}.allow_docker"),
+        allow_ports=_policy_bool(policy.get("allow_ports"), f"{field}.allow_ports"),
+        allow_commands=_policy_bool(policy.get("allow_commands"), f"{field}.allow_commands"),
+    )
+
+
+def _parse_web_fetch_policy(value: Any, field: str) -> WebFetchPolicy:
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled")
+    return WebFetchPolicy(
+        enabled=enabled,
+        allowed_domains=_policy_domain_tuple(policy.get("allowed_domains"), f"{field}.allowed_domains"),
+        allow_http=_policy_bool(policy.get("allow_http"), f"{field}.allow_http"),
+        max_bytes=_policy_timeout_seconds(
+            policy.get("max_bytes"),
+            f"{field}.max_bytes",
+            default=MAX_WEB_FETCH_BYTES,
+            maximum=MAX_WEB_FETCH_BYTES,
+        ),
+    )
+
+
 def _parse_cron_policy(value: Any, field: str) -> CronPolicy:
     policy = _policy_mapping(value, field)
     return CronPolicy(
@@ -849,6 +1496,63 @@ def _parse_cron_policy(value: Any, field: str) -> CronPolicy:
         allowed_scripts=_policy_cron_script_tuple(
             policy.get("allowed_scripts"), f"{field}.allowed_scripts"
         ),
+    )
+
+
+def _parse_git_write_policy(value: Any, field: str) -> GitWritePolicy:
+    policy = _policy_mapping(value, field)
+    write_enabled = _policy_bool(policy.get("write"), f"{field}.write")
+    allow_push = _policy_bool(policy.get("allow_push"), f"{field}.allow_push")
+    allow_rebase = _policy_bool(policy.get("allow_rebase"), f"{field}.allow_rebase")
+    allow_merge = _policy_bool(policy.get("allow_merge"), f"{field}.allow_merge")
+    enabled = _policy_bool(
+        policy.get("write_enabled"),
+        f"{field}.write_enabled",
+        default=write_enabled
+        or allow_push
+        or allow_rebase
+        or allow_merge
+        or any(
+            key in policy
+            for key in (
+                "allow_add",
+                "allow_commit",
+                "allow_checkout",
+                "allow_restore",
+                "allow_force_push",
+                "allow_protected_branch_mutation",
+            )
+        ),
+    )
+    return GitWritePolicy(
+        enabled=enabled,
+        allow_add=_policy_bool(policy.get("allow_add"), f"{field}.allow_add", default=write_enabled),
+        allow_commit=_policy_bool(policy.get("allow_commit"), f"{field}.allow_commit", default=write_enabled),
+        allow_push=allow_push,
+        allow_checkout=_policy_bool(policy.get("allow_checkout"), f"{field}.allow_checkout", default=write_enabled),
+        allow_restore=_policy_bool(policy.get("allow_restore"), f"{field}.allow_restore", default=write_enabled),
+        allow_rebase=allow_rebase,
+        allow_merge=allow_merge,
+        allow_force_push=_policy_bool(policy.get("allow_force_push"), f"{field}.allow_force_push"),
+        allow_protected_branch_mutation=_policy_bool(
+            policy.get("allow_protected_branch_mutation"),
+            f"{field}.allow_protected_branch_mutation",
+        ),
+    )
+
+
+def _parse_github_pr_policy(value: Any, field: str) -> GithubPRPolicy:
+    policy = _policy_mapping(value, field)
+    enabled = _policy_bool(policy.get("enabled"), f"{field}.enabled")
+    return GithubPRPolicy(
+        enabled=enabled,
+        allow_status=_policy_bool(policy.get("allow_status"), f"{field}.allow_status", default=enabled),
+        allow_create=_policy_bool(policy.get("allow_create"), f"{field}.allow_create", default=enabled),
+        allow_update=_policy_bool(policy.get("allow_update"), f"{field}.allow_update", default=enabled),
+        allow_ready=_policy_bool(policy.get("allow_ready"), f"{field}.allow_ready", default=enabled),
+        allow_merge=_policy_bool(policy.get("allow_merge"), f"{field}.allow_merge"),
+        allow_issue_view=_policy_bool(policy.get("allow_issue_view"), f"{field}.allow_issue_view", default=enabled),
+        allow_issue_comment=_policy_bool(policy.get("allow_issue_comment"), f"{field}.allow_issue_comment"),
     )
 
 
@@ -1028,7 +1732,16 @@ def _parse_profile_policy(
     messaging = _policy_mapping(policy.get("messaging"), f"profiles.{ref.value}.messaging")
     cron = _policy_mapping(policy.get("cron"), f"profiles.{ref.value}.cron")
     git = _policy_mapping(policy.get("git"), f"profiles.{ref.value}.git")
+    github_pr = _policy_mapping(
+        policy.get("github_pr", git.get("github_pr", git.get("pr"))),
+        f"profiles.{ref.value}.github_pr",
+    )
     deploy = _policy_mapping(policy.get("deploy"), f"profiles.{ref.value}.deploy")
+    production_actions = _parse_production_actions(
+        policy.get("production_actions", deploy.get("actions")),
+        f"profiles.{ref.value}.production_actions",
+    )
+    server = _policy_mapping(policy.get("server", policy.get("servers")), f"profiles.{ref.value}.server")
     skills = _policy_mapping(policy.get("skills"), f"profiles.{ref.value}.skills")
     memory = _policy_mapping(policy.get("memory"), f"profiles.{ref.value}.memory")
     session = _policy_mapping(policy.get("session"), f"profiles.{ref.value}.session")
@@ -1054,9 +1767,13 @@ def _parse_profile_policy(
     allow_git_push = _policy_bool(
         git.get("allow_push"), f"profiles.{ref.value}.git.allow_push"
     )
+    git_write_policy = _parse_git_write_policy(git, f"profiles.{ref.value}.git")
+    github_pr_policy = _parse_github_pr_policy(github_pr, f"profiles.{ref.value}.github_pr")
     allow_deploy = _policy_bool(
         deploy.get("enabled"), f"profiles.{ref.value}.deploy.enabled"
     )
+    server_policy = _parse_server_operations_policy(server, f"profiles.{ref.value}.server")
+    web_fetch_policy = _parse_web_fetch_policy(web, f"profiles.{ref.value}.web")
     allow_skills = _policy_bool(skills.get("enabled"), f"profiles.{ref.value}.skills.enabled")
     allow_skills_write = _policy_bool(skills.get("write"), f"profiles.{ref.value}.skills.write")
     allow_skills_delete = _policy_bool(skills.get("delete"), f"profiles.{ref.value}.skills.delete")
@@ -1108,14 +1825,14 @@ def _parse_profile_policy(
 
     capability_groups = {
         "filesystem": allow_filesystem_read or allow_filesystem_write,
-        "terminal": allow_terminal,
-        "git": allow_git or allow_git_push,
+        "terminal": allow_terminal or server_policy.enabled,
+        "git": allow_git or allow_git_push or git_write_policy.enabled or github_pr_policy.enabled,
         "cron": allow_cron,
         "messaging": allow_messaging,
         "skills": allow_skills or allow_skills_write or allow_skills_delete,
         "memory": allow_memory or allow_memory_write,
         "session": allow_session,
-        "web": allow_web,
+        "web": allow_web or web_fetch_policy.enabled,
         "browser": allow_browser,
         "api": allow_api,
     }
@@ -1158,6 +1875,14 @@ def _parse_profile_policy(
         allowed_cost_classes=allowed_cost_classes,
         terminal_execution_policy=terminal_execution_policy,
         cron_policy=cron_policy,
+        messaging_delivery_policy=_parse_messaging_delivery_policy(
+            messaging.get("delivery"), f"profiles.{ref.value}.messaging.delivery"
+        ),
+        git_write_policy=git_write_policy,
+        github_pr_policy=github_pr_policy,
+        production_actions=production_actions,
+        server_policy=server_policy,
+        web_fetch_policy=web_fetch_policy,
     )
 
 
@@ -1202,6 +1927,14 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
         f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.metadata_only_without_root",
         default=True,
     )
+    project_discovery = _parse_project_discovery_policy(
+        section.get("project_discovery"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.project_discovery",
+    )
+    server_aliases = _parse_server_aliases(
+        section.get("server_aliases", section.get("servers")),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.server_aliases",
+    )
     global_context = _policy_mapping(
         section.get("context"), f"{PROFILE_ROUTER_CONFIG_KEY}.context"
     )
@@ -1217,6 +1950,7 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
         host: _parse_host_policy(host, host_policy)
         for host, host_policy in raw_hosts.items()
     }
+    discovered_project_roots = _discover_project_roots(project_discovery, hosts)
     profile_sources: dict[str, MappingABC] = {}
     for profile_ref, profile_policy in raw_profiles.items():
         profile_sources[parse_profile_ref(profile_ref).value] = _policy_mapping(
@@ -1241,7 +1975,7 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
                 "description": "Auto-discovered profile policy generated from profile_router.profile_defaults.",
                 "allowed_roots": list(auto_roots),
             }
-            if not auto_roots and auto_metadata_only_without_root:
+            if not auto_roots and auto_metadata_only_without_root and not discovered_project_roots:
                 profile_policy = _disable_workspace_bound_capabilities(
                     _policy_mapping(profile_policy, f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.{profile_ref}")
                 )
@@ -1254,6 +1988,9 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
             merged_policy.get("allowed_roots"),
             f"{PROFILE_ROUTER_CONFIG_KEY}.profiles.{profile_ref}.allowed_roots",
         )
+        if discovered_project_roots and project_discovery.attach_to_profiles:
+            roots = tuple(dict.fromkeys((*roots, *discovered_project_roots)))
+            merged_policy["allowed_roots"] = list(roots)
         if not roots and auto_metadata_only_without_root:
             merged_policy = _disable_workspace_bound_capabilities(merged_policy)
         profiles[profile_ref] = _parse_profile_policy(profile_ref, merged_policy, hosts)
@@ -1262,6 +1999,8 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
         hosts=hosts,
         profiles=profiles,
         allow_global_viking_read=allow_global_viking_read,
+        project_discovery=project_discovery,
+        server_aliases=server_aliases,
     )
 
 
@@ -1735,6 +2474,132 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         mutates_state=False,
         requires_context=True,
     ),
+    "git_add": RouterToolMetadata(
+        name="git_add",
+        description="Private owner-mode Git add wrapper; root-scoped, no-shell, bounded/redacted.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_commit": RouterToolMetadata(
+        name="git_commit",
+        description="Private owner-mode Git commit wrapper; root-scoped and protected-branch guarded.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_push": RouterToolMetadata(
+        name="git_push",
+        description="Private owner-mode Git push wrapper; policy-gated and force-push denied by default.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_checkout": RouterToolMetadata(
+        name="git_checkout",
+        description="Private owner-mode Git checkout wrapper; safe ref-only, root-scoped.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_restore": RouterToolMetadata(
+        name="git_restore",
+        description="Private owner-mode Git restore wrapper; explicit paths only, no secrets.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_rebase": RouterToolMetadata(
+        name="git_rebase",
+        description="Private owner-mode Git rebase wrapper; explicit safe ref and clean tree required.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_merge": RouterToolMetadata(
+        name="git_merge",
+        description="Private owner-mode Git merge wrapper; explicit safe ref and clean tree required.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "github_pr_status": RouterToolMetadata(
+        name="github_pr_status",
+        description="Private GitHub PR status wrapper using server-side gh auth without token exposure.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "github_pr_create": RouterToolMetadata(
+        name="github_pr_create",
+        description="Private GitHub PR create wrapper using server-side gh auth without token exposure.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "github_pr_update": RouterToolMetadata(
+        name="github_pr_update",
+        description="Private GitHub PR edit wrapper using server-side gh auth without token exposure.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "github_pr_ready": RouterToolMetadata(
+        name="github_pr_ready",
+        description="Private GitHub PR ready wrapper using server-side gh auth without token exposure.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "github_pr_merge": RouterToolMetadata(
+        name="github_pr_merge",
+        description="Private GitHub PR merge wrapper; separately policy-gated.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "github_issue_view": RouterToolMetadata(
+        name="github_issue_view",
+        description="Private GitHub issue view wrapper using server-side gh auth without token exposure.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "github_issue_comment": RouterToolMetadata(
+        name="github_issue_comment",
+        description="Private GitHub issue comment wrapper; policy-gated and body redacted in audit.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
     "cron_list": RouterToolMetadata(
         name="cron_list",
         description=(
@@ -1819,6 +2684,104 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         llm_calls=0,
         enabled_by_default=False,
         mutates_state=True,
+        requires_context=True,
+    ),
+    "workspace_production_action_list": RouterToolMetadata(
+        name="workspace_production_action_list",
+        description="List explicit root-scoped production action groups without exposing argv or host roots.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "workspace_production_action_status": RouterToolMetadata(
+        name="workspace_production_action_status",
+        description="Report policy/status metadata for one production action group; no model calls.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "workspace_production_action_run": RouterToolMetadata(
+        name="workspace_production_action_run",
+        description="Run one explicit owner-mode production action group with sanitized env and redacted output.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "server_alias_list": RouterToolMetadata(
+        name="server_alias_list",
+        description="List profile-allowed server aliases without exposing ssh targets or hostnames.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        requires_profile_ref=True,
+    ),
+    "server_status_check": RouterToolMetadata(
+        name="server_status_check",
+        description="Run a named status check on an explicit server alias through server-side SSH/local policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
+    ),
+    "server_service_logs": RouterToolMetadata(
+        name="server_service_logs",
+        description="Read bounded service logs from an explicit server alias and allowlisted service.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
+    ),
+    "server_docker_ps": RouterToolMetadata(
+        name="server_docker_ps",
+        description="List docker containers on an explicit server alias when docker policy is enabled.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
+    ),
+    "server_docker_logs": RouterToolMetadata(
+        name="server_docker_logs",
+        description="Read bounded docker logs for an allowlisted container on an explicit server alias.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
+    ),
+    "server_port_check": RouterToolMetadata(
+        name="server_port_check",
+        description="Check one allowlisted TCP port on an explicit server alias without exposing target details.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
+    ),
+    "server_command_run": RouterToolMetadata(
+        name="server_command_run",
+        description="Run one named server command group on an explicit alias; argv and ssh target stay redacted.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "workspace_web_fetch": RouterToolMetadata(
+        name="workspace_web_fetch",
+        description="Fetch an HTTPS allowlisted public URL with SSRF/private-network guards and no model calls.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
         requires_context=True,
     ),
     "profile_skill_create": RouterToolMetadata(
@@ -2171,6 +3134,20 @@ ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
         "git_diff",
         "git_log",
         "git_branch",
+        "git_add",
+        "git_commit",
+        "git_push",
+        "git_checkout",
+        "git_restore",
+        "git_rebase",
+        "git_merge",
+        "github_pr_status",
+        "github_pr_create",
+        "github_pr_update",
+        "github_pr_ready",
+        "github_pr_merge",
+        "github_issue_view",
+        "github_issue_comment",
         "cron_list",
         "cron_pause",
         "cron_resume",
@@ -2178,6 +3155,10 @@ ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
         "cron_create_script_only",
         "message_send",
         "telegram_send",
+        "workspace_production_action_list",
+        "workspace_production_action_status",
+        "workspace_production_action_run",
+        "workspace_web_fetch",
     }
 )
 
@@ -2197,12 +3178,18 @@ def _router_capability_group(tool_name: str) -> str:
         return "session"
     if tool_name in {"viking_search", "viking_read"}:
         return "memory"
-    if tool_name.startswith("git_"):
+    if tool_name.startswith("git_") or tool_name.startswith("github_pr_") or tool_name.startswith("github_issue_"):
         return "git"
     if tool_name.startswith("cron_"):
         return "cron"
     if tool_name in {"message_send", "telegram_send"}:
         return "messaging"
+    if tool_name.startswith("workspace_production_action_"):
+        return "terminal"
+    if tool_name.startswith("server_"):
+        return "terminal"
+    if tool_name in {"workspace_web_fetch"}:
+        return "web"
     if tool_name in {"terminal_run", "workspace_python_run"} or tool_name.startswith("process_"):
         return "terminal"
     if tool_name in {
@@ -2317,13 +3304,27 @@ class WorkspaceMetadata:
     host: str
     profile: str
     root: str
+    root_id: str | None = None
+    root_label: str | None = None
+    root_index: int | None = None
+    root_source: str | None = None
     mode: str = "checkout"
     read_only: bool = True
     cost_class: str = COST_CLASS_NO_MODEL
     llm_calls: int = 0
 
     def to_public_dict(self) -> dict:
-        return asdict(self)
+        return {
+            "workspace_id": self.workspace_id,
+            "profile_ref": self.profile_ref,
+            "host": self.host,
+            "profile": self.profile,
+            "root": self.root,
+            "mode": self.mode,
+            "read_only": self.read_only,
+            "cost_class": self.cost_class,
+            "llm_calls": self.llm_calls,
+        }
 
 
 @dataclass(frozen=True)
@@ -2414,12 +3415,18 @@ def create_workspace_metadata(
             f"Resolved workspace root escapes allowed roots for {ref.value}",
         )
 
+    root_descriptor = _root_descriptor_for_path(route_policy, resolved_root)
+
     return WorkspaceMetadata(
         workspace_id=workspace_id or f"ws_{uuid4().hex}",
         profile_ref=ref.value,
         host=ref.host,
         profile=ref.profile,
         root=str(resolved_root),
+        root_id=root_descriptor.root_id,
+        root_label=root_descriptor.root_label,
+        root_index=root_descriptor.root_index,
+        root_source=root_descriptor.source,
         mode=mode,
         read_only=True,
     )
@@ -2764,6 +3771,11 @@ def _public_workspace_dict(workspace: WorkspaceMetadata) -> dict:
         "profile_ref": workspace.profile_ref,
         "host": workspace.host,
         "profile": workspace.profile,
+        "root_id": workspace.root_id,
+        "root_label": workspace.root_label,
+        "root_index": workspace.root_index,
+        "root_source": workspace.root_source,
+        "root_exposed": False,
         "mode": workspace.mode,
         "read_only": workspace.read_only,
         "cost_class": workspace.cost_class,
@@ -2950,9 +3962,20 @@ def _resolve_local_profile_dir(ref: ProfileRef) -> Path:
 
 
 def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: ProfileRouterPolicy) -> dict:
+    workspace_roots = [descriptor.to_public_dict() for descriptor in _workspace_root_descriptors(route_policy)]
     return {
         "enabled": router_policy.is_profile_exposed(route_policy),
         "allowed_roots": list(route_policy.allowed_roots),
+        "allowed_roots_count": len(route_policy.allowed_roots),
+        "workspace_roots": workspace_roots,
+        "workspace_roots_count": len(workspace_roots),
+        "project_discovery": {
+            "enabled": router_policy.project_discovery.enabled,
+            "mode": router_policy.project_discovery.mode,
+            "container_count": len(router_policy.project_discovery.containers),
+            "attach_to_profiles": router_policy.project_discovery.attach_to_profiles,
+            "root_exposed": False,
+        },
         "allowed_tool_groups": list(route_policy.allowed_tool_groups),
         "capabilities": {
             "filesystem_read": route_policy.allow_filesystem_read,
@@ -2986,8 +4009,32 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "allowed_recipients_count": len(route_policy.messaging_allowed_recipients),
             "allowlist_redacted": True,
             "broadcast_allowed": False,
-            "external_delivery_enabled": False,
-            "public_mcp_exposure": "disabled_pending_phase_10_messaging_policy_review",
+            "external_delivery_enabled": route_policy.messaging_delivery_policy.enabled,
+            "public_mcp_exposure": "policy_gated_real_send_or_dry_run",
+        },
+        "production_actions_policy": {
+            "enabled": route_policy.allow_deploy,
+            "actions_count": len(route_policy.production_actions),
+            "action_names": sorted(route_policy.production_actions),
+            "argv_redacted": True,
+            "root_exposed": False,
+        },
+        "server_policy": {
+            "enabled": route_policy.server_policy.enabled,
+            "allowed_aliases_count": len(route_policy.server_policy.allowed_aliases),
+            "allow_status": route_policy.server_policy.allow_status,
+            "allow_logs": route_policy.server_policy.allow_logs,
+            "allow_docker": route_policy.server_policy.allow_docker,
+            "allow_ports": route_policy.server_policy.allow_ports,
+            "allow_commands": route_policy.server_policy.allow_commands,
+            "ssh_targets_exposed": False,
+        },
+        "web_fetch_policy": {
+            "enabled": route_policy.web_fetch_policy.enabled,
+            "allowed_domains_count": len(route_policy.web_fetch_policy.allowed_domains),
+            "allow_http": route_policy.web_fetch_policy.allow_http,
+            "max_bytes": route_policy.web_fetch_policy.max_bytes,
+            "private_networks_allowed": False,
         },
         "terminal_execution_policy": {
             "enabled": route_policy.terminal_execution_policy.enabled,
@@ -3712,6 +4759,56 @@ def _require_workspace_git_read_access(
     return workspace, route_policy
 
 
+def _git_write_action_allowed(policy: GitWritePolicy, action: str) -> bool:
+    return bool(policy.enabled and getattr(policy, f"allow_{action}", False))
+
+
+def _require_workspace_git_write_access(
+    workspace_id: str,
+    action: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit owner-mode Git mutation policy."""
+
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    if not _git_write_action_allowed(route_policy.git_write_policy, action):
+        raise ProfileRouterError(
+            "git_write_not_allowed",
+            f"Git {action} is disabled by profile_router git policy: {workspace.profile_ref}",
+        )
+    return workspace, route_policy
+
+
+def _require_workspace_github_pr_access(
+    workspace_id: str,
+    action: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit GitHub PR/issue policy."""
+
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    pr_policy = route_policy.github_pr_policy
+    if not bool(pr_policy.enabled and getattr(pr_policy, f"allow_{action}", False)):
+        raise ProfileRouterError(
+            "github_pr_not_allowed",
+            f"GitHub {action} is disabled by profile_router github_pr policy: {workspace.profile_ref}",
+        )
+    _require_github_remote(workspace)
+    return workspace, route_policy
+
+
 def _require_workspace_cron_access(
     workspace_id: str,
     *,
@@ -3761,6 +4858,88 @@ def _require_workspace_messaging_access(
     return workspace, route_policy
 
 
+def _require_workspace_production_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit deploy/production action policy."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.allow_deploy:
+        raise ProfileRouterError(
+            "production_actions_not_allowed",
+            f"Production actions are disabled by profile_router deploy policy: {workspace.profile_ref}",
+        )
+    return workspace, route_policy
+
+
+def _require_workspace_web_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit deterministic web fetch policy."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.web_fetch_policy.enabled:
+        raise ProfileRouterError(
+            "web_fetch_not_allowed",
+            f"Web fetch is disabled by profile_router web policy: {workspace.profile_ref}",
+        )
+    if not route_policy.web_fetch_policy.allowed_domains:
+        raise ProfileRouterError("web_fetch_allowlist_required", "web.allowed_domains must explicitly allow fetch targets")
+    return workspace, route_policy
+
+
+def _require_profile_server_access(
+    profile_ref: str,
+    alias_name: str | None = None,
+    *,
+    operation: str,
+) -> tuple[ProfileRef, ProfileRoutePolicy, ProfileRouterPolicy, ServerAliasPolicy | None]:
+    """Require profile-scoped server policy and optional explicit alias."""
+
+    ref, route_policy, router_policy = _require_local_profile_policy(profile_ref)
+    server_policy = route_policy.server_policy
+    if not server_policy.enabled:
+        raise ProfileRouterError(
+            "server_operations_not_allowed",
+            f"Server operations are disabled by profile_router policy: {ref.value}",
+        )
+    allowed_for_operation = {
+        "status": server_policy.allow_status,
+        "logs": server_policy.allow_logs,
+        "docker": server_policy.allow_docker,
+        "ports": server_policy.allow_ports,
+        "commands": server_policy.allow_commands,
+        "list": True,
+    }.get(operation, False)
+    if not allowed_for_operation:
+        raise ProfileRouterError("server_operation_not_allowed", "Server operation is disabled by profile policy")
+    if alias_name is None:
+        return ref, route_policy, router_policy, None
+    alias = _policy_slug(alias_name, field="server_alias")
+    if alias not in server_policy.allowed_aliases:
+        raise ProfileRouterError("server_alias_not_allowed", "Server alias is not allowlisted for this profile")
+    alias_policy = router_policy.server_aliases.get(alias)
+    if alias_policy is None or not alias_policy.enabled:
+        raise ProfileRouterError("server_alias_not_found", "Server alias is not configured or enabled")
+    return ref, route_policy, router_policy, alias_policy
+
+
 def _cron_jobs_backend():
     """Return Hermes cron storage helpers lazily so tests can monkeypatch safely."""
 
@@ -3775,6 +4954,522 @@ def _bounded_text(value: Any, max_chars: int) -> str:
     if len(text) > max_chars:
         return text[:max_chars] + "…"
     return text
+
+
+def _redact_policy_subprocess_text(text: Any, redactions: Iterable[str] = ()) -> str:
+    result = _redact_sensitive_text_fields(str(text or ""))
+    for source in redactions:
+        if source and source != "/":
+            result = result.replace(source, "<redacted>")
+    return result
+
+
+def _shape_policy_subprocess_result(
+    completed: subprocess.CompletedProcess[str] | None,
+    *,
+    tool_name: str,
+    timed_out: bool = False,
+    stdout: Any = "",
+    stderr: Any = "",
+    max_output_chars: int = MAX_PRODUCTION_ACTION_OUTPUT_CHARS,
+    redactions: Iterable[str] = (),
+) -> dict:
+    raw_stdout = stdout if completed is None else completed.stdout
+    raw_stderr = stderr if completed is None else completed.stderr
+    safe_stdout = _redact_policy_subprocess_text(raw_stdout, redactions)
+    safe_stderr = _redact_policy_subprocess_text(raw_stderr, redactions)
+    budget = max(1, min(int(max_output_chars), MAX_PRODUCTION_ACTION_OUTPUT_CHARS))
+    stdout_returned = safe_stdout[:budget]
+    stderr_budget = max(0, budget - len(stdout_returned))
+    stderr_returned = safe_stderr[:stderr_budget]
+    returncode = None if timed_out or completed is None else completed.returncode
+    return {
+        "status": "timeout" if timed_out else "success" if returncode == 0 else "failed",
+        "returncode": returncode,
+        "timed_out": bool(timed_out),
+        "stdout": {
+            "text": stdout_returned,
+            "returned_chars": len(stdout_returned),
+            "truncated": len(safe_stdout) > len(stdout_returned),
+        },
+        "stderr": {
+            "text": stderr_returned,
+            "returned_chars": len(stderr_returned),
+            "truncated": len(safe_stderr) > len(stderr_returned),
+        },
+        "output": {
+            "max_output_chars": budget,
+            "returned_chars": len(stdout_returned) + len(stderr_returned),
+            "truncated": len(safe_stdout) > len(stdout_returned) or len(safe_stderr) > len(stderr_returned),
+        },
+        "audit": {
+            "tool": tool_name,
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": False,
+            "argv_redacted": True,
+            "env_values_exposed": False,
+        },
+    }
+
+
+def _run_policy_subprocess(
+    argv: tuple[str, ...],
+    *,
+    cwd: Path | None,
+    timeout_seconds: int,
+    tool_name: str,
+    max_output_chars: int = MAX_PRODUCTION_ACTION_OUTPUT_CHARS,
+    redactions: Iterable[str] = (),
+) -> dict:
+    """Run a deterministic no-shell subprocess with sanitized env and redacted output."""
+
+    try:
+        completed = subprocess.run(
+            list(argv),
+            cwd=str(cwd) if cwd is not None else None,
+            env=_build_terminal_sanitized_env(),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("policy_executable_not_found", "Configured executable is not available in sanitized PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        return _shape_policy_subprocess_result(
+            None,
+            tool_name=tool_name,
+            timed_out=True,
+            stdout=exc.stdout or "",
+            stderr=exc.stderr or "",
+            max_output_chars=max_output_chars,
+            redactions=redactions,
+        )
+    except OSError as exc:
+        raise ProfileRouterError("policy_execution_failed", "Configured command could not be started safely") from exc
+    return _shape_policy_subprocess_result(
+        completed,
+        tool_name=tool_name,
+        max_output_chars=max_output_chars,
+        redactions=redactions,
+    )
+
+
+def _production_action_summary(action: ProductionActionPolicy) -> dict:
+    return {
+        "name": action.name,
+        "enabled": action.enabled,
+        "category": action.category,
+        "rollback_action": action.rollback_action,
+        "working_directory": action.working_directory,
+        "timeout_seconds": action.timeout_seconds,
+        "argv_redacted": True,
+        "root_exposed": False,
+    }
+
+
+def list_workspace_production_actions(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_production_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    actions = [_production_action_summary(action) for action in route_policy.production_actions.values()]
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "actions": sorted(actions, key=lambda item: item["name"]),
+        "actions_count": len(actions),
+        "policy": {
+            "deploy_enabled": route_policy.allow_deploy,
+            "argv_redacted": True,
+            "root_exposed": False,
+        },
+        "audit": {"tool": "workspace_production_action_list", "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def get_workspace_production_action_status(
+    workspace_id: str,
+    action_name: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_production_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    name = _policy_slug(action_name, field="production_action")
+    action = route_policy.production_actions.get(name)
+    if action is None:
+        raise ProfileRouterError("production_action_not_found", "Production action is not configured for this profile")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "action": _production_action_summary(action),
+        "last_run_tracking": "not_persisted_by_no_model_connector",
+        "audit": {"tool": "workspace_production_action_status", "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def run_workspace_production_action(
+    workspace_id: str,
+    action_name: str,
+    *,
+    args: Mapping[str, Any] | None = None,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if args:
+        raise ProfileRouterError("production_action_args_not_supported", "Production actions only accept server-configured argv in this phase")
+    workspace, route_policy = _require_workspace_production_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    name = _policy_slug(action_name, field="production_action")
+    action = route_policy.production_actions.get(name)
+    if action is None or not action.enabled:
+        raise ProfileRouterError("production_action_not_found", "Production action is not configured or enabled for this profile")
+    resolved_cwd, public_cwd = _resolve_terminal_working_directory(workspace, action.working_directory)
+    result = _run_policy_subprocess(
+        action.argv,
+        cwd=resolved_cwd,
+        timeout_seconds=action.timeout_seconds,
+        tool_name="workspace_production_action_run",
+        max_output_chars=MAX_PRODUCTION_ACTION_OUTPUT_CHARS,
+        redactions=(workspace.root, str(resolved_cwd)),
+    )
+    audit = dict(result.get("audit") or {})
+    audit.update(
+        {
+            "tool": "workspace_production_action_run",
+            "action_name": name,
+            "llm_calls": 0,
+            "root_exposed": False,
+            "working_directory": public_cwd,
+            "production_action_policy_gated": True,
+        }
+    )
+    result["audit"] = audit
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "action": _production_action_summary(action),
+        "result": result,
+        "rollback_action": action.rollback_action,
+        "rollback_documented": action.rollback_action is not None,
+        "root_exposed": False,
+    }
+
+
+
+def _server_alias_public_summary(alias: ServerAliasPolicy) -> dict:
+    return {
+        "alias": alias.alias,
+        "enabled": alias.enabled,
+        "transport": alias.transport,
+        "ssh_target_exposed": False,
+        "allowed_services_count": len(alias.allowed_services),
+        "allowed_containers_count": len(alias.allowed_containers),
+        "allowed_ports": list(alias.allowed_ports),
+        "command_groups": sorted(alias.command_groups),
+        "argv_redacted": True,
+    }
+
+
+def list_server_aliases(profile_ref: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, route_policy, router_policy, _alias = _require_profile_server_access(
+        profile_ref,
+        operation="list",
+    )
+    aliases = [
+        _server_alias_public_summary(router_policy.server_aliases[alias])
+        for alias in route_policy.server_policy.allowed_aliases
+        if alias in router_policy.server_aliases and router_policy.server_aliases[alias].enabled
+    ]
+    return {
+        "profile_ref": ref.value,
+        "aliases": aliases,
+        "alias_count": len(aliases),
+        "policy": {
+            "server_operations_enabled": route_policy.server_policy.enabled,
+            "ssh_targets_exposed": False,
+            "root_exposed": False,
+        },
+        "audit": {"tool": "server_alias_list", "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def _server_command_argv(alias: ServerAliasPolicy, argv: tuple[str, ...]) -> tuple[str, ...]:
+    if alias.transport == "local":
+        return argv
+    if not alias.ssh_target:
+        raise ProfileRouterError("server_alias_invalid", "SSH alias is missing its server-side target")
+    return ("ssh", "-o", "BatchMode=yes", alias.ssh_target, *argv)
+
+
+def _run_server_alias_command(
+    alias: ServerAliasPolicy,
+    argv: tuple[str, ...],
+    *,
+    tool_name: str,
+    timeout_seconds: int = MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+    extra_redactions: Iterable[str] = (),
+) -> dict:
+    return _run_policy_subprocess(
+        _server_command_argv(alias, argv),
+        cwd=None,
+        timeout_seconds=timeout_seconds,
+        tool_name=tool_name,
+        max_output_chars=MAX_SERVER_ALIAS_OUTPUT_CHARS,
+        redactions=tuple(extra_redactions) + tuple([alias.ssh_target or ""]),
+    )
+
+
+def check_server_status(profile_ref: str, alias: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="status",
+    )
+    assert alias_policy is not None
+    argv = alias_policy.command_groups.get("status", ("uptime",))
+    result = _run_server_alias_command(alias_policy, argv, tool_name="server_status_check")
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "result": result,
+        "audit": {"tool": "server_status_check", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def read_server_service_logs(profile_ref: str, alias: str, service: str, *, lines: int | None = 100) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="logs",
+    )
+    assert alias_policy is not None
+    service_name = _policy_slug(service, field="service")
+    if service_name not in alias_policy.allowed_services:
+        raise ProfileRouterError("server_service_not_allowed", "Service is not allowlisted for this server alias")
+    line_count = _bounded_int(lines, "lines", default=100, minimum=1, maximum=MAX_SERVER_LOG_LINES)
+    argv = ("journalctl", "--no-pager", "-u", service_name, "-n", str(line_count))
+    result = _run_server_alias_command(alias_policy, argv, tool_name="server_service_logs", extra_redactions=(service_name,))
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "service": {"name": service_name, "allowed": True},
+        "lines": line_count,
+        "result": result,
+        "audit": {"tool": "server_service_logs", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def list_server_docker_containers(profile_ref: str, alias: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="docker",
+    )
+    assert alias_policy is not None
+    argv = alias_policy.command_groups.get("docker_ps", ("docker", "ps", "--format", "{{json .}}"))
+    result = _run_server_alias_command(alias_policy, argv, tool_name="server_docker_ps")
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "result": result,
+        "audit": {"tool": "server_docker_ps", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def read_server_docker_logs(profile_ref: str, alias: str, container: str, *, lines: int | None = 100) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="docker",
+    )
+    assert alias_policy is not None
+    container_name = _policy_slug(container, field="container")
+    if container_name not in alias_policy.allowed_containers:
+        raise ProfileRouterError("server_container_not_allowed", "Container is not allowlisted for this server alias")
+    line_count = _bounded_int(lines, "lines", default=100, minimum=1, maximum=MAX_SERVER_LOG_LINES)
+    argv = ("docker", "logs", "--tail", str(line_count), container_name)
+    result = _run_server_alias_command(alias_policy, argv, tool_name="server_docker_logs", extra_redactions=(container_name,))
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "container": {"name": container_name, "allowed": True},
+        "lines": line_count,
+        "result": result,
+        "audit": {"tool": "server_docker_logs", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def check_server_port(profile_ref: str, alias: str, port: int) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="ports",
+    )
+    assert alias_policy is not None
+    if isinstance(port, bool) or not isinstance(port, int) or port not in alias_policy.allowed_ports:
+        raise ProfileRouterError("server_port_not_allowed", "Port is not allowlisted for this server alias")
+    result = _run_server_alias_command(alias_policy, ("nc", "-z", "127.0.0.1", str(port)), tool_name="server_port_check")
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "port": {"port": port, "allowed": True},
+        "result": result,
+        "audit": {"tool": "server_port_check", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def run_server_command(profile_ref: str, alias: str, command_name: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="commands",
+    )
+    assert alias_policy is not None
+    safe_command_name = _policy_slug(command_name, field="command_name")
+    argv = alias_policy.command_groups.get(safe_command_name)
+    if argv is None:
+        raise ProfileRouterError("server_command_not_allowed", "Named command group is not allowlisted for this server alias")
+    result = _run_server_alias_command(alias_policy, argv, tool_name="server_command_run")
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "command": {"name": safe_command_name, "argv_redacted": True},
+        "result": result,
+        "audit": {"tool": "server_command_run", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+
+def _url_host_allowed(hostname: str, allowed_domains: tuple[str, ...]) -> bool:
+    host = hostname.lower().rstrip(".")
+    return any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains)
+
+
+def _ip_address_is_public(address: Any) -> bool:
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _validate_web_fetch_url(url: str, policy: WebFetchPolicy) -> tuple[str, str]:
+    text = str(url or "").strip()
+    if len(text) > 2048:
+        raise ProfileRouterError("web_fetch_url_too_long", "URL exceeds the deterministic fetch limit")
+    parsed = urlparse(text)
+    allowed_schemes = {"https", "http"} if policy.allow_http else {"https"}
+    if parsed.scheme not in allowed_schemes or not parsed.netloc or parsed.username or parsed.password:
+        raise ProfileRouterError("web_fetch_url_invalid", "URL must be an allowed-scheme absolute URL without credentials")
+    if parsed.fragment:
+        raise ProfileRouterError("web_fetch_url_invalid", "URL fragments are not accepted")
+    hostname = parsed.hostname
+    if not hostname or not _url_host_allowed(hostname, policy.allowed_domains):
+        raise ProfileRouterError("web_fetch_domain_not_allowed", "URL host is not allowlisted by profile policy")
+    try:
+        direct_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        direct_ip = None
+    if direct_ip is not None and not _ip_address_is_public(direct_ip):
+        raise ProfileRouterError("web_fetch_private_network_denied", "Private/link-local/loopback fetch targets are denied")
+    try:
+        addresses = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ProfileRouterError("web_fetch_dns_failed", "URL host could not be resolved safely") from exc
+    for info in addresses:
+        address_text = info[4][0]
+        try:
+            address = ipaddress.ip_address(address_text)
+        except ValueError:
+            continue
+        if not _ip_address_is_public(address):
+            raise ProfileRouterError("web_fetch_private_network_denied", "Resolved private/link-local/loopback fetch target is denied")
+    return text, hostname.lower().rstrip(".")
+
+
+def fetch_workspace_url(
+    workspace_id: str,
+    url: str,
+    *,
+    method: str = "GET",
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_web_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    method_upper = str(method or "GET").strip().upper()
+    if method_upper != "GET":
+        raise ProfileRouterError("web_fetch_method_not_allowed", "Only GET is supported by the no-model web fetch wrapper")
+    safe_url, hostname = _validate_web_fetch_url(url, route_policy.web_fetch_policy)
+    request = Request(
+        safe_url,
+        headers={"Accept": "text/plain, text/html, application/json;q=0.8", "User-Agent": "hermes-profile-router-no-model/1"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=MAX_WEB_FETCH_TIMEOUT_SECONDS) as response:
+            raw = response.read(route_policy.web_fetch_policy.max_bytes + 1)
+            status = int(getattr(response, "status", 200))
+            content_type = str(response.headers.get("content-type", ""))[:160]
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise ProfileRouterError("web_fetch_failed", "Web fetch failed without exposing query text or host roots") from exc
+    truncated = len(raw) > route_policy.web_fetch_policy.max_bytes
+    raw = raw[: route_policy.web_fetch_policy.max_bytes]
+    text = raw.decode("utf-8", errors="replace")
+    text = _redact_sensitive_text_fields(text)
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "fetch": {
+            "status": status,
+            "hostname": hostname,
+            "url_returned": False,
+            "content_type": content_type,
+            "body": text,
+            "bytes_returned": len(raw),
+            "truncated": truncated,
+        },
+        "policy": {
+            "allowed_domains_count": len(route_policy.web_fetch_policy.allowed_domains),
+            "allow_http": route_policy.web_fetch_policy.allow_http,
+            "private_networks_allowed": False,
+        },
+        "audit": {"tool": "workspace_web_fetch", "llm_calls": 0, "root_exposed": False, "uses_model": False},
+    }
 
 
 def _normalize_cron_job_ref(job_ref: str) -> str:
@@ -4143,24 +5838,45 @@ def prepare_workspace_message_send(
             "destination is not in profile_router.messaging.allowed_recipients",
         )
     message_text = _normalize_message_text(message)
+    delivery_result = None
+    external_delivery_enabled = route_policy.messaging_delivery_policy.enabled
+    delivery_attempted = False
+    status = "dry_run_ready"
     if not dry_run:
-        raise ProfileRouterError(
-            "message_delivery_not_enabled",
-            "external message delivery remains disabled pending explicit runtime policy/review",
+        delivery_policy = route_policy.messaging_delivery_policy
+        if not delivery_policy.enabled or not delivery_policy.command_argv:
+            raise ProfileRouterError(
+                "message_delivery_not_enabled",
+                "external message delivery requires explicit messaging.delivery policy",
+            )
+        rendered_argv = tuple(
+            item.replace("{destination}", normalized_destination).replace("{message}", message_text)
+            for item in delivery_policy.command_argv
         )
+        delivery_result = _run_policy_subprocess(
+            rendered_argv,
+            cwd=None,
+            timeout_seconds=delivery_policy.timeout_seconds,
+            tool_name=tool_name,
+            max_output_chars=MAX_SERVER_ALIAS_OUTPUT_CHARS,
+            redactions=(normalized_destination, message_text),
+        )
+        delivery_attempted = True
+        status = "delivery_attempted"
     return {
         "workspace_id": workspace.workspace_id,
         "messaging": {
-            "status": "dry_run_ready",
+            "status": status,
             "platform": platform,
             "destination_hash": _messaging_destination_fingerprint(normalized_destination),
             "destination_allowed": True,
             "destination_exposed": False,
             "message_chars": len(message_text),
             "message_content_logged": False,
-            "dry_run": True,
-            "delivery_attempted": False,
-            "external_delivery_enabled": False,
+            "dry_run": dry_run,
+            "delivery_attempted": delivery_attempted,
+            "external_delivery_enabled": external_delivery_enabled,
+            "delivery_result": delivery_result,
             "policy": {
                 "messaging_enabled": route_policy.allow_messaging,
                 "allowed_recipients_count": len(route_policy.messaging_allowed_recipients),
@@ -4171,10 +5887,10 @@ def prepare_workspace_message_send(
                 "tool": tool_name,
                 "llm_calls": 0,
                 "root_exposed": False,
-                "uses_gateway_adapter": False,
+                "uses_gateway_adapter": delivery_attempted,
                 "destination_exposed": False,
                 "message_content_logged": False,
-                "public_mcp_exposure": "disabled_pending_phase_10_messaging_policy_review",
+                "public_mcp_exposure": "policy_gated_real_send_or_dry_run",
             },
         },
     }
@@ -7048,6 +8764,741 @@ def read_workspace_git_branch(
     }
 
 
+def _git_mutation_audit(tool_name: str, workspace: WorkspaceMetadata, action: str) -> dict:
+    return {
+        "tool": tool_name,
+        "action": action,
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "git_read_only": False,
+        "git_mutation_allowed": True,
+        "raw_command_exposed": False,
+        "argv_values_exposed": False,
+        "env_values_exposed": False,
+        "workspace_id": workspace.workspace_id,
+    }
+
+
+def _git_credential_env() -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+    for key in (
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "SSH_AUTH_SOCK",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_ASKPASS",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GITHUB_HOST",
+    ):
+        value = os.environ.get(key)
+        if isinstance(value, str) and value:
+            env[key] = value
+    return env
+
+
+def _redact_git_process_text(workspace: WorkspaceMetadata, text: str | bytes) -> str:
+    value = _coerce_terminal_output_stream(text, "git_output")
+    value = value.replace(str(Path(workspace.root)), "<workspace>")
+    try:
+        value = value.replace(str(Path(workspace.root).resolve()), "<workspace>")
+    except OSError:
+        pass
+    return _redact_sensitive_text_fields(value)
+
+
+def _shape_git_process_result(
+    workspace: WorkspaceMetadata,
+    result: subprocess.CompletedProcess[str],
+    *,
+    max_chars: int = MAX_GIT_MUTATION_OUTPUT_CHARS,
+) -> dict:
+    stdout_full = _redact_git_process_text(workspace, result.stdout or "")
+    stderr_full = _redact_git_process_text(workspace, result.stderr or "")
+    stdout = stdout_full[:max_chars]
+    stderr_budget = max(0, max_chars - len(stdout))
+    stderr = stderr_full[:stderr_budget]
+    return {
+        "returncode": result.returncode,
+        "status": "success" if result.returncode == 0 else "failed",
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": len(stdout_full) > len(stdout),
+        "stderr_truncated": len(stderr_full) > len(stderr),
+        "raw_command_exposed": False,
+        "root_exposed": False,
+    }
+
+
+def _run_workspace_git_mutation(
+    workspace: WorkspaceMetadata,
+    args: list[str],
+    *,
+    timeout: int = 60,
+    credentialed: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", workspace.root, *args],
+            cwd=workspace.root,
+            env=_git_credential_env() if credentialed else {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("git_unavailable", "git executable is not available") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ProfileRouterError("git_timeout", "git command timed out") from exc
+    except OSError as exc:
+        raise ProfileRouterError("git_unavailable", "git command could not be started") from exc
+
+
+def _require_git_success(workspace: WorkspaceMetadata, result: subprocess.CompletedProcess[str], action: str) -> None:
+    if result.returncode != 0:
+        raise ProfileRouterError("git_command_failed", f"git {action} failed")
+
+
+def _current_branch_protected(route_policy: ProfileRoutePolicy, workspace: WorkspaceMetadata) -> bool:
+    branch = _git_current_branch(workspace)
+    return bool(branch and branch in set(route_policy.protected_branches))
+
+
+def _require_unprotected_branch(route_policy: ProfileRoutePolicy, workspace: WorkspaceMetadata, action: str) -> None:
+    if route_policy.git_write_policy.allow_protected_branch_mutation:
+        return
+    if _current_branch_protected(route_policy, workspace):
+        raise ProfileRouterError(
+            "protected_branch_mutation_denied",
+            f"git {action} is denied on protected branches by profile_router policy",
+        )
+
+
+def _workspace_git_status_summary(workspace: WorkspaceMetadata, route_policy: ProfileRoutePolicy) -> dict:
+    output = _git_output(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    changes, skipped, truncated = _parse_git_status_entries(
+        workspace,
+        output,
+        limit=MAX_GIT_STATUS_ENTRIES,
+    )
+    return {
+        "branch": _git_branch_summary(workspace, route_policy),
+        "change_count": len(changes),
+        "changes": changes,
+        "skipped": skipped,
+        "truncated": truncated,
+        "clean": not changes and not skipped,
+    }
+
+
+def _require_clean_git_tree(workspace: WorkspaceMetadata, route_policy: ProfileRoutePolicy, action: str) -> None:
+    status = _workspace_git_status_summary(workspace, route_policy)
+    if not status["clean"]:
+        raise ProfileRouterError(
+            "git_worktree_not_clean",
+            f"git {action} requires a clean worktree to avoid accidental data loss",
+        )
+
+
+def _normalize_git_mutation_paths(paths: Any) -> list[str]:
+    if not isinstance(paths, list) or not paths:
+        raise ProfileRouterError("invalid_git_paths", "paths must be a non-empty list")
+    if len(paths) > MAX_GIT_PATHS_PER_MUTATION:
+        raise ProfileRouterError("git_paths_too_many", f"paths may include at most {MAX_GIT_PATHS_PER_MUTATION} entries")
+    normalized_paths: list[str] = []
+    for path in paths:
+        if not isinstance(path, str):
+            raise ProfileRouterError("invalid_git_paths", "paths entries must be strings")
+        normalized = _normalize_git_relative_path(path)
+        if normalized is None:
+            raise ProfileRouterError("invalid_git_paths", "git paths must be workspace-relative file paths")
+        if normalized not in normalized_paths:
+            normalized_paths.append(normalized)
+    return normalized_paths
+
+
+def _normalize_safe_git_ref(value: str, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ProfileRouterError("invalid_git_ref", f"{field} is required")
+    ref = value.strip()
+    if (
+        not GIT_SAFE_REF_RE.fullmatch(ref)
+        or ".." in ref
+        or "@{" in ref
+        or ref.endswith(".lock")
+        or ref.startswith(("-", "/"))
+        or ref.endswith("/")
+        or "\\" in ref
+    ):
+        raise ProfileRouterError("invalid_git_ref", f"{field} must be a safe Git ref name")
+    if _redact_sensitive_text_fields(ref) != ref or _is_secret_path(ref):
+        raise ProfileRouterError("git_ref_secret_denied", f"{field} is blocked by the secret denylist")
+    return ref
+
+
+def _normalize_git_commit_message(message: str) -> str:
+    if not isinstance(message, str):
+        raise ProfileRouterError("invalid_commit_message", "commit message must be a string")
+    text = message.strip()
+    if not text:
+        raise ProfileRouterError("invalid_commit_message", "commit message is required")
+    if "\x00" in text or len(text) > MAX_GIT_COMMIT_MESSAGE_CHARS:
+        raise ProfileRouterError("invalid_commit_message", f"commit message must be <= {MAX_GIT_COMMIT_MESSAGE_CHARS} characters")
+    if _redact_sensitive_text_fields(text) != text:
+        raise ProfileRouterError("commit_message_secret_denied", "commit message appears to contain a secret/token")
+    return text
+
+
+def run_workspace_git_add(
+    workspace_id: str,
+    paths: list[str],
+    *,
+    context_token: str | None = None,
+    update: bool = False,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(update, bool):
+        raise ProfileRouterError("invalid_git_option", "update must be a boolean")
+    workspace, route_policy = _require_workspace_git_write_access(
+        workspace_id,
+        "add",
+        context_token=context_token,
+        registry=registry,
+    )
+    safe_paths, skipped, _truncated = _filter_workspace_diff_paths(
+        workspace,
+        _normalize_git_mutation_paths(paths),
+        max_files=MAX_GIT_PATHS_PER_MUTATION,
+    )
+    if skipped:
+        raise ProfileRouterError("git_path_denied", "one or more git add paths are denied by workspace policy")
+    args = ["add"] + (["-u"] if update else []) + ["--", *_literal_git_pathspecs(safe_paths)]
+    result = _run_workspace_git_mutation(workspace, args)
+    _require_git_success(workspace, result, "add")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "paths": safe_paths,
+        "path_count": len(safe_paths),
+        "status": _workspace_git_status_summary(workspace, route_policy),
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_add", workspace, "add"),
+    }
+
+
+def run_workspace_git_commit(
+    workspace_id: str,
+    message: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    commit_message = _normalize_git_commit_message(message)
+    workspace, route_policy = _require_workspace_git_write_access(
+        workspace_id,
+        "commit",
+        context_token=context_token,
+        registry=registry,
+    )
+    _require_unprotected_branch(route_policy, workspace, "commit")
+    result = _run_workspace_git_mutation(workspace, ["commit", "-m", commit_message])
+    _require_git_success(workspace, result, "commit")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "head": _git_short_head(workspace),
+        "message_chars": len(commit_message),
+        "message_returned": False,
+        "status": _workspace_git_status_summary(workspace, route_policy),
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_commit", workspace, "commit"),
+    }
+
+
+def run_workspace_git_push(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    remote: str = "origin",
+    branch: str | None = None,
+    force_with_lease: bool = False,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(force_with_lease, bool):
+        raise ProfileRouterError("invalid_git_option", "force_with_lease must be a boolean")
+    workspace, route_policy = _require_workspace_git_write_access(
+        workspace_id,
+        "push",
+        context_token=context_token,
+        registry=registry,
+    )
+    selected_remote = _normalize_safe_git_ref(remote, "remote")
+    selected_branch = _normalize_safe_git_ref(branch or _git_current_branch(workspace) or "", "branch")
+    if force_with_lease and not route_policy.git_write_policy.allow_force_push:
+        raise ProfileRouterError("git_force_push_denied", "force pushes require explicit allow_force_push policy")
+    if selected_branch in set(route_policy.protected_branches) and not route_policy.git_write_policy.allow_protected_branch_mutation:
+        raise ProfileRouterError("protected_branch_mutation_denied", "git push to protected branches is denied by policy")
+    args = ["push"] + (["--force-with-lease"] if force_with_lease else []) + [selected_remote, selected_branch]
+    result = _run_workspace_git_mutation(workspace, args, timeout=120, credentialed=True)
+    _require_git_success(workspace, result, "push")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "remote": selected_remote,
+        "branch": selected_branch,
+        "force_with_lease": force_with_lease,
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_push", workspace, "push"),
+    }
+
+
+def run_workspace_git_checkout(
+    workspace_id: str,
+    branch: str,
+    *,
+    context_token: str | None = None,
+    create: bool = False,
+    start_point: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(create, bool):
+        raise ProfileRouterError("invalid_git_option", "create must be a boolean")
+    workspace, route_policy = _require_workspace_git_write_access(
+        workspace_id,
+        "checkout",
+        context_token=context_token,
+        registry=registry,
+    )
+    selected_branch = _normalize_safe_git_ref(branch, "branch")
+    args = ["checkout", "-b", selected_branch] if create else ["checkout", selected_branch]
+    if start_point is not None:
+        args.append(_normalize_safe_git_ref(start_point, "start_point"))
+    result = _run_workspace_git_mutation(workspace, args)
+    _require_git_success(workspace, result, "checkout")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "created": create,
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_checkout", workspace, "checkout"),
+    }
+
+
+def run_workspace_git_restore(
+    workspace_id: str,
+    paths: list[str],
+    *,
+    context_token: str | None = None,
+    staged: bool = False,
+    worktree: bool = True,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(staged, bool) or not isinstance(worktree, bool):
+        raise ProfileRouterError("invalid_git_option", "staged/worktree must be booleans")
+    if not staged and not worktree:
+        raise ProfileRouterError("invalid_git_option", "git restore must target staged and/or worktree")
+    workspace, route_policy = _require_workspace_git_write_access(
+        workspace_id,
+        "restore",
+        context_token=context_token,
+        registry=registry,
+    )
+    _require_unprotected_branch(route_policy, workspace, "restore")
+    safe_paths, skipped, _truncated = _filter_workspace_diff_paths(
+        workspace,
+        _normalize_git_mutation_paths(paths),
+        max_files=MAX_GIT_PATHS_PER_MUTATION,
+    )
+    if skipped:
+        raise ProfileRouterError("git_path_denied", "one or more git restore paths are denied by workspace policy")
+    args = ["restore"] + (["--staged"] if staged else []) + (["--worktree"] if worktree else []) + ["--", *_literal_git_pathspecs(safe_paths)]
+    result = _run_workspace_git_mutation(workspace, args)
+    _require_git_success(workspace, result, "restore")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "paths": safe_paths,
+        "staged": staged,
+        "worktree": worktree,
+        "status": _workspace_git_status_summary(workspace, route_policy),
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_restore", workspace, "restore"),
+    }
+
+
+def run_workspace_git_rebase(
+    workspace_id: str,
+    upstream: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_git_write_access(workspace_id, "rebase", context_token=context_token, registry=registry)
+    _require_unprotected_branch(route_policy, workspace, "rebase")
+    _require_clean_git_tree(workspace, route_policy, "rebase")
+    selected_upstream = _normalize_safe_git_ref(upstream, "upstream")
+    result = _run_workspace_git_mutation(workspace, ["rebase", selected_upstream], timeout=120)
+    _require_git_success(workspace, result, "rebase")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "upstream": selected_upstream,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_rebase", workspace, "rebase"),
+    }
+
+
+def run_workspace_git_merge(
+    workspace_id: str,
+    ref: str,
+    *,
+    context_token: str | None = None,
+    no_ff: bool = False,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(no_ff, bool):
+        raise ProfileRouterError("invalid_git_option", "no_ff must be a boolean")
+    workspace, route_policy = _require_workspace_git_write_access(workspace_id, "merge", context_token=context_token, registry=registry)
+    _require_unprotected_branch(route_policy, workspace, "merge")
+    _require_clean_git_tree(workspace, route_policy, "merge")
+    selected_ref = _normalize_safe_git_ref(ref, "ref")
+    result = _run_workspace_git_mutation(workspace, ["merge", *(["--no-ff"] if no_ff else []), selected_ref], timeout=120)
+    _require_git_success(workspace, result, "merge")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "ref": selected_ref,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "result": _shape_git_process_result(workspace, result),
+        "audit": _git_mutation_audit("git_merge", workspace, "merge"),
+    }
+
+
+def _run_workspace_gh(workspace: WorkspaceMetadata, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            cwd=workspace.root,
+            env=_git_credential_env(),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("gh_unavailable", "GitHub CLI executable is not available") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ProfileRouterError("gh_timeout", "GitHub CLI command timed out") from exc
+    except OSError as exc:
+        raise ProfileRouterError("gh_unavailable", "GitHub CLI command could not be started") from exc
+
+
+def _require_github_remote(workspace: WorkspaceMetadata) -> None:
+    result = _run_workspace_git(workspace, ["remote", "-v"], timeout=5)
+    if result.returncode != 0 or "github.com" not in (result.stdout or "").lower():
+        raise ProfileRouterError("github_remote_required", "GitHub PR wrappers require a GitHub remote")
+
+
+def _normalize_github_pr_selector(selector: str | int | None, *, required: bool = True) -> str | None:
+    if selector is None or selector == "":
+        if required:
+            raise ProfileRouterError("invalid_pr_selector", "PR/issue selector is required")
+        return None
+    text = str(selector).strip()
+    if not text or not GITHUB_PR_SELECTOR_RE.fullmatch(text) or _redact_sensitive_text_fields(text) != text:
+        raise ProfileRouterError("invalid_pr_selector", "PR/issue selector must be a number, URL, or safe ref")
+    return text
+
+
+def _normalize_pr_text(value: str | None, field: str, max_chars: int, *, required: bool = False) -> str | None:
+    if value is None:
+        if required:
+            raise ProfileRouterError("invalid_pr_text", f"{field} is required")
+        return None
+    if not isinstance(value, str):
+        raise ProfileRouterError("invalid_pr_text", f"{field} must be a string")
+    text = value.strip()
+    if required and not text:
+        raise ProfileRouterError("invalid_pr_text", f"{field} is required")
+    if "\x00" in text or len(text) > max_chars:
+        raise ProfileRouterError("invalid_pr_text", f"{field} must be <= {max_chars} characters")
+    if _redact_sensitive_text_fields(text) != text:
+        raise ProfileRouterError("pr_text_secret_denied", f"{field} appears to contain a secret/token")
+    return text
+
+
+def _normalize_github_labels(labels: Any) -> list[str]:
+    if labels is None:
+        return []
+    if not isinstance(labels, list):
+        raise ProfileRouterError("invalid_github_labels", "labels must be a list")
+    if len(labels) > MAX_GITHUB_PR_LABELS:
+        raise ProfileRouterError("invalid_github_labels", f"labels may include at most {MAX_GITHUB_PR_LABELS} entries")
+    normalized: list[str] = []
+    for label in labels:
+        if not isinstance(label, str):
+            raise ProfileRouterError("invalid_github_labels", "labels entries must be strings")
+        text = label.strip()
+        if not text or len(text) > MAX_GITHUB_PR_LABEL_CHARS or _redact_sensitive_text_fields(text) != text:
+            raise ProfileRouterError("invalid_github_labels", "labels must be bounded non-secret strings")
+        if text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _shape_gh_result(workspace: WorkspaceMetadata, result: subprocess.CompletedProcess[str]) -> dict:
+    shaped = _shape_git_process_result(workspace, result)
+    data = None
+    stdout = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if stdout.startswith("{") or stdout.startswith("["):
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            data = None
+    return {
+        **shaped,
+        "json": data,
+        "json_available": data is not None,
+        "uses_server_side_gh_auth": True,
+        "token_exposed": False,
+    }
+
+
+def _github_audit(tool_name: str, workspace: WorkspaceMetadata, action: str, *, mutates_state: bool) -> dict:
+    return {
+        "tool": tool_name,
+        "action": action,
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "uses_server_side_gh_auth": True,
+        "token_exposed": False,
+        "raw_command_exposed": False,
+        "mutates_state": mutates_state,
+        "workspace_id": workspace.workspace_id,
+    }
+
+
+def run_workspace_github_pr_status(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    selector: str | int | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "status", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(selector, required=False)
+    args = ["pr", "view", selected, "--json", "number,title,state,url,isDraft,headRefName,baseRefName"] if selected else ["pr", "status", "--json", "currentBranch,createdBy"]
+    result = _run_workspace_gh(workspace, [item for item in args if item is not None])
+    _require_git_success(workspace, result, "pr status")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "selector_provided": selected is not None,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_pr_status", workspace, "status", mutates_state=False),
+    }
+
+
+def run_workspace_github_pr_create(
+    workspace_id: str,
+    title: str,
+    *,
+    context_token: str | None = None,
+    body: str | None = None,
+    base: str | None = None,
+    head: str | None = None,
+    draft: bool = False,
+    labels: list[str] | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if not isinstance(draft, bool):
+        raise ProfileRouterError("invalid_pr_option", "draft must be a boolean")
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "create", context_token=context_token, registry=registry)
+    pr_title = _normalize_pr_text(title, "title", MAX_GITHUB_PR_TITLE_CHARS, required=True) or ""
+    pr_body = _normalize_pr_text(body or "", "body", MAX_GITHUB_PR_BODY_CHARS) or ""
+    args = ["pr", "create", "--title", pr_title, "--body", pr_body]
+    if base:
+        args.extend(["--base", _normalize_safe_git_ref(base, "base")])
+    if head:
+        args.extend(["--head", _normalize_safe_git_ref(head, "head")])
+    if draft:
+        args.append("--draft")
+    for label in _normalize_github_labels(labels):
+        args.extend(["--label", label])
+    result = _run_workspace_gh(workspace, args, timeout=120)
+    _require_git_success(workspace, result, "pr create")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "title_chars": len(pr_title),
+        "body_chars": len(pr_body),
+        "draft": draft,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_pr_create", workspace, "create", mutates_state=True),
+    }
+
+
+def run_workspace_github_pr_update(
+    workspace_id: str,
+    selector: str | int,
+    *,
+    context_token: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    labels: list[str] | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "update", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(selector)
+    args = ["pr", "edit", selected]
+    pr_title = _normalize_pr_text(title, "title", MAX_GITHUB_PR_TITLE_CHARS) if title is not None else None
+    pr_body = _normalize_pr_text(body, "body", MAX_GITHUB_PR_BODY_CHARS) if body is not None else None
+    if pr_title is not None:
+        args.extend(["--title", pr_title])
+    if pr_body is not None:
+        args.extend(["--body", pr_body])
+    normalized_labels = _normalize_github_labels(labels)
+    if normalized_labels:
+        args.extend(["--add-label", ",".join(normalized_labels)])
+    if len(args) == 3:
+        raise ProfileRouterError("invalid_pr_update", "workspace_pr_update requires title, body, or labels")
+    result = _run_workspace_gh(workspace, args, timeout=120)
+    _require_git_success(workspace, result, "pr update")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "selector": selected,
+        "updated_title": pr_title is not None,
+        "updated_body": pr_body is not None,
+        "labels_added_count": len(normalized_labels),
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_pr_update", workspace, "update", mutates_state=True),
+    }
+
+
+def run_workspace_github_pr_ready(
+    workspace_id: str,
+    selector: str | int,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "ready", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(selector)
+    result = _run_workspace_gh(workspace, ["pr", "ready", selected], timeout=120)
+    _require_git_success(workspace, result, "pr ready")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "selector": selected,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_pr_ready", workspace, "ready", mutates_state=True),
+    }
+
+
+def run_workspace_github_pr_merge(
+    workspace_id: str,
+    selector: str | int,
+    *,
+    context_token: str | None = None,
+    method: str = "merge",
+    delete_branch: bool = False,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    if method not in {"merge", "squash", "rebase"}:
+        raise ProfileRouterError("invalid_pr_merge_method", "method must be merge, squash, or rebase")
+    if not isinstance(delete_branch, bool):
+        raise ProfileRouterError("invalid_pr_option", "delete_branch must be a boolean")
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "merge", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(selector)
+    args = ["pr", "merge", selected, f"--{method}"] + (["--delete-branch"] if delete_branch else [])
+    result = _run_workspace_gh(workspace, args, timeout=120)
+    _require_git_success(workspace, result, "pr merge")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "selector": selected,
+        "method": method,
+        "delete_branch": delete_branch,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_pr_merge", workspace, "merge", mutates_state=True),
+    }
+
+
+def run_workspace_github_issue_view(
+    workspace_id: str,
+    issue: str | int,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "issue_view", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(issue)
+    result = _run_workspace_gh(workspace, ["issue", "view", selected, "--json", "number,title,state,url,author,body"], timeout=60)
+    _require_git_success(workspace, result, "issue view")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "issue": selected,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_issue_view", workspace, "issue_view", mutates_state=False),
+    }
+
+
+def run_workspace_github_issue_comment(
+    workspace_id: str,
+    issue: str | int,
+    body: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_github_pr_access(workspace_id, "issue_comment", context_token=context_token, registry=registry)
+    selected = _normalize_github_pr_selector(issue)
+    comment_body = _normalize_pr_text(body, "body", MAX_GITHUB_PR_BODY_CHARS, required=True) or ""
+    result = _run_workspace_gh(workspace, ["issue", "comment", selected, "--body", comment_body], timeout=120)
+    _require_git_success(workspace, result, "issue comment")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "issue": selected,
+        "body_chars": len(comment_body),
+        "body_returned": False,
+        "result": _shape_gh_result(workspace, result),
+        "audit": _github_audit("github_issue_comment", workspace, "issue_comment", mutates_state=True),
+    }
+
+
 def _safe_profile_summary(
     info: ProfileInfo,
     *,
@@ -7096,12 +9547,60 @@ def _safe_profile_summary(
             "messaging_recipients_configured": bool(
                 route_policy.messaging_allowed_recipients
             ),
+            "messaging_policy": {
+                "external_delivery_enabled": route_policy.messaging_delivery_policy.enabled,
+                "allowed_recipients_count": len(route_policy.messaging_allowed_recipients),
+                "allowlist_redacted": True,
+            },
+            "production_actions_policy": {
+                "enabled": route_policy.allow_deploy,
+                "actions_count": len(route_policy.production_actions),
+                "argv_redacted": True,
+                "root_exposed": False,
+            },
+            "server_policy": {
+                "enabled": route_policy.server_policy.enabled,
+                "allowed_aliases_count": len(route_policy.server_policy.allowed_aliases),
+                "ssh_targets_exposed": False,
+            },
+            "web_fetch_policy": {
+                "enabled": route_policy.web_fetch_policy.enabled,
+                "allowed_domains_count": len(route_policy.web_fetch_policy.allowed_domains),
+                "private_networks_allowed": False,
+            },
+            "workspace_roots_count": len(route_policy.allowed_roots),
+            "project_discovery": {
+                "enabled": router_policy.project_discovery.enabled,
+                "root_exposed": False,
+            },
             "cron_policy": {
                 "enabled": route_policy.cron_policy.enabled,
                 "allowed_scripts_count": len(route_policy.cron_policy.allowed_scripts),
                 "allowlist_redacted": True,
                 "no_agent_only": True,
                 "model_backed_crons_allowed": False,
+            },
+            "git_write_policy": {
+                "enabled": route_policy.git_write_policy.enabled,
+                "allow_add": route_policy.git_write_policy.allow_add,
+                "allow_commit": route_policy.git_write_policy.allow_commit,
+                "allow_push": route_policy.git_write_policy.allow_push,
+                "allow_checkout": route_policy.git_write_policy.allow_checkout,
+                "allow_restore": route_policy.git_write_policy.allow_restore,
+                "allow_rebase": route_policy.git_write_policy.allow_rebase,
+                "allow_merge": route_policy.git_write_policy.allow_merge,
+                "allow_force_push": route_policy.git_write_policy.allow_force_push,
+                "allow_protected_branch_mutation": route_policy.git_write_policy.allow_protected_branch_mutation,
+            },
+            "github_pr_policy": {
+                "enabled": route_policy.github_pr_policy.enabled,
+                "allow_status": route_policy.github_pr_policy.allow_status,
+                "allow_create": route_policy.github_pr_policy.allow_create,
+                "allow_update": route_policy.github_pr_policy.allow_update,
+                "allow_ready": route_policy.github_pr_policy.allow_ready,
+                "allow_merge": route_policy.github_pr_policy.allow_merge,
+                "allow_issue_view": route_policy.github_pr_policy.allow_issue_view,
+                "allow_issue_comment": route_policy.github_pr_policy.allow_issue_comment,
             },
             "model_policy": {
                 "allow_model_tools": route_policy.allow_model_tools,
@@ -9571,6 +12070,254 @@ def git_branch(
         return _tool_error("git_branch", exc)
 
 
+def git_add(
+    workspace_id: str,
+    paths: list[str],
+    context_token: str | None = None,
+    update: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "git_add",
+            {"ok": True, "git_add": run_workspace_git_add(workspace_id, paths, context_token=context_token, update=update)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_add", exc)
+
+
+def git_commit(workspace_id: str, message: str, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "git_commit",
+            {"ok": True, "git_commit": run_workspace_git_commit(workspace_id, message, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_commit", exc)
+
+
+def git_push(
+    workspace_id: str,
+    context_token: str | None = None,
+    remote: str = "origin",
+    branch: str | None = None,
+    force_with_lease: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "git_push",
+            {
+                "ok": True,
+                "git_push": run_workspace_git_push(
+                    workspace_id,
+                    context_token=context_token,
+                    remote=remote,
+                    branch=branch,
+                    force_with_lease=force_with_lease,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_push", exc)
+
+
+def git_checkout(
+    workspace_id: str,
+    branch: str,
+    context_token: str | None = None,
+    create: bool = False,
+    start_point: str | None = None,
+) -> str:
+    try:
+        return _tool_envelope(
+            "git_checkout",
+            {
+                "ok": True,
+                "git_checkout": run_workspace_git_checkout(
+                    workspace_id,
+                    branch,
+                    context_token=context_token,
+                    create=create,
+                    start_point=start_point,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_checkout", exc)
+
+
+def git_restore(
+    workspace_id: str,
+    paths: list[str],
+    context_token: str | None = None,
+    staged: bool = False,
+    worktree: bool = True,
+) -> str:
+    try:
+        return _tool_envelope(
+            "git_restore",
+            {
+                "ok": True,
+                "git_restore": run_workspace_git_restore(
+                    workspace_id,
+                    paths,
+                    context_token=context_token,
+                    staged=staged,
+                    worktree=worktree,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_restore", exc)
+
+
+def git_rebase(workspace_id: str, upstream: str, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "git_rebase",
+            {"ok": True, "git_rebase": run_workspace_git_rebase(workspace_id, upstream, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_rebase", exc)
+
+
+def git_merge(
+    workspace_id: str,
+    ref: str,
+    context_token: str | None = None,
+    no_ff: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "git_merge",
+            {"ok": True, "git_merge": run_workspace_git_merge(workspace_id, ref, context_token=context_token, no_ff=no_ff)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_merge", exc)
+
+
+def github_pr_status(workspace_id: str, context_token: str | None = None, selector: str | int | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "github_pr_status",
+            {"ok": True, "github_pr_status": run_workspace_github_pr_status(workspace_id, context_token=context_token, selector=selector)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_pr_status", exc)
+
+
+def github_pr_create(
+    workspace_id: str,
+    title: str,
+    context_token: str | None = None,
+    body: str | None = None,
+    base: str | None = None,
+    head: str | None = None,
+    draft: bool = False,
+    labels: list[str] | None = None,
+) -> str:
+    try:
+        return _tool_envelope(
+            "github_pr_create",
+            {
+                "ok": True,
+                "github_pr_create": run_workspace_github_pr_create(
+                    workspace_id,
+                    title,
+                    context_token=context_token,
+                    body=body,
+                    base=base,
+                    head=head,
+                    draft=draft,
+                    labels=labels,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_pr_create", exc)
+
+
+def github_pr_update(
+    workspace_id: str,
+    selector: str | int,
+    context_token: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    labels: list[str] | None = None,
+) -> str:
+    try:
+        return _tool_envelope(
+            "github_pr_update",
+            {
+                "ok": True,
+                "github_pr_update": run_workspace_github_pr_update(
+                    workspace_id,
+                    selector,
+                    context_token=context_token,
+                    title=title,
+                    body=body,
+                    labels=labels,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_pr_update", exc)
+
+
+def github_pr_ready(workspace_id: str, selector: str | int, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "github_pr_ready",
+            {"ok": True, "github_pr_ready": run_workspace_github_pr_ready(workspace_id, selector, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_pr_ready", exc)
+
+
+def github_pr_merge(
+    workspace_id: str,
+    selector: str | int,
+    context_token: str | None = None,
+    method: str = "merge",
+    delete_branch: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "github_pr_merge",
+            {
+                "ok": True,
+                "github_pr_merge": run_workspace_github_pr_merge(
+                    workspace_id,
+                    selector,
+                    context_token=context_token,
+                    method=method,
+                    delete_branch=delete_branch,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_pr_merge", exc)
+
+
+def github_issue_view(workspace_id: str, issue: str | int, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "github_issue_view",
+            {"ok": True, "github_issue_view": run_workspace_github_issue_view(workspace_id, issue, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_issue_view", exc)
+
+
+def github_issue_comment(workspace_id: str, issue: str | int, body: str, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "github_issue_comment",
+            {"ok": True, "github_issue_comment": run_workspace_github_issue_comment(workspace_id, issue, body, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("github_issue_comment", exc)
+
+
 def cron_list(
     workspace_id: str,
     context_token: str | None = None,
@@ -9751,6 +12498,97 @@ def telegram_send(
         )
     except ProfileRouterError as exc:
         return _tool_error("telegram_send", exc)
+
+
+def workspace_production_action_list(workspace_id: str, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "workspace_production_action_list",
+            {"ok": True, "production_actions": list_workspace_production_actions(workspace_id, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_production_action_list", exc)
+
+
+def workspace_production_action_status(workspace_id: str, action_name: str, context_token: str | None = None) -> str:
+    try:
+        return _tool_envelope(
+            "workspace_production_action_status",
+            {"ok": True, "production_action_status": get_workspace_production_action_status(workspace_id, action_name, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_production_action_status", exc)
+
+
+def workspace_production_action_run(
+    workspace_id: str,
+    action_name: str,
+    context_token: str | None = None,
+    args: Mapping[str, Any] | None = None,
+) -> str:
+    try:
+        return _tool_envelope(
+            "workspace_production_action_run",
+            {"ok": True, "production_action": run_workspace_production_action(workspace_id, action_name, args=args, context_token=context_token)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_production_action_run", exc)
+
+
+def server_alias_list(profile_ref: str) -> str:
+    try:
+        return _tool_envelope("server_alias_list", {"ok": True, "servers": list_server_aliases(profile_ref)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_alias_list", exc)
+
+
+def server_status_check(profile_ref: str, alias: str) -> str:
+    try:
+        return _tool_envelope("server_status_check", {"ok": True, "server_status": check_server_status(profile_ref, alias)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_status_check", exc)
+
+
+def server_service_logs(profile_ref: str, alias: str, service: str, lines: int | None = 100) -> str:
+    try:
+        return _tool_envelope("server_service_logs", {"ok": True, "server_logs": read_server_service_logs(profile_ref, alias, service, lines=lines)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_service_logs", exc)
+
+
+def server_docker_ps(profile_ref: str, alias: str) -> str:
+    try:
+        return _tool_envelope("server_docker_ps", {"ok": True, "docker": list_server_docker_containers(profile_ref, alias)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_docker_ps", exc)
+
+
+def server_docker_logs(profile_ref: str, alias: str, container: str, lines: int | None = 100) -> str:
+    try:
+        return _tool_envelope("server_docker_logs", {"ok": True, "docker_logs": read_server_docker_logs(profile_ref, alias, container, lines=lines)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_docker_logs", exc)
+
+
+def server_port_check(profile_ref: str, alias: str, port: int) -> str:
+    try:
+        return _tool_envelope("server_port_check", {"ok": True, "server_port": check_server_port(profile_ref, alias, port)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_port_check", exc)
+
+
+def server_command_run(profile_ref: str, alias: str, command_name: str) -> str:
+    try:
+        return _tool_envelope("server_command_run", {"ok": True, "server_command": run_server_command(profile_ref, alias, command_name)})
+    except ProfileRouterError as exc:
+        return _tool_error("server_command_run", exc)
+
+
+def workspace_web_fetch(workspace_id: str, url: str, context_token: str | None = None, method: str = "GET") -> str:
+    try:
+        return _tool_envelope("workspace_web_fetch", {"ok": True, "web_fetch": fetch_workspace_url(workspace_id, url, method=method, context_token=context_token)})
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_web_fetch", exc)
 
 
 def workspace_python_run(

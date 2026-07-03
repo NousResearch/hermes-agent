@@ -6117,7 +6117,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
+
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
         term_width = shutil.get_terminal_size().columns
@@ -11961,7 +11961,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Initialize agent if needed
         if self.agent is None:
-            _cprint(f"{_DIM}Initializing agent...{_RST}")
+            self._spinner_text = "⚡ Initializing agent..."
+            self._invalidate()
         if not self._init_agent(
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
@@ -15090,6 +15091,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._agent_running = True
                     self._pet_turn_error = False
                     self._pet_reasoning = False
+                    self._spinner_text = self._spinner_text or "⚡ Thinking..."
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -15591,7 +15593,7 @@ def main(
     max_turns: int = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
-    compact: bool = False,
+    compact: bool = None,
     list_tools: bool = False,
     list_toolsets: bool = False,
     gateway: bool = False,

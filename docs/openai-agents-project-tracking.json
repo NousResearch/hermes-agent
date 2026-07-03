@@ -80,8 +80,10 @@
     {
       "id": "OASDK-HARDEN-005",
       "title": "Native git workflow tracking and local-first PR readiness",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": [
+        "0efd2c44a"
+      ],
       "linked_receipt_groups": [
         "OASDK-RCPT-GATE"
       ],
@@ -187,7 +189,7 @@
     {
       "id": "OASDK-NEXT-004",
       "title": "Wire native git workflow validation into project tracking gate",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-005"
       ],
@@ -233,7 +235,8 @@
       "3a78ac5ce",
       "e3401f585",
       "a36a79845",
-      "060bc1648"
+      "060bc1648",
+      "0efd2c44a"
     ],
     "integration_targets": {
       "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",

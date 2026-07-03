@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SIDECAR_PORT = 8790
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
 _MAX_MESSAGE_LENGTH = 4000
+_WECHAT_SESSION_RETS = frozenset({1100, 1101, 1102})
+_WECHAT_RETRYABLE_RETS = frozenset({1205})
 _DEDUP_MAX_SIZE = 2000
 _DEDUP_WINDOW_SECONDS = 5 * 60
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
@@ -75,6 +77,33 @@ def _truthy(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _send_result_from_sidecar_error(exc: Exception) -> SendResult:
+    """Map sidecar HTTP / wechat4u errors to a retryable SendResult when safe."""
+    wechat_ret: Optional[int] = None
+    retryable = False
+    message = str(exc)
+    if isinstance(exc, RuntimeError):
+        marker = "wechat_ret="
+        if marker in message:
+            tail = message.split(marker, 1)[1].split(")", 1)[0].strip()
+            token = tail.split(",", 1)[0].strip()
+            try:
+                wechat_ret = int(token)
+            except ValueError:
+                wechat_ret = None
+        if "retryable=True" in message or "retryable=true" in message:
+            retryable = True
+    if wechat_ret in _WECHAT_SESSION_RETS:
+        retryable = False
+        message = (
+            f"WeChat session expired or invalid (ret={wechat_ret}). "
+            "Re-scan the QR code in gateway logs."
+        )
+    elif wechat_ret in _WECHAT_RETRYABLE_RETS:
+        retryable = True
+    return SendResult(success=False, error=message, retryable=retryable)
 
 
 def check_requirements() -> bool:
@@ -339,6 +368,15 @@ class WechatyAdapter(BasePlatformAdapter):
         elif etype == "logout":
             self._logged_in = False
             logger.warning("[wechaty] logged out: %s", event.get("userName"))
+        elif etype == "session_error":
+            self._logged_in = False
+            ret = event.get("wechatRet")
+            logger.warning(
+                "[wechaty] WeChat session error (ret=%s, context=%s) — "
+                "re-scan QR in gateway logs if sends keep failing",
+                ret,
+                event.get("context"),
+            )
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
@@ -490,7 +528,7 @@ class WechatyAdapter(BasePlatformAdapter):
                 {"chatId": chat_id, "text": plain[: self.MAX_MESSAGE_LENGTH]},
             )
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return _send_result_from_sidecar_error(exc)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def send_image_file(
@@ -508,7 +546,7 @@ class WechatyAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send-file", body)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return _send_result_from_sidecar_error(exc)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def send_document(
@@ -531,7 +569,7 @@ class WechatyAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send-file", body)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return _send_result_from_sidecar_error(exc)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def send_typing(self, chat_id: str) -> None:
@@ -553,15 +591,22 @@ class WechatyAdapter(BasePlatformAdapter):
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, json=body, headers=headers)
-        if resp.status_code != 200:
+        data: Dict[str, Any] = {}
+        if resp.content:
+            try:
+                data = resp.json() or {}
+            except json.JSONDecodeError:
+                data = {}
+        if resp.status_code != 200 or not data.get("ok"):
+            wechat_ret = data.get("wechat_ret")
+            retryable = bool(data.get("retryable"))
+            err = data.get("error") or resp.text[:200]
+            if wechat_ret in _WECHAT_SESSION_RETS:
+                self._logged_in = False
             raise RuntimeError(
-                f"Wechaty sidecar {path} returned {resp.status_code}: "
-                f"{resp.text[:200]}"
-            )
-        data = resp.json() or {}
-        if not data.get("ok"):
-            raise RuntimeError(
-                f"Wechaty sidecar {path} error: {data.get('error')}"
+                f"Wechaty sidecar {path} error: {err} "
+                f"(http={resp.status_code}, wechat_ret={wechat_ret}, "
+                f"retryable={retryable})"
             )
         return data
 

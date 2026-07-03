@@ -258,6 +258,74 @@ async function resolveSayTarget(chatId) {
   throw new Error(`unknown chatId kind: ${kind}`);
 }
 
+// wechat4u returns non-zero BaseResponse.Ret on send/sync failures.
+// 1100/1101/1102 = login/session invalid (fail fast); 1205 = rate limited.
+const SESSION_RETS = new Set([1100, 1101, 1102]);
+const RATE_LIMIT_RETS = new Set([1205]);
+
+function parseWechatRet(err) {
+  const text = String((err && err.message) || err || "");
+  const match = text.match(/(?:'|)(\d{3,4})(?:'|) == 0/);
+  return match ? Number(match[1]) : null;
+}
+
+async function notifySessionError(ret, context) {
+  loggedIn = false;
+  try {
+    await deliver({
+      type: "session_error",
+      wechatRet: ret,
+      context,
+      timestamp: new Date().toISOString(),
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+// Serialize outbound sends — wechat4u corrupts sync state on concurrent say().
+let sendChain = Promise.resolve();
+const MIN_SEND_GAP_MS = 350;
+let lastSendAt = 0;
+
+function enqueueSend(fn) {
+  const run = sendChain.then(fn);
+  sendChain = run.catch(() => {});
+  return run;
+}
+
+async function pacedSay(target, payload) {
+  const gap = MIN_SEND_GAP_MS - (Date.now() - lastSendAt);
+  if (gap > 0) {
+    await new Promise((resolve) => setTimeout(resolve, gap));
+  }
+  const result = await target.say(payload);
+  lastSendAt = Date.now();
+  return result;
+}
+
+async function sayWithRetry(target, payload) {
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await pacedSay(target, payload);
+    } catch (err) {
+      lastErr = err;
+      const ret = parseWechatRet(err);
+      if (ret != null && SESSION_RETS.has(ret)) {
+        await notifySessionError(ret, "send");
+        throw err;
+      }
+      if (attempt === 0 && ret != null && RATE_LIMIT_RETS.has(ret)) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP server
 
@@ -289,10 +357,14 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
-  res.statusCode = 500;
+function fail(res, status, payload) {
+  res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  res.end(JSON.stringify({ ok: false, ...payload }));
+}
+
+function serverError(res, payload = { error: "internal sidecar error" }) {
+  fail(res, payload.status || 500, payload);
 }
 
 function ok(res, data) {
@@ -364,7 +436,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "chatId and text are required");
       }
       const target = await resolveSayTarget(chatId);
-      const result = await target.say(text);
+      const result = await enqueueSend(() => sayWithRetry(target, text));
       const messageId =
         result && typeof result === "object" && result.id ? result.id : null;
       return ok(res, { messageId });
@@ -377,10 +449,13 @@ const server = http.createServer(async (req, res) => {
       await fs.access(filePath);
       const fileBox = FileBox.fromFile(filePath, name || path.basename(filePath));
       const target = await resolveSayTarget(chatId);
-      const result = await target.say(fileBox);
-      if (caption && typeof caption === "string") {
-        await target.say(caption);
-      }
+      const result = await enqueueSend(async () => {
+        const sent = await sayWithRetry(target, fileBox);
+        if (caption && typeof caption === "string") {
+          await sayWithRetry(target, caption);
+        }
+        return sent;
+      });
       const messageId =
         result && typeof result === "object" && result.id ? result.id : null;
       return ok(res, { messageId });
@@ -393,11 +468,28 @@ const server = http.createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     return res.end(JSON.stringify({ ok: false, error: "not found" }));
   } catch (e) {
+    const ret = parseWechatRet(e);
     console.error(
       "wechaty-sidecar: handler error: " +
         (e && e.stack ? e.stack : String(e))
     );
-    return serverError(res);
+    if (ret != null && SESSION_RETS.has(ret)) {
+      return serverError(res, {
+        status: 503,
+        error: "wechat_session_expired",
+        wechat_ret: ret,
+        retryable: false,
+      });
+    }
+    if (ret != null && RATE_LIMIT_RETS.has(ret)) {
+      return serverError(res, {
+        status: 503,
+        error: "wechat_rate_limited",
+        wechat_ret: ret,
+        retryable: true,
+      });
+    }
+    return serverError(res, { error: String((e && e.message) || e) });
   }
 });
 

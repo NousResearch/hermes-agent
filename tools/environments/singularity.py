@@ -21,10 +21,35 @@ from tools.environments.base import (
     _popen_bash,
     _save_json_store,
 )
+from tools.environments.local import (
+    _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _is_hermes_internal_secret,
+)
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
+
+
+def _filtered_container_env(overrides: dict) -> dict:
+    """Build a sanitized env for ``apptainer``/``singularity exec``.
+
+    Unlike Docker (which only forwards explicitly allowlisted ``-e`` vars),
+    Apptainer/Singularity's ``exec`` inherits the calling process's FULL
+    environment into the container by default — ``--cleanenv`` is passed to
+    ``instance start`` only, not to the per-command ``exec`` that actually
+    runs each terminal command. Passing this filtered dict as
+    ``subprocess.Popen``'s ``env=`` keeps every hermes provider API key /
+    session token / gateway secret out of the container, matching the same
+    blocklist ``LocalEnvironment`` and ``DockerEnvironment`` already apply
+    to their own subprocess spawns.
+    """
+    merged = dict(os.environ) | dict(overrides)
+    return {
+        k: v
+        for k, v in merged.items()
+        if k not in _HERMES_PROVIDER_ENV_BLOCKLIST and not _is_hermes_internal_secret(k)
+    }
 
 
 def _find_singularity_executable() -> str:
@@ -243,7 +268,7 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
-        return _popen_bash(cmd, stdin_data)
+        return _popen_bash(cmd, stdin_data, env=_filtered_container_env(self.env))
 
     def cleanup(self):
         """Stop the instance. If persistent, the overlay dir survives."""

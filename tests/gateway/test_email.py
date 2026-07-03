@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import asyncio
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -26,6 +27,48 @@ from gateway.platforms.base import SendResult
 class TestConfigEnvOverrides(unittest.TestCase):
     """Verify email config is loaded from environment variables."""
 
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_email_explicit_disable_not_reenabled_by_env(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            }
+        )
+        _apply_env_overrides(config)
+        self.assertFalse(config.platforms[Platform.EMAIL].enabled)
+        self.assertEqual(config.platforms[Platform.EMAIL].extra["address"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=True)
+    def test_email_send_only_enabled_without_imap(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=True,
+                    extra={"mode": "send_only", "_enabled_explicit": True},
+                ),
+            }
+        )
+        _apply_env_overrides(config)
+        email_config = config.platforms[Platform.EMAIL]
+        self.assertTrue(email_config.enabled)
+        self.assertEqual(email_config.extra["address"], "hermes@test.com")
+        self.assertEqual(email_config.extra["smtp_host"], "smtp.test.com")
+        self.assertNotIn("imap_host", email_config.extra)
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",
@@ -55,6 +98,70 @@ class TestCheckRequirements(unittest.TestCase):
     def test_requirements_met(self):
         from plugins.platforms.email.adapter import check_email_requirements
         self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_SMTP_HOST": "smtp.b.com",
+    }, clear=True)
+    def test_requirements_met_for_send_only_smtp(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_SMTP_HOST": "smtp.b.com",
+    }, clear=True)
+    def test_smtp_only_credentials_require_explicit_send_only_mode(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import _is_connected
+
+        self.assertFalse(_is_connected(PlatformConfig(enabled=True)))
+        self.assertTrue(_is_connected(
+            PlatformConfig(enabled=True, extra={"mode": "send_only"})
+        ))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+    }, clear=True)
+    def test_requirements_not_met(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_requirements_empty_env(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
+
+class TestSendOnlyMode(unittest.TestCase):
+    """Verify email can be configured for outbound-only delivery."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=True)
+    def test_connect_send_only_skips_imap_polling(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        adapter = EmailAdapter(
+            PlatformConfig(enabled=True, extra={"mode": "send_only"})
+        )
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap, patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            connected = asyncio.run(adapter.connect())
+
+            self.assertTrue(connected)
+            mock_imap.assert_not_called()
+            mock_server.login.assert_called_once_with("hermes@test.com", "secret")
+            self.assertTrue(adapter._running)
+            self.assertIsNone(adapter._poll_task)
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -382,6 +489,37 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
 
+    def test_reply_does_not_double_re(self):
+        """If subject already has Re:, don't add another."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Re: Project question",
+            "message_id": "<reply@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Follow up.", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Project question")
+            self.assertFalse(send_call["Subject"].startswith("Re: Re:"))
+
+    def test_no_thread_context_uses_default_subject(self):
+        """Without thread context, subject should be 'Re: Hermes Agent'."""
+        adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("newuser@test.com", "Hello!", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+            self.assertIn("Date", send_call)
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""

@@ -12,6 +12,18 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
 </p>
 
+> **Fork note.** This checkout is a fork of NousResearch/hermes-agent. The upstream
+> README below describes the general-purpose agent engine and still applies. What this
+> fork actually ships is a **deployed Slack agent on AWS ECS Fargate** — `/work`, `/wiki`,
+> `/daily`, a skill self-improvement loop, and integration with the sibling
+> hermes-skills-service (S3 registry) and Atlas. **For the real surface an agent edits,
+> read [`AGENTS.md`](AGENTS.md) → "The Real Hermes Surface (this fork)" first** — it maps
+> `hermes_agent/`, `gateway/platforms/slack.py`, the `:8080` health/forge/clarify servers,
+> the `cron/` jobs, and `infra/terraform/`. Run tests with `scripts/run_tests.sh`; lint/typecheck
+> with `ruff check .` and `ty check`.
+
+---
+
 **The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.

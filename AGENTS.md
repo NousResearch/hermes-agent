@@ -2,6 +2,99 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+> **This is a fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).**
+> Most of this file (and the whole `run_agent.py` / `cli.py` / `tools/` / `plugins/`
+> / `ui-tui/` upstream tree) documents the upstream CLI agent and is still accurate —
+> read it for how the engine works. But the code you actually ship here is a thin
+> **deployed-Slack-agent layer** on top: a Slack gateway on AWS ECS Fargate that
+> integrates with the sibling **hermes-skills-service** (S3 skills registry) and
+> **Atlas** (army-of-one). Start at the section below — it points you at the real
+> surface and tells you which upstream cruft to ignore. When a change is about
+> "the Slack bot", `/work`, `/wiki`, `/daily`, deploy, or self-improvement, it lives
+> in **the fork layer**, not in the upstream engine.
+
+## The Real Hermes Surface (this fork)
+
+Everything in this section is a **fork addition** — none of it exists upstream.
+This is where nearly all product work happens.
+
+### At a glance
+
+```
+Slack (Socket Mode)  ──►  gateway/platforms/slack.py  ──►  AIAgent (upstream engine)
+   │  /work /wiki /daily /draft, 👍/👎 reactions          │
+   │                                                       ├─ hermes_agent/ (self-improvement, channel ctx)
+   ├─ gateway/work_surface.py  → plan_lifecycle sensor     ├─ hermes-skills-service (S3 registry, HERMES_MODE=saas)
+   ├─ gateway/wiki_surface.py  → gateway/atlas_wiki_client → Atlas /v1 wiki
+   └─ :8080  health / forge / clarify HTTP (aiohttp)       └─ Neon Postgres (telemetry, RLS by tenant)
+
+Deployed as: ECS Fargate service `hermes` (cluster `agentic-stack`), image ECR `agentic-stack/hermes`,
+container runs the Slack **gateway** (NOT web_server); entrypoint docker/entrypoint.saas.sh.
+```
+
+### Fork module map
+
+| Path | Role (fork-only) | Key symbols |
+|------|------------------|-------------|
+| `hermes_agent/` | Fork package (distinct from upstream `agent/`) — self-improvement + channel context. | see below |
+| `hermes_agent/channel_context/models.py` | Per-request channel metadata. | `ChannelContext`, `ChannelType` (SLACK/FEISHU/EMAIL/API/CLI) |
+| `hermes_agent/handlers/emoji_annotation_handler.py` | Prepend sentiment emoji by `message["category"]`. | `EmojiAnnotationHandler`, `DEFAULT_EMOJI_MAP` |
+| `hermes_agent/prompts/` | LLM prompt builders. | `dag_attribution.build_attribution_prompt`, `verifier_summary.build_prompt/parse_response`, `skill_recommendation.md.j2` |
+| `hermes_agent/self_improvement/` | Skill feedback→score→promote→drift→recommend loop (Plans 004-A…D) on Neon. | `feedback_capture` (Slack reactions→`skill_feedback`), `skill_scorer`, `promotion_proposer` (POST `{HERMES_SKILLS_SERVICE_URL}/v1/skills/promote`), `drift_detector`, `recommender` |
+| `gateway/platforms/slack.py` | The Slack agent (extends upstream `SlackAdapter`): `/work`, `/wiki`, reaction feedback. | slack-bolt Socket Mode; `os.getenv("SLACK_BOT_TOKEN"/"SLACK_APP_TOKEN")` |
+| `gateway/work_surface.py` | Pure `/work` preset menu + Block Kit + view parsing → `plan_lifecycle` sensor. | `WorkValidationError`, `PRESET_ACTION_PREFIX` |
+| `gateway/plan_lifecycle_presets.json` | Vendored `/work` preset library (id/title/goal/operator/repos/budget_usd/…). | — |
+| `gateway/wiki_surface.py` | Pure Atlas EntityPage → Slack Block Kit with `[cite:*]` receipts. | `UncitedSentenceError` (anti-Goodhart) |
+| `gateway/atlas_wiki_client.py` | Atlas wiki HTTP client + name→IRI resolver; fail-soft `{degraded:True}`. | `resolve_entity_iri`; env `ATLAS_BASE_URL`, `ATLAS_BEARER_TOKEN`, `ATLAS_ORG` |
+| `gateway/health_server.py` + `gateway/health.py` | Standalone aiohttp `:8080` — `GET /health` (Neon+S3 dep check), `/healthz` liveness. | `run_server()`; `python -m gateway.health_server --port 8080` |
+| `gateway/forge_server.py` | Forge routes on the `:8080` server: `/forge/candidates|draft|score|promote`. | bearer `HERMES_FORGE_BEARER_TOKEN`; `FORGE_SCORE_BAR` |
+| `gateway/clarify_relay.py` | Bidirectional clarify relay: `POST /clarify/ask` (:8080) → Slack thread → orchestrator sensor. | env `HERMES_CLARIFY_BEARER`, `ORCHESTRATOR_SENSOR_URL`, `LINEAR_WEBHOOK_SECRET` |
+| `agent/credential_resolver.py` | Resolve `users/{id}/credentials/{server}.ref` → live secret, in-memory only. | `CredentialResolver` (keychain/env/secrets-manager) |
+| `agent/mcp_gateway.py` | Session-scoped credential-injection auth over the MCP pool. | `MCPGateway`, `MCPAccessDenied` |
+| `agent/session_runtime.py` | Per-session ephemeral sandbox; promotes outputs→artifacts on close. | `SessionRuntime` |
+| `agent/skill_bundles.py` | `~/.hermes/skill-bundles/*.yaml` aliases loading N skills under one `/<bundle>`. | — |
+| `hermes_storage/s3_skills.py` | S3 skills-service storage layer (active only when `HERMES_MODE=saas`). | `S3SkillSource`; bucket `S3_SKILLS_BUCKET` (`hermes-saas-skills`), prefix `hermes-skills/{tenant}/` |
+| `tools/skill_locks.py` | Distributed skill write-locks in DynamoDB. | table `HERMES_SKILL_LOCKS_TABLE` (`hermes-skill-locks`) |
+| `cron/daily_brief.py` | Weekday 07:30 `/daily` Slack DM (Phase 026-D). | `run_daily_brief`; `python -m cron.daily_brief`; env `SLACK_DAILY_DM_CHANNEL` |
+| `cron/follow_up_sweep.py` | Monday 09:00 Linear `follow-up:*` >30d Slack DM (Phase 028-B). | `run_sweep`; `python -m cron.follow_up_sweep`; env `LINEAR_API_KEY`, `SLACK_FOLLOW_UP_CHANNEL` |
+| `cron/run_record.py` | Canonical orchestrator RunRecord JSON (shared `run_id` join key). | `RunRecord`, `new_run_id()`; env `HERMES_RUN_RECORD_PATH` |
+| `hermes_cli/web_server.py` | FastAPI dashboard `app` (69 routes under `/api/*`); **not** the deployed container. | `hermes dashboard` (`--port`, default http://127.0.0.1:9119; the module docstring's `... main web` is stale) |
+| `infra/terraform/` | Deploy: `hermes-fargate/` (ECS task def), `s3-skills-bucket/`, `dynamodb-skill-locks/`. | see Deploy below |
+
+### Slack tokens & secrets (do NOT put them in env files)
+
+`slack.py` reads `os.getenv("SLACK_BOT_TOKEN")` (`xoxb-`) / `os.getenv("SLACK_APP_TOKEN")`
+(`xapp-`). In production those, plus `NEON_DATABASE_URL` and the Portkey key, are
+injected into the ECS task **from AWS Secrets Manager via `valueFrom`** (see
+`infra/terraform/hermes-fargate/main.tf`, `data.aws_secretsmanager_secret.slack_bot_token`).
+Chain: Secrets Manager → ECS `valueFrom` → container env → `os.getenv`. Never commit
+tokens; never hardcode them; local dev reads them from an untracked `.env`.
+
+### Deploy topology (fork)
+
+- **`infra/terraform/hermes-fargate/main.tf`** — stateless ECS Fargate task def (no EFS, no whisper sidecar); sets `HERMES_MODE=saas`, `HERMES_HOME=/tmp/hermes-runtime`, `S3_SKILLS_BUCKET`, `HERMES_SKILL_LOCKS_TABLE`; healthcheck `curl http://localhost:8080/health`; `desiredCount=1`; secrets via `valueFrom`.
+- **`infra/terraform/s3-skills-bucket/main.tf`** — `hermes-saas-skills` bucket (block-public, SSE-S3, versioned).
+- **`infra/terraform/dynamodb-skill-locks/main.tf`** — `hermes-skill-locks` table (PK `skill_key`, TTL, PAY_PER_REQUEST).
+- **`Dockerfile.saas`** → `docker/entrypoint.saas.sh`: seeds `/tmp/hermes-runtime`, copies `cli-config.saas.yaml`, starts `python -m gateway.health_server` in the background, then `exec hermes "$@" -v` (the `-v` fixes the "5-day silent zombie" logging bug, Plan 009-E). Local mirror: `docker-compose.saas.yml`.
+- **`cli-config.saas.yaml`** — cloud-canonical config baked into the image: `model.provider: bedrock` (auth via task IAM role), `kanban.dispatch_in_gateway: false` (Fargate OOM fix).
+
+### Fork env vars (names only — see `.env.example` for the full set)
+
+- **Atlas:** `ATLAS_BASE_URL`, `ATLAS_BEARER_TOKEN`, `ATLAS_ORG` (unset ⇒ `/wiki` degrades).
+- **Skills-service / SaaS storage:** `HERMES_SKILLS_SERVICE_URL`, `S3_SKILLS_BUCKET`, `HERMES_SKILL_LOCKS_TABLE`, `HERMES_MODE=saas`, `NEON_DATABASE_URL`.
+- **Slack channels/gating:** `SLACK_DAILY_DM_CHANNEL`/`SLACK_HOME_CHANNEL`, `SLACK_FOLLOW_UP_CHANNEL`, `HERMES_BLAKE_SLACK_USER_ID`.
+- **Bearers / relay / ports:** `HERMES_FORGE_BEARER_TOKEN`, `FORGE_SCORE_BAR`, `HERMES_CLARIFY_BEARER`, `HERMES_CLARIFY_DEFAULT_CHANNEL`, `ORCHESTRATOR_SENSOR_URL`, `LINEAR_WEBHOOK_SECRET`, `HEALTH_PORT` (default 8080; forge + clarify share it), `HERMES_RUN_RECORD_PATH`, `HERMES_TIMEZONE`.
+- **Self-improvement tuning (Plan 004):** `HERMES_DRIFT_*`, `HERMES_PROMOTION_*`/`HERMES_DEMOTION_*`, `HERMES_RECOMMENDER_*`.
+- **AWS / LLM (SaaS):** `AWS_DEFAULT_REGION` (+ boto3 creds via task role), `PORTKEY_API_KEY`.
+
+### Fork docs
+
+- `docs/env-vars.md` — upstream `HERMES_*` operator/path vars (Plan 002-D); does **not** yet cover the fork vars above (`.env.example` is the fuller reference).
+- `docs/ops/follow-up-sweep.md` — runbook for the 028-B cron (cadence, env, `hermes cron add`, silent-failure playbook).
+- `plans/003-skills-service/` — design of the external hermes-skills-service integration.
+
+---
+
 ## Development Environment
 
 ```bash
@@ -30,7 +123,9 @@ hermes-agent/
 ├── hermes_logging.py     # setup_logging() — agent.log / errors.log / gateway.log (profile-aware)
 ├── batch_runner.py       # Parallel batch processing
 ├── agent/                # Agent internals (provider adapters, memory, caching, compression, etc.)
-├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
+├── hermes_agent/         # FORK layer — self-improvement loop + channel context (NOT upstream `agent/`)
+├── hermes_storage/       # FORK — S3 skills-service storage (s3_skills.py)
+├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine, web_server.py
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
@@ -56,8 +151,9 @@ hermes-agent/
 ├── tui_gateway/          # Python JSON-RPC backend for the TUI
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── scripts/              # run_tests.sh, release.py, auxiliary scripts
-├── website/              # Docusaurus docs site
+├── scripts/              # run_tests.sh, release.py, build_skills_index.py, hermes-gateway
+├── infra/terraform/      # FORK — ECS Fargate deploy, S3 skills bucket, DynamoDB skill locks
+├── website/              # Docusaurus docs site (UPSTREAM — not the deployed surface)
 └── tests/                # Pytest suite (~17k tests across ~900 files as of May 2026)
 ```
 
@@ -1054,6 +1150,20 @@ Worker count above 4 will surface test-ordering flakes that CI never sees.
 
 Always run the full suite before pushing changes.
 
+### Lint & typecheck (green before commit)
+
+CI runs both, so run them before pushing (dev deps pin `ruff==0.15.10`, `ty==0.0.21`):
+
+```bash
+ruff check .   # blocking; preview mode, only PLW1514 (unspecified-encoding) selected
+ty check       # Astral type checker (config under [tool.ty.*] in pyproject.toml)
+```
+
+`ruff format` is NOT wired as a gate — do not reformat the tree. Only `ruff check .`
+(the explicit PLW1514 rule) blocks; the `ruff + ty diff` job is advisory. There is
+no `tsc`/npm typecheck for the Python surface — the root `package.json` only carries
+the `agent-browser` dep for `ui-tui/`.
+
 ### Don't write change-detector tests
 
 A test is a **change-detector** if it fails whenever data that is **expected
@@ -1102,3 +1212,5 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+<!-- agent-ready:baseline d08d5aefc6752474b25e3ba68c39b91d4dd03571 2026-07-03 -->

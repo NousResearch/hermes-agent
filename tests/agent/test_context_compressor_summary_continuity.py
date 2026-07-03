@@ -5,12 +5,12 @@ from unittest.mock import MagicMock, patch
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
-def _compressor() -> ContextCompressor:
+def _compressor(protect_first_n: int = 1) -> ContextCompressor:
     with patch("agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
-            protect_first_n=1,
+            protect_first_n=protect_first_n,
             protect_last_n=1,
             quiet_mode=True,
         )
@@ -31,6 +31,21 @@ def _messages_with_handoff(summary_body: str):
         {"role": "user", "content": "new user turn after resume"},
         {"role": "assistant", "content": "new assistant work after resume"},
         {"role": "user", "content": "more new work after resume"},
+        {"role": "assistant", "content": "latest tail response"},
+        {"role": "user", "content": "final active request stays in protected tail"},
+    ]
+
+
+def _messages_with_default_handoff(summary_body: str):
+    return [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "original task before first compaction"},
+        {"role": "assistant", "content": "original answer before first compaction"},
+        {"role": "user", "content": "original follow-up before first compaction"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{summary_body}"},
+        {"role": "user", "content": "new user turn after restart"},
+        {"role": "assistant", "content": "new assistant work after restart"},
+        {"role": "user", "content": "more new work after restart"},
         {"role": "assistant", "content": "latest tail response"},
         {"role": "user", "content": "final active request stays in protected tail"},
     ]
@@ -92,16 +107,43 @@ def test_resume_handoff_in_protected_head_is_not_preserved_as_fossil():
     compressor = _compressor()
     old_summary = "RESTART-FOSSIL-SUMMARY durable facts from before restart"
 
-    with patch.object(compressor, "_generate_summary", return_value="fresh summary"):
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
         result = compressor.compress(_messages_with_handoff(old_summary))
 
-    assert compressor._previous_summary == old_summary
+    assert compressor._previous_summary == "fresh summary"
     summary_messages = [
         msg for msg in result
         if ContextCompressor._has_compressed_summary_metadata(msg)
         or ContextCompressor._is_context_summary_content(msg.get("content"))
     ]
     assert len(summary_messages) == 1
+    assert all(
+        old_summary not in str(msg.get("content", ""))
+        for msg in result
+    )
+
+
+def test_resume_handoff_after_default_protected_head_decays_initial_turns():
+    """Default protect_first_n=3 should not fossilize old protected head turns."""
+    compressor = _compressor(protect_first_n=3)
+    old_summary = "DEFAULT-RESTART-SUMMARY durable facts from before restart"
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+        result = compressor.compress(_messages_with_default_handoff(old_summary))
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert prompt.count(old_summary) == 1
+    assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
+    assert compressor._previous_summary == "fresh summary"
+    assert all(
+        "original task before first compaction" not in str(msg.get("content", ""))
+        for msg in result
+    )
+    assert all(
+        "original answer before first compaction" not in str(msg.get("content", ""))
+        for msg in result
+    )
     assert all(
         old_summary not in str(msg.get("content", ""))
         for msg in result

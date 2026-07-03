@@ -20076,12 +20076,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     #   - WSL2/container runtime sending unexpected signals
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
+    #
+    # On macOS/launchd: KeepAlive=true restarts on ANY exit code, so exit 0
+    # is cleaner. Only use exit 1 when running under actual systemd
+    # (detected by INVOCATION_ID env var, not by ppid==1 which is also true
+    # under launchd).
     if _signal_initiated_shutdown and not runner._restart_requested:
+        _is_under_systemd = bool(os.environ.get("INVOCATION_ID"))
+        if _is_under_systemd:
+            logger.info(
+                "Exiting with code 1 (signal-initiated shutdown without restart "
+                "request) so systemd Restart=on-failure can revive the gateway."
+            )
+            return False  # → sys.exit(1) in the caller
         logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "Signal-initiated shutdown without restart request — "
+            "exiting cleanly (non-systemd service manager)."
         )
-        return False  # → sys.exit(1) in the caller
+        return True
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.

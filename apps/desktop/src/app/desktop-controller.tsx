@@ -17,8 +17,8 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { isMessagingSource } from '../lib/session-source'
 import { storedSessionIdForNotification } from '../lib/session-ids'
+import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
 import {
@@ -200,6 +200,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -946,9 +947,16 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshMessagingSessions])
 
+  // Only the open messaging transcript needs a poll — local chats are already
+  // live over the websocket, so arming a timer for them would just no-op every
+  // tick. Gate on the active session actually being a messaging source.
+  const activeIsMessaging =
+    !!selectedStoredSessionId &&
+    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
   // Keep the currently-viewed messaging transcript live.
   useEffect(() => {
-    if (gatewayState !== 'open' || !selectedStoredSessionId) {
+    if (gatewayState !== 'open' || !activeIsMessaging) {
       return
     }
 
@@ -966,7 +974,7 @@ export function DesktopController() {
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', tick)
     }
-  }, [gatewayState, refreshActiveMessagingTranscript, selectedStoredSessionId])
+  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {

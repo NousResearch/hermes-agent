@@ -687,8 +687,10 @@ def run_conversation(
 
         # Track tool-calling iterations for skill nudge.
         # Counter resets whenever skill_manage is actually used.
+        # Sub-agents are excluded — see turn_finalizer.py for rationale.
         if (agent._skill_nudge_interval > 0
-                and "skill_manage" in agent.valid_tool_names):
+                and "skill_manage" in agent.valid_tool_names
+                and getattr(agent, "_delegate_depth", 0) == 0):
             agent._iters_since_skill += 1
         
         # ── Pre-API-call /steer drain ──────────────────────────────────

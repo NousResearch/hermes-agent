@@ -452,10 +452,17 @@ def finalize_turn(
     agent._stream_callback = None
 
     # Check skill trigger NOW — based on how many tool iterations THIS turn used.
+    # Sub-agents (delegate_task children) must never trigger the skill review
+    # nudge — the foreground parent session handles skill curation.  Without
+    # this gate every long-running sub-agent (~30+ tool iterations) receives
+    # the ~6k-char "Review the conversation above and update the skill library"
+    # injection, hijacking its final turns with irrelevant skill_manage calls
+    # and polluting the skill library with unreviewed auto-generated content.
     _should_review_skills = False
     if (agent._skill_nudge_interval > 0
             and agent._iters_since_skill >= agent._skill_nudge_interval
-            and "skill_manage" in agent.valid_tool_names):
+            and "skill_manage" in agent.valid_tool_names
+            and getattr(agent, "_delegate_depth", 0) == 0):
         _should_review_skills = True
         agent._iters_since_skill = 0
 

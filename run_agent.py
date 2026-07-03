@@ -4864,17 +4864,37 @@ class AIAgent:
 
         Some providers (e.g. Xiaomi MiMo) support multimodal user messages
         but reject list-type tool message content with 400 errors.  This
-        checks the provider profile's ``supports_vision_tool_messages`` field.
+        checks the provider profile's ``supports_vision_tool_messages`` field,
+        then falls back to a model-family check for known problematic models.
         """
+        provider = (getattr(self, "provider", "") or "").strip()
+
         try:
             from providers import get_provider_profile
-            provider = (getattr(self, "provider", "") or "").strip()
             profile = get_provider_profile(provider)
             if profile is not None:
                 return getattr(profile, "supports_vision_tool_messages", True)
         except Exception:
             pass
+
         return True  # default: assume compatible
+
+    def _model_supports_vision_tool_messages(self) -> bool:
+        """Return False for model families that reject list-type tool content.
+
+        Xiaomi MiMo models with native vision (mimo-v2.5, mimo-v2-omni) reject
+        list-type tool content in tool-role messages regardless of which provider
+        fronts them.  Checked separately from the provider profile so that proxies
+        (e.g. opencode-go) that expose MiMo models alongside other models don't
+        need a blanket profile override.
+
+        Note: mimo-v2.5-pro is text-only (delegates vision to a separate model)
+        and is not affected by this limitation.
+        """
+        model = (getattr(self, "model", "") or "").strip().lower()
+        if model.startswith("mimo"):
+            return False
+        return True
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
@@ -5019,11 +5039,11 @@ class AIAgent:
             # tool content (e.g. Xiaomi MiMo's 400 "text is not set"), or if
             # we've already learned this lesson in-session, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
-            if not self._provider_supports_vision_tool_messages():
+            if not self._provider_supports_vision_tool_messages() or not self._model_supports_vision_tool_messages():
                 logger.debug(
-                    "Tool %s: provider %s does not accept list-type tool "
+                    "Tool %s: provider %s / model %s does not accept list-type tool "
                     "content — sending text summary",
-                    tool_name, getattr(self, "provider", ""),
+                    tool_name, getattr(self, "provider", ""), getattr(self, "model", ""),
                 )
                 return _multimodal_text_summary(result)
             key = (

@@ -40,6 +40,7 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent._content_has_image_parts = _real_content_has_image_parts
     agent._model_supports_vision = lambda: AIAgent._model_supports_vision(agent)
     agent._provider_supports_vision_tool_messages = lambda: AIAgent._provider_supports_vision_tool_messages(agent)
+    agent._model_supports_vision_tool_messages = lambda: AIAgent._model_supports_vision_tool_messages(agent)
     agent._tool_result_content_for_active_model = (
         lambda name, result: AIAgent._tool_result_content_for_active_model(agent, name, result)
     )
@@ -86,6 +87,26 @@ class TestProviderSupportsVisionToolMessages:
     def test_empty_provider_defaults_true(self):
         agent = _make_agent("", "")
         assert agent._provider_supports_vision_tool_messages() is True
+
+    def test_opencode_go_mimo_returns_false(self):
+        """opencode-go + mimo-v2.5: vision model, rejects list-type tool content."""
+        agent = _make_agent("opencode-go", "mimo-v2.5")
+        assert agent._model_supports_vision_tool_messages() is False
+
+    def test_opencode_go_mimo_omni_returns_false(self):
+        """opencode-go + mimo-v2-omni: vision model, rejects list-type tool content."""
+        agent = _make_agent("opencode-go", "mimo-v2-omni")
+        assert agent._model_supports_vision_tool_messages() is False
+
+    def test_opencode_go_deepseek_returns_true(self):
+        """Non-Mimo model through opencode-go: not affected."""
+        agent = _make_agent("opencode-go", "deepseek-v4-flash")
+        assert agent._model_supports_vision_tool_messages() is True
+
+    def test_unknown_provider_mimo_returns_false(self):
+        """Unknown provider + mimo vision model: model-family check still works."""
+        agent = _make_agent("some-proxy", "mimo-v2.5")
+        assert agent._model_supports_vision_tool_messages() is False
 
 
 # ---------------------------------------------------------------------------

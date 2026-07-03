@@ -9222,10 +9222,28 @@ def run_workspace_git_merge(
     }
 
 
+def _github_cli_executable() -> str:
+    configured = os.environ.get("HERMES_PROFILE_ROUTER_GH_BIN")
+    candidates = [configured] if configured else []
+    candidates.extend(("gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"))
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if "/" in candidate:
+            if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+                return candidate
+            continue
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            path = Path(directory) / candidate
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+    raise ProfileRouterError("gh_unavailable", "GitHub CLI executable is not available")
+
+
 def _run_workspace_gh(workspace: WorkspaceMetadata, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            ["gh", *args],
+            [_github_cli_executable(), *args],
             cwd=workspace.root,
             env=_git_credential_env(),
             text=True,

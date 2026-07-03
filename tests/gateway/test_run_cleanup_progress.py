@@ -131,15 +131,34 @@ class FailingAgent:
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.25)
-        # Empty final_response + failed=True is the shape the gateway
-        # actually returns on provider errors (see gateway/run.py where
-        # failed keys are only propagated when final_response is empty).
+        # Empty final_response + failed=True exercises the gateway's failed
+        # cleanup path without sending user-visible error text.
         return {
             "final_response": "",
             "messages": [],
             "api_calls": 1,
             "failed": True,
             "error": "simulated provider failure",
+        }
+
+
+class NonEmptyFailingAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.25)
+        return {
+            "final_response": "API call failed after 3 retries: HTTP 401 Unauthorized",
+            "messages": [{"role": "user", "content": message}],
+            "api_calls": 1,
+            "completed": False,
+            "failed": True,
+            "error": "HTTP 401 Unauthorized",
         }
 
 
@@ -297,6 +316,41 @@ async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
     assert result.get("failed") is True
     # Whatever callback is registered should not trigger any deletion —
     # the cleanup callback is skipped on failed runs.
+    cb = adapter.pop_post_delivery_callback(session_key)
+    if cb is not None:
+        await _fire_post_delivery_cb(cb)
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+    assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_non_empty_agent_failure_keeps_failed_flag_and_skips_cleanup(
+    monkeypatch, tmp_path
+):
+    """Provider failures with user-facing text remain failed runs."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, NonEmptyFailingAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"].startswith("API call failed")
+    assert result.get("failed") is True
+    assert result.get("completed") is False
+    assert "HTTP 401" in result.get("error", "")
+
     cb = adapter.pop_post_delivery_callback(session_key)
     if cb is not None:
         await _fire_post_delivery_cb(cb)

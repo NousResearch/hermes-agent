@@ -17215,6 +17215,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
+          - "failed": bool (retryable/failed turn, not delivered as model output)
+          - "error": str (machine-readable failure detail when available)
+          - "agent_persisted": bool (whether the runtime already wrote transcript rows)
         
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
@@ -18224,7 +18227,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
-                error = f"Provider authentication failed: {exc}"
+                error = f"Provider authentication failed: {str(exc)[:300]}"
                 return {
                     "final_response": f"⚠️ {error}",
                     "messages": [],
@@ -19370,8 +19373,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
+                "failed": result_holder[0].get("failed", False) if result_holder[0] else False,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
+                "compression_exhausted": result_holder[0].get("compression_exhausted", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
                 "tools": tools_holder[0] or [],

@@ -588,6 +588,17 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
         return None
 
+    if event == "pre_verify":
+        # "continue" (Hermes) / "block" (Claude-Code Stop: block the stop) both
+        # mean keep going; the message/reason is the follow-up for the model. A
+        # continue with no message is a no-op — let the turn finish.
+        action = str(data.get("action") or data.get("decision") or "").strip().lower()
+        if action in {"continue", "block"}:
+            message = data.get("message") or data.get("reason")
+            if isinstance(message, str) and message.strip():
+                return {"action": "continue", "message": message.strip()}
+        return None
+
     context = data.get("context")
     if isinstance(context, str) and context.strip():
         return {"context": context}

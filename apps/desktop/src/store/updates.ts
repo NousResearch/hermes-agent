@@ -185,6 +185,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
       }
     },
     durationMs: 0,
+    icon: 'gift',
     id: UPDATE_TOAST_ID,
     kind: 'info',
     message: translateNow('notifications.updateReadyMessage', behind),

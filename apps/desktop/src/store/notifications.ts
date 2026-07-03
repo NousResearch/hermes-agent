@@ -12,6 +12,8 @@ export interface NotificationAction {
 export interface AppNotification {
   id: string
   kind: NotificationKind
+  /** When set, renders this codicon instead of the default kind icon. */
+  icon?: string
   title?: string
   message: string
   detail?: string
@@ -23,6 +25,7 @@ export interface AppNotification {
 interface NotificationInput {
   id?: string
   kind?: NotificationKind
+  icon?: string
   title?: string
   message: string
   detail?: string
@@ -107,6 +110,7 @@ export function notify(input: NotificationInput): string {
   const notification: AppNotification = {
     id,
     kind,
+    icon: input.icon,
     title: input.title,
     message: input.message,
     detail: input.detail,

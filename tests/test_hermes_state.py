@@ -939,6 +939,80 @@ class TestMessageStorage:
         assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
         assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
 
+    def _archived_count(self, db, session_id):
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT COUNT(*) AS n FROM messages"
+                " WHERE session_id = ? AND active = 0",
+                (session_id,),
+            ).fetchone()
+        return row["n"]
+
+    def test_replace_messages_default_preserves_archived_rows(self, db):
+        """A transcript rewrite (/retry, /undo, /compress) on a session that
+        was in-place-compacted must NOT destroy the soft-archived
+        pre-compaction turns archive_and_compact() keeps for #38763."""
+        db.create_session(session_id="s_arc", source="cli")
+        db.append_message("s_arc", role="user", content="old turn 1")
+        db.append_message("s_arc", role="assistant", content="old answer 1")
+        db.archive_and_compact(
+            "s_arc", [{"role": "user", "content": "summary of old turns"}]
+        )
+        assert self._archived_count(db, "s_arc") == 2
+
+        db.replace_messages(
+            "s_arc",
+            [
+                {"role": "user", "content": "rewritten turn"},
+                {"role": "assistant", "content": "rewritten answer"},
+            ],
+        )
+
+        # Archived rows survived; the live set is exactly the rewrite.
+        assert self._archived_count(db, "s_arc") == 2
+        live = db.get_messages("s_arc")
+        assert [m["content"] for m in live] == [
+            "rewritten turn",
+            "rewritten answer",
+        ]
+        # Counters track the live set, matching archive_and_compact.
+        session = db.get_session("s_arc")
+        assert session["message_count"] == 2
+
+    def test_replace_messages_explicit_false_still_wipes(self, db):
+        """active_only=False keeps the old destructive semantics for callers
+        that really mean a full-history wipe."""
+        db.create_session(session_id="s_wipe", source="cli")
+        db.append_message("s_wipe", role="user", content="old turn")
+        db.archive_and_compact(
+            "s_wipe", [{"role": "user", "content": "summary"}]
+        )
+        assert self._archived_count(db, "s_wipe") == 1
+
+        db.replace_messages(
+            "s_wipe",
+            [{"role": "user", "content": "fresh"}],
+            active_only=False,
+        )
+
+        assert self._archived_count(db, "s_wipe") == 0
+        assert [m["content"] for m in db.get_messages("s_wipe")] == ["fresh"]
+
+    def test_replace_messages_no_archive_matches_old_behaviour(self, db):
+        """Sessions without soft-archived rows (the common case, incl. the
+        api_server fork path) behave byte-identically to the old default."""
+        db.create_session(session_id="s_plain", source="cli")
+        db.append_message("s_plain", role="user", content="a")
+        db.append_message("s_plain", role="assistant", content="b")
+
+        db.replace_messages(
+            "s_plain", [{"role": "user", "content": "only"}]
+        )
+
+        assert self._archived_count(db, "s_plain") == 0
+        assert [m["content"] for m in db.get_messages("s_plain")] == ["only"]
+        assert db.get_session("s_plain")["message_count"] == 1
+
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")

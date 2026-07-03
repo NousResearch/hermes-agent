@@ -3285,7 +3285,7 @@ class SessionDB:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-        active_only: bool = False,
+        active_only: Optional[bool] = None,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -3293,24 +3293,35 @@ class SessionDB:
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
 
-        DESTRUCTIVE by default: every row for the session is DELETEd (and drops
-        out of the FTS index). For compaction that must preserve the
-        pre-compaction transcript under the same id, use
-        :meth:`archive_and_compact` instead.
+        ``active_only=None`` (the default) preserves soft-archived rows
+        (``active = 0`` — e.g. the ``compacted = 1`` turns that
+        :meth:`archive_and_compact` keeps on disk for #38763 durability, or
+        rewind/undo rows) whenever the session has any: the rewrite then
+        replaces ONLY the live (``active = 1``) rows. A rewrite on a session
+        that was in-place-compacted would otherwise silently destroy the
+        archived pre-compaction transcript. The probe runs inside the same
+        write transaction as the delete, so the decision cannot race a
+        concurrent archive.
 
-        Pass ``active_only=True`` to replace ONLY the live (``active = 1``) rows,
-        leaving soft-archived rows (``active = 0`` — e.g. the ``compacted = 1``
-        turns that :meth:`archive_and_compact` keeps on disk for #38763
-        durability, or rewind/undo rows) untouched. Callers that share a session
-        id with an agent already running in-place compaction must use this so a
-        full-history rewrite doesn't wipe the rows the agent deliberately
-        archived. ``message_count``/``tool_call_count`` then track the live set,
+        Pass ``active_only=True`` to force live-rows-only semantics, or
+        ``active_only=False`` to force a full DESTRUCTIVE rewrite: every row
+        for the session is DELETEd (and drops out of the FTS index). For
+        compaction that must preserve the pre-compaction transcript under the
+        same id, use :meth:`archive_and_compact` instead.
+        ``message_count``/``tool_call_count`` track the live set either way,
         matching :meth:`archive_and_compact`.
         """
 
-        active_clause = " AND active = 1" if active_only else ""
-
         def _do(conn):
+            preserve = active_only
+            if preserve is None:
+                row = conn.execute(
+                    "SELECT 1 FROM messages WHERE session_id = ? AND active = 0"
+                    " LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                preserve = row is not None
+            active_clause = " AND active = 1" if preserve else ""
             conn.execute(
                 f"DELETE FROM messages WHERE session_id = ?{active_clause}",
                 (session_id,),

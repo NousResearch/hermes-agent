@@ -2590,6 +2590,12 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Only user-configured headers can carry secrets (API keys, ${VAR}
+        # tokens). Snapshot their keys before seeding the protocol header
+        # below so the redirect scrubber targets exactly those — the seeded
+        # header is not a secret and must not, by itself, force the
+        # scrubbing machinery (client factories) onto default configs.
+        _secret_header_keys = frozenset(headers.keys())
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
@@ -2654,22 +2660,24 @@ class MCPServerTask:
                 # behind OAuth 2.1 PKCE work. Previously built but never
                 # forwarded — SSE OAuth would silently fail with 401s.
                 _sse_kwargs["auth"] = _oauth_auth
-            if headers or client_cert is not None or ssl_verify is not True:
+            if _secret_header_keys or client_cert is not None or ssl_verify is not True:
                 # SSE transport doesn't expose verify/cert (or a redirect hook)
                 # as kwargs, so route them through an httpx_client_factory that
                 # wraps the SDK's defaults (follow_redirects=True) and adds our
                 # TLS settings plus the cross-origin secret-header scrubber. The
                 # factory must be installed whenever secret headers are present
                 # too — otherwise the default-TLS SSE path has no redirect
-                # scrubbing and custom auth headers leak cross-origin. The SDK
-                # calls the factory with (headers, auth, timeout); we forward
-                # all of those and layer verify/cert/event_hooks on top.
+                # scrubbing and custom auth headers leak cross-origin. Gated on
+                # the user-configured header keys (not the seeded protocol
+                # header) so fully-default configs keep the SDK's own client.
+                # The SDK calls the factory with (headers, auth, timeout); we
+                # forward all of those and layer verify/cert/event_hooks on top.
                 import httpx as _httpx_mod
 
                 _cert_for_factory = client_cert
                 _verify_for_factory = ssl_verify
                 _sse_scrubber = _make_redirect_secret_scrubber(
-                    url, (headers or {}).keys()
+                    url, _secret_header_keys
                 )
 
                 def _mcp_http_client_factory(
@@ -2735,7 +2743,7 @@ class MCPServerTask:
                 "verify": ssl_verify,
                 "event_hooks": {
                     "response": [
-                        _make_redirect_secret_scrubber(url, (headers or {}).keys())
+                        _make_redirect_secret_scrubber(url, _secret_header_keys)
                     ]
                 },
             }
@@ -2786,16 +2794,22 @@ class MCPServerTask:
             # robustness — without it the deprecated client follows redirects
             # with the configured secret headers attached and no scrubbing).
             # When a factory is supplied the SDK builds the client itself, so
-            # verify/cert move into the factory.
+            # verify/cert move into the factory. Gated like the SSE path: a
+            # fully-default config (no secret headers, default TLS) keeps the
+            # SDK's own client.
             try:
                 import inspect as _inspect
                 import httpx as _httpx_dep
 
-                if "httpx_client_factory" in _inspect.signature(
+                if (
+                    _secret_header_keys
+                    or client_cert is not None
+                    or ssl_verify is not True
+                ) and "httpx_client_factory" in _inspect.signature(
                     streamablehttp_client
                 ).parameters:
                     _dep_scrubber = _make_redirect_secret_scrubber(
-                        url, (headers or {}).keys()
+                        url, _secret_header_keys
                     )
                     _dep_cert = client_cert
                     _dep_verify = ssl_verify

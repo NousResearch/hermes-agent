@@ -425,6 +425,66 @@ class TestSSEClientCert:
         asyncio.run(drive())
         assert "httpx_client_factory" not in patch_sse_client
 
+    def test_factory_injected_when_secret_headers_set(self, patch_sse_client):
+        """With user-configured headers (potential secrets) and default TLS, a
+        factory IS injected so the redirect scrubber can strip them on a
+        cross-origin redirect. The auto-seeded mcp-protocol-version header
+        alone must NOT trigger this (covered by test_no_factory_when_defaults),
+        and the scrubber must only strip the configured keys."""
+        import httpx
+
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("sse-test")
+        server._auth_type = ""
+        server._sampling = None
+
+        async def drive():
+            with patch.object(MCPServerTask, "_wait_for_lifecycle_event",
+                              new=AsyncMock(return_value="shutdown")), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
+                try:
+                    await asyncio.wait_for(
+                        server._run_http({
+                            "url": "https://example.com/mcp/sse",
+                            "transport": "sse",
+                            "headers": {"X-API-Key": "sekrit"},
+                        }),
+                        timeout=2.0,
+                    )
+                except (asyncio.TimeoutError, StopAsyncIteration, Exception):
+                    pass
+
+        asyncio.run(drive())
+        factory = patch_sse_client.get("httpx_client_factory")
+        assert factory is not None, (
+            "expected httpx_client_factory when secret headers are configured"
+        )
+
+        # The factory's client must carry a response hook that scrubs the
+        # configured secret header on a cross-origin redirect but leaves the
+        # (non-secret) seeded protocol header alone.
+        client = factory(headers=None, timeout=None, auth=None)
+        hooks = client.event_hooks.get("response") or []
+        assert hooks, "expected a redirect-scrubbing response hook"
+
+        next_request = httpx.Request(
+            "GET", "https://evil.example.net/landing",
+            headers={
+                "X-API-Key": "sekrit",
+                "mcp-protocol-version": "2025-11-25",
+            },
+        )
+        redirect = httpx.Response(
+            302,
+            headers={"location": "https://evil.example.net/landing"},
+            request=httpx.Request("GET", "https://example.com/mcp/sse"),
+        )
+        redirect.next_request = next_request
+        asyncio.run(hooks[0](redirect))
+        assert "X-API-Key" not in next_request.headers
+        assert "mcp-protocol-version" in next_request.headers
+
     def test_factory_injected_when_cert_set(self, patch_sse_client, tmp_path):
         """With client_cert set, an httpx_client_factory is injected that
         applies the cert (and follow_redirects=True to match the SDK)."""

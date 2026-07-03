@@ -439,6 +439,51 @@ _MALFORMED_SCHEMA_MARKERS = (
     "database disk image is malformed",
 )
 
+# FTS5 shadow table suffixes created internally by the virtual table engine.
+# When a virtual table is removed from sqlite_master but these shadow tables
+# survive (e.g. interrupted sqlite_master surgery), subsequent
+# CREATE VIRTUAL TABLE fails with "shadow table … already exists".
+_FTS5_SHADOW_TABLE_SUFFIXES = (
+    "content",
+    "data",
+    "docsize",
+    "idx",
+    "config",
+)
+
+
+def _repair_orphan_fts_shadow_tables(
+    conn: sqlite3.Connection,
+    base_name: str,
+) -> bool:
+    """Drop orphan FTS5 shadow tables whose virtual table definition is missing.
+
+    Returns True if any orphan tables were found and dropped.
+    """
+    expected = {f"{base_name}_{s}" for s in _FTS5_SHADOW_TABLE_SUFFIXES}
+    if not expected:
+        return False
+    placeholders = ",".join("?" for _ in expected)
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        f"AND name IN ({placeholders})",
+        list(expected),
+    )
+    existing = {row[0] for row in cursor.fetchall()}
+    if not existing:
+        return False
+    # Virtual table still exists → shadows are legitimate.
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='virtual' AND name=?",
+        (base_name,),
+    ).fetchone()
+    if row:
+        return False
+    for tbl in sorted(existing):
+        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+    return True
+
+
 # Process-global guard so auto-repair is attempted at most once per DB path
 # per process (prevents repair loops and serialises concurrent web_server /
 # gateway opens against the same malformed file).
@@ -897,6 +942,7 @@ class SessionDB:
         self._fts_enabled = False
         self._trigram_available = False
         self._fts_unavailable_warned = False
+        self._fts_orphan_repair_needed = False
         self._conn = None
         try:
             if read_only:
@@ -1108,6 +1154,19 @@ class SessionDB:
         status = self._fts_table_probe(cursor, table_name)
         if status is None:
             return False
+
+        # Detect orphan FTS5 shadow tables before attempting CREATE.
+        # When a virtual table is removed from sqlite_master but its internal
+        # shadow tables survive (e.g. interrupted sqlite_master surgery),
+        # CREATE VIRTUAL TABLE fails with "shadow table … already exists".
+        # Detecting proactively avoids the exception path entirely.
+        if status is False:
+            conn = cursor.connection
+            if _repair_orphan_fts_shadow_tables(conn, table_name):
+                logger.warning(
+                    "Dropped orphan FTS5 shadow tables for %s", table_name
+                )
+                self._fts_orphan_repair_needed = True
         try:
             # Run even when the virtual table exists so any dropped or missing
             # triggers are recreated after a previous no-FTS5 runtime disabled
@@ -1115,6 +1174,20 @@ class SessionDB:
             cursor.executescript(ddl)
             return True
         except sqlite3.OperationalError as exc:
+            err_lower = str(exc).lower()
+            # Handle residual orphan shadow tables that the proactive check
+            # missed (e.g. partial cleanup or race with concurrent open).
+            if "shadow table" in err_lower and "already exists" in err_lower:
+                conn = cursor.connection
+                if _repair_orphan_fts_shadow_tables(conn, table_name):
+                    logger.warning(
+                        "Repaired orphan FTS5 shadow tables for %s "
+                        "on error recovery",
+                        table_name,
+                    )
+                    self._fts_orphan_repair_needed = True
+                    cursor.executescript(ddl)
+                    return True
             if not self._is_fts5_unavailable_error(exc):
                 raise
             # Only disable FTS entirely when the whole FTS5 module is missing.
@@ -1552,7 +1625,7 @@ class SessionDB:
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
                 self._trigram_available = trigram_enabled
-                if triggers_need_repair:
+                if triggers_need_repair or self._fts_orphan_repair_needed:
                     self._rebuild_fts_indexes(
                         cursor,
                         include_trigram=trigram_enabled,

@@ -15,6 +15,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   searchValue: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
+  /** Reach the underlying input (e.g. to focus it on page mount / hotkey). */
+  searchInputRef?: React.RefObject<HTMLInputElement | null>
 }
 
 export function PageSearchShell({
@@ -27,6 +29,7 @@ export function PageSearchShell({
   searchTrailingAction,
   searchValue,
   searchHidden = false,
+  searchInputRef,
   ...props
 }: PageSearchShellProps) {
   return (
@@ -58,6 +61,7 @@ export function PageSearchShell({
               <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>
                 <SearchField
                   containerClassName="max-w-[45vw]"
+                  inputRef={searchInputRef}
                   onChange={onSearchChange}
                   placeholder={searchPlaceholder}
                   trailingAction={searchTrailingAction}

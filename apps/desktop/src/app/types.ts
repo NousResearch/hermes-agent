@@ -129,9 +129,8 @@ export interface SidebarNavItem {
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
-  // 'new-session' starts a fresh draft; 'search' is handled inside the sidebar
-  // (toggles the session search field) and never reaches onNavigate.
-  action?: 'new-session' | 'search'
+  // 'new-session' starts a fresh draft (搜索 routes to its main-area page).
+  action?: 'new-session'
 }
 
 export interface ClientSessionState {

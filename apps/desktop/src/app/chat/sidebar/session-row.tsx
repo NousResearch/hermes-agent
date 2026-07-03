@@ -37,7 +37,7 @@ const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
   [60_000, 'ageMin']
 ]
 
-function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
+export function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
   for (const [ms, key] of AGE_TICKS) {

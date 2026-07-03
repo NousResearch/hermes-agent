@@ -16,12 +16,11 @@ import {
 } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
-import { SearchField } from '@/components/ui/search-field'
 import {
   Sidebar,
   SidebarContent,
@@ -33,11 +32,10 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
-import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
-import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
   $panesFlipped,
@@ -50,7 +48,6 @@ import {
   $sidebarSessionOrderIds,
   $sidebarSessionOrderManual,
   pinSession,
-  SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarPinsOpen,
   setSidebarProjectsOpen,
@@ -79,7 +76,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, CRON_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, CRON_ROUTE, SEARCH_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -108,7 +105,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     id: 'search',
     label: '',
     icon: props => <Codicon name="search" {...props} />,
-    action: 'search'
+    route: SEARCH_ROUTE
   },
   {
     id: 'cron',
@@ -226,32 +223,6 @@ function sameIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
-// FTS results cover sessions that aren't in the loaded page; synthesize a
-// minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: result.snippet?.trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: null,
-    tool_call_count: 0
-  }
-}
-
 function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
 
@@ -321,37 +292,8 @@ export function ChatSidebar({
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
-  const [searchQuery, setSearchQuery] = useState('')
-  // Codex-style search: the field stays hidden until the 搜索 nav row (or the
-  // focus-search hotkey) opens it; closing clears the query so the list snaps
-  // back to the normal sections.
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
-  const searchInputRef = useRef<HTMLInputElement>(null)
-  const trimmedQuery = searchQuery.trim()
-
-  const openSearch = useCallback(() => {
-    setSearchOpen(true)
-    // The field may not be mounted yet (it renders on searchOpen), so focus on
-    // the next frame, after React has committed it.
-    requestAnimationFrame(() => searchInputRef.current?.focus({ preventScroll: true }))
-  }, [])
-
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false)
-    setSearchQuery('')
-  }, [])
-
-  // Hotkey (session.focusSearch) → reveal + focus the field.
-  useEffect(() => {
-    const onFocus = () => openSearch()
-
-    window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
-
-    return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
-  }, [openSearch])
 
   // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
   // the shortcut visibly pings its affordance in the sidebar.
@@ -434,59 +376,6 @@ export function ChatSidebar({
   }, [pinnedSessionIds, sessionByAnyId])
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
-
-  // Full-text search across *all* sessions (not just the loaded page) so 699
-  // sessions stay findable. Debounced; loaded sessions are matched instantly
-  // client-side and merged ahead of the server hits.
-  useEffect(() => {
-    if (!trimmedQuery) {
-      setServerMatches([])
-
-      return
-    }
-
-    let cancelled = false
-
-    const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
-        .then(res => {
-          if (!cancelled) {
-            setServerMatches(res.results)
-          }
-        })
-        .catch(() => undefined)
-    }, 200)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(id)
-    }
-  }, [trimmedQuery])
-
-  const searchResults = useMemo(() => {
-    if (!trimmedQuery) {
-      return []
-    }
-
-    const out = new Map<string, SessionInfo>()
-
-    for (const s of sortedSessions) {
-      if (sessionMatchesSearch(s, trimmedQuery)) {
-        out.set(s.id, s)
-      }
-    }
-
-    for (const match of serverMatches) {
-      if (out.has(match.session_id)) {
-        continue
-      }
-
-      const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
-    }
-
-    return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
@@ -627,14 +516,6 @@ export function ChatSidebar({
 
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
 
-  // Sections gone (e.g. last session deleted) → the search field unmounts, so
-  // drop the open state instead of leaving the 搜索 row stuck "active".
-  useEffect(() => {
-    if (searchOpen && !showSessionSections) {
-      closeSearch()
-    }
-  }, [searchOpen, showSessionSections, closeSearch])
-
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.
   const reorderSessions = (ids: string[]) => {
@@ -679,7 +560,7 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'cron' && currentView === 'cron') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
-                  (item.id === 'search' && searchOpen)
+                  (item.id === 'search' && currentView === 'search')
 
                 const isNewSession = item.id === 'new-session'
 
@@ -702,18 +583,6 @@ export function ChatSidebar({
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}
                       onClick={() => {
-                        // 搜索 toggles the sidebar-local search field; it never
-                        // routes anywhere, so don't hand it to onNavigate.
-                        if (item.action === 'search') {
-                          if (searchOpen) {
-                            closeSearch()
-                          } else {
-                            openSearch()
-                          }
-
-                          return
-                        }
-
                         // A plain new session lands in whatever profile the live
                         // gateway is on (= the active switcher context). null →
                         // no swap. The switcher header is the single place to
@@ -748,55 +617,11 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {contentVisible && showSessionSections && searchOpen && (
-          <div
-            className="shrink-0 px-2 pb-1 pt-1"
-            onKeyDown={event => {
-              // Esc backs out of search entirely (clears + hides the field).
-              if (event.key === 'Escape') {
-                event.stopPropagation()
-                closeSearch()
-              }
-            }}
-          >
-            <SearchField
-              aria-label={s.searchAria}
-              inputRef={searchInputRef}
-              onChange={setSearchQuery}
-              placeholder={s.searchPlaceholder}
-              value={searchQuery}
-            />
-          </div>
-        )}
-
         {contentVisible && showSessionSections && (
           <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
-            {trimmedQuery && (
-              <SidebarSessionsSection
-                activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
-                emptyState={
-                  <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                    {s.noMatch(trimmedQuery)}
-                  </div>
-                }
-                label={s.results}
-                labelMeta={String(searchResults.length)}
-                onArchiveSession={onArchiveSession}
-                onDeleteSession={onDeleteSession}
-                onResumeSession={onResumeSession}
-                onToggle={() => undefined}
-                onTogglePin={pinSession}
-                open
-                pinned={false}
-                rootClassName="min-h-32 flex-1 overflow-hidden p-0"
-                sessions={searchResults}
-                workingSessionIdSet={workingSessionIdSet}
-              />
-            )}
-
-            {!trimmedQuery && (
-              <SidebarSessionsSection
+            {/* 搜索 lives on its own main-area page (/search) now — the sidebar
+                always shows the plain 置顶/项目/对话 sections. */}
+            <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
@@ -815,12 +640,11 @@ export function ChatSidebar({
                 sortable={pinnedSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
               />
-            )}
 
             {/* 项目 — Codex-style: one row per distinct workspace folder, that
                 folder's chats nested beneath. Hidden entirely when no session
                 runs in a project cwd. */}
-            {!trimmedQuery && projectGroups.length > 0 && (
+            {projectGroups.length > 0 && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-72 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
@@ -842,8 +666,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
-              <SidebarSessionsSection
+            <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col pb-1.75',
@@ -889,7 +712,6 @@ export function ChatSidebar({
                 sortable={!showAllProfiles && agentSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
               />
-            )}
           </div>
         )}
 

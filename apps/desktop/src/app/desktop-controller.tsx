@@ -131,6 +131,7 @@ const CommandCenterView = lazy(async () => ({ default: (await import('./command-
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
+const SearchView = lazy(async () => ({ default: (await import('./search')).SearchView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
@@ -225,7 +226,6 @@ export function DesktopController() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
-    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
@@ -999,15 +999,6 @@ export function DesktopController() {
         </Suspense>
       )}
 
-      {cronOpen && (
-        <Suspense fallback={null}>
-          <CronView
-            onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
-          />
-        </Suspense>
-      )}
-
       {profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
@@ -1167,7 +1158,25 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route element={null} path="cron" />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <CronView
+                  onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+                  setStatusbarItemGroup={setStatusbarItemGroup}
+                />
+              </Suspense>
+            }
+            path="cron"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <SearchView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="search"
+          />
           <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />

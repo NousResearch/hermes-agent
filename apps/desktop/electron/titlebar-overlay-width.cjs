@@ -21,4 +21,23 @@ function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } 
   return OVERLAY_FALLBACK_WIDTH
 }
 
-module.exports = { OVERLAY_FALLBACK_WIDTH, nativeOverlayWidth }
+// macOS Tahoe ships as Darwin 25 (Sequoia is 24); the Darwin number is truthful,
+// unlike the product version which macOS reports as 16 or 26 depending on the
+// build SDK.
+const MACOS_TAHOE_DARWIN_MAJOR = 25
+
+/**
+ * Height (px) to pass to `titleBarOverlay` on macOS. Tahoe (Darwin 25+)
+ * miscalculates the native traffic-light position when the overlay carries a
+ * nonzero height (electron#49183), shoving the lights into the left titlebar
+ * tools. Return 0 there so `setWindowButtonPosition` lands them at the configured
+ * inset; the renderer paints its own drag strips, so nothing is lost. Pre-Tahoe
+ * keeps the full titlebar height, byte-identical.
+ *
+ * @param {{ darwinMajor?: number, titlebarHeight?: number }} opts
+ */
+function macTitleBarOverlayHeight({ darwinMajor = 0, titlebarHeight = 0 } = {}) {
+  return darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR ? 0 : titlebarHeight
+}
+
+module.exports = { MACOS_TAHOE_DARWIN_MAJOR, OVERLAY_FALLBACK_WIDTH, macTitleBarOverlayHeight, nativeOverlayWidth }

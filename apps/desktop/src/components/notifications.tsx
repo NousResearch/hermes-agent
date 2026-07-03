@@ -116,7 +116,11 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant="default"
     >
-      <Icon className={styles.iconClass} />
+      {notification.icon ? (
+        <Codicon className={styles.iconClass} name={notification.icon} size="1rem" />
+      ) : (
+        <Icon className={styles.iconClass} />
+      )}
       <div className="col-start-2 min-w-0">
         {notification.title && <AlertTitle className="col-start-auto">{notification.title}</AlertTitle>}
         <AlertDescription className="col-start-auto">

@@ -651,7 +651,12 @@ class MemoryManager:
         with self._sync_executor_lock:
             if self._sync_executor is None:
                 try:
-                    self._sync_executor = ThreadPoolExecutor(
+                    # Daemon workers (see tools.daemon_pool): a provider wedged
+                    # on a network call must never block interpreter exit —
+                    # stdlib ThreadPoolExecutor's atexit hook would join it
+                    # unconditionally even after shutdown(wait=False).
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._sync_executor = DaemonThreadPoolExecutor(
                         max_workers=1,
                         thread_name_prefix="mem-sync",
                     )

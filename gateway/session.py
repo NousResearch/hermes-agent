@@ -574,6 +574,31 @@ def build_session_context_prompt(
     return "\n".join(lines)
 
 
+# Keys of a /model session override that are safe to persist to disk.
+# ``api_key`` (and anything else, e.g. ``api_mode`` which is re-derived from
+# provider resolution) is intentionally excluded: credentials must NEVER be
+# written to sessions.json.  On rehydration after a gateway restart the
+# runner re-resolves credentials via the normal runtime provider resolution.
+PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+
+
+def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """Return a copy of *override* containing only persistable, non-secret keys.
+
+    Returns ``None`` when the input is empty/not a dict or no persistable
+    values remain, so callers can store the result directly on
+    ``SessionEntry.model_override``.
+    """
+    if not isinstance(override, dict):
+        return None
+    cleaned = {
+        k: str(v)
+        for k, v in override.items()
+        if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
+    }
+    return cleaned or None
+
+
 @dataclass
 class SessionEntry:
     """
@@ -644,6 +669,15 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Session-scoped /model override (model/provider/base_url ONLY — never
+    # credentials).  ``_session_model_overrides`` in the gateway runner is
+    # in-memory, so before this field a gateway restart silently reverted
+    # every session to the global default model.  api_key/api_mode are
+    # re-resolved through the normal runtime provider resolution when the
+    # override is rehydrated after a restart and are never written to disk
+    # (see sanitize_model_override / SessionStore.set_model_override).
+    model_override: Optional[Dict[str, str]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -675,6 +709,10 @@ class SessionEntry:
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
         }
+        if self.model_override:
+            # Defence-in-depth: strip credentials even if a caller stored an
+            # unsanitized dict directly on the entry.
+            result["model_override"] = sanitize_model_override(self.model_override)
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -736,6 +774,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            model_override=sanitize_model_override(data.get("model_override")),
         )
 
 
@@ -1225,6 +1264,37 @@ class SessionStore:
 
         return False
 
+    def is_session_finalizable(self, entry: SessionEntry) -> bool:
+        """Return True if the expiry watcher will *ever* finalize this session.
+
+        The expiry watcher (``GatewayRunner._session_expiry_watcher``) only
+        tears an agent down — and only then fires ``on_session_end`` — for
+        sessions whose reset policy eventually expires. A ``mode == "none"``
+        session never expires (``_is_session_expired`` returns ``False``
+        forever), so the watcher will never finalize it.
+
+        This distinction matters for the agent-cache idle sweep: deferring
+        idle eviction to "let the watcher finalize it later" is only correct
+        when the watcher WILL run for this session. For a ``mode == "none"``
+        session, deferring pins the cached agent in memory for the gateway's
+        entire lifetime with no finalization ever coming — the exact leak the
+        idle sweep exists to relieve. Callers use this predicate to decide
+        whether the session store owns the eviction boundary (finalizable) or
+        the idle sweep must still reap the agent itself (not finalizable).
+
+        Public wrapper so callers don't reach into policy internals. Errors
+        resolving the policy are treated as "not finalizable" (safe: the idle
+        sweep falls back to reaping the agent rather than pinning it).
+        """
+        try:
+            policy = self.config.get_reset_policy(
+                platform=entry.platform,
+                session_type=entry.chat_type,
+            )
+            return policy.mode != "none"
+        except Exception:
+            return False
+
     def _is_session_ended_in_db(self, session_id: str) -> bool:
         """Return True iff state.db has this session with a non-null end_reason.
 
@@ -1299,6 +1369,48 @@ class SessionStore:
         
         return None
     
+    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Return the latest compression continuation for *session_id*.
+
+        When an agent compresses context mid-turn the transcript moves to a
+        child session, but a restart or failed send can leave the SessionStore
+        mapping pointing at the compressed parent.  Heal that on read so the
+        next inbound message resumes the child instead of reloading the parent.
+        """
+        if not session_id or self._db is None:
+            return session_id
+        try:
+            return self._db.get_compression_tip(session_id) or session_id
+        except Exception:
+            logger.debug(
+                "Compression-tip lookup failed for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return session_id
+
+    def _heal_compression_tip_locked(
+        self,
+        entry: "SessionEntry",
+        original_session_id: Optional[str],
+        canonical_session_id: Optional[str],
+    ) -> bool:
+        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        if (
+            not original_session_id
+            or not canonical_session_id
+            or entry.session_id != original_session_id
+            or canonical_session_id == original_session_id
+        ):
+            return False
+        logger.info(
+            "SessionStore healed compressed session mapping: %s -> %s",
+            entry.session_id,
+            canonical_session_id,
+        )
+        entry.session_id = canonical_session_id
+        return True
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1339,12 +1451,30 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        existing_session_id = None
+
+        if not force_new:
+            with self._lock:
+                self._ensure_loaded_locked()
+                entry = self._entries.get(session_key)
+                if entry is not None:
+                    existing_session_id = entry.session_id
+
+        # Look up the compression continuation outside the lock (DB I/O).
+        canonical_existing_session_id = (
+            self._compression_tip_for_session_id(existing_session_id)
+            if existing_session_id
+            else None
+        )
 
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
+                self._heal_compression_tip_locked(
+                    entry, existing_session_id, canonical_existing_session_id
+                )
 
                 # Self-heal stale routing: if this session_key still points at
                 # a session that has ALREADY been ended in state.db (end_reason
@@ -1514,6 +1644,37 @@ class SessionStore:
                     session_key,
                     entry.origin,
                 )
+
+    def set_model_override(
+        self, session_key: str, override: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist (or clear) the session-scoped /model override.
+
+        Only non-secret keys (model/provider/base_url — see
+        ``sanitize_model_override``) are written; ``api_key``/``api_mode``
+        are re-resolved at rehydration time via the normal runtime provider
+        resolution.  Pass ``None`` (or a dict with no persistable values)
+        to clear the persisted override, e.g. on /new.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            cleaned = sanitize_model_override(override)
+            if entry.model_override == cleaned:
+                return
+            entry.model_override = cleaned
+            self._save()
+
+    def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
+        """Return the persisted /model override for *session_key*, if any."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            return dict(entry.model_override) if entry.model_override else None
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
@@ -1817,6 +1978,22 @@ class SessionStore:
                 if entry.session_id == session_id:
                     return entry
         return None
+
+    def peek_session_id(self, session_key: str) -> Optional[str]:
+        """Return the persisted session_id currently bound to a session key.
+
+        Public, lock-held accessor for the key→session_id mapping. Callers that
+        need to resolve the session row for a source (e.g. the webhook
+        delivery-close path) should use this rather than reaching into the
+        private ``_entries`` dict without holding ``self._lock``. Returns None
+        when the key is unknown or has no session_id yet.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return getattr(entry, "session_id", None) if entry else None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).

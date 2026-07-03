@@ -112,6 +112,20 @@ def test_discord_final_response_strips_gateway_fallback_prefix_but_keeps_model_e
     assert _sanitize_gateway_final_response(Platform.DISCORD, model_answer) == model_answer
 
 
+def test_discord_final_response_strips_leading_acknowledgements_only():
+    answer = "内田さん、確認しました\n\n有効スキルは108件です。"
+    inline = "調べました。たぶんHermesのスキルのことです。"
+    code = "```python\nprint('確認しました')\n```"
+
+    assert _sanitize_gateway_final_response(Platform.DISCORD, answer) == (
+        "有効スキルは108件です。"
+    )
+    assert _sanitize_gateway_final_response(Platform.DISCORD, inline) == (
+        "たぶんHermesのスキルのことです。"
+    )
+    assert _sanitize_gateway_final_response(Platform.DISCORD, code) == code
+
+
 def test_telegram_existing_status_display_is_preserved():
     message = "⏳ Gateway再起動中です。復旧後の次の返答に回しました。"
 

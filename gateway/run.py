@@ -451,6 +451,25 @@ def _strip_discord_gateway_chrome_emoji(text: str) -> str:
     return text
 
 
+_DISCORD_LEADING_ACK_RE = re.compile(
+    r"^\s*"
+    r"(?:(?:内田さん|うっちー)(?:さん)?[、,\s]*)?"
+    r"(?:はい[、,。.\s]*)?"
+    r"(?:確認しました|確認します|調べました|見ました|了解しました|承知しました)"
+    r"[。.!！、,\s]*",
+)
+
+
+def _strip_discord_leading_acknowledgement(text: str) -> str:
+    """Remove acknowledgement-only prefixes from Discord final answers."""
+    cleaned = str(text or "").lstrip()
+    previous = None
+    while cleaned and previous != cleaned:
+        previous = cleaned
+        cleaned = _DISCORD_LEADING_ACK_RE.sub("", cleaned, count=1).lstrip()
+    return cleaned
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -468,7 +487,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         redacted = _redact_gateway_user_facing_secrets(str(text))
         if _TELEGRAM_NOISY_STATUS_RE.search(redacted):
             return ""
-        return _strip_discord_gateway_chrome_emoji(redacted)
+        return _strip_discord_leading_acknowledgement(
+            _strip_discord_gateway_chrome_emoji(redacted)
+        )
 
     if platform_value != "telegram":
         return text

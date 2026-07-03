@@ -55,7 +55,8 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -135,7 +136,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
     }
@@ -614,6 +616,57 @@ def test_block_rejects_empty_reason(worker_env):
     for bad in ["", "   ", None]:
         out = kt._handle_block({"reason": bad})
         assert json.loads(out).get("error")
+
+
+def test_request_review_happy_path(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_request_review({"summary": "impl done + tests green"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "review"
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "review"
+    finally:
+        conn.close()
+
+
+def test_request_review_rejects_empty_summary(worker_env):
+    from tools import kanban_tools as kt
+    for bad in ["", "   ", None]:
+        out = kt._handle_request_review({"summary": bad})
+        assert json.loads(out).get("error")
+    # Task must not have moved on a rejected call.
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
+def test_worker_request_review_rejects_foreign_task_id(worker_env):
+    """A worker cannot request review on a task that isn't its own (#19534)."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_request_review({"task_id": other, "summary": "evil"})
+    d = json.loads(out)
+    assert "refusing to mutate" in d.get("error", "")
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+    finally:
+        conn.close()
 
 
 def test_heartbeat_happy_path(worker_env):

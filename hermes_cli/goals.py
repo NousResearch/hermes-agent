@@ -1600,9 +1600,11 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "[Continuing toward this kanban task — judge says it is not done yet]\n"
     "Reason: {reason}\n\n"
     "Take the next concrete step toward completing the task. When the work "
-    "is genuinely finished, call kanban_complete with a summary. If you are "
-    "blocked and need human input, call kanban_block with a reason. Do not "
-    "stop without calling one of them."
+    "is genuinely finished, call kanban_complete with a summary. If it is a "
+    "code change that needs human review before counting as done, call "
+    "kanban_request_review with a summary instead. If you are blocked and "
+    "need human input, call kanban_block with a reason. Do not stop without "
+    "calling one of them."
 )
 
 # Fed when the judge believes the work is done but the worker never called
@@ -1612,8 +1614,9 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
     "If the task is genuinely done, call kanban_complete now with a short "
-    "summary of what you did. If something still blocks completion, call "
-    "kanban_block with the reason instead."
+    "summary of what you did. If it is a code change awaiting human review, "
+    "call kanban_request_review with that summary instead. If something still "
+    "blocks completion, call kanban_block with the reason instead."
 )
 
 
@@ -1652,8 +1655,8 @@ def run_kanban_goal_loop(
     (reason: str -> None).
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
-    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
+    ``"blocked_budget"``, ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -1686,6 +1689,12 @@ def run_kanban_goal_loop(
         if status == "blocked":
             _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
             return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
+        if status == "review":
+            # A legitimate worker-driven terminator (kanban_request_review),
+            # not an unexpected stop: the implementation is done and the task
+            # is awaiting a human. Stop the loop cleanly.
+            _log(f"kanban goal loop: task {task_id} handed off for review by worker after {turns_used} turn(s)")
+            return {"outcome": "review_requested_by_worker", "turns_used": turns_used, "reason": "worker requested review"}
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")

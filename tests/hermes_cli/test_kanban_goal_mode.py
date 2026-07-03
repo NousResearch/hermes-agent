@@ -204,6 +204,24 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_stops_when_worker_requests_review(monkeypatch):
+    # Worker called kanban_request_review — a legitimate terminator, not an
+    # unexpected stop. Loop ends cleanly with its own outcome.
+    _patch_judge(monkeypatch, ["continue"])  # should never be consulted
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t_rev",
+        goal_text="ship a code change",
+        run_turn=lambda p: turns.append(p) or "x",
+        task_status_fn=lambda: "review",
+        block_fn=lambda r: pytest.fail("should not block"),
+        first_response="implemented, requesting review",
+    )
+    assert res["outcome"] == "review_requested_by_worker"
+    assert turns == []  # no extra turns
+
+
 def test_loop_continues_then_worker_completes(monkeypatch):
     _patch_judge(monkeypatch, ["continue", "continue"])
     statuses = iter(["running", "running", "done"])

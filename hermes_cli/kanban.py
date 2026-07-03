@@ -584,6 +584,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_request_review = sub.add_parser(
+        "request-review",
+        help="Move a task to 'review' (implementation done, awaiting review) — NOT a block",
+    )
+    p_request_review.add_argument("task_id")
+    p_request_review.add_argument(
+        "--summary", default=None,
+        help="What was implemented and how it was verified — shown to the reviewer.",
+    )
+    p_request_review.add_argument(
+        "--reviewer", default=None,
+        help="Optional profile/handle to attribute the review to (informational only).",
+    )
+
+    p_reopen_review = sub.add_parser(
+        "reopen-review",
+        help="Send one or more review tasks back for changes (review -> ready/todo)",
+    )
+    p_reopen_review.add_argument("task_ids", nargs="+")
+    p_reopen_review.add_argument(
+        "--reason", default=None,
+        help="Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons.",
+    )
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -976,6 +1000,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "request-review": _cmd_request_review,
+            "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -2037,6 +2063,48 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_request_review(args: argparse.Namespace) -> int:
+    tid = args.task_id
+    summary = getattr(args, "summary", None)
+    if summary is not None:
+        summary = summary.strip() or None
+    reviewer = getattr(args, "reviewer", None)
+    with kb.connect_closing() as conn:
+        if not kb.request_review(
+            conn, tid, summary=summary, reviewer=reviewer,
+            expected_run_id=_worker_run_id_for(tid),
+        ):
+            print(
+                f"cannot request review for {tid} (not running/ready?)",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Requested review for {tid}" + (f": {summary}" if summary else ""))
+    return 0
+
+
+def _cmd_reopen_review(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = reason.strip() or None
+    author = _profile_author() if reason else None
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"CHANGES REQUESTED: {reason}")
+            if not kb.reopen_review_task(conn, tid):
+                failed.append(tid)
+                print(f"cannot reopen {tid} (not in review?)", file=sys.stderr)
+            else:
+                print(f"Reopened {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -2780,6 +2848,7 @@ Common subcommands:
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
+  `request-review <id>` Hand off for human review (moves to `review`, not a block); `reopen-review <id>…` sends it back for changes
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards

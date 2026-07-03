@@ -663,6 +663,59 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_request_review(args: dict, **kw) -> str:
+    """Move the task to 'review' — implementation done, awaiting a human."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if not summary or not str(summary).strip():
+        return tool_error(
+            "summary is required — describe what was implemented and how it "
+            "was verified so the reviewer has context"
+        )
+    summary = redact_sensitive_text(str(summary), force=True)
+    reviewer = args.get("reviewer") or None
+    if reviewer:
+        # Model-supplied free text stored durably on the event payload —
+        # redact like summary / kanban_block's reason.
+        reviewer = redact_sensitive_text(str(reviewer), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.request_review(
+                conn, tid,
+                summary=summary,
+                reviewer=reviewer,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not request review for {tid} (unknown id or not "
+                    f"in running/ready)"
+                )
+            run = kb.latest_run(conn, tid)
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "review",
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_review failed")
+        return tool_error(f"kanban_request_review: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1248,6 +1301,46 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REQUEST_REVIEW_SCHEMA = {
+    "name": "kanban_request_review",
+    "description": (
+        "Hand the task off for review: implementation, self-review, and "
+        "verification are complete and you want a human (or reviewer) to "
+        "look before it is marked done. Moves the task to the 'review' "
+        "column and notifies the subscriber. Unlike ``kanban_block`` this is "
+        "NOT a blocker — it never counts toward unblock-loop detection, so a "
+        "task can cycle through review across follow-ups without ever being "
+        "falsely escalated to triage. Use this instead of blocking with a "
+        "free-form 'review-required:' reason."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "What was implemented and how it was verified, in one or "
+                    "two sentences — shown to the human reviewer. Don't paste "
+                    "the whole diff; the reviewer has the board and the PR."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Optional profile/handle to attribute the review to. "
+                    "Omit when a human reviews."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["summary"],
+    },
+}
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -1541,6 +1634,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_request_review",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_REVIEW_SCHEMA,
+    handler=_handle_request_review,
+    check_fn=_check_kanban_mode,
+    emoji="👀",
 )
 
 registry.register(

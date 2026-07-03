@@ -18,7 +18,7 @@ Reviewer       =  人工或人工代理，负责把关"完成"状态
 GitHub PR      =  可上游的产物（可选，适用于代码通道）
 ```
 
-Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `blocked` / `done` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换。
+Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `review` / `blocked` / `done` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换。
 
 ## 通道需提供的内容
 
@@ -51,27 +51,28 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 每次 claim 必须以以下之一结束：
 
 - `kanban_complete(summary=..., metadata=...)` — 任务成功，状态切换为 `done`。
+- `kanban_request_review(summary=...)` — 实现已完成，但在计为 done 之前需要人工审查；状态切换为 `review`，并唤醒订阅者。这**不是** block——它从不计入解除阻塞循环检测，因此任务可以在多次后续跟进中反复进入审查。Reviewer 通过 `kanban_complete` 批准，或将其退回修改（`review -> ready`）。
 - `kanban_block(reason=...)` — 任务等待人工输入，状态切换为 `blocked`。调度器在 `kanban_unblock` 运行时重新生成。
 - worker 进程退出而未调用任何工具。内核回收该进程并发出 `crashed`（PID 已消亡）、`gave_up`（连续失败断路器触发）或 `timed_out`（超过 max_runtime）。这是失败路径；健康的 worker 不会在此结束。
 
 kanban 内核强制要求每次运行恰好由其中一项终止。既未调用任何终止工具又正常退出的 worker 将被视为崩溃。
 
-## 输出与 review-required 约定
+## 输出与审查交接
 
-对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制 block 而非 complete 会破坏不需要审查的流程）。这是叠加在上层的约定：
+对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制执行会破坏不需要审查的流程）。这是叠加在上层的约定，并拥有一等的终止动作：
 
-- **使用 block 而非 complete**，`reason` 以 `review-required: ` 为前缀，使仪表板 / `hermes kanban show` 将该行显示为等待审查。
-- **先将结构化元数据写入 `kanban_comment`**，因为 `kanban_block` 只携带人类可读的 `reason`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
-- **Reviewer 批准并解除阻塞**，这将重新生成 worker 并附带 comment 线程用于后续跟进；或通过另一条 comment 要求修改，下一次 worker 运行时将通过 `kanban_show` 的上下文看到这些内容。
+- **请求审查而非完成**：以 `kanban_request_review(summary=...)` 结束。任务移入 `review` 列（实现已完成，等待人工），并唤醒订阅者。与 block 不同，它从不计入解除阻塞循环检测，因此任务可以在多次后续跟进中反复进入审查而不会被误升级到 triage。**不要**把 `review-required:` 编码进 `kanban_block` 的 reason——那会经过 block 循环断路器，最终把任务困在 triage。
+- **先将结构化元数据写入 `kanban_comment`**，因为审查交接只携带人类可读的 `summary`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
+- **Reviewer 要么批准**（`kanban_complete`，或将卡片移至 `done`）以结束任务；**要么要求修改**，将卡片从 `review` 退回 `ready`/`todo`（`hermes kanban reopen-review`，或在仪表板上拖拽），这将重新生成 worker 并附带 comment 线程作为 `kanban_show` 上下文的一部分。
 
-自动注入的 `KANBAN_GUIDANCE` 同时涵盖 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `review-required` block 模式。
+自动注入的 `KANBAN_GUIDANCE` 涵盖 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）、`kanban_request_review` 交接，以及 `kanban_block`（等待人工输入的真正阻塞）。
 
 ## 日志与审计追踪
 
 调度器将每个任务的 worker stdout/stderr 写入 `<board-root>/logs/<task_id>.log`。日志可通过 kanban 元数据进行审计：
 
 - `task_runs` 行携带 `log_path`、退出码（如有）、摘要和元数据。
-- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
+- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`review_requested`、`review_reopened`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
 - `kanban_show` 同时返回两者，因此 reviewer（或后续 worker）读取任务时无需访问仪表板即可获得完整历史。
 
 仪表板以摘要、元数据块和退出状态徽章渲染运行历史。CLI 用户可运行 `hermes kanban tail <task_id>` 实时跟踪，或运行 `hermes kanban runs <task_id>` 查看历史尝试列表。

@@ -818,6 +818,19 @@ class UpdateTaskBody(BaseModel):
     metadata: Optional[dict] = None
 
 
+def _reopen_if_review(conn, task_id: str, current) -> Optional[bool]:
+    """Route a task leaving the ``review`` lane through ``reopen_review_task``
+    (proper transition: stale-run recovery, parent re-gate, ``review_reopened``
+    event) instead of a raw status write. Returns the transition result, or
+    ``None`` when the task isn't in ``review`` so the caller falls through to
+    its normal handling. Shared by the single-task and bulk status handlers so
+    the review-reopen routing can't drift between them.
+    """
+    if current is not None and getattr(current, "status", None) == "review":
+        return kanban_db.reopen_review_task(conn, task_id)
+    return None
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
@@ -853,14 +866,25 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
+            elif s == "review":
+                # Manual "request review" from the board: implementation done,
+                # awaiting a human. Routes through request_review so it is NOT a
+                # block (never trips unblock-loop detection). Only valid from
+                # running/ready — a False return becomes the 409 toast below.
+                ok = kanban_db.request_review(
+                    conn, task_id, summary=payload.summary,
+                )
             elif s == "ready":
-                # Re-open a blocked/scheduled task, or just an explicit status set.
+                # Re-open a blocked/scheduled/review task, or just an explicit
+                # status set. "Changes requested" (review -> ready) goes through
+                # reopen_review_task via _reopen_if_review.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
+                    reopened = _reopen_if_review(conn, task_id, current)
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
+                    ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
             elif s == "running":
@@ -869,7 +893,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
             elif s in ("todo", "triage", "scheduled"):
-                ok = _set_status_direct(conn, task_id, s)
+                # Only a review task moving to 'todo' needs the reopen
+                # transition; fetch lazily so triage/scheduled skip the query.
+                current = kanban_db.get_task(conn, task_id) if s == "todo" else None
+                reopened = _reopen_if_review(conn, task_id, current)
+                ok = reopened if reopened is not None else _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
@@ -1194,12 +1222,18 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)
+                    elif s == "review":
+                        # Non-block review handoff (mirror of PATCH /tasks/{id}).
+                        ok = kanban_db.request_review(
+                            conn, tid, summary=payload.summary,
+                        )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
                         if cur and cur.status in ("blocked", "scheduled"):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
-                            ok = _set_status_direct(conn, tid, "ready")
+                            reopened = _reopen_if_review(conn, tid, cur)
+                            ok = reopened if reopened is not None else _set_status_direct(conn, tid, "ready")
                     elif s == "running":
                         entry.update(
                             ok=False,
@@ -1213,7 +1247,10 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     elif s == "scheduled":
                         ok = kanban_db.schedule_task(conn, tid)
                     elif s in {"todo", "triage"}:
-                        ok = _set_status_direct(conn, tid, s)
+                        # Fetch lazily: only review->todo needs reopen.
+                        cur = kanban_db.get_task(conn, tid) if s == "todo" else None
+                        reopened = _reopen_if_review(conn, tid, cur)
+                        ok = reopened if reopened is not None else _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
                         results.append(entry)

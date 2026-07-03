@@ -2493,6 +2493,14 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # When true, the dispatcher auto-claims tasks in the 'review' column and
+        # spawns a reviewer worker (sdlc-review skill) on the task's assignee
+        # profile. Defaults to FALSE: this build ships no autonomous reviewer
+        # (no sdlc-review skill), so a task moved to 'review' by request_review
+        # waits for a human instead of spawning a phantom reviewer on the
+        # implementer's own profile. Set true only in deployments that actually
+        # have an sdlc-review agent installed.
+        "review_dispatch": False,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

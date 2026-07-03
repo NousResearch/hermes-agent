@@ -6801,7 +6801,19 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
+            """Build the model dropdown for a specific provider.
+
+            Handles two modes:
+
+            * Normal provider: ``models`` is a list of model IDs. The select
+              shows ``<model>`` (or the segment after ``/`` if present) with
+              the model ID as value. Click triggers ``_on_model_selected``.
+            * Sub-provider picker (OpenRouter-style aggregators): ``models`` is
+              a list of ``"<sub> (<n> models)"`` labels and the provider dict
+              carries ``is_subprovider_picker=True`` and ``sub_models``. The
+              select shows the sub-provider labels; clicking one drills into
+              the corresponding sub-catalog via ``_on_subprovider_selected``.
+            """
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -6810,25 +6822,47 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
-            options = []
-            for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
-                options.append(
-                    discord.SelectOption(
-                        label=short[:100],
-                        value=model_id[:100],
-                    )
-                )
-            if not options:
-                return
 
-            select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
-                options=options,
-                custom_id="model_model_select",
-            )
-            select.callback = self._on_model_selected
-            self.add_item(select)
+            if provider.get("is_subprovider_picker"):
+                # Sub-provider drill-down: emit one option per upstream.
+                self._selected_subprovider = ""  # reset
+                options = []
+                for idx, label in enumerate(models[:25]):
+                    options.append(
+                        discord.SelectOption(
+                            label=str(label)[:100],
+                            value=f"sub:{idx}",
+                        )
+                    )
+                if not options:
+                    return
+                select = discord.ui.Select(
+                    placeholder=f"Choose an upstream provider from {provider.get('name', provider_slug)}...",
+                    options=options,
+                    custom_id="model_subprovider_select",
+                )
+                select.callback = self._on_subprovider_selected
+                self.add_item(select)
+            else:
+                options = []
+                for model_id in models[:25]:
+                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    options.append(
+                        discord.SelectOption(
+                            label=short[:100],
+                            value=model_id[:100],
+                        )
+                    )
+                if not options:
+                    return
+
+                select = discord.ui.Select(
+                    placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
+                    options=options,
+                    custom_id="model_model_select",
+                )
+                select.callback = self._on_model_selected
+                self.add_item(select)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -6950,6 +6984,118 @@ def _define_discord_view_classes() -> None:
                 ),
                 view=None,
             )
+
+        async def _on_subprovider_selected(self, interaction: discord.Interaction):
+            """Drill into a sub-provider catalog (OpenRouter-style aggregators).
+
+            Triggered by the ``model_subprovider_select`` dropdown built by
+            :py:meth:`_build_model_select` when the chosen provider carries
+            ``is_subprovider_picker=True``. The select's value is
+            ``"sub:<idx>"`` where ``idx`` indexes into the provider's
+            ``subproviders`` list.
+            """
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            raw = interaction.data["values"][0]
+            if not raw.startswith("sub:"):
+                # Fallback: treat as a normal model id and switch.
+                await self._switch_selected_model(interaction, raw)
+                return
+            try:
+                idx = int(raw[4:])
+            except ValueError:
+                await interaction.response.send_message(
+                    "Invalid sub-provider selection.", ephemeral=True
+                )
+                return
+
+            provider_slug = self._selected_provider
+            provider = next(
+                (p for p in self.providers if p["slug"] == provider_slug), None
+            )
+            if not provider or not provider.get("is_subprovider_picker"):
+                await interaction.response.send_message(
+                    "Picker state expired.", ephemeral=True
+                )
+                return
+
+            subs = provider.get("subproviders", [])
+            if not (0 <= idx < len(subs)):
+                await interaction.response.send_message(
+                    "Out-of-range sub-provider selection.", ephemeral=True
+                )
+                return
+            sub = subs[idx]
+            sub_models = provider.get("sub_models", {}).get(sub, [])
+            self._selected_subprovider = sub
+            # Stash the filtered catalog so the existing back/switch flow
+            # only sees the models for this sub. We rebuild the view as a
+            # flat model select without the sub-provider toggle.
+            self._build_filtered_model_select(provider_slug, sub, sub_models)
+
+            extra = ""
+            if len(sub_models) > 25:
+                extra = f"\n*{len(sub_models) - 25} more available — type `/model <name>` directly*"
+            pname = provider.get("name", provider_slug)
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=f"Provider: **{pname}** / **{sub}**\nSelect a model:{extra}",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        def _build_filtered_model_select(
+            self, provider_slug: str, sub: str, models: list
+        ):
+            """Render a flat model select for a single sub-provider.
+
+            Used by :py:meth:`_on_subprovider_selected` after the user picks
+            an upstream. The Back button re-opens the sub-provider select.
+            """
+            self.clear_items()
+            options = []
+            for model_id in models[:25]:
+                # Strip the "<sub>/" prefix so the dropdown labels read clean.
+                short = model_id
+                if model_id.startswith(f"{sub}/"):
+                    short = model_id[len(sub) + 1:]
+                options.append(
+                    discord.SelectOption(
+                        label=short[:100],
+                        value=model_id[:100],
+                    )
+                )
+            if not options:
+                return
+            select = discord.ui.Select(
+                placeholder=f"Choose a model from {sub}...",
+                options=options,
+                custom_id="model_model_select",
+            )
+            select.callback = self._on_model_selected
+            self.add_item(select)
+
+            back_btn = discord.ui.Button(
+                label="◀ Upstream",
+                style=discord.ButtonStyle.grey,
+                custom_id="model_back",
+            )
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel",
+                style=discord.ButtonStyle.red,
+                custom_id="model_cancel2",
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
 
         async def _on_model_selected(self, interaction: discord.Interaction):
             if self.resolved:

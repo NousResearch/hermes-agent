@@ -273,6 +273,16 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** True when the provider groups models by upstream sub-provider
+   *  (e.g. openrouter). When set, `models` contains sub-labels and
+   *  `sub_models` / `subproviders` / `sub_labels` carry the drill-down data. */
+  is_subprovider_picker?: boolean
+  /** Sub-provider slugs (e.g. ["openai", "anthropic", "google"]). */
+  subproviders?: string[]
+  /** Display labels for each sub (e.g. "openai (12 models)"). */
+  sub_labels?: string[]
+  /** Maps each sub-provider slug to its list of model IDs. */
+  sub_models?: Record<string, string[]>
 }
 
 export interface ModelCapabilities {

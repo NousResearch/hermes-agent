@@ -15,7 +15,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-type Stage = 'provider' | 'key' | 'model' | 'disconnect'
+type Stage = 'provider' | 'subprovider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
@@ -35,6 +35,8 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
+  const [subIdx, setSubIdx] = useState(0)
+  const [chosenSub, setChosenSub] = useState<string>('')
   const [stage, setStage] = useState<Stage>('provider')
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
@@ -106,7 +108,26 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   }, [providerRows, filter, stage])
 
   const provider = filteredProviderRows[providerIdx]?.provider
-  const allModels = useMemo(() => provider?.models ?? [], [provider])
+
+  // Sub-provider drill-down: when the selected provider has
+  // is_subprovider_picker, its `models` are actually sub-labels and the
+  // real model IDs live in `sub_models[sub_slug]`.
+  const subLabels = useMemo(() => provider?.sub_labels ?? [], [provider])
+  const filteredSubLabels = useMemo(() => {
+    if (stage !== 'subprovider' || !filter.trim()) {
+      return subLabels
+    }
+
+    return fuzzyRank(subLabels, filter, s => s).map(r => r.item)
+  }, [subLabels, filter, stage])
+
+  const allModels = useMemo(() => {
+    if (provider?.is_subprovider_picker && chosenSub && provider.sub_models?.[chosenSub]) {
+      return provider.sub_models[chosenSub]
+    }
+
+    return provider?.models ?? []
+  }, [provider, chosenSub])
 
   const filteredModels = useMemo(() => {
     if (stage !== 'model' || !filter.trim()) {
@@ -131,9 +152,15 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     }
   }, [models.length, modelIdx])
 
+  useEffect(() => {
+    if (subIdx >= filteredSubLabels.length && filteredSubLabels.length > 0) {
+      setSubIdx(0)
+    }
+  }, [filteredSubLabels.length, subIdx])
+
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
-    if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+    if ((stage === 'provider' || stage === 'model' || stage === 'subprovider') && filter.trim()) {
       // Preserve the selected provider across filter clear (same fix as
       // Enter→key/model and Ctrl+D transitions above).
       const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
@@ -146,11 +173,36 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
       setFilter('')
       setModelIdx(0)
+      setSubIdx(0)
 
       return
     }
 
-    if (stage === 'model' || stage === 'key' || stage === 'disconnect') {
+    if (stage === 'model') {
+      // Back from model → subprovider (if applicable) or provider.
+      if (provider?.is_subprovider_picker && chosenSub) {
+        setStage('subprovider')
+        setModelIdx(0)
+        setFilter('')
+      } else {
+        setStage('provider')
+        setModelIdx(0)
+        setFilter('')
+      }
+
+      return
+    }
+
+    if (stage === 'subprovider') {
+      setStage('provider')
+      setSubIdx(0)
+      setChosenSub('')
+      setFilter('')
+
+      return
+    }
+
+    if (stage === 'key' || stage === 'disconnect') {
       setStage('provider')
       setModelIdx(0)
       setKeyInput('')
@@ -166,7 +218,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
   // On the list stages we capture printable keys (including 'q') into the
   // filter, so the shared overlay q/Esc handler must yield to our own handler.
-  const listStage = stage === 'provider' || stage === 'model'
+  const listStage = stage === 'provider' || stage === 'model' || stage === 'subprovider'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
@@ -301,9 +353,9 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return
     }
 
-    const count = stage === 'provider' ? filteredProviderRows.length : models.length
-    const sel = stage === 'provider' ? providerIdx : modelIdx
-    const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
+    const count = stage === 'provider' ? filteredProviderRows.length : stage === 'subprovider' ? filteredSubLabels.length : models.length
+    const sel = stage === 'provider' ? providerIdx : stage === 'subprovider' ? subIdx : modelIdx
+    const setSel = stage === 'provider' ? setProviderIdx : stage === 'subprovider' ? setSubIdx : setModelIdx
 
     if (key.upArrow && sel > 0) {
       setSel(v => v - 1)
@@ -342,12 +394,51 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
           return
         }
 
+        // Sub-provider drill-down: if the provider groups models by
+        // upstream (openrouter-style, etc.), go to the subprovider stage first.
+        if (provider.is_subprovider_picker && provider.sub_labels?.length) {
+          setStage('subprovider')
+          setSubIdx(0)
+          setChosenSub('')
+          setFilter('')
+
+          return
+        }
+
         const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
 
         if (fullProviderIdx >= 0) {
           setProviderIdx(fullProviderIdx)
         }
 
+        setStage('model')
+        setModelIdx(0)
+        setFilter('')
+
+        return
+      }
+
+      if (stage === 'subprovider') {
+        const subLabel = filteredSubLabels[subIdx]
+
+        if (!subLabel || !provider) {
+          setStage('provider')
+
+          return
+        }
+
+        // Resolve the bare sub slug from the label "openai (12 models)".
+        const subs = provider.subproviders ?? []
+        const matchedSub = subs.find(s => subLabel === s || subLabel.startsWith(`${s} (`))
+
+        if (!matchedSub || !provider.sub_models?.[matchedSub]?.length) {
+          // Defensive: sub-label out of sync — bail to provider stage.
+          setStage('provider')
+
+          return
+        }
+
+        setChosenSub(matchedSub)
         setStage('model')
         setModelIdx(0)
         setFilter('')
@@ -604,6 +695,64 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     )
   }
 
+  // ── Sub-provider selection stage ────────────────────────────────────
+  if (stage === 'subprovider' && provider) {
+    const { items: subItems, offset: subOffset } = windowItems(filteredSubLabels, subIdx, VISIBLE)
+    const noSubMatches = !!filter.trim() && filteredSubLabels.length === 0
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent} wrap="truncate-end">
+          Select upstream from {provider.name}
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {filteredSubLabels.length} upstream(s) · Esc back
+        </Text>
+        <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+          {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
+        </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {subOffset > 0 ? ` ↑ ${subOffset} more` : ' '}
+        </Text>
+
+        {noSubMatches ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            no upstreams match
+          </Text>
+        ) : (
+          Array.from({ length: VISIBLE }, (_, i) => {
+            const row = subItems[i]
+            const idx = subOffset + i
+
+            return row ? (
+              <Text
+                bold={subIdx === idx}
+                color={subIdx === idx ? t.color.accent : t.color.muted}
+                inverse={subIdx === idx}
+                key={`sub-${idx}`}
+                wrap="truncate-end"
+              >
+                {subIdx === idx ? '▸ ' : '  '}
+                {idx + 1}. {row}
+              </Text>
+            ) : (
+              <Text color={t.color.muted} key={`sub-pad-${i}`} wrap="truncate-end">
+                {' '}
+              </Text>
+            )
+          })
+        )}
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {subOffset + VISIBLE < filteredSubLabels.length ? ` ↓ ${filteredSubLabels.length - subOffset - VISIBLE} more` : ' '}
+        </Text>
+
+        <OverlayHint t={t}>↑/↓ select · Enter drill in · Esc clear/back · q close</OverlayHint>
+      </Box>
+    )
+  }
+
   // ── Model selection stage ────────────────────────────────────────────
   const { items, offset } = windowItems(models, modelIdx, VISIBLE)
   const noModelMatches = !!filter.trim() && models.length === 0
@@ -615,7 +764,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'} · Esc back
+        {chosenSub ? `${filteredProviderRows[providerIdx]?.name ?? ''} › ${chosenSub}` : (filteredProviderRows[providerIdx]?.name || '(unknown provider)')} · Esc back
       </Text>
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}

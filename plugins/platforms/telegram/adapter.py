@@ -4717,8 +4717,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Invalid model index.")
                 return
 
-            model_id = model_list[idx]
             provider_slug = state.get("selected_provider", "")
+            provider_obj = next(
+                (p for p in state.get("providers", []) if p.get("slug") == provider_slug),
+                None,
+            )
+            # Sub-provider drill-down: if this provider is in
+            # ``is_subprovider_picker`` mode AND we have not already drilled
+            # into a sub, the click on a row is the sub-provider label, not
+            # a final model. Filter the catalog and re-render the model
+            # keyboard for that sub. Once a sub is selected (state has
+            # ``selected_subprovider``), subsequent mm:N clicks are final
+            # model picks and we fall through to the normal switch path —
+            # otherwise we'd loop indefinitely, bouncing between subs
+            # (e.g. openai ↔ anthropic) on every model click.
+            if (
+                provider_obj
+                and provider_obj.get("is_subprovider_picker")
+                and not state.get("selected_subprovider")
+            ):
+                sub_list = provider_obj.get("subproviders", [])
+                if 0 <= idx < len(sub_list):
+                    sub = sub_list[idx]
+                    sub_models = provider_obj.get("sub_models", {}).get(sub, [])
+                    state["model_list"] = sub_models
+                    state["model_page"] = 0
+                    state["selected_subprovider"] = sub
+                    keyboard, page_info = self._build_model_keyboard(sub_models, 0)
+                    pname = provider_obj.get("name", provider_slug)
+                    total = len(sub_models)
+                    shown = len(sub_models)
+                    extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+                    await query.edit_message_text(
+                        text=self.format_message(
+                            (
+                                f"⚙ *Model Configuration*\n\n"
+                                f"Provider: *{pname}* / *{sub}*{page_info}\n"
+                                f"Select a model:{extra}"
+                            )
+                        ),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=keyboard,
+                    )
+                    await query.answer()
+                    return
+                # is_subprovider_picker=True but idx out of range of sub_list.
+                # The button must be a stale sub-label click; refuse rather
+                # than feeding a label like "openai (12 models)" to switch_model,
+                # which would trigger "Model names cannot contain spaces."
+                await query.answer(text="Picker out of sync — use /model again.")
+                return
+
+            model_id = model_list[idx]
             callback = state.get("on_model_selected")
 
             if not callback:

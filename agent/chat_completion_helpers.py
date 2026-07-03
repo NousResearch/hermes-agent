@@ -1893,8 +1893,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         t = threading.Thread(target=_bedrock_call, daemon=True)
         t.start()
+        # Same poll-interval reduction as the non-streaming
+        # ``interruptible_api_call`` in this file: 50ms keeps the
+        # worst-case event-loop stall under the 5s-stall watchdog
+        # threshold. See issue #57903 for the diagnosis.
+        _POLL_INTERVAL = _env_float("HERMES_INTERRUPTIBLE_API_POLL_SECONDS", 0.05)
+        if _POLL_INTERVAL <= 0:
+            _POLL_INTERVAL = 0.05
         while t.is_alive():
-            t.join(timeout=0.3)
+            t.join(timeout=_POLL_INTERVAL)
+            time.sleep(0)  # explicit GIL yield
             if agent._interrupt_requested:
                 raise InterruptedError("Agent interrupted during Bedrock API call")
         if result["error"] is not None:

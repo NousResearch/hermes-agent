@@ -1551,6 +1551,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "voice_refine": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
         # Triage specifier — flesh out a rough one-liner in the Kanban
         # Triage column into a concrete spec, then promote it to ``todo``.
         # Invoked by ``hermes kanban specify`` (single id or --all). Set a
@@ -2034,11 +2042,17 @@ DEFAULT_CONFIG = {
 
     "voice": {
         "record_key": "ctrl+b",
+        "submit_mode": "direct",       # direct = submit transcript immediately; draft = place transcript in composer
         "max_recording_seconds": 120,
         "auto_tts": False,
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "refine": {
+            "enabled": False,        # Opt-in TUI transcript cleanup via auxiliary.voice_refine
+            "mode": "medium",       # light | medium | strict — conservative, language-agnostic cleanup intensity
+            "min_chars": 40,         # Skip very short transcripts; avoids latency/spend for one-word commands
+        },
     },
     
     "human_delay": {

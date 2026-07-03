@@ -3976,19 +3976,46 @@ class HallucinatedCardsError(ValueError):
 
 
 _COMPLETION_EVIDENCE_METADATA_KEYS = ("evidence_refs", "evidence_paths", "artifacts")
-_COMPLETION_EVIDENCE_SENSITIVE_MARKERS = (
+_COMPLETION_EVIDENCE_SENSITIVE_COMPONENTS = {
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".gnupg",
+    ".kube",
+    ".password-store",
+    ".ssh",
+    "auth",
+    "cookie",
+    "cookies",
     "credential",
     "credentials",
-    "secret",
-    "token",
-    "cookie",
-    "wallet",
-    "private",
     "mnemonic",
+    "private",
+    "secret",
+    "secrets",
     "seed",
-    "api_key",
-    "api-key",
-    "auth",
+    "token",
+    "tokens",
+    "wallet",
+    "wallets",
+}
+_COMPLETION_EVIDENCE_SENSITIVE_FILENAMES = {
+    "authorized_keys",
+    "credentials.json",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "passwd",
+    "password",
+    "service-account.json",
+}
+_COMPLETION_EVIDENCE_SENSITIVE_SUFFIXES = (
+    ".key",
+    ".kdbx",
+    ".p12",
+    ".pem",
+    ".pfx",
 )
 
 
@@ -4007,15 +4034,40 @@ class CompletionEvidenceError(ValueError):
             "evidence path. Provide metadata.evidence_refs or "
             "metadata.evidence_paths (or top-level evidence_paths/artifacts "
             "through the Kanban tool/CLI) with an existing, absolute, "
-            "non-sensitive local file path. Evidence validation checks path "
-            "existence only and never reads file contents."
+            "non-sensitive local evidence file path. Evidence validation uses "
+            "stat-only checks and never reads file contents."
             f"{problem_text}"
         )
 
 
-def _completion_evidence_ref_looks_sensitive(ref: str) -> bool:
-    lower = ref.lower()
-    return any(marker in lower for marker in _COMPLETION_EVIDENCE_SENSITIVE_MARKERS)
+def _completion_evidence_ref_looks_sensitive(
+    ref: str,
+    *,
+    resolved: Optional[Path] = None,
+) -> bool:
+    """Return True for credential-store-looking paths without broad substrings.
+
+    Keep this component-aware so benign evidence like ``author-report.md`` is
+    not rejected merely because it contains ``auth``.
+    """
+    candidates = [Path(ref).expanduser()]
+    if resolved is not None:
+        candidates.append(resolved)
+    for path in candidates:
+        parts = [p.lower() for p in path.parts if p and p not in {path.anchor, "/"}]
+        joined = "/".join(parts)
+        if ".config/gcloud" in joined:
+            return True
+        for part in parts:
+            if part == ".env" or part.startswith(".env."):
+                return True
+            if part in _COMPLETION_EVIDENCE_SENSITIVE_COMPONENTS:
+                return True
+            if part in _COMPLETION_EVIDENCE_SENSITIVE_FILENAMES:
+                return True
+            if any(part.endswith(suffix) for suffix in _COMPLETION_EVIDENCE_SENSITIVE_SUFFIXES):
+                return True
+    return False
 
 
 def _append_completion_evidence_values(
@@ -4054,8 +4106,8 @@ def _metadata_with_valid_completion_evidence(
     """Return metadata carrying canonical ``evidence_refs`` or raise.
 
     The gate is deliberately metadata-only: it validates local evidence by
-    ``Path.exists()`` and rejects sensitive-looking path strings, but never
-    opens or reads evidence contents.
+    stat-only file checks and rejects sensitive-looking path strings/targets,
+    but never opens or reads evidence contents.
     """
     if metadata is None:
         normalized_metadata: dict = {}
@@ -4085,12 +4137,6 @@ def _metadata_with_valid_completion_evidence(
     normalized_refs: list[str] = []
     seen: set[str] = set()
     for label, ref in raw_values:
-        if _completion_evidence_ref_looks_sensitive(ref):
-            problems.append(
-                f"{label} contains a sensitive-looking path; use a "
-                "non-secret report/artifact path instead"
-            )
-            continue
         if "://" in ref:
             problems.append(
                 f"{label} contains a URL; provide an existing local file path"
@@ -4101,19 +4147,35 @@ def _metadata_with_valid_completion_evidence(
             problems.append(f"{label} contains a relative path; use an absolute path")
             continue
         try:
-            exists = path.exists()
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError:
+            problems.append(
+                f"{label} points to a missing path; create the evidence file first"
+            )
+            continue
         except OSError:
             problems.append(
                 f"{label} could not be stat() checked; use a readable path "
                 "outside credential/auth stores"
             )
             continue
-        if not exists:
+        except RuntimeError:
             problems.append(
-                f"{label} points to a missing path; create the evidence file first"
+                f"{label} could not be resolved; use a non-cyclic evidence file path"
             )
             continue
-        normalized = str(path)
+        if _completion_evidence_ref_looks_sensitive(ref, resolved=resolved):
+            problems.append(
+                f"{label} contains a sensitive-looking path; use a "
+                "non-secret report/artifact path instead"
+            )
+            continue
+        if not resolved.is_file():
+            problems.append(
+                f"{label} points to a directory or special path; use an existing file"
+            )
+            continue
+        normalized = str(resolved)
         if normalized not in seen:
             seen.add(normalized)
             normalized_refs.append(normalized)
@@ -4164,9 +4226,9 @@ def complete_task(
     Every completion must include at least one valid evidence path via
     ``evidence_paths`` / ``evidence_refs`` or via metadata fields
     ``evidence_refs``, ``evidence_paths``, or ``artifacts``. Local paths
-    must be absolute, non-sensitive-looking, and exist at completion
-    time. The check uses ``Path.exists()`` only and never reads evidence
-    contents; normalized refs are persisted as ``metadata['evidence_refs']``.
+    must be absolute, non-sensitive-looking, and existing files at
+    completion time. The check uses stat-only file checks and never reads
+    evidence contents; normalized refs are persisted as ``metadata['evidence_refs']``.
 
     After a successful completion, ``summary`` and ``result`` are scanned
     for prose references like ``t_deadbeefcafe`` that do not resolve.
@@ -4674,8 +4736,14 @@ def edit_completed_task_result(
     result: str,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    evidence_paths: Optional[Any] = None,
+    evidence_refs: Optional[Any] = None,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
+    """Backfill the user-visible result for an already completed task.
+
+    Edits preserve existing evidence refs by default and require valid evidence
+    when new metadata would otherwise replace them.
+    """
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
@@ -4683,13 +4751,9 @@ def edit_completed_task_result(
         ).fetchone()
         if not row or row["status"] != "done":
             return False
-        conn.execute(
-            "UPDATE tasks SET result = ? WHERE id = ?",
-            (result, task_id),
-        )
         run = conn.execute(
             """
-            SELECT id FROM task_runs
+            SELECT id, metadata FROM task_runs
              WHERE task_id = ?
                AND outcome = 'completed'
              ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
@@ -4698,23 +4762,40 @@ def edit_completed_task_result(
             (task_id,),
         ).fetchone()
         run_id = int(run["id"]) if run else None
+        existing_metadata: dict = {}
+        if run and run["metadata"]:
+            try:
+                decoded = json.loads(run["metadata"])
+                if isinstance(decoded, dict):
+                    existing_metadata = decoded
+            except (TypeError, json.JSONDecodeError):
+                existing_metadata = {}
+        next_metadata = dict(metadata) if metadata is not None else dict(existing_metadata)
+        if not any(k in next_metadata for k in _COMPLETION_EVIDENCE_METADATA_KEYS):
+            existing_refs = existing_metadata.get("evidence_refs")
+            if existing_refs:
+                next_metadata["evidence_refs"] = existing_refs
+        next_metadata, normalized_evidence_refs = _metadata_with_valid_completion_evidence(
+            next_metadata,
+            evidence_paths=evidence_paths,
+            evidence_refs=evidence_refs,
+        )
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
         if run_id is None:
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
                 summary=handoff_summary,
-                metadata=metadata,
+                metadata=next_metadata,
             )
         else:
             conn.execute(
-                "UPDATE task_runs SET summary = ? WHERE id = ?",
-                (handoff_summary, run_id),
+                "UPDATE task_runs SET summary = ?, metadata = ? WHERE id = ?",
+                (handoff_summary, json.dumps(next_metadata, ensure_ascii=False), run_id),
             )
-            if metadata is not None:
-                conn.execute(
-                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                    (json.dumps(metadata, ensure_ascii=False), run_id),
-                )
         ev_summary = (
             handoff_summary.strip().splitlines()[0][:400]
             if handoff_summary else ""
@@ -4725,9 +4806,11 @@ def edit_completed_task_result(
                 "fields": (
                     ["result", "summary"]
                     + (["metadata"] if metadata is not None else [])
+                    + (["evidence_refs"] if normalized_evidence_refs else [])
                 ),
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
+                "evidence_refs": normalized_evidence_refs,
             },
             run_id=run_id,
         )

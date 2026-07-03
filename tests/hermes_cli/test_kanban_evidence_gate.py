@@ -186,6 +186,72 @@ def test_complete_task_rejects_sensitive_looking_evidence_path(kanban_home, tmp_
         conn.close()
 
 
+def test_complete_task_rejects_directory_evidence(kanban_home, tmp_path):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="directory evidence", assignee="worker")
+        with pytest.raises(kb.CompletionEvidenceError) as exc:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="done with directory",
+                evidence_paths=[str(tmp_path)],
+            )
+        assert "directory or special path" in str(exc.value)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_complete_task_rejects_credential_component_and_symlink_target(
+    kanban_home, tmp_path
+):
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    key = ssh_dir / "id_rsa"
+    key.write_text("dummy key path only\n", encoding="utf-8")
+    benign_link = tmp_path / "evidence-report.md"
+    try:
+        benign_link.symlink_to(key)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+
+    conn = kb.connect()
+    try:
+        for evidence_ref in (key, benign_link):
+            tid = kb.create_task(conn, title="credential path", assignee="worker")
+            with pytest.raises(kb.CompletionEvidenceError) as exc:
+                kb.complete_task(
+                    conn,
+                    tid,
+                    summary="done with credential-looking path",
+                    evidence_paths=[str(evidence_ref)],
+                )
+            assert "sensitive-looking path" in str(exc.value)
+            assert str(evidence_ref) not in str(exc.value)
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_complete_task_allows_author_named_report(kanban_home, tmp_path):
+    evidence = _evidence_file(tmp_path, "author-report.md")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="author report", assignee="worker")
+        assert kb.complete_task(conn, tid, summary="done", evidence_paths=[evidence])
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["evidence_refs"] == [evidence]
+    finally:
+        conn.close()
+
+
 def test_complete_task_accepts_existing_evidence_and_persists_refs(
     kanban_home, tmp_path
 ):
@@ -240,5 +306,51 @@ def test_complete_task_allows_existing_artifact_as_evidence(kanban_home, tmp_pat
         assert completed[0].payload is not None
         assert completed[0].payload["artifacts"] == [artifact]
         assert completed[0].payload["evidence_refs"] == [artifact]
+    finally:
+        conn.close()
+
+
+def test_edit_completed_task_result_preserves_existing_evidence_refs(
+    kanban_home, tmp_path
+):
+    evidence = _evidence_file(tmp_path, "edit-evidence.md")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="edit", assignee="worker")
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="initial",
+            metadata={"tests_run": 1},
+            evidence_paths=[evidence],
+        )
+        assert kb.edit_completed_task_result(
+            conn,
+            tid,
+            result="updated",
+            metadata={"tests_run": 2},
+        )
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["tests_run"] == 2
+        assert run.metadata["evidence_refs"] == [evidence]
+    finally:
+        conn.close()
+
+
+def test_edit_completed_task_result_requires_evidence_for_legacy_done_task(
+    kanban_home,
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy done", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (tid,))
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.edit_completed_task_result(conn, tid, result="edited without proof")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.result is None
     finally:
         conn.close()

@@ -816,6 +816,21 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    evidence_paths: Optional[list[str]] = None
+    evidence_refs: Optional[list[str]] = None
+    artifacts: Optional[list[str]] = None
+
+
+def _completion_metadata(metadata: Optional[dict], artifacts: Optional[list[str]]) -> Optional[dict]:
+    if artifacts is None:
+        return metadata
+    out = dict(metadata or {})
+    out["artifacts"] = artifacts
+    return out
+
+
+def _completion_evidence_detail(exc: kanban_db.CompletionEvidenceError) -> str:
+    return str(exc)
 
 
 @router.patch("/tasks/{task_id}")
@@ -843,12 +858,17 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
+                try:
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=_completion_metadata(payload.metadata, payload.artifacts),
+                        evidence_paths=payload.evidence_paths,
+                        evidence_refs=payload.evidence_refs,
+                    )
+                except kanban_db.CompletionEvidenceError as exc:
+                    raise HTTPException(status_code=400, detail=_completion_evidence_detail(exc))
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
@@ -1155,6 +1175,9 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    evidence_paths: Optional[list[str]] = None
+    evidence_refs: Optional[list[str]] = None
+    artifacts: Optional[list[str]] = None
     reclaim_first: bool = False
 
 
@@ -1190,7 +1213,9 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             conn, tid,
                             result=payload.result,
                             summary=payload.summary,
-                            metadata=payload.metadata,
+                            metadata=_completion_metadata(payload.metadata, payload.artifacts),
+                            evidence_paths=payload.evidence_paths,
+                            evidence_refs=payload.evidence_refs,
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)
@@ -1247,6 +1272,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+            except kanban_db.CompletionEvidenceError as e:
+                entry.update(ok=False, error=_completion_evidence_detail(e))
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)

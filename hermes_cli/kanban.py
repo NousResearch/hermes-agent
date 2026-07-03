@@ -558,6 +558,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="JSON dict of structured facts to store on the latest completed run.",
     )
+    p_edit.add_argument(
+        "--evidence", "--evidence-path", action="append",
+        default=[], dest="evidence_paths",
+        help=(
+            "Evidence path for the edited done claim. Must be an existing "
+            "absolute local file path. Repeat for multiple evidence files."
+        ),
+    )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
@@ -1927,14 +1935,21 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    evidence_paths = list(getattr(args, "evidence_paths", None) or [])
     with kb.connect_closing() as conn:
-        if not kb.edit_completed_task_result(
-            conn,
-            args.task_id,
-            result=args.result,
-            summary=getattr(args, "summary", None),
-            metadata=metadata,
-        ):
+        try:
+            ok = kb.edit_completed_task_result(
+                conn,
+                args.task_id,
+                result=args.result,
+                summary=getattr(args, "summary", None),
+                metadata=metadata,
+                evidence_paths=evidence_paths,
+            )
+        except kb.CompletionEvidenceError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        if not ok:
             print(
                 f"cannot edit {args.task_id} (unknown id or task is not done)",
                 file=sys.stderr,

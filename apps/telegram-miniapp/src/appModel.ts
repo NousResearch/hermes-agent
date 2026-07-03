@@ -23,6 +23,10 @@ export const riskLabels: Record<QuickAction["risk"], string> = {
 export const POLL_INTERVAL_MS = 15_000;
 export const STALE_AFTER_MS = 45_000;
 
+// Human-facing build/stage tag shown in the footer so the owner always knows
+// which build they are looking at.
+export const DECK_VERSION = "Control Deck · v0.3 · read-only";
+
 export type FreshnessState = "mock" | "fresh" | "refreshing" | "stale" | "offline";
 export type LogLevelFilter = LogLine["level"] | "all";
 export type EndpointKey = "status" | "capabilities" | "approvals" | "sessions" | "logs";

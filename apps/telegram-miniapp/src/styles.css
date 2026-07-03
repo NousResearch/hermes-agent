@@ -1031,6 +1031,47 @@ h2 {
   box-shadow: none;
 }
 
+.degraded-notice {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 3px;
+  margin: -2px 0 14px;
+  border: 1px solid var(--risk-rim);
+  border-radius: var(--radius-control);
+  padding: 11px 13px;
+  background: var(--risk-dim);
+}
+
+.degraded-notice strong {
+  color: var(--risk);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.degraded-notice small {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.deck-footer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin: 4px 2px 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .palette-button,
 .refresh-button,
 .ghost-button {

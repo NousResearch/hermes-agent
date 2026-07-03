@@ -91,16 +91,18 @@ export const quickActions: QuickAction[] = [
 ];
 
 export const recentLogs: LogLine[] = [
-  { level: "info", time: "M2", message: "Status API работает только на чтение." },
-  { level: "info", time: "M3", message: "Telegram initData проверяется на сервере." },
-  { level: "warn", time: "M4", message: "Интерфейс одобрений показан как безопасный макет." },
-  { level: "warn", time: "M4", message: "Опасные действия всё ещё заблокированы сервером." },
+  { level: "info", time: "1 мин", message: "Статус читается только для просмотра." },
+  { level: "info", time: "3 мин", message: "Telegram initData проверяется на сервере." },
+  { level: "warn", time: "8 мин", message: "Очередь одобрений показана как безопасный макет." },
+  { level: "warn", time: "8 мин", message: "Опасные действия заблокированы сервером." },
 ];
 
+// The approvals badge is NOT hardcoded here — it is derived live from the real
+// queue length in App.tsx, so it can never show a stale count.
 export const navItems: NavItem[] = [
   { key: "status", label: "Статус" },
   { key: "sessions", label: "Сессии" },
-  { key: "approvals", label: "Одобрения", badge: "2" },
+  { key: "approvals", label: "Одобрения" },
   { key: "logs", label: "Логи" },
 ];
 

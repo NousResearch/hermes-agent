@@ -113,6 +113,7 @@ export function ApprovalsSection({
   onSelect,
   actionsEnabled = false,
   isOwner = false,
+  isConnected = false,
   onDecision,
 }: {
   approvals: ApprovalPreview[];
@@ -120,6 +121,7 @@ export function ApprovalsSection({
   onSelect: (approval: ApprovalPreview) => void;
   actionsEnabled?: boolean;
   isOwner?: boolean;
+  isConnected?: boolean;
   onDecision?: (approvalId: string, decision: ApprovalDecision) => Promise<boolean>;
 }) {
   // The confirm freezes BOTH the decision and the exact approval it targets, so
@@ -137,6 +139,19 @@ export function ApprovalsSection({
   // A decision is actionable only when the backend capability is live, the user
   // is the authenticated owner, and this approval advertises the decision.
   const canDecide = actionsEnabled && isOwner && Boolean(onDecision);
+  // Distinguish WHY a decision is unavailable so the button copy tells the
+  // truth instead of a generic "позже": a non-owner on a live connection can
+  // never decide (stable), whereas an owner whose gate is off/degraded may be
+  // able to later.
+  const denyReason: "none" | "not-owner" | "gate-off" | "preview" = canDecide
+    ? "none"
+    : isConnected && !isOwner
+      ? "not-owner"
+      : isConnected
+        ? "gate-off"
+        : "preview";
+  const approveLabel = canDecide ? "Одобрить" : denyReason === "not-owner" ? "Только владелец" : "Одобрить позже";
+  const rejectLabel = canDecide ? "Отклонить" : denyReason === "not-owner" ? "Только владелец" : "Отклонить позже";
 
   async function runDecision(target: ApprovalPreview, decision: ApprovalDecisionValue) {
     if (!onDecision) return;
@@ -189,7 +204,7 @@ export function ApprovalsSection({
             disabled={!canDecide || pending || !allowed.includes("approve_once")}
             onClick={() => setConfirm({ approval: selected, decision: "approve_once" })}
           >
-            {canDecide ? "Одобрить" : "Одобрить позже"}
+            {approveLabel}
           </button>
           <button
             type="button"
@@ -197,7 +212,7 @@ export function ApprovalsSection({
             disabled={!canDecide || pending || !allowed.includes("reject_once")}
             onClick={() => setConfirm({ approval: selected, decision: "reject_once" })}
           >
-            {canDecide ? "Отклонить" : "Отклонить позже"}
+            {rejectLabel}
           </button>
         </div>
       </article>

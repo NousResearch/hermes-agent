@@ -256,6 +256,20 @@ def test_local_storage_keys_remain_harmless_ui_state_only():
         assert forbidden.lower() not in storage_block.lower()
 
 
+def test_approvals_badge_is_derived_live_not_hardcoded():
+    # Truthfulness tripwire: the nav badge must never carry a static count.
+    mock_text = read_frontend(MOCK_DATA_TS)
+    nav_block = re.search(r"export const navItems[\s\S]*?\];", mock_text)
+    assert nav_block, "navItems must be reviewable"
+    assert "badge:" not in nav_block.group(0), "navItems must NOT hardcode a badge; derive it live"
+
+    app_text = read_frontend(APP_TSX)
+    # The approvals badge is computed from the real queue length AND suppressed
+    # in live mode unless the approvals endpoint is fresh (no stale count).
+    assert "item.key === \"approvals\" && approvalCount > 0 && approvalsTrustworthy" in app_text
+    assert 'endpointHealth.approvals.state === "ok"' in app_text
+
+
 def test_mock_quick_actions_remain_read_only_navigation():
     mock_text = read_frontend(MOCK_DATA_TS)
     ids = set(re.findall(r'id: "([^"]+)"', mock_text[mock_text.index("export const quickActions"):mock_text.index("export const recentLogs")]))

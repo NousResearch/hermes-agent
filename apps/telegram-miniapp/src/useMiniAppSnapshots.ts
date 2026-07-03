@@ -26,6 +26,7 @@ import {
   approveActionEnabled,
   createEndpointHealth,
   createEndpointStateUpdates,
+  endpointKeys,
   logLineKey,
   mapServerApproval,
   mapServerLog,
@@ -55,6 +56,12 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
   const [approvalsVersion, setApprovalsVersion] = useState("");
   const [isActionOwner, setIsActionOwner] = useState(false);
   const [endpointHealth, setEndpointHealth] = useState<Record<EndpointKey, EndpointHealthItem>>(() => createEndpointHealth("preview"));
+  // Per-endpoint time of that endpoint's OWN last successful read, so a
+  // degraded section can be dated (or marked never-loaded) truthfully instead
+  // of borrowing the whole poll's success time.
+  const [endpointLastOk, setEndpointLastOk] = useState<Record<EndpointKey, number | null>>(() =>
+    endpointKeys.reduce((acc, key) => ({ ...acc, [key]: null }), {} as Record<EndpointKey, number | null>),
+  );
   const [snapshotMeta, setSnapshotMeta] = useState<Record<"approvals" | "sessions" | "logs", SnapshotMeta | null>>({ approvals: null, sessions: null, logs: null });
   const [isRefreshing, setRefreshing] = useState(false);
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
@@ -131,26 +138,45 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
         ]);
         if (requestId !== refreshRequestId.current) return;
 
-        setEndpointHealth((current) => updateEndpointHealth(current, {
-          status: status.status === "fulfilled" ? "ok" : "degraded",
-          capabilities: capabilities.status === "fulfilled" ? "ok" : "degraded",
-          approvals: approvals.status === "fulfilled" ? "ok" : "degraded",
-          sessions: sessions.status === "fulfilled" ? "ok" : "degraded",
-          logs: logs.status === "fulfilled" ? "ok" : "degraded",
-        }));
-
-        // Fail closed FIRST, before any early return: the action gate may open
-        // ONLY when every action-critical read of this poll is fresh and
-        // successful — status AND capabilities AND approvals. If any of them
-        // degraded, drop the capability (and the stale approvals version) so a
-        // previously-loaded approve-action=true can never keep buttons live on
-        // stale data.
-        const actionReadsHealthy =
-          status.status === "fulfilled" &&
-          capabilities.status === "fulfilled" &&
-          approvals.status === "fulfilled";
+        // The action gate may open ONLY when every action-critical read of this
+        // poll is fresh — status AND capabilities AND approvals. If any degraded,
+        // drop the capability and stale approvals version so a previously-loaded
+        // approve-action=true can never keep buttons live on stale data.
+        const statusOk = status.status === "fulfilled";
+        const actionReadsHealthy = statusOk && capabilities.status === "fulfilled" && approvals.status === "fulfilled";
         setServerCapabilities(actionReadsHealthy ? capabilities.value.items : []);
         if (!actionReadsHealthy) setApprovalsVersion("");
+
+        // "committed" means this poll actually APPLIED the endpoint's payload to
+        // displayed state, not merely that its request resolved. Section payloads
+        // (approvals/sessions/logs) only commit when status also succeeds (they
+        // live after the status early-return); the capability matrix is only
+        // stored when actionReadsHealthy (fail-closed). Health and per-endpoint
+        // last-ok both track committed state so a row never claims ok while the
+        // screen shows nothing.
+        const committed: Record<EndpointKey, boolean> = {
+          status: statusOk,
+          capabilities: actionReadsHealthy,
+          approvals: statusOk && approvals.status === "fulfilled",
+          sessions: statusOk && sessions.status === "fulfilled",
+          logs: statusOk && logs.status === "fulfilled",
+        };
+        setEndpointHealth((current) =>
+          updateEndpointHealth(
+            current,
+            endpointKeys.reduce(
+              (acc, key) => ({ ...acc, [key]: committed[key] ? "ok" : "degraded" }),
+              {} as Partial<Record<EndpointKey, "ok" | "degraded">>,
+            ),
+          ),
+        );
+        const pollAt = Date.now();
+        setEndpointLastOk((current) =>
+          endpointKeys.reduce(
+            (acc, key) => ({ ...acc, [key]: committed[key] ? pollAt : current[key] }),
+            {} as Record<EndpointKey, number | null>,
+          ),
+        );
 
         if (status.status !== "fulfilled") {
           setApiState("offline");
@@ -222,6 +248,7 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
       setServerLogs([]);
       setServerCapabilities([]);
       setEndpointHealth(createEndpointHealth("preview"));
+      setEndpointLastOk(endpointKeys.reduce((acc, key) => ({ ...acc, [key]: null }), {} as Record<EndpointKey, number | null>));
       setSnapshotMeta({ approvals: null, sessions: null, logs: null });
       setApprovalsVersion("");
       setIsActionOwner(false);
@@ -246,6 +273,12 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
         if (!cancelled) {
           setApiState("offline");
           setIsActionOwner(false);
+          // Auth failed before any poll committed data: mark the endpoints
+          // degraded so the sections show the outage notice instead of a blank
+          // live tab with no explanation, and keep the action gate closed.
+          setEndpointHealth((current) => updateEndpointHealth(current, createEndpointStateUpdates("degraded")));
+          setServerCapabilities([]);
+          setApprovalsVersion("");
           setRefreshing(false);
         }
       });
@@ -306,6 +339,7 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
     logs,
     serverCapabilities,
     endpointHealth,
+    endpointLastOk,
     snapshotMeta,
     isRefreshing,
     lastSuccessAt,

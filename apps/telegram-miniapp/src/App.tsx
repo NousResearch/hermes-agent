@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasMiniAppApi } from "./api";
 import { navItems, statusCards, type NavKey } from "./mockData";
 import {
+  DECK_VERSION,
   STORAGE_KEYS,
   actionValue,
   endpointKeys,
@@ -16,7 +17,7 @@ import {
   writeStoredValue,
   type Theme,
 } from "./appModel";
-import { configureTelegramBackButton, configureTelegramMainButton, getTelegramRuntime, prepareTelegramViewport } from "./telegram";
+import { configureTelegramBackButton, getTelegramRuntime, prepareTelegramViewport } from "./telegram";
 import { useMiniAppSnapshots } from "./useMiniAppSnapshots";
 import { SectionIntro, SourceStrip } from "./components/chrome";
 import { StatusSection } from "./components/StatusSection";
@@ -54,6 +55,7 @@ export function App() {
     logs,
     serverCapabilities,
     endpointHealth,
+    endpointLastOk,
     snapshotMeta,
     isRefreshing,
     lastSuccessAt,
@@ -82,7 +84,6 @@ export function App() {
   }, [activeTab, isPaletteOpen]);
 
   useEffect(() => configureTelegramBackButton(isPaletteOpen || activeTab !== "status", closeTransientUi), [activeTab, closeTransientUi, isPaletteOpen]);
-  useEffect(() => configureTelegramMainButton("Только чтение", () => undefined), []);
 
   useEffect(() => {
     writeStoredValue(STORAGE_KEYS.activeTab, activeTab);
@@ -141,10 +142,29 @@ export function App() {
     ? "Сервер сообщил о включённых действиях. Перед любым запуском нужен контур одобрений."
     : "Ничего не будет выполнено без вашего явного одобрения.";
   const approvalCount = approvals.length;
+  const isConnected = apiState === "connected";
+  // The hero headline tracks the real connection/gateway state instead of a
+  // static "Hermes готов", so the biggest signal on screen never lies.
+  const heroTitle =
+    apiState === "connected"
+      ? snapshot?.gateway.running
+        ? "Hermes на связи"
+        : "Hermes офлайн"
+      : apiState === "connecting"
+        ? "Подключаюсь…"
+        : apiState === "offline"
+          ? lastSuccessAt
+            ? "Связь потеряна"
+            : "Hermes недоступен"
+          : "Локальное превью";
   const currentFreshness = freshnessState(apiState, isRefreshing, lastSuccessAt, now);
   const lastRefreshText = lastSuccessAt ? `последнее обновление ${formatRefreshTime(lastSuccessAt)}` : formatRefreshTime(lastSuccessAt);
   const refreshEnabled = telegram.isTelegram && Boolean(telegram.initData) && apiConfigured;
   const currentSourceMeta = activeTab === "approvals" || activeTab === "sessions" || activeTab === "logs" ? snapshotMeta[activeTab] : null;
+  // A live section renders only once it has committed data at least once; a
+  // never-loaded degraded endpoint shows the degraded notice alone instead of
+  // an empty-state that would masquerade an outage as a valid empty response.
+  const sectionAvailable = activeTab === "status" || apiState === "mock" || endpointLastOk[activeTab] !== null;
 
   return (
     <main className="screen" data-mode={telegram.colorScheme}>
@@ -175,7 +195,7 @@ export function App() {
       <section className="hero-card glass-card scan-line">
         <div className="hero-copy-block">
           <p className="eyebrow">Тихая роскошь · кибернетика</p>
-          <h1>Hermes готов</h1>
+          <h1>{heroTitle}</h1>
           <p className="hero-copy">
             Персональная диспетчерская для агентов, сессий, логов и будущих ручных одобрений. Сейчас режим только чтение.
           </p>
@@ -198,19 +218,31 @@ export function App() {
       />
       <SourceStrip meta={currentSourceMeta} />
 
+      {activeTab !== "status" && endpointHealth[activeTab].state === "degraded" ? (
+        <div className="degraded-notice" role="status" aria-live="polite">
+          <strong>Раздел не обновился в последнем опросе</strong>
+          <small>
+            {endpointLastOk[activeTab]
+              ? `Показаны данные за ${formatRefreshTime(endpointLastOk[activeTab])}.`
+              : "Этот раздел ещё ни разу не загрузился успешно."}
+          </small>
+        </div>
+      ) : null}
+
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} capabilities={serverCapabilities} endpointHealth={endpointKeys.map((key) => endpointHealth[key])} /> : null}
-      {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
-      {activeTab === "approvals" ? (
+      {activeTab === "sessions" && sectionAvailable ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
+      {activeTab === "approvals" && sectionAvailable ? (
         <ApprovalsSection
           approvals={approvals}
           selectedId={selectedApprovalId}
           onSelect={(approval) => setSelectedApprovalId(approval.id)}
           actionsEnabled={actionsEnabled}
           isOwner={isActionOwner}
+          isConnected={isConnected}
           onDecision={submitApprovalDecision}
         />
       ) : null}
-      {activeTab === "logs" ? (
+      {activeTab === "logs" && sectionAvailable ? (
         <LogsSection
           logs={logs}
           selectedKey={selectedLogKey}
@@ -220,13 +252,26 @@ export function App() {
         />
       ) : null}
 
+      <footer className="deck-footer" aria-label="Версия и режим">
+        <span>{DECK_VERSION}</span>
+        <span>{actionsEnabled ? "Действия: включены для владельца" : "Действия: выключены"}</span>
+      </footer>
+
       <nav className="bottom-nav" aria-label="Навигация">
-        {navItems.map((item) => (
-          <button aria-current={activeTab === item.key ? "page" : undefined} className={activeTab === item.key ? "active" : ""} key={item.key} type="button" onClick={() => setActiveTab(item.key)}>
-            <span>{item.label}</span>
-            {item.badge ? <em>{item.badge}</em> : null}
-          </button>
-        ))}
+        {navItems.map((item) => {
+          // The approvals badge is derived live from the real queue length, so
+          // it shows the true number of pending items and disappears at zero.
+          // In live mode it is suppressed unless the approvals endpoint is fresh
+          // (state "ok"), so a degraded poll never shows a stale count as current.
+          const approvalsTrustworthy = apiState === "mock" || endpointHealth.approvals.state === "ok";
+          const badge = item.key === "approvals" && approvalCount > 0 && approvalsTrustworthy ? String(approvalCount) : undefined;
+          return (
+            <button aria-current={activeTab === item.key ? "page" : undefined} className={activeTab === item.key ? "active" : ""} key={item.key} type="button" onClick={() => setActiveTab(item.key)}>
+              <span>{item.label}</span>
+              {badge ? <em aria-label={`${badge} в очереди`}>{badge}</em> : null}
+            </button>
+          );
+        })}
       </nav>
 
       <CommandPalette isOpen={isPaletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={setActiveTab} />

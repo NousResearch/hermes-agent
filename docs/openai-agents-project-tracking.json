@@ -339,5 +339,56 @@
     },
     "current_tip_ref": "HEAD",
     "current_tip_note": "HEAD is intentionally tracked symbolically so the latest local manifest/status commit is covered without impossible self-referential SHA churn."
+  },
+  "github_bridge": {
+    "status": "blocked_read_only_on_origin",
+    "origin_repo": "NousResearch/hermes-agent",
+    "viewer_permission": "READ",
+    "issues_enabled": true,
+    "reason": "gh auth is valid but current account lacks write permission on origin; do not create upstream issues without target fork/repo confirmation.",
+    "next_required_action": "Confirm target repo/fork for issue/PR tracking or grant/write use appropriate remote."
+  },
+  "kanban_bridge": {
+    "status": "wired_local_board",
+    "board": "hermes-optimization",
+    "assignee": "projectmanager",
+    "note": "projectmanager profile exists but has no configured model, so actionable cards were blocked unless already completed to prevent accidental dispatcher failures/spend.",
+    "tasks": [
+      {
+        "id": "t_d874e97f",
+        "title": "OASDK: bridge GitHub Issues tracking once write permission exists",
+        "status": "blocked"
+      },
+      {
+        "id": "t_6b9792e8",
+        "title": "OASDK: implement proof bundle as release/readiness artifact",
+        "status": "done"
+      },
+      {
+        "id": "t_f9adabc8",
+        "title": "OASDK: gateway restart and fresh Telegram session smoke",
+        "status": "blocked"
+      },
+      {
+        "id": "t_0bfd8eec",
+        "title": "OASDK: Cursor and Continue governed workflow wiring",
+        "status": "blocked"
+      },
+      {
+        "id": "t_f019867c",
+        "title": "OASDK: cost and model routing policy enforcement",
+        "status": "blocked"
+      },
+      {
+        "id": "t_a1c5eb9c",
+        "title": "OASDK: upstream sync, branch, PR, and CI readiness",
+        "status": "blocked"
+      },
+      {
+        "id": "t_b5288e5b",
+        "title": "OASDK: pre-NAS migration readiness gate",
+        "status": "blocked"
+      }
+    ]
   }
 }

@@ -14,6 +14,7 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
     noisy_messages = [
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
         "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+        "📦 Preflight compression: ~138,265 tokens >= 136,000 threshold. This may take a moment.",
         "ℹ Configured compression model 'small-model' failed (timeout). Recovered using main model — check auxiliary.compression.model in config.yaml.",
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
@@ -24,11 +25,14 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
-def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
+def test_discord_status_suppresses_internal_noise_like_telegram():
+    """Discord should keep chat clean from gateway/internal lifecycle chatter."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
+    preflight = "📦 Preflight compression: ~138,265 tokens >= 136,000 threshold. This may take a moment."
 
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", preflight) is None
+    assert _sanitize_gateway_final_response(Platform.DISCORD, preflight) == ""
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 

@@ -466,6 +466,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     platform_value = _gateway_platform_value(platform)
     if platform_value == "discord":
         redacted = _redact_gateway_user_facing_secrets(str(text))
+        if _TELEGRAM_NOISY_STATUS_RE.search(redacted):
+            return ""
         return _strip_discord_gateway_chrome_emoji(redacted)
 
     if platform_value != "telegram":
@@ -486,6 +488,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     platform_value = _gateway_platform_value(platform)
     if platform_value == "discord":
         redacted = _redact_gateway_user_facing_secrets(text)
+        if _TELEGRAM_NOISY_STATUS_RE.search(redacted):
+            return None
         return _strip_discord_gateway_chrome_emoji(redacted)
 
     if platform_value != "telegram":

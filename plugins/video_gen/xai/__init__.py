@@ -132,12 +132,11 @@ def _raise_if_blocked_local_input(ref: str) -> None:
         from agent.file_safety import get_read_block_error
 
         blocked = get_read_block_error(ref)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
     except Exception as exc:
         logger.debug("xAI media input read guard unavailable: %s", exc)
+        return
+    if blocked:
+        raise ValueError(blocked)
 
 
 def _image_ref_to_xai_url(value: str) -> str:

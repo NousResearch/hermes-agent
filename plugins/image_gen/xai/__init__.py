@@ -123,6 +123,26 @@ def _resolve_resolution() -> str:
     return DEFAULT_RESOLUTION
 
 
+def _raise_if_blocked_local_input(source: str) -> None:
+    """Refuse to read a local path that Hermes' read deny-list blocks.
+
+    Mirrors the video_gen/xai plugin and the openai-codex image path so all
+    local media inputs share one guard: a symlink such as
+    ``~/.hermes/leak.png -> ~/.hermes/auth.json`` must not be base64-encoded
+    into the outbound xAI payload. Fail-open if ``agent.file_safety`` is
+    unavailable (defense-in-depth, consistent with the sibling plugins).
+    """
+    try:
+        from agent.file_safety import get_read_block_error
+
+        blocked = get_read_block_error(source)
+    except Exception as exc:
+        logger.debug("xAI image input read guard unavailable: %s", exc)
+        return
+    if blocked:
+        raise ValueError(blocked)
+
+
 def _xai_image_field(source: str) -> Dict[str, str]:
     """Build the xAI ``image`` field for an edit request.
 
@@ -137,16 +157,7 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     import base64
     import os as _os
 
-    try:
-        from agent.file_safety import get_read_block_error
-
-        blocked = get_read_block_error(source)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
-    except Exception as exc:
-        logger.debug("xAI image input read guard unavailable: %s", exc)
+    _raise_if_blocked_local_input(source)
 
     with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
         raw = fh.read()
@@ -308,6 +319,18 @@ class XAIImageGenProvider(ImageGenProvider):
             edit_model = "grok-imagine-image-quality"
             try:
                 image_fields = [_xai_image_field(source) for source in source_images]
+            except ValueError as exc:
+                # Read deny-list block (e.g. a credential-store symlink). Surface
+                # it as an access error rather than a generic I/O failure so the
+                # cause isn't mislabeled.
+                return error_response(
+                    error=str(exc),
+                    error_type="access_denied",
+                    provider=provider_name,
+                    model=edit_model,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             except Exception as exc:
                 return error_response(
                     error=f"Could not load source image for editing: {exc}",

@@ -143,6 +143,7 @@ def test_discord_final_response_returns_result_without_work_report_prefixes():
         "GootHands Web流入・検索状況調査を並行で進め、"
         "その結果をbusiness-advisorが内田さん向けの短い回答に統合する流れにしました。"
     )
+    live_bad_skill_count = "Hermesのスキル一覧を確認し、件数は102件でした。"
 
     assert _sanitize_gateway_final_response(Platform.DISCORD, skill_count).startswith(
         "有効なスキルは102個です。"
@@ -158,6 +159,9 @@ def test_discord_final_response_returns_result_without_work_report_prefixes():
         "削除やアーカイブ、設定変更はしていません。"
     )
     assert _sanitize_gateway_final_response(Platform.DISCORD, orchestration) == ""
+    assert _sanitize_gateway_final_response(
+        Platform.DISCORD, live_bad_skill_count
+    ) == "有効なスキルは102件です。"
 
 
 def test_discord_kanban_error_notifications_do_not_say_will_check():

@@ -181,6 +181,24 @@ def test_discord_skill_inventory_summary_starts_with_result(tmp_path, monkeypatc
     assert "確認できています" not in adapter.sent[0]["text"]
 
 
+def test_discord_skill_count_completion_strips_work_clause(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-skill-count-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = "Hermesのスキル一覧を確認し、件数は102件でした。"
+    _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["text"] == "有効なスキルは102件です。"
+    assert "確認し" not in adapter.sent[0]["text"]
+
+
 def test_discord_skill_audit_summary_starts_with_result(tmp_path, monkeypatch):
     db_path = tmp_path / "discord-skill-audit-result.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

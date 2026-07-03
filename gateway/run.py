@@ -211,19 +211,34 @@ def _discord_naturalize_completion_summary(text: str) -> str:
     if not cleaned:
         return ""
 
+    original_cleaned = cleaned
+    cleaned = re.sub(
+        r"^\s*.{0,120}?"
+        r"(?:確認|調査|検索|調べ|見直|検証|テスト|チェック|整理|抽出)"
+        r"(?:し|して|しました)[、,\s]+",
+        "",
+        cleaned,
+        count=1,
+        flags=re.DOTALL,
+    ).lstrip()
+
     time_answer = re.search(
         r"現在時刻を確認しました[。.!！\s]*(.+?です。?)$",
-        cleaned,
+        original_cleaned,
         flags=re.DOTALL,
     )
     if time_answer:
         return f"現在時刻は{time_answer.group(1).strip()}"
 
+    skill_count = re.search(r"件数は\s*(\d+)\s*件", cleaned)
+    if skill_count and "スキル" in original_cleaned:
+        return f"有効なスキルは{skill_count.group(1)}件です。"
+
     skill_inventory = re.search(
         r"(\d+)\s*個のスキルが有効",
-        cleaned,
+        original_cleaned,
     )
-    if skill_inventory and "スキル" in cleaned:
+    if skill_inventory and "スキル" in original_cleaned:
         parts = [f"有効なスキルは{skill_inventory.group(1)}個です。"]
         category_labels = [
             "AI Company",

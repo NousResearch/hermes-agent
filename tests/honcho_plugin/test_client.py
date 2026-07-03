@@ -735,6 +735,44 @@ class TestGetHonchoClient:
         mock_honcho.assert_called_once()
         assert mock_honcho.call_args.kwargs["timeout"] == 77.5
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_timeout_change_triggers_client_rebuild(self):
+        """Changing timeout config must rebuild the cached client."""
+        fake_honcho_1 = MagicMock(name="Honcho_v1")
+        fake_honcho_2 = MagicMock(name="Honcho_v2")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+            client1 = get_honcho_client(cfg)
+
+        assert client1 is fake_honcho_1
+        assert mock_h1.call_args.kwargs["timeout"] == 30.0
+
+        # Same config — should return cached client (no rebuild)
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+            client2 = get_honcho_client(cfg)
+
+        assert client2 is fake_honcho_1  # still cached
+        mock_h2.assert_not_called()
+
+        # Changed timeout — must rebuild
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 300}}):
+            client3 = get_honcho_client(cfg)
+
+        assert client3 is fake_honcho_2  # rebuilt
+        mock_h3.assert_called_once()
+        assert mock_h3.call_args.kwargs["timeout"] == 300.0
+
 
 class TestResolveSessionNameGatewayKey:
     """Regression tests for gateway_session_key priority in resolve_session_name.

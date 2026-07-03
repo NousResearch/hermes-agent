@@ -11,6 +11,10 @@ fi
 
 PR_URL="$1"
 CMD="${2:-review}"
+case "${CMD}" in
+  review|describe|improve|ask|reflect) ;;
+  *) echo "คำสั่งย่อยไม่ถูกต้อง: ${CMD} (ใช้ได้: review, describe, improve, ask, reflect)"; exit 2 ;;
+esac
 HOME_GATE_DIR="${HOME}/.hermes/pr-review-gate"
 VENV="${HOME_GATE_DIR}/venv"
 CONFIG="${HOME_GATE_DIR}/pr_agent.toml"
@@ -25,7 +29,9 @@ load_env() {
   local f="$1"
   [ -f "$f" ] || return 0
   while IFS= read -r raw; do
-    line="${raw%%#*}"
+    # ข้ามเฉพาะบรรทัด comment เต็มบรรทัด — ห้ามตัด # กลางค่า (key/URL บางตัวมี #)
+    case "$raw" in \#*|"") continue ;; esac
+    line="$raw"
     case "$line" in
       *=*)
         key="${line%%=*}"; key="$(echo "$key" | tr -d '[:space:]')"

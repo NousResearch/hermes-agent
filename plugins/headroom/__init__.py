@@ -521,6 +521,7 @@ def register(ctx) -> None:
 
     ctx.register_tool(
         name="headroom_retrieve",
+        toolset="headroom",
         check_fn=_retrieval_tool_available,
         schema={
             "properties": {

@@ -748,7 +748,7 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
         try:
             page = browser.new_page(
                 viewport={"width": 1600, "height": 100},
-                device_scale_factor=3,
+                device_scale_factor=6,
             )
             page.set_content(html)
             page.wait_for_timeout(100)  # let fonts settle

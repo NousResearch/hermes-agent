@@ -1914,8 +1914,11 @@ def test_cli_edit_backfills_result_on_done_task(kanban_home):
     finally:
         conn.close()
     assert task.result == "DECIDED: done"
+    assert run is not None
     assert run.summary == "DECIDED: done"
-    assert run.metadata == {"source": "dashboard-recovery"}
+    assert run.metadata is not None
+    assert run.metadata["source"] == "dashboard-recovery"
+    assert len(run.metadata.get("evidence_refs", [])) == 1
     assert events[-1].kind == "edited"
 
 

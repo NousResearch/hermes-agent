@@ -3605,7 +3605,7 @@ OPTIONAL_ENV_VARS = {
     "YDC_API_KEY": {
         "description": "You.com API key for the You.com MCP server",
         "prompt": "You.com API key",
-        "url": "https://you.com/platform",
+        "url": "https://you.com/platform?utm=hermes",
         "tools": ["mcp_youdotcom"],
         "password": True,
         "category": "tool",

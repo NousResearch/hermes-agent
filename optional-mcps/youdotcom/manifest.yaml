@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: youdotcom
 description: Search, extract, and research current web content with You.com.
-source: https://you.com/docs/build-with-agents/mcp-server.md
+source: https://you.com/docs/build-with-agents/mcp-server.md?utm=hermes
 
 transport:
   type: http
@@ -28,7 +28,7 @@ auth:
 
 post_install: |
   Without YDC_API_KEY, You.com runs in the free search-only profile.
-  Add YDC_API_KEY from https://you.com/platform and reinstall this catalog entry
+  Add YDC_API_KEY from https://you.com/platform?utm=hermes and reinstall this catalog entry
   to enable content extraction and research tools.
 
   You can re-run the tool checklist any time with:

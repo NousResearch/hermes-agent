@@ -1849,6 +1849,55 @@ def init_db(
     return path
 
 
+def _dedupe_active_idempotency_keys(conn: sqlite3.Connection) -> None:
+    """Archive-safe de-dup pass ahead of the UNIQUE idempotency index.
+
+    Pre-#19-fix DBs may already hold duplicate active (non-archived) rows
+    sharing one ``idempotency_key`` — the exact race this migration closes.
+    Building ``idx_tasks_idempotency`` directly over dirty data would
+    raise ``IntegrityError`` and make the DB permanently unopenable. For each
+    duplicated key, keep the row the pre-existing ``create_task`` lookup
+    fast-path already resolves to (``ORDER BY created_at DESC LIMIT 1`` —
+    newest wins) and archive the rest, so post-migration lookups keep
+    returning the same task id they did before the migration. Idempotent and
+    cheap on the common case (no duplicates): the GROUP BY scan is the only
+    cost when there is nothing to fix.
+    """
+    dupe_keys = conn.execute(
+        "SELECT idempotency_key FROM tasks "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+        "GROUP BY idempotency_key HAVING COUNT(*) > 1"
+    ).fetchall()
+    if not dupe_keys:
+        return
+    now = int(time.time())
+    for row in dupe_keys:
+        key = row["idempotency_key"]
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC, id DESC",
+            (key,),
+        ).fetchall()
+        # Keep the first (canonical, newest-wins per the existing lookup
+        # order); archive every other duplicate so the UNIQUE partial index
+        # can be built cleanly.
+        for dupe in rows[1:]:
+            conn.execute(
+                "UPDATE tasks SET status = 'archived', completed_at = ? "
+                "WHERE id = ? AND status != 'archived'",
+                (now, dupe["id"]),
+            )
+            _append_event(
+                conn,
+                dupe["id"],
+                "archived",
+                {
+                    "reason": "duplicate_idempotency_key_migration",
+                    "idempotency_key": key,
+                },
+            )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1994,9 +2043,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
+    # ``idx_tasks_idempotency`` used to be a plain (non-unique) index, which
+    # is why concurrent ``create_task`` callers with the same idempotency key
+    # could both insert (#19 2/3 review finding: true multi-connection races
+    # produced two active fix tasks for one logical DoD verdict). Replace it
+    # with a UNIQUE partial index over active (non-archived) rows so a second
+    # concurrent INSERT for the same key fails fast with an IntegrityError
+    # that ``create_task`` turns into a "return the canonical existing task"
+    # response instead of a silently-inserted duplicate. Archived rows are
+    # excluded so a key can be legitimately reused once its original task is
+    # archived, matching the pre-existing fast-path SELECT semantics. Kept
+    # under the SAME index name (drop + recreate, not rename) so callers that
+    # only inspect ``sqlite_master`` for ``idx_tasks_idempotency`` see no
+    # difference.
+    #
+    # A production DB may already contain duplicate active rows for the same
+    # key from before this fix (that's the exact bug being closed) — building
+    # the UNIQUE index directly over dirty data would raise and prevent the
+    # DB from ever opening again. De-duplicate first so the migration is
+    # forward-safe on existing boards. Guarded on ``status`` existing: some
+    # synthetic/legacy schemas used only in migration-idempotency tests don't
+    # model the ``status`` column at all, and this dedup pass is meaningless
+    # without it (there's no "active" concept to dedup within).
+    if "status" in cols:
+        _dedupe_active_idempotency_keys(conn)
+        conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
+            "ON tasks(idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+        )
+    else:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -2538,9 +2618,15 @@ def create_task(
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # and to avoid holding a write lock during the lookup. This pre-check is
+    # an optimisation, not the correctness guarantee: two concurrent
+    # creators with the same key can both pass it and both attempt the
+    # INSERT below, but ``idx_tasks_idempotency`` (a UNIQUE partial
+    # index over active idempotency keys) means only one INSERT actually
+    # lands — the loser hits ``sqlite3.IntegrityError`` and the ``except``
+    # block around the INSERT re-reads and returns the winner's id instead
+    # of leaving a duplicate row committed (#19 2/3 review finding: a plain
+    # non-unique index let both concurrent inserts land).
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -2682,9 +2768,29 @@ def create_task(
                 )
             return task_id
         except sqlite3.IntegrityError:
+            # A concurrent creator may have won the idempotency-key race
+            # between our fast-path SELECT (above) and this INSERT hitting
+            # the UNIQUE partial index over active idempotency keys
+            # (idx_tasks_idempotency). write_txn's BEGIN IMMEDIATE
+            # has already rolled our attempt back by the time we get here,
+            # so a plain read now sees the winner's committed row. Return
+            # its id instead of raising or retrying with a doomed new id —
+            # this is what makes the fix task-level idempotency race-safe
+            # rather than merely racy-but-eventually-consistent (#19 2/3
+            # review finding).
+            if idempotency_key:
+                winner = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "AND status != 'archived' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if winner is not None:
+                    return winner["id"]
             if attempt == 1:
                 raise
-            # Retry with a fresh id.
+            # Genuine (extremely unlikely) task-id collision with no
+            # idempotency-key conflict involved — retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
 

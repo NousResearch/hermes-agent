@@ -826,6 +826,10 @@ let poolIdleReaper = null
 const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
 let rendererReloadTimes = []
+// One-shot guard: prevents an infinite relaunch loop if --no-sandbox doesn't
+// resolve the renderer crash either. Only the first crash-loop triggers the
+// auto-relaunch; subsequent ones just leave the dead window (#56726).
+let noSandboxRelaunchAttempted = false
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
@@ -4740,11 +4744,36 @@ function installPreviewShortcut(window) {
   })
 }
 
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
+// Zoom level is persisted in BOTH a main-process JSON file (zoom-state.json)
+// and the renderer's localStorage. The JSON file is the primary store: it
+// survives renderer crash recovery (Electron cache/storage folders may be
+// moved or recreated during crash recovery, wiping localStorage), which was
+// the root cause of zoom resets on Windows (#56726). localStorage is kept as
+// a secondary mirror so existing installs migrate transparently.
 import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+
+const DESKTOP_ZOOM_STATE_PATH = path.join(app.getPath('userData'), 'zoom-state.json')
+
+function readZoomState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_STATE_PATH, 'utf8'))
+    return clampZoomLevel(Number(raw?.zoomLevel))
+  } catch {
+    return null
+  }
+}
+
+function writeZoomState(zoomLevel) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_STATE_PATH), { recursive: true })
+    writeFileAtomic(
+      DESKTOP_ZOOM_STATE_PATH,
+      JSON.stringify({ zoomLevel: clampZoomLevel(zoomLevel) }, null, 2)
+    )
+  } catch (error) {
+    rememberLog(`[zoom] json persist failed: ${error?.message || error}`)
+  }
+}
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -4752,6 +4781,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   }
   const next = clampZoomLevel(zoomLevel)
   window.webContents.setZoomLevel(next)
+  writeZoomState(next)
   // Keep any open settings UI in sync, including changes made via the
   // keyboard shortcuts or the View menu.
   window.webContents.send('hermes:zoom:changed', { level: next, percent: zoomLevelToPercent(next) })
@@ -4766,6 +4796,15 @@ function restorePersistedZoomLevel(window) {
   if (!window || window.isDestroyed()) {
     return
   }
+
+  // Prefer the JSON file — it survives renderer crash recovery (#56726).
+  const saved = readZoomState()
+  if (saved != null) {
+    window.webContents.setZoomLevel(saved)
+    return
+  }
+
+  // Fall back to localStorage for installs that haven't written zoom-state.json yet.
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -6758,6 +6797,22 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// Relaunch the app with --no-sandbox appended to the current launch args.
+// Used as a one-shot recovery for Windows renderer sandbox crash loops (#56726):
+// Chromium's renderer sandbox can crash deterministically on certain Windows
+// setups, leaving a dead black window. --no-sandbox is a compatibility
+// workaround (not ideal long-term) but it's better than an unusable app.
+function relaunchWithNoSandbox() {
+  try {
+    const args = process.argv.slice(1).filter(a => a !== '--no-sandbox')
+    args.push('--no-sandbox')
+    app.relaunch({ args })
+    app.exit(0)
+  } catch (err) {
+    rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
+  }
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -6815,6 +6870,9 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
+    // Persist geometry as soon as the window is visible so a crash before the
+    // first clean resize/move/close still captures the restored bounds (#56726).
+    schedulePersistWindowState()
   })
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -6848,6 +6906,17 @@ function createWindow() {
         rememberLog(
           `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
         )
+
+        // Windows: the most common cause of a deterministic renderer crash loop
+        // is the Chromium/Electron sandbox crashing on startup. Auto-relaunch
+        // once with --no-sandbox so the user gets a working window instead of a
+        // dead black screen they can't recover from (#56726). The relaunch is
+        // gated by a one-shot flag so we don't loop if --no-sandbox doesn't help.
+        if (IS_WINDOWS && !noSandboxRelaunchAttempted) {
+          noSandboxRelaunchAttempted = true
+          rememberLog('[renderer] Windows crash loop detected; relaunching with --no-sandbox')
+          relaunchWithNoSandbox()
+        }
 
         return
       }

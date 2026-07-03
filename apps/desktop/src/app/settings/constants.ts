@@ -490,7 +490,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
     label: 'Model',
-    icon: codiconIcon('hubot'),
+    icon: codiconIcon('symbol-namespace'),
     keys: ['model_context_length', 'fallback_providers']
   },
   {

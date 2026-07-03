@@ -567,12 +567,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                # Forward CLI flags from ``hermes model --manual-paste``
-                # / ``--no-browser`` / ``--timeout`` into the loopback
-                # login. Without this, browser-only remotes (#26923)
-                # can't reach the manual-paste path via ``hermes model``.
                 mock_args = argparse.Namespace(
-                    manual_paste=bool(getattr(args, "manual_paste", False)),
                     no_browser=bool(getattr(args, "no_browser", False)),
                     timeout=getattr(args, "timeout", None),
                 )
@@ -594,7 +589,6 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         print()
         try:
             mock_args = argparse.Namespace(
-                manual_paste=bool(getattr(args, "manual_paste", False)),
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
@@ -1452,7 +1446,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = provider_key
+        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:

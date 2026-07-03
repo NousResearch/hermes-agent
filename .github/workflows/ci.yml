@@ -70,11 +70,11 @@ jobs:
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
 
-  typecheck:
-    name: TypeScript
+  js-tests:
+    name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
-    uses: ./.github/workflows/typecheck.yml
+    uses: ./.github/workflows/js-tests.yml
 
   docs-site:
     name: Docs Site
@@ -139,7 +139,7 @@ jobs:
     needs:
       - tests
       - lint
-      - typecheck
+      - js-tests
       - docs-site
       - history-check
       - contributor-check

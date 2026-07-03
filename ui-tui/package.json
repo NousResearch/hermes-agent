@@ -12,6 +12,7 @@
     "lint:fix": "eslint src/ packages/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
+    "check": "npm run typecheck && npm run test",
     "test": "vitest run",
     "test:watch": "vitest"
   },

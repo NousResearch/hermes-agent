@@ -1,12 +1,12 @@
-# .github/workflows/typecheck.yml
-name: Typecheck
+# .github/workflows/js-tests.yml
+name: JS Tests
 
 on:
   workflow_call:
 
 jobs:
-  typecheck:
-    name: Check TypeScript
+  check:
+    name: Typecheck & Test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,14 +19,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # --ignore-scripts: typecheck only needs the TS sources + type defs, not
-      # native builds. Skipping install scripts drops node-pty's node-gyp
-      # header fetch — the transient flake that killed this job pre-`tsc` — and
-      # is faster. retry covers the remaining registry blips.
       - uses: ./.github/actions/retry
         with:
+          # --ignore-scripts: TS & tests don't need native deps
           command: npm ci --ignore-scripts
-      - run: npm run --prefix ${{ matrix.package }} typecheck
+      - run: npm run --prefix ${{ matrix.package }} check
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
   # which does NOT exercise Vite/Rolldown module resolution — so an

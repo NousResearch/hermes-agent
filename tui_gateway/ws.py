@@ -32,8 +32,12 @@ import threading
 from typing import Any
 
 from tui_gateway import server
+from tui_gateway.loop_monitor import install_event_loop_lag_watchdog
 
 _log = logging.getLogger(__name__)
+_loop_lag_watchdog_lock = threading.Lock()
+_loop_lag_watchdog_loop: asyncio.AbstractEventLoop | None = None
+_loop_lag_watchdog_handle: asyncio.TimerHandle | None = None
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
@@ -280,6 +284,26 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _ensure_loop_lag_watchdog(loop: asyncio.AbstractEventLoop) -> None:
+    """Install the WS event-loop lag watchdog once per running loop."""
+    global _loop_lag_watchdog_handle, _loop_lag_watchdog_loop
+
+    with _loop_lag_watchdog_lock:
+        if (
+            _loop_lag_watchdog_loop is loop
+            and _loop_lag_watchdog_handle is not None
+            and not _loop_lag_watchdog_handle.cancelled()
+        ):
+            return
+
+        _loop_lag_watchdog_loop = loop
+        _loop_lag_watchdog_handle = install_event_loop_lag_watchdog(
+            loop=loop,
+            logger=_log,
+            component="tui ws",
+        )
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -296,9 +320,11 @@ async def handle_ws(ws: Any) -> None:
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
+        loop = asyncio.get_running_loop()
+        _ensure_loop_lag_watchdog(loop)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(ws, loop, peer=peer)
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that

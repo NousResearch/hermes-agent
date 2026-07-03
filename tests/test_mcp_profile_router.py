@@ -3364,7 +3364,7 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
                 },
                 "web": {
                     "enabled": True,
-                    "allowed_domains": ["example.com"],
+                    "allowed_domains": ["*"],
                     "max_bytes": 2000,
                 },
             }

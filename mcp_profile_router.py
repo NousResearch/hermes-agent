@@ -1116,6 +1116,22 @@ def _disable_workspace_bound_capabilities(raw_policy: MappingABC) -> dict[str, A
         _policy_mapping(policy.get("messaging"), "messaging"),
         {"enabled": False},
     )
+    github_pr = _deep_merge_policy(
+        _policy_mapping(policy.get("github_pr"), "github_pr"),
+        {"enabled": False},
+    )
+    deploy = _deep_merge_policy(
+        _policy_mapping(policy.get("deploy"), "deploy"),
+        {"enabled": False},
+    )
+    server = _deep_merge_policy(
+        _policy_mapping(policy.get("server"), "server"),
+        {"enabled": False},
+    )
+    web = _deep_merge_policy(
+        _policy_mapping(policy.get("web"), "web"),
+        {"enabled": False, "allowed_domains": []},
+    )
     policy.update(
         {
             "filesystem": filesystem,
@@ -1123,6 +1139,11 @@ def _disable_workspace_bound_capabilities(raw_policy: MappingABC) -> dict[str, A
             "git": git,
             "cron": cron,
             "messaging": messaging,
+            "github_pr": github_pr,
+            "deploy": deploy,
+            "production_actions": {},
+            "server": server,
+            "web": web,
         }
     )
     return policy
@@ -1350,6 +1371,10 @@ def _policy_domain_tuple(value: Any, field: str) -> tuple[str, ...]:
     domains: list[str] = []
     for raw_domain in _policy_string_tuple(value, field):
         domain = raw_domain.strip().lower().rstrip(".")
+        if domain == "*":
+            if domain not in domains:
+                domains.append(domain)
+            continue
         if "://" in domain or "/" in domain or "@" in domain or not domain:
             raise ProfileRouterError("invalid_policy", f"{field} entries must be hostnames, not URLs")
         if domain.startswith("*."):
@@ -5369,6 +5394,8 @@ def run_server_command(profile_ref: str, alias: str, command_name: str) -> dict:
 
 def _url_host_allowed(hostname: str, allowed_domains: tuple[str, ...]) -> bool:
     host = hostname.lower().rstrip(".")
+    if "*" in allowed_domains:
+        return True
     return any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains)
 
 

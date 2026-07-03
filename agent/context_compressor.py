@@ -2797,6 +2797,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg = messages[i]
             if msg.get("role") != "assistant":
                 continue
+            if self._is_context_summary_message(msg):
+                continue
             if last_any < 0:
                 last_any = i
             content = msg.get("content")
@@ -3201,21 +3203,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         turns_to_summarize = messages[compress_start:compress_end]
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
-        # the first non-system message through the compression window, extended
-        # through the bounded restart probe when that probe contains a handoff,
-        # so short resumed transcripts don't copy an old summary as protected
-        # tail before it can rehydrate iterative-summary state.
+        # the first non-system message through the compression window. On the
+        # first compaction after a restart, extend through the full transcript
+        # so summaries that landed in the protected tail or drifted past the
+        # decay probe still rehydrate iterative-summary state instead of being
+        # copied forward as stacked fossils.
         summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
         summary_search_end = compress_end
         if self.compression_count < 1 and not self._previous_summary:
-            restart_probe_start, restart_probe_end = self._restart_handoff_probe_bounds(
-                messages
-            )
-            if any(
-                self._is_context_summary_message(msg)
-                for msg in messages[restart_probe_start:restart_probe_end]
-            ):
-                summary_search_end = max(summary_search_end, restart_probe_end)
+            summary_search_end = len(messages)
         summary_search_end = min(len(messages), summary_search_end)
         summary_indices: set[int] = set()
         tail_start = compress_end

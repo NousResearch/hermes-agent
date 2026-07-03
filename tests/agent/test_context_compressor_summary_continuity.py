@@ -198,7 +198,7 @@ def test_tail_summary_marker_does_not_decay_first_compaction_head():
     assert "HEAD-ONE original request" in result_text
     assert "HEAD-TWO original answer" in result_text
     assert "HEAD-THREE original follow-up" in result_text
-    assert tail_summary in result_text
+    assert tail_summary not in result_text
 
 
 def test_restart_handoff_in_protected_tail_is_folded_not_preserved():
@@ -242,6 +242,54 @@ def test_restart_handoff_fallback_preserves_rehydrated_summary_body():
     assert sum(
         1 for msg in result if ContextCompressor._is_context_summary_message(msg)
     ) == 1
+
+
+def test_zero_protect_first_n_still_folds_restart_fossil():
+    """protect_first_n=0 should still self-heal restarted summaries."""
+    compressor = _compressor(protect_first_n=0)
+    old_summary = "OLD-SUMMARY-ZERO-PROTECT durable facts"
+    msgs = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "task one"},
+        {"role": "assistant", "content": "answer one"},
+        {"role": "user", "content": "task two"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": "active request"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+        result = compressor.compress(msgs)
+
+    result_text = "\n".join(str(msg.get("content", "")) for msg in result)
+    assert old_summary not in result_text
+    assert sum(
+        1 for msg in result if ContextCompressor._is_context_summary_message(msg)
+    ) == 1
+
+
+def test_fossil_beyond_restart_probe_window_is_still_folded():
+    """Self-heal should find summaries that drift past the decay probe."""
+    compressor = _compressor(protect_first_n=1)
+    old_summary = "OLD-SUMMARY-FAR-FROM-HEAD durable facts"
+    msgs = [{"role": "system", "content": "system prompt"}]
+    msgs += [
+        {
+            "role": "user" if idx % 2 else "assistant",
+            "content": f"filler {idx}",
+        }
+        for idx in range(1, 6)
+    ]
+    msgs += [
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": "active request"},
+    ]
+
+    assert compressor._effective_protect_first_n(msgs) == compressor.protect_first_n
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+        result = compressor.compress(msgs)
+
+    assert all(old_summary not in str(msg.get("content", "")) for msg in result)
 
 
 def test_restart_probe_boundary_summary_just_inside_window_decays():

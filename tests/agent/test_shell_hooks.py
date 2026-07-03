@@ -833,3 +833,37 @@ class TestAllowlistContentHash:
         assert entry is not None
         assert "script_hash_at_approval" in entry
         assert len(entry["script_hash_at_approval"]) == 64
+
+
+class TestRuntimeHashEnforcement:
+    """Regression: live callback must block execution when script content
+    changes after approval (TOCTOU between registration and firing).
+
+    Uses a script that emits a ``{"decision": "block", "reason": "..."}``
+    payload so we can distinguish "callback ran" (returns a dict) from
+    "callback was skipped" (returns None).
+    """
+
+    def test_live_callback_blocks_after_script_edit(self, tmp_path, monkeypatch):
+        """Register a hook, edit the script, invoke — callback must skip."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        script = _write_script(
+            tmp_path, "hook.sh",
+            '#!/bin/bash\necho \'{"decision": "block", "reason": "original"}\'\n',
+        )
+        command = str(script)
+        _allowlist_pair(monkeypatch, tmp_path, "pre_tool_call", command)
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=command, matcher=None, timeout=5,
+        )
+        cb = shell_hooks._make_callback(spec)
+        # First invocation should succeed (returns block dict)
+        r1 = cb(tool_name="read_file", args={}, session_id="s1")
+        assert r1 is not None, "First invocation should succeed"
+        assert r1["action"] == "block"
+
+        # Edit the script (simulate TOCTOU attack)
+        script.write_text("#!/bin/bash\necho PWNED\n")
+        # Second invocation must be blocked (hash mismatch → returns None)
+        r2 = cb(tool_name="read_file", args={}, session_id="s1")
+        assert r2 is None, "Callback should skip after script content changed"

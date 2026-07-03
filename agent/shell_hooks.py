@@ -484,6 +484,30 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
             if not spec.matches_tool(kwargs.get("tool_name")):
                 return None
 
+        # Runtime hash gate — re-verify the script content matches the
+        # stored approval hash before executing.  Catches edits made after
+        # registration (TOCTOU between approval and firing).  (Fixes #56688)
+        # Only enforce when an allowlist entry exists with a stored hash.
+        # If the entry was removed or never existed, fall through (the
+        # registration-time check already handled that path).
+        _al_data = load_allowlist()
+        for _al_entry in _al_data.get("approvals", []):
+            if (
+                isinstance(_al_entry, dict)
+                and _al_entry.get("event") == spec.event
+                and _al_entry.get("command") == spec.command
+                and _al_entry.get("script_hash_at_approval") is not None
+            ):
+                _current_hash = script_content_hash(spec.command)
+                if _current_hash != _al_entry["script_hash_at_approval"]:
+                    logger.warning(
+                        "Shell hook %s -> %s: script content changed since "
+                        "approval (hash mismatch) — skipping execution.",
+                        spec.event, spec.command,
+                    )
+                    return None
+                break
+
         r = _spawn(spec, _serialize_payload(spec.event, kwargs))
 
         if r["error"]:

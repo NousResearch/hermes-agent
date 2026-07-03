@@ -1,5 +1,8 @@
 """Tests for Mem0Backend abstraction — PlatformBackend and OSSBackend."""
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from plugins.memory.mem0._backend import Mem0Backend, PlatformBackend, OSSBackend
@@ -157,11 +160,56 @@ class TestOSSBackend:
         assert memory.calls[0][2]["filters"] == {"user_id": "u1"}
         assert memory.calls[0][2]["top_k"] == 3
 
-    def test_search_ignores_rerank(self):
-        """OSS backend accepts rerank param but does not forward it to Memory."""
+    def test_search_forwards_rerank(self):
         backend, memory = self._make()
-        backend.search("q", filters={}, rerank=True)
-        assert "rerank" not in memory.calls[0][2]
+        backend.search("q", filters={}, rerank=False)
+        assert memory.calls[0][2]["rerank"] is False
+
+    def test_search_rerank_default_true(self):
+        backend, memory = self._make()
+        backend.search("q", filters={})
+        assert memory.calls[0][2]["rerank"] is True
+
+    def test_init_forwards_reranker_config(self, monkeypatch, tmp_path):
+        captured = {}
+
+        class FakeMemoryFactory:
+            @staticmethod
+            def from_config(config):
+                captured["config"] = config
+                return FakeOSSMemory()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "mem0",
+            SimpleNamespace(Memory=FakeMemoryFactory),
+        )
+
+        OSSBackend(
+            {
+                "vector_store": {
+                    "provider": "qdrant",
+                    "config": {
+                        "path": str(tmp_path / "qdrant"),
+                        "collection_name": "mem0",
+                    },
+                },
+                "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+                "embedder": {
+                    "provider": "openai",
+                    "config": {"model": "text-embedding-3-small", "embedding_dims": 1536},
+                },
+                "reranker": {
+                    "provider": "cohere",
+                    "config": {"model": "rerank-v3.5"},
+                },
+            }
+        )
+
+        assert captured["config"]["reranker"] == {
+            "provider": "cohere",
+            "config": {"model": "rerank-v3.5"},
+        }
 
     def test_get_all_ignores_pagination(self):
         """OSSBackend accepts page/page_size but does NOT forward to Memory.get_all()."""

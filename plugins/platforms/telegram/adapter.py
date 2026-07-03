@@ -3342,12 +3342,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
-                if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
-                    return SendResult(
-                        success=False,
-                        error=self._dm_topic_missing_anchor_error(),
-                        retryable=False,
-                    )
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,

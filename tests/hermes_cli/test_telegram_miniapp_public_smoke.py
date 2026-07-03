@@ -130,6 +130,22 @@ def test_bridge_enabled_defaults_off_and_ttl_defaults_to_900():
     assert settings.action_initdata_ttl_seconds == 900
 
 
+def test_rate_limits_are_read_from_durable_config():
+    settings = settings_from_config({"telegram_miniapp": {
+        "auth_rate_limit_per_minute": 3,
+        "action_rate_limit_per_minute": 2,
+        "status_rate_limit_per_minute": 7,
+        "auth_global_limit": 11,
+    }})
+    assert settings.auth_rate_limit_per_minute == 3
+    assert settings.action_rate_limit_per_minute == 2
+    assert settings.status_rate_limit_per_minute == 7
+    assert settings.auth_global_limit == 11
+    # Defaults when unset.
+    d = settings_from_config({"telegram_miniapp": {}})
+    assert (d.auth_rate_limit_per_minute, d.action_rate_limit_per_minute, d.status_rate_limit_per_minute, d.auth_global_limit) == (10, 5, 60, 50)
+
+
 def test_bridge_enabled_fails_closed_on_quoted_false_and_junk():
     # A plain bool() would make the string "false" truthy and silently enable a
     # security-sensitive gateway switch. Only explicit affirmatives turn it on.
@@ -154,6 +170,37 @@ def test_public_smoke_cli_forces_loopback_bind(monkeypatch):
 
     assert captured["host"] == "127.0.0.1"
     assert settings.host == "127.0.0.1"
+
+
+def test_cli_port_conflict_exits_with_actionable_message(monkeypatch):
+    import socket
+    import pytest
+    from hermes_cli.telegram_miniapp import cli
+
+    # Occupy a real loopback port so the pre-bind probe genuinely fails — this
+    # exercises the actual bind path, not a mocked OSError.
+    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupier.bind(("127.0.0.1", 0))
+    occupier.listen(1)
+    busy_port = occupier.getsockname()[1]
+    try:
+        settings = public_settings(host="127.0.0.1", port=busy_port)
+        monkeypatch.setattr(cli, "settings_from_config", lambda: settings)
+        monkeypatch.setattr(cli, "create_app", lambda *, settings: object())
+        # uvicorn must never be reached; stub it so a missed probe can't hang.
+        monkeypatch.setitem(
+            sys.modules, "uvicorn",
+            types.SimpleNamespace(run=lambda app, **kwargs: pytest.fail("uvicorn.run must not be reached")),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cli.run_foreground()
+
+        message = str(exc.value)
+        assert "could not bind" in message
+        assert str(busy_port) in message  # actionable: names the port to change
+    finally:
+        occupier.close()
 
 
 def test_public_smoke_host_port_must_match_public_base_url():

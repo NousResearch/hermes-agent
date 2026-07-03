@@ -52,6 +52,10 @@ def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSetting
         action_owners={str(value) for value in action_owners if str(value).strip()},
         hermes_home=str(get_hermes_home()),
         cors_allowed_origins=cors_allowed_origins or _default_allowed_origins(),
+        auth_rate_limit_per_minute=int(section.get("auth_rate_limit_per_minute") or 10),
+        auth_global_limit=int(section.get("auth_global_limit") or 50),
+        action_rate_limit_per_minute=int(section.get("action_rate_limit_per_minute") or 5),
+        status_rate_limit_per_minute=int(section.get("status_rate_limit_per_minute") or 60),
         action_initdata_ttl_seconds=int(section.get("action_initdata_ttl_seconds") or 900),
         # bridge_enabled is the durable switch the gateway-side bridge service
         # reads to decide whether to run its export/resolve cycle. It does NOT

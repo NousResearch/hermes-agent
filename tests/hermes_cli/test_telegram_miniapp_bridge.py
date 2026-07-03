@@ -74,6 +74,23 @@ def test_identical_commands_same_second_get_distinct_ids():
     assert len(projected.index) == 2
 
 
+def test_unknown_risk_tier_floors_to_critical():
+    # Fail-closed: a missing / spoofed / unrecognized risk_tier must surface as
+    # the MOST dangerous tier, never a safe-looking one — while a legitimate
+    # low tier is preserved (not over-escalated).
+    key = B.derive_bridge_key(BOT_TOKEN)
+    for bad in [None, "", "safe", "read_only_but_lying", "APPROVE", 123]:
+        item = B.project_snapshot(
+            key, [{"session_key": "s", "command": "c", "risk_tier": bad}], now=1_700_000_100
+        ).public["items"][0]
+        assert item["risk"] == "critical", bad
+        assert item["title"] == "Опасная команда"
+    ok = B.project_snapshot(
+        key, [{"session_key": "s", "command": "c", "risk_tier": "read_only"}], now=1_700_000_100
+    ).public["items"][0]
+    assert ok["risk"] == "read_only"  # a valid low tier is NOT escalated
+
+
 def test_snapshot_projection_redacts_all_sensitive_fields():
     key = B.derive_bridge_key(BOT_TOKEN)
     projected = B.project_snapshot(key, [_pending()], now=1_700_000_100)

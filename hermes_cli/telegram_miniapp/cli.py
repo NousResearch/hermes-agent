@@ -7,10 +7,33 @@ command helper. Public HTTPS smoke mode is opt-in per foreground run only.
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 
 from .config import settings_from_config
 from .server import create_app
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    """Fail fast with an actionable message if the bind port is already taken.
+
+    Done as an explicit pre-bind probe rather than relying on ``uvicorn.run`` to
+    surface the error: some uvicorn versions log and ``sys.exit(1)`` on a bind
+    failure before it ever reaches our handler. Uses the same SO_REUSEADDR
+    semantics uvicorn does, so an actively-listened port is reported as busy.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+    except OSError as exc:
+        raise SystemExit(
+            f"Telegram Mini App sidecar could not bind {host}:{port} "
+            f"({exc.strerror or exc}). Stop the process using that port or set "
+            f"telegram_miniapp.port to a free port in config.yaml."
+        ) from exc
+    finally:
+        probe.close()
 
 
 def run_foreground(*, https_smoke: bool = False, public_base_url: str | None = None, enable_actions: bool = False) -> None:
@@ -34,17 +57,28 @@ def run_foreground(*, https_smoke: bool = False, public_base_url: str | None = N
             raise SystemExit("--enable-actions requires telegram_miniapp.action_owners in config.yaml")
         settings.enable_actions = True
         print(
-            "[miniapp] Action gate ENABLED for this run. The gateway must be running the "
-            "Mini App bridge (config telegram_miniapp.bridge_enabled + a gateway restart) to "
-            "export approvals and process decisions; otherwise /api/approvals falls back to "
-            "preview and decisions stay unprocessed.",
+            "[miniapp] Action gate ENABLED for this run: owners can submit signed "
+            "approve/reject decisions. NOTE the gateway-side resolver is not yet wired "
+            "(nothing reads telegram_miniapp.bridge_enabled), so decisions are validated "
+            "and recorded but NOT applied to live approvals. See "
+            "docs/telegram-miniapp-runbook.md.",
             file=sys.stderr,
         )
     try:
         import uvicorn
     except ImportError as exc:
         raise SystemExit("Telegram Mini App sidecar requires uvicorn/FastAPI dashboard extras") from exc
-    uvicorn.run(create_app(settings=settings), host=settings.host, port=settings.port)
+    _ensure_port_available(settings.host, settings.port)
+    try:
+        uvicorn.run(create_app(settings=settings), host=settings.host, port=settings.port)
+    except OSError as exc:
+        # Fallback for the small TOCTOU window between the probe above and the
+        # real bind — same actionable message rather than a raw traceback.
+        raise SystemExit(
+            f"Telegram Mini App sidecar could not bind {settings.host}:{settings.port} "
+            f"({exc.strerror or exc}). Stop the process using that port or set "
+            f"telegram_miniapp.port to a free port in config.yaml."
+        ) from exc
 
 
 def main(argv: list[str] | None = None) -> None:

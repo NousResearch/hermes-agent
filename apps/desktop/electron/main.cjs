@@ -6280,7 +6280,7 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   }
   bootstrapFailure = null
   backendStartFailure = null
-  resetHermesConnection()
+  await teardownPrimaryBackendAndWait()
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:cancel', async () => {

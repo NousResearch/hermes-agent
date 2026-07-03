@@ -31,6 +31,46 @@ _log = logging.getLogger(__name__)
 # rather than try to sanitise — the operator can fix their config.
 _REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
 
+# Remember which (source, value) pairs we've already warned about.
+# ``resolve_public_url`` runs on every authenticated request, so an
+# un-deduplicated warning would flood the logs once per request for a
+# misconfigured deploy. Keyed on the raw value too, so changing the
+# config and reloading surfaces a fresh warning.
+_warned_malformed_public_urls: set = set()
+
+
+def _warn_if_malformed(source: str, raw: str) -> None:
+    """Warn (once per distinct value) when a non-empty public-url value
+    was rejected by :func:`_normalise_public_url`.
+
+    A non-empty value that normalises to ``""`` is almost always a
+    missing scheme (``hermes.example.com`` instead of
+    ``https://hermes.example.com``) — the single most common cause of
+    "I set HERMES_DASHBOARD_PUBLIC_URL but the OAuth callback is still
+    http://". Without this warning the value is silently discarded and
+    the dashboard falls back to reconstructing the redirect URI from
+    request headers, which behind a reverse proxy can yield the wrong
+    scheme. Surfacing it turns a silent footgun into a self-diagnosing
+    one.
+    """
+    cleaned = raw.strip() if raw else ""
+    if not cleaned:
+        return  # empty/unset is a legitimate "no override" — not malformed
+    key = (source, cleaned)
+    if key in _warned_malformed_public_urls:
+        return
+    _warned_malformed_public_urls.add(key)
+    _log.warning(
+        "%s is set to %r but was ignored because it is not a valid "
+        "absolute URL — it must include an http:// or https:// scheme "
+        "(e.g. https://%s). Falling back to reconstructing the OAuth "
+        "redirect URI from request headers, which may produce the wrong "
+        "scheme behind a reverse proxy.",
+        source,
+        cleaned,
+        cleaned.split("://")[-1] or "hermes.example.com",
+    )
+
 
 def normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
@@ -153,5 +193,9 @@ def resolve_public_url() -> str:
     env_clean = _normalise_public_url(env_raw)
     if env_clean:
         return env_clean
-    cfg_raw = _load_dashboard_section().get("public_url", "")
-    return _normalise_public_url(str(cfg_raw))
+    _warn_if_malformed("HERMES_DASHBOARD_PUBLIC_URL env var", env_raw)
+    cfg_raw = str(_load_dashboard_section().get("public_url", ""))
+    cfg_clean = _normalise_public_url(cfg_raw)
+    if not cfg_clean:
+        _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
+    return cfg_clean

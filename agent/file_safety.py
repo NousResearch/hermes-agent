@@ -46,11 +46,6 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
-            os.path.join(home, ".bashrc"),
-            os.path.join(home, ".zshrc"),
-            os.path.join(home, ".profile"),
-            os.path.join(home, ".bash_profile"),
-            os.path.join(home, ".zprofile"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -82,15 +77,22 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
-def get_safe_write_root() -> Optional[str]:
-    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+def get_safe_write_roots() -> set[str]:
+    """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
+    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
+    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
+    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if not env:
+        return set()
+    roots: set[str] = set()
+    for path in env.split(os.pathsep):
+        if path:
+            try:
+                resolved = os.path.realpath(os.path.expanduser(path))
+                roots.add(resolved)
+            except (OSError, ValueError):
+                continue
+    return roots
 
 
 def is_write_denied(path: str) -> bool:
@@ -104,12 +106,6 @@ def is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
 
-    # Hermes control-plane files: block both the ACTIVE profile's view
-    # (hermes_home) AND the global root view. Without the root pass, a
-    # profile-mode session leaves <root>/auth.json + <root>/config.yaml
-    # writable — letting a prompt-injected write_file overwrite the global
-    # files that every profile inherits from (same shape as #15981).
-    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
     mcp_tokens_dir_name = "mcp-tokens"
 
     hermes_dirs = []
@@ -122,12 +118,6 @@ def is_write_denied(path: str) -> bool:
             continue
 
     for base_real in hermes_dirs:
-        for name in control_file_names:
-            try:
-                if resolved == os.path.realpath(os.path.join(base_real, name)):
-                    return True
-            except Exception:
-                continue
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
@@ -141,9 +131,15 @@ def is_write_denied(path: str) -> bool:
         except Exception:
             pass
 
-    safe_root = get_safe_write_root()
-    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-        return True
+    safe_roots = get_safe_write_roots()
+    if safe_roots:
+        allowed = False
+        for safe_root in safe_roots:
+            if resolved == safe_root or resolved.startswith(safe_root + os.sep):
+                allowed = True
+                break
+        if not allowed:
+            return True
 
     return False
 
@@ -297,7 +293,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "

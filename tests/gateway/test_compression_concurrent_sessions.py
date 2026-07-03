@@ -71,6 +71,10 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # ROTATION fallback path — pin in_place=False so these keep covering the
+    # concurrent-rotation lock contract regardless of the global default
+    # (flipped to True in #38763).
+    agent.compression_in_place = False
     return agent
 
 
@@ -146,6 +150,30 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     agent_a = _build_agent_with_db(db, shared_sid)
     agent_b = _build_agent_with_db(db, shared_sid)
 
+    # Force genuine simultaneous lock contention instead of relying on a
+    # ``time.sleep`` inside the compressor stub to make the threads overlap.
+    # Under CI CPU starvation that sleep is not enough: one thread could
+    # acquire → compress → rotate → RELEASE the lock before the other even
+    # reaches ``try_acquire``, so both would acquire on the shared id and
+    # both would compress (the historical "got 2" flake). A two-party
+    # barrier in front of the real acquire guarantees both threads are
+    # contending for the lock at the same instant, which is exactly the
+    # condition this test means to assert — with zero timing dependency.
+    barrier = threading.Barrier(2, timeout=15)
+    _real_acquire = db.try_acquire_compression_lock
+
+    def _barriered_acquire(*args, **kwargs):
+        # Rendezvous both callers, then let the real (atomic) acquire decide
+        # the single winner. Tolerate a broken barrier so a test-side timeout
+        # never masquerades as a lock-logic failure.
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return _real_acquire(*args, **kwargs)
+
+    db.try_acquire_compression_lock = _barriered_acquire
+
     results: dict[str, list | None] = {"a": None, "b": None}
     errors: list[Exception] = []
 
@@ -162,6 +190,10 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     t_b.start()
     t_a.join(timeout=15)
     t_b.join(timeout=15)
+
+    # Restore the real method so the post-join lock-leak assertion below
+    # (and any future call) hits the unwrapped implementation.
+    db.try_acquire_compression_lock = _real_acquire
 
     assert not errors, f"Compression raised exceptions: {errors}"
 

@@ -22,6 +22,33 @@ describe('detectTrigger', () => {
   it('returns null for plain text', () => {
     expect(detectTrigger('hello there')).toBeNull()
   })
+
+  it('keeps the slash trigger live while typing args', () => {
+    expect(detectTrigger('/personality ')).toEqual({
+      kind: '/',
+      query: 'personality ',
+      tokenLength: 13
+    })
+    expect(detectTrigger('/personality alic')).toEqual({
+      kind: '/',
+      query: 'personality alic',
+      tokenLength: 17
+    })
+    expect(detectTrigger('/tools enable foo')).toEqual({
+      kind: '/',
+      query: 'tools enable foo',
+      tokenLength: 17
+    })
+  })
+
+  it('does not treat file-style paths as slash triggers', () => {
+    expect(detectTrigger('src/foo/bar')).toBeNull()
+    expect(detectTrigger('/path/to/file')).toBeNull()
+  })
+
+  it('still anchors at-mention triggers strictly at the token edge', () => {
+    expect(detectTrigger('@file:path with space')).toBeNull()
+  })
 })
 
 describe('extractClipboardImageBlobs', () => {

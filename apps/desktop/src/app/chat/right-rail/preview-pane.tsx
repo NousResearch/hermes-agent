@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Bug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -406,6 +407,7 @@ export function PreviewPane({
   useEffect(() => {
     if (
       target.kind !== 'file' ||
+      isDesktopFsRemoteMode() ||
       !window.hermesDesktop?.watchPreviewFile ||
       !window.hermesDesktop?.onPreviewFileChanged
     ) {

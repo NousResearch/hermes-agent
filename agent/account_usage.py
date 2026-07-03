@@ -145,7 +145,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     account info to show (fail-open: caller just shows nothing).
     """
     try:
-        from hermes_cli.nous_account import nous_portal_billing_url
+        from hermes_cli.nous_account import nous_portal_topup_url
 
         if account_info is None or not getattr(account_info, "logged_in", False):
             return None
@@ -213,7 +213,8 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
         if not windows and not details:
             return None
 
-        details.append(f"Manage / top up: {nous_portal_billing_url(account_info)}")
+        details.append(f"Top up: {nous_portal_topup_url(account_info)}")
+        details.append("(or run /credits)")
 
         plan = getattr(sub, "plan", None) if sub is not None else None
         return AccountUsageSnapshot(
@@ -335,6 +336,93 @@ def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
         )
     except (AttributeError, TypeError):
         return None
+
+
+@dataclass(frozen=True)
+class CreditsView:
+    """Surface-agnostic data for the ``/credits`` command.
+
+    One portal fetch, one parse — consumed identically by the CLI panel, the
+    gateway button, and any other money surface. Fail-open: when not logged in
+    or the portal is unreachable, ``logged_in`` is False / ``topup_url`` is None
+    and callers degrade gracefully.
+    """
+
+    logged_in: bool
+    balance_lines: tuple[str, ...] = ()
+    identity_line: Optional[str] = None
+    topup_url: Optional[str] = None
+    depleted: bool = False
+
+
+def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> CreditsView:
+    """Build the /credits view: balance block + identity line + top-up URL.
+
+    Reuses the same account fetch + snapshot + URL builder as the /usage credits
+    block, so the numbers always match. The balance block is the rendered
+    snapshot MINUS its trailing top-up/command-hint lines (the /credits surface
+    supplies its own affordance). Fail-open → ``CreditsView(logged_in=False)``.
+    """
+    not_logged_in = CreditsView(logged_in=False)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        tok = (get_provider_auth_state("nous") or {}).get("access_token")
+        if not (isinstance(tok, str) and tok.strip()):
+            return not_logged_in
+    except Exception:
+        return not_logged_in
+
+    try:
+        import concurrent.futures
+
+        from hermes_cli.nous_account import (
+            get_nous_portal_account_info,
+            nous_portal_topup_url,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            account = pool.submit(get_nous_portal_account_info, force_fresh=True).result(
+                timeout=timeout
+            )
+    except Exception:
+        logger.debug("credits ▸ /credits portal fetch failed (fail-open)", exc_info=True)
+        return not_logged_in
+
+    if account is None or not getattr(account, "logged_in", False):
+        return not_logged_in
+
+    snapshot = build_nous_credits_snapshot(account)
+    # Balance lines = the snapshot block minus the two trailing affordance lines
+    # ("Top up: <url>" + "(or run /credits)") that build_nous_credits_snapshot
+    # appends for the /usage surface. /credits renders its own button/panel.
+    balance_lines: list[str] = []
+    if snapshot is not None:
+        rendered = render_account_usage_lines(snapshot, markdown=markdown)
+        balance_lines = [
+            line
+            for line in rendered
+            if not line.lstrip().startswith("Top up:")
+            and not line.lstrip().startswith("(or run")
+        ]
+
+    # Identity line — shown before any open (roadmap §4.4).
+    email = getattr(account, "email", None)
+    org_name = getattr(account, "org_name", None)
+    who: list[str] = []
+    if email:
+        who.append(str(email))
+    if org_name:
+        who.append(f"org {org_name}")
+    identity_line = ("Topping up as " + " / ".join(who)) if who else None
+
+    return CreditsView(
+        logged_in=True,
+        balance_lines=tuple(balance_lines),
+        identity_line=identity_line,
+        topup_url=nous_portal_topup_url(account),
+        depleted=getattr(account, "paid_service_access", None) is False,
+    )
 
 
 def _resolve_codex_usage_url(base_url: str) -> str:

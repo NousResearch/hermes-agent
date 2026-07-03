@@ -41,7 +41,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--backup",
         action="store_true",
         default=False,
-        help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup)",
+        help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup=false)",
     )
     update_parser.add_argument(
         "--yes",

@@ -2,16 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
+import { requestModelOptions } from '@/lib/model-options'
+import { currentPickerSelection } from '@/lib/model-status-label'
+import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import { getGlobalModelOptions } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
-import { Checkbox } from './ui/checkbox'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Skeleton } from './ui/skeleton'
@@ -23,7 +23,7 @@ interface ModelPickerDialogProps {
   sessionId?: string | null
   currentModel: string
   currentProvider: string
-  onSelect: (selection: { provider: string; model: string; persistGlobal: boolean }) => void
+  onSelect: (selection: { provider: string; model: string }) => void
   /**
    * Optional class to apply to DialogContent. Use to override z-index when
    * stacking the picker on top of another fixed overlay (e.g. the desktop
@@ -45,7 +45,6 @@ export function ModelPickerDialog({
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
   const copy = t.modelPicker
-  const [persistGlobal, setPersistGlobal] = useState(!sessionId)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
@@ -55,21 +54,18 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
-    queryFn: () => {
-      if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', {
-          session_id: sessionId
-        })
-      }
-
-      return getGlobalModelOptions()
-    },
+    queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
 
   const providers = modelOptions.data?.providers ?? []
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    !!sessionId,
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error
@@ -79,11 +75,7 @@ export function ModelPickerDialog({
     : null
 
   const selectModel = (provider: ModelOptionProvider, model: string) => {
-    onSelect({
-      provider: provider.slug,
-      model,
-      persistGlobal: persistGlobal || !sessionId
-    })
+    onSelect({ provider: provider.slug, model })
     onOpenChange(false)
   }
 
@@ -108,12 +100,7 @@ export function ModelPickerDialog({
         </DialogHeader>
 
         <Command className="rounded-none bg-card" shouldFilter={false}>
-          <CommandInput
-            autoFocus
-            onValueChange={setSearch}
-            placeholder={copy.search}
-            value={search}
-          />
+          <CommandInput autoFocus onValueChange={setSearch} placeholder={copy.search} value={search} />
           <CommandList className="max-h-96">
             {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
             <ModelResults
@@ -128,24 +115,13 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
-          <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
-            <Checkbox
-              checked={persistGlobal || !sessionId}
-              disabled={!sessionId}
-              onCheckedChange={checked => setPersistGlobal(checked === true)}
-            />
-            {sessionId ? copy.persistGlobalSession : copy.persistGlobal}
-          </label>
-
-          <div className="flex items-center gap-2">
-            <Button onClick={addProvider} variant="ghost">
-              {copy.addProvider}
-            </Button>
-            <Button onClick={() => onOpenChange(false)} variant="outline">
-              {t.common.cancel}
-            </Button>
-          </div>
+        <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          <Button onClick={addProvider} variant="ghost">
+            {copy.addProvider}
+          </Button>
+          <Button onClick={() => onOpenChange(false)} variant="outline">
+            {t.common.cancel}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -247,7 +223,9 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">{model}</span>
-                  {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>}
+                  {locked && (
+                    <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
+                  )}
                   <ModelPrice isCurrent={isCurrent} price={price} />
                 </CommandItem>
               )

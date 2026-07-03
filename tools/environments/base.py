@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ def _popen_bash(
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
     """
+    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -355,11 +357,16 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Full capture: env vars, functions, aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
+        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
+        # the Windows subclass override converts a native ``C:\Users\x`` cwd to
+        # the Git-Bash ``/c/Users/x`` form the bootstrap ``cd`` can resolve.
+        # Without this the snapshot bootstrap ``cd`` below fails on Windows and
+        # ``pwd -P`` captures the login shell's directory, not ``terminal.cwd``.
+        _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  On POSIX this is a no-op (no colons /
@@ -369,20 +376,59 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Use atomic file replacement: assemble the snapshot in a temp file,
+        # then mv it over the final path.  This prevents concurrent source()
+        # calls from reading a half-written snapshot when another terminal
+        # command finishes and rewrites the env vars (issue #38249).  `mv` is
+        # atomic on POSIX when src and dest are on the same filesystem, so
+        # source() either sees the old complete snapshot or the new complete
+        # one — never a partial/truncated file.
+        #
+        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
+        # bash PID, but in ``&``-launched subshells (how concurrent terminal
+        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
+        # writers would pick the SAME temp name, clobber each other's temp
+        # mid-write, and mv would then publish a torn file (the corruption is
+        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
+        # and is genuinely unique per writer, which closes the race.  The
+        # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
+        # with ``$BASHPID`` left outside the quotes so it still expands.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
-            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
+            f"export -p > {_snap_tmp}\n"
+            # Dump function definitions, filtering out private (``_``-prefixed)
+            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
+            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
+            # is line-based: it strips the function *header* line but leaves the
+            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
+            # makes every sourced command fail (e.g. exit 127).  Selecting the
+            # wanted names with ``declare -F`` first, then dumping only those
+            # whole definitions, preserves the filter's intent without ever
+            # tearing a function body.  The non-empty guard matters: bare
+            # ``declare -f`` with no name args dumps ALL functions, so an empty
+            # name list (only private funcs present) would otherwise leak the
+            # very functions we meant to drop.
+            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+            f">> {_snap_tmp} 2>/dev/null || true\n"
+            f"alias -p >> {_snap_tmp}\n"
+            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+            f"echo 'set +e' >> {_snap_tmp}\n"
+            f"echo 'set +u' >> {_snap_tmp}\n"
+            # Publish atomically only if assembly succeeded; otherwise drop the
+            # partial temp rather than leave it to be sourced or orphaned.
+            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(
@@ -425,6 +471,14 @@ class BaseEnvironment(ABC):
         # :meth:`init_session` for the same fix on the bootstrap block.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Use atomic file replacement for env snapshot updates (issue #38249).
+        # Assemble into a per-writer-unique temp file, then mv to atomically
+        # replace the snapshot so concurrent source() calls never read a
+        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
+        # subshell PID — unique per concurrent ``&``-launched writer — so two
+        # writers never share a temp name and clobber each other before the mv.
+        # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 
@@ -449,9 +503,15 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Chain mv on the export succeeding so a failed/partial dump never
+        # replaces a good snapshot; drop the temp on failure so it isn't
+        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(
+                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+            )
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")

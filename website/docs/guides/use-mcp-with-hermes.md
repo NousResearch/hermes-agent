@@ -264,7 +264,58 @@ Review the project structure and identify where configuration lives.
 Check the local git state and summarize what changed recently.
 ```
 
-### Pattern 2: GitHub triage assistant
+### Pattern 2: repo-native work record with Open Scaffold
+
+Use [Open Scaffold](https://github.com/graphanov/open-scaffold) when you want Hermes to read a repository's durable AI-work record: mission, plans, evidence notes, handoff packets, and review/gate results. Hermes remains the agent; Open Scaffold remains the repo-local record.
+
+Add the server for one scaffolded repository:
+
+```bash
+hermes mcp add open_scaffold --command npx --args -y open-scaffold@latest mcp serve --repo /absolute/path/to/repo
+hermes mcp test open_scaffold
+```
+
+Then keep the exposed surface read-oriented. Choose `select` in the `hermes mcp add` prompt, or edit `config.yaml` afterward:
+
+```yaml
+mcp_servers:
+  open_scaffold:
+    command: "npx"
+    args: ["-y", "open-scaffold@latest", "mcp", "serve", "--repo", "/absolute/path/to/repo"]
+    tools:
+      include:
+        - list_plans
+        - get_plan
+        - get_mission
+        - list_evidence
+        - get_evidence
+        - get_status
+        - search_plans
+        - list_amendments
+        - get_handoff
+        - analyze_loop
+        - gate_loop
+      prompts: false
+```
+
+Good prompts:
+
+```text
+Use the Open Scaffold MCP tools to compile the current handoff packet and tell me the next legal action.
+```
+
+```text
+Inspect the active plans and evidence notes, then say whether this repo is ready for human review or needs another attempt.
+```
+
+Boundary notes:
+
+- Open Scaffold MCP is local-first and read-only by default.
+- Its write tools require the server to be started with `--allow-write`; do not enable that until you explicitly want Hermes to mutate `.osc` files.
+- Open Scaffold records and gates work; it does not authorize Hermes to merge, publish, deploy, or spawn runtimes.
+- Pin `open-scaffold@<version>` instead of `@latest` if you need reproducible tool schemas.
+
+### Pattern 3: GitHub triage assistant
 
 ```yaml
 mcp_servers:
@@ -289,7 +340,7 @@ List open issues about MCP, cluster them by theme, and draft a high-quality issu
 Search the repo for uses of _discover_and_register_server and explain how MCP tools are registered.
 ```
 
-### Pattern 3: internal API assistant
+### Pattern 4: internal API assistant
 
 ```yaml
 mcp_servers:
@@ -485,6 +536,6 @@ Not-great first servers:
 
 ## Related docs
 
-- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-- [FAQ](/docs/reference/faq)
-- [Slash Commands](/docs/reference/slash-commands)
+- [MCP (Model Context Protocol)](/user-guide/features/mcp)
+- [FAQ](/reference/faq)
+- [Slash Commands](/reference/slash-commands)

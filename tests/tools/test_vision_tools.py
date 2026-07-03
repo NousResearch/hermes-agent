@@ -1,6 +1,5 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
-import asyncio
 import json
 import logging
 import os
@@ -16,6 +15,8 @@ from tools.vision_tools import (
     _determine_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
+    _image_exceeds_dimension,
+    _EMBED_MAX_DIMENSION,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
@@ -190,57 +191,70 @@ class TestHandleVisionAnalyze:
             # Clean up the coroutine to avoid RuntimeWarning
             result.close()
 
-    def test_prompt_contains_question(self):
+    @pytest.mark.asyncio
+    async def test_prompt_contains_question(self):
         """The full prompt should incorporate the user's question."""
-        with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-        ) as mock_tool:
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
+        ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {
                     "image_url": "https://example.com/img.png",
                     "question": "Describe the cat",
                 }
             )
-            # Clean up coroutine
-            coro.close()
             call_args = mock_tool.call_args
             full_prompt = call_args[0][1]  # second positional arg
             assert "Describe the cat" in full_prompt
             assert "Fully describe and explain" in full_prompt
 
-    def test_uses_auxiliary_vision_model_env(self):
+    @pytest.mark.asyncio
+    async def test_uses_auxiliary_vision_model_env(self):
         """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]  # third positional arg
             assert model == "custom/model-v1"
 
-    def test_falls_back_to_default_model(self):
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_model(self):
         """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
             patch.dict(os.environ, {}, clear=False),
         ):
             # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
             # With no AUXILIARY_VISION_MODEL set, model should be None
@@ -296,7 +310,7 @@ class TestErrorLoggingExcInfo:
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch(
                 "tools.vision_tools._download_image",
                 new_callable=AsyncMock,
@@ -328,7 +342,7 @@ class TestErrorLoggingExcInfo:
             return dest
 
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", side_effect=fake_download),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
@@ -450,7 +464,7 @@ class TestVisionSafetyGuards:
 
         with (
             patch("tools.vision_tools.check_website_access", return_value=blocked),
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
@@ -548,7 +562,9 @@ class TestTildeExpansion:
         img = fake_home / "test_image.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
 
+        # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -579,6 +595,7 @@ class TestTildeExpansion:
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         result = await vision_analyze_tool(
             "~/nonexistent.png", "describe this", "test/model"
@@ -891,6 +908,72 @@ class TestResizeImageForVision:
 
 
 # ---------------------------------------------------------------------------
+# _image_exceeds_dimension — proactive embed-time pixel-cap detector
+# ---------------------------------------------------------------------------
+
+
+class TestImageExceedsDimension:
+    """The proactive embed path checks pixel dimensions, not just bytes.
+
+    A tall full-page screenshot can be well under the byte budget yet far
+    over Anthropic's 8000px per-side cap (e.g. 1200x12000 at 0.06 MB). The
+    byte-only embed guard let it slip into immutable history un-resized,
+    bricking the session on a non-retryable 400. This helper flags it so the
+    embed-time resize fires on dimensions too.
+    """
+
+    def test_tall_small_byte_image_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # 1200x12000 solid color: trips the pixel cap, tiny in bytes.
+        img = Image.new("RGB", (1200, 12000), (40, 40, 40))
+        path = tmp_path / "tall.png"
+        img.save(path, "PNG")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is True
+
+    def test_small_image_not_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (800, 600), (10, 200, 10))
+        path = tmp_path / "small.png"
+        img.save(path, "PNG")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_exactly_at_cap_not_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (_EMBED_MAX_DIMENSION, 100), (1, 2, 3))
+        path = tmp_path / "edge.png"
+        img.save(path, "PNG")
+        # max == cap is fine; only strictly greater forces a resize.
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_missing_pillow_returns_false(self, tmp_path):
+        # Without Pillow we can't inspect dimensions — return False so the
+        # byte-based checks still apply and a missing soft dep never breaks
+        # the embed path.
+        path = tmp_path / "x.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+            assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_corrupt_file_returns_false(self, tmp_path):
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        path = tmp_path / "corrupt.png"
+        path.write_bytes(b"not an image at all")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+
+# ---------------------------------------------------------------------------
 # _is_image_size_error — detect size-related API errors
 # ---------------------------------------------------------------------------
 
@@ -918,3 +1001,246 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+class TestDownloadRetryClassification:
+    """Error-class-aware retry: 4xx fail-fast, 429/5xx/transient retried (issue #32296)."""
+
+    @staticmethod
+    def _status_error(status_code):
+        import httpx
+
+        request = httpx.Request("GET", "https://example.com/img.jpg")
+        response = httpx.Response(status_code, request=request)
+        return httpx.HTTPStatusError(
+            f"{status_code}", request=request, response=response
+        )
+
+    def _make_client_raising_status(self, status_code):
+        """AsyncClient whose response.raise_for_status() raises HTTPStatusError."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock(
+            side_effect=self._status_error(status_code)
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    def test_is_retryable_classification(self):
+        from tools.vision_tools import _is_retryable_download_error
+
+        # Non-retryable client errors
+        for code in (400, 403, 404, 410):
+            assert _is_retryable_download_error(self._status_error(code)) is False
+        # Retryable: rate limit + server errors
+        for code in (429, 500, 502, 503):
+            assert _is_retryable_download_error(self._status_error(code)) is True
+        # Policy/SSRF/size errors are terminal
+        assert _is_retryable_download_error(PermissionError("blocked")) is False
+        assert _is_retryable_download_error(ValueError("too large")) is False
+        # Unclassified (network blip) is retryable
+        assert _is_retryable_download_error(ConnectionError("reset")) is True
+
+    @pytest.mark.asyncio
+    async def test_404_fails_fast_without_retry(self, tmp_path):
+        """A 404 must raise on the first attempt — no backoff sleep, no extra GETs."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_client = self._make_client_raising_status(404)
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_image(
+                "https://example.com/missing.jpg", tmp_path / "x.jpg", max_retries=3
+            )
+        # Exactly one attempt, zero backoff sleeps.
+        assert mock_client.get.await_count == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_503_retries_then_raises(self, tmp_path):
+        """A 5xx is retried up to max_retries, sleeping between attempts."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_client = self._make_client_raising_status(503)
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_image(
+                "https://example.com/flaky.jpg", tmp_path / "y.jpg", max_retries=3
+            )
+        # All three attempts used, two backoff sleeps between them.
+        assert mock_client.get.await_count == 3
+        assert mock_sleep.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# CPU-burst concurrency cap — a single turn (or several concurrent sessions in
+# one process) can launch dozens of vision_analyze calls at once. Only the
+# CPU-bound encode/resize is bounded (to host cores), so a video-frame storm
+# can't saturate every core and starve the dashboard event loop — while the
+# network-bound LLM calls stay fully concurrent for legitimate multi-image work.
+# ---------------------------------------------------------------------------
+
+
+class TestVisionCpuBurstCap:
+    """The bounded CPU executor caps concurrent encode/resize, not LLM calls."""
+
+    def test_resolver_defaults_to_host_cpus_no_ceiling(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools._detect_host_cpus", return_value=64),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
+        ):
+            os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
+            # No fixed ceiling: a 64-core host gets 64 encode workers. The cap
+            # tracks the actual resource (cores), not a magic number.
+            assert vt._resolve_vision_cpu_workers() == 64
+
+    def test_resolver_respects_low_host_cpu_count(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools._detect_host_cpus", return_value=2),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
+        ):
+            os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
+            assert vt._resolve_vision_cpu_workers() == 2
+
+    def test_resolver_env_override(self):
+        from tools import vision_tools as vt
+
+        with patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "16"}):
+            # Explicit override is honored verbatim — including ABOVE core count,
+            # so operators can raise it for heavy multi-image workloads.
+            assert vt._resolve_vision_cpu_workers() == 16
+
+    def test_resolver_rejects_sub_one_override(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "0"}),
+            patch("tools.vision_tools._detect_host_cpus", return_value=2),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
+        ):
+            # 0 is ignored (cap can never be disabled) → falls back to host cores.
+            assert vt._resolve_vision_cpu_workers() == 2
+
+    def test_cpu_executor_is_dedicated_and_sized_to_workers(self):
+        """The encode executor must be dedicated, not the shared default pool."""
+        import importlib
+        from concurrent.futures import ThreadPoolExecutor
+
+        vt = importlib.import_module("tools.vision_tools")
+        assert isinstance(vt._vision_cpu_executor, ThreadPoolExecutor)
+        assert vt._vision_cpu_executor._max_workers == vt._VISION_CPU_WORKERS
+
+    @pytest.mark.asyncio
+    async def test_encode_runs_on_dedicated_cpu_executor(self):
+        """Encode/resize must execute on a ``vision-encode`` thread, off the loop.
+
+        Regression guard: the CPU burst is what saturated cores and starved the
+        loop. It must run on the bounded vision executor, not the caller's loop
+        thread nor the shared default pool.
+        """
+        import importlib
+        import threading
+
+        vt = importlib.import_module("tools.vision_tools")
+
+        seen_threads = []
+
+        def fake_encode(path, mime_type=None):
+            seen_threads.append(threading.current_thread().name)
+            return "data:image/jpeg;base64,AAAA"
+
+        result = await vt._run_encode_on_cpu_executor(fake_encode, "p", mime_type="image/jpeg")
+        assert result == "data:image/jpeg;base64,AAAA"
+        assert len(seen_threads) == 1
+        assert seen_threads[0].startswith("vision-encode"), seen_threads
+
+    @pytest.mark.asyncio
+    async def test_encode_bursts_bounded_but_llm_stays_concurrent(self):
+        """Encode concurrency is clamped to the cap; the LLM call is not.
+
+        Drives many native-path calls whose encode step is the only thing on
+        the CPU executor. With the executor sized to CAP, no more than CAP
+        encodes ever run at once — even though all N calls are in flight
+        simultaneously (proving the analyses themselves are NOT serialized).
+        """
+        import asyncio
+        import importlib
+        from concurrent.futures import ThreadPoolExecutor
+
+        vt = importlib.import_module("tools.vision_tools")
+
+        CAP = 3
+        N = 12
+        enc_inflight = 0
+        enc_peak = 0
+        calls_inflight = 0
+        calls_peak = 0
+        import threading as _t
+        enc_lock = _t.Lock()
+
+        def slow_encode(path, mime_type=None):
+            nonlocal enc_inflight, enc_peak
+            with enc_lock:
+                enc_inflight += 1
+                enc_peak = max(enc_peak, enc_inflight)
+            try:
+                _t.Event().wait(0.04)  # simulate CPU burst
+            finally:
+                with enc_lock:
+                    enc_inflight -= 1
+            return "data:image/jpeg;base64,AAAA"
+
+        async def fake_native(image_url, question):
+            nonlocal calls_inflight, calls_peak
+            calls_inflight += 1
+            calls_peak = max(calls_peak, calls_inflight)
+            try:
+                # The encode is the capped CPU step.
+                await vt._run_encode_on_cpu_executor(slow_encode, "p", mime_type="image/jpeg")
+                # The "LLM call" is NOT capped — overlaps freely.
+                await asyncio.sleep(0.02)
+            finally:
+                calls_inflight -= 1
+            return json.dumps({"ok": True})
+
+        with (
+            patch.object(vt, "_vision_cpu_executor",
+                         ThreadPoolExecutor(max_workers=CAP, thread_name_prefix="vision-encode")),
+            patch.object(vt, "_should_use_native_vision_fast_path", return_value=True),
+            patch.object(vt, "_vision_analyze_native", side_effect=fake_native),
+        ):
+            await asyncio.gather(*[
+                vt._handle_vision_analyze(
+                    {"image_url": f"https://example.com/frame_{i}.png",
+                     "question": "what is this"}
+                )
+                for i in range(N)
+            ])
+
+        assert enc_peak <= CAP, f"encode peak {enc_peak} exceeded cap {CAP}"
+        assert enc_peak == CAP, f"expected to saturate encode cap {CAP}, got {enc_peak}"
+        # The analyses themselves were NOT serialized to the cap — all N ran
+        # concurrently, which is the whole point (multi-image workflows keep
+        # their concurrency; only the CPU burst is bounded).
+        assert calls_peak > CAP, (
+            f"analyses were serialized to the cap (peak={calls_peak}); only the "
+            "encode burst should be bounded, not the whole call"
+        )

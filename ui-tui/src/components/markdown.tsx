@@ -70,6 +70,12 @@ const NUMBERED_RE = /^(\s*)(\d+)[.)]\s+(.*)$/
 const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
+const MD_IDENTIFIER_RE = '[A-Za-z_][A-Za-z0-9_]*'
+const MD_DUNDER_IDENTIFIER_RE = `(?:${MD_IDENTIFIER_RE}__(?!\\w))`
+const MD_UNDERSCORE_BOLD_RE = `(?<!\\w)__(?!${MD_DUNDER_IDENTIFIER_RE})(.+?)__(?!\\w)`
+const MD_UNDERSCORE_ITALIC_RE = `(?<![\\w_])_(?!_)(.+?)(?<!_)_(?![\\w_])`
+const STRIP_UNDERSCORE_BOLD_RE = new RegExp(MD_UNDERSCORE_BOLD_RE, 'g')
+const STRIP_UNDERSCORE_ITALIC_RE = new RegExp(MD_UNDERSCORE_ITALIC_RE, 'g')
 
 // Display math openers: `$$ ... $$` (TeX) and `\[ ... \]` (LaTeX). The
 // opener is matched only when `$$` / `\[` appears at the very start of the
@@ -107,9 +113,9 @@ export const INLINE_RE = new RegExp(
     `~~(.+?)~~`, // 6    strike
     `\`([^\\\`]+)\``, // 7    code
     `\\*\\*(.+?)\\*\\*`, // 8    bold *
-    `(?<!\\w)__(.+?)__(?!\\w)`, // 9    bold _
+    MD_UNDERSCORE_BOLD_RE, // 9    bold _
     `\\*(.+?)\\*`, // 10   italic *
-    `(?<!\\w)_(.+?)_(?!\\w)`, // 11   italic _
+    MD_UNDERSCORE_ITALIC_RE, // 11   italic _
     `==(.+?)==`, // 12   highlight
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
     `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
@@ -190,9 +196,9 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_BOLD_RE, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_ITALIC_RE, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
@@ -207,7 +213,9 @@ const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // Guard: empty table
-  if (rows.length === 0 || rows[0]!.length === 0) return null
+  if (rows.length === 0 || rows[0]!.length === 0) {
+    return null
+  }
 
   const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
@@ -215,7 +223,11 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const minCellWidth = (raw: string) => {
     const text = stripInlineMarkup(raw)
     const words = text.split(/\s+/).filter(w => w.length > 0)
-    if (words.length === 0) return MIN_COL_WIDTH
+
+    if (words.length === 0) {
+      return MIN_COL_WIDTH
+    }
+
     return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
   }
 
@@ -223,7 +235,10 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
   // Normalize ragged rows: ensure every row has exactly numCols cells
   const normalizedRows = rows.map(row => {
-    if (row.length >= numCols) return row.slice(0, numCols)
+    if (row.length >= numCols) {
+      return row.slice(0, numCols)
+    }
+
     return [...row, ...Array<string>(numCols - row.length).fill('')]
   })
 
@@ -241,6 +256,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
   // but NOT this table's paddingLeft — we subtract it here.
   const gapOverhead = (numCols - 1) * COL_GAP
+
   const availableWidth = cols
     ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
     : Infinity
@@ -260,19 +276,23 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const extraSpace = availableWidth - totalMin
     const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
     const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+
     if (totalOverflow === 0) {
       columnWidths = [...minWidths]
     } else {
-      const rawAlloc = minWidths.map((min, i) =>
-        min + (overflows[i]! / totalOverflow) * extraSpace
-      )
+      const rawAlloc = minWidths.map((min, i) => min + (overflows[i]! / totalOverflow) * extraSpace)
+
       columnWidths = rawAlloc.map(v => Math.floor(v))
       // Distribute rounding remainders to columns with largest fractional part
       let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-        .sort((a, b) => b.frac - a.frac)
+
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
       for (const { i } of fracs) {
-        if (remainder <= 0) break
+        if (remainder <= 0) {
+          break
+        }
+
         columnWidths[i]!++
         remainder--
       }
@@ -286,31 +306,40 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const rawAlloc = minWidths.map(w => w * scaleFactor)
     columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
     let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-      .sort((a, b) => b.frac - a.frac)
+
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
     for (const { i } of fracs) {
-      if (remainder <= 0) break
+      if (remainder <= 0) {
+        break
+      }
+
       columnWidths[i]!++
       remainder--
     }
   }
 
   // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
-  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
-    : null
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+      : null
 
   const graphemes = (s: string): string[] =>
-    segmenter
-      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
-      : [...s]
+    segmenter ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment) : [...s]
 
   // Word-wrap plain text to fit within `width` display columns.
   // Operates on stripped text for correct width measurement.
   const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
     const text = stripInlineMarkup(raw)
-    if (width <= 0) return [text]
-    if (stringWidth(text) <= width) return [text]
+
+    if (width <= 0) {
+      return [text]
+    }
+
+    if (stringWidth(text) <= width) {
+      return [text]
+    }
 
     const words = text.split(/\s+/).filter(w => w.length > 0)
     const lines: string[] = []
@@ -319,15 +348,18 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
     for (const word of words) {
       const w = stringWidth(word)
+
       if (currentWidth === 0) {
         if (hard && w > width) {
           for (const ch of graphemes(word)) {
             const cw = stringWidth(ch)
+
             if (currentWidth + cw > width && current) {
               lines.push(current)
               current = ''
               currentWidth = 0
             }
+
             current += ch
             currentWidth += cw
           }
@@ -344,7 +376,11 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         currentWidth = w
       }
     }
-    if (current) lines.push(current)
+
+    if (current) {
+      lines.push(current)
+    }
+
     return lines.length > 0 ? lines : ['']
   }
 
@@ -357,26 +393,27 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
   if (!needsWrap) {
     const buildRowString = (row: string[]): string =>
-      row.map((cell, ci) => {
-        const text = stripInlineMarkup(cell)
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-        const gap = ci < numCols - 1 ? '  ' : ''
-        return text + pad + gap
-      }).join('')
+      row
+        .map((cell, ci) => {
+          const text = stripInlineMarkup(cell)
+          const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+          const gap = ci < numCols - 1 ? '  ' : ''
+
+          return text + pad + gap
+        })
+        .join('')
 
     return (
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
         {normalizedRows.map((row, ri) => (
           <Fragment key={ri}>
-            <Text
-              bold={ri === 0}
-              color={ri === 0 ? t.color.accent : undefined}
-              wrap="truncate-end"
-            >
+            <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} wrap="truncate-end">
               {buildRowString(row)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
-              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+              <Text color={t.color.muted} dimColor wrap="truncate-end">
+                {sep}
+              </Text>
             ) : null}
           </Fragment>
         ))}
@@ -388,23 +425,29 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
 
   const buildRowLines = (row: string[]): string[] => {
-    const cellLines = row.map((cell, ci) =>
-      wrapCell(cell, columnWidths[ci]!, isHard)
-    )
+    const cellLines = row.map((cell, ci) => wrapCell(cell, columnWidths[ci]!, isHard))
+
     const maxLines = Math.max(...cellLines.map(l => l.length), 1)
 
     const result: string[] = []
+
     for (let li = 0; li < maxLines; li++) {
       let line = ''
+
       for (let ci = 0; ci < numCols; ci++) {
         const cl = cellLines[ci] ?? ['']
         const cellText = li < cl.length ? cl[li]! : ''
         const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
         line += cellText + pad
-        if (ci < numCols - 1) line += '  '
+
+        if (ci < numCols - 1) {
+          line += '  '
+        }
       }
+
       result.push(line)
     }
+
     return result
   }
 
@@ -412,10 +455,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const allEntries: LineEntry[] = []
   let tallestBodyRow = 0
   normalizedRows.forEach((row, ri) => {
-    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const kind = ri === 0 ? ('header' as const) : ('body' as const)
     const rowLines = buildRowLines(row)
     rowLines.forEach(text => allEntries.push({ text, kind }))
-    if (ri > 0) tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+
+    if (ri > 0) {
+      tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    }
+
     if (ri === 0 && normalizedRows.length > 1) {
       allEntries.push({ text: sep, kind: 'separator' })
     }
@@ -451,15 +498,20 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         {dataRows.map((row, ri) => (
           <Fragment key={ri}>
             {ri > 0 ? (
-              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+              <Text color={t.color.muted} dimColor>
+                {'─'.repeat(sepWidth)}
+              </Text>
             ) : null}
             {headers.map((header, ci) => {
               const cell = row[ci] ?? ''
               const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+
               return (
                 <Text key={ci} wrap="wrap-trim">
-                  <Text bold color={t.color.accent}>{label}:</Text>
-                  {' '}{stripInlineMarkup(cell)}
+                  <Text bold color={t.color.accent}>
+                    {label}:
+                  </Text>{' '}
+                  {stripInlineMarkup(cell)}
                 </Text>
               )
             })}

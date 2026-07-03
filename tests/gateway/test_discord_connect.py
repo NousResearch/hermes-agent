@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -67,8 +68,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +147,13 @@ class SlowSyncBot(FakeBot):
         ("769524422783664158", False),
         ("abhey-gupta", True),
         ("769524422783664158,abhey-gupta", True),
+        # ``"*"`` is the open-mode wildcard, not a username to resolve, so it
+        # must not pull in the privileged Server Members intent. Requesting
+        # that intent without it being enabled in the Discord Developer Portal
+        # can prevent the bot from coming online at all — and that is exactly
+        # the migration-from-OpenClaw path the wildcard fix targets (#22334).
+        ("*", False),
+        ("769524422783664158,*", False),
     ],
 )
 async def test_connect_only_requests_members_intent_when_needed(monkeypatch, allowed_users, expected_members_intent):
@@ -180,6 +188,50 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am.roles is False
 
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_allowed",
+    [
+        {"*"},
+        {"769524422783664158", "*"},
+    ],
+)
+async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch, initial_allowed):
+    """Regression (#22334): ``_resolve_allowed_usernames`` must not strip ``"*"``.
+
+    The method splits entries into numeric-IDs (kept) vs non-numeric (treated
+    as usernames to resolve), then rewrites ``self._allowed_user_ids`` and the
+    ``DISCORD_ALLOWED_USERS`` env var from the numeric set. Since ``"*"`` is
+    non-numeric, without the wildcard branch it ends up in the resolution
+    bucket, fails to match any guild member, and is silently dropped from both
+    the in-memory set and the env var on the first ``on_ready`` — quietly
+    undoing the wildcard fix in ``_is_allowed_user`` for every subsequent
+    message.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = set(initial_allowed)
+    adapter._client = SimpleNamespace(guilds=[])  # no guilds → no resolution work
+
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", ",".join(sorted(initial_allowed)))
+
+    await adapter._resolve_allowed_usernames()
+
+    assert "*" in adapter._allowed_user_ids, (
+        "wildcard must survive _resolve_allowed_usernames; it is the open-mode "
+        "marker, not a username to resolve"
+    )
+    env_entries = {
+        e.strip()
+        for e in os.environ.get("DISCORD_ALLOWED_USERS", "").split(",")
+        if e.strip()
+    }
+    assert "*" in env_entries, (
+        "DISCORD_ALLOWED_USERS env must still contain '*' after resolution; "
+        "downstream readers (and any restart-time re-parse) rely on it"
+    )
+
 
 
 @pytest.mark.asyncio
@@ -266,17 +318,136 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
         ),
     )
 
-    async def fake_wait_for(awaitable, timeout):
-        awaitable.close()
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
         raise asyncio.TimeoutError()
 
-    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
 
     ok = await adapter.connect()
 
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._platform_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_cancels_bot_task(monkeypatch):
+    """Regression: connect() timeout must cancel _bot_task so the zombie
+    Discord client cannot fire on_message after the adapter is discarded.
+
+    Without this fix, the orphaned task eventually completes its WebSocket
+    handshake and a subsequent successful reconnect leaves two live clients
+    that each process every message, producing duplicate threads.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class NeverReadyBot(FakeBot):
+        """Bot whose start() never fires on_ready — simulates a slow gateway handshake."""
+        async def start(self, token):
+            await asyncio.Event().wait()  # hang forever
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: NeverReadyBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter._bot_task is None, (
+        "_bot_task must be cancelled and cleared on connect() timeout; "
+        "leaving it alive creates a zombie Discord client that produces duplicate threads"
+    )
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_running_bot_task(monkeypatch):
+    """Regression: disconnect() must cancel _bot_task even when connect() timed out.
+
+    _dispose_unused_adapter calls disconnect() on adapters whose connect() returned
+    False.  If _bot_task was still running (zombie), disconnect() must cancel it.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    # Simulate a zombie bot_task that never finishes (as if discord.py is mid-handshake)
+    async def _forever():
+        await asyncio.Event().wait()  # hang forever
+
+    zombie_task = asyncio.create_task(_forever())
+    adapter._bot_task = zombie_task
+    adapter._client = AsyncMock()
+    adapter._post_connect_task = None
+    adapter._voice_clients = {}
+    adapter._running = True
+    adapter._ready_event = asyncio.Event()
+
+    await adapter.disconnect()
+
+    # The task must have been cancelled (done + cancelled) and cleared from the adapter.
+    assert adapter._bot_task is None, "disconnect() must clear _bot_task"
+    assert zombie_task.done(), "disconnect() must have awaited the bot task to completion"
+    assert zombie_task.cancelled(), "disconnect() must cancel the zombie bot task"
+
+
+@pytest.mark.asyncio
+async def test_connect_ready_wait_uses_gateway_platform_connect_timeout(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "90")
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    seen_timeouts = []
+
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
+        seen_timeouts.append(timeout)
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert seen_timeouts == [90.0]
 
 
 @pytest.mark.asyncio

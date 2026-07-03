@@ -117,13 +117,29 @@ def test_assistant_only_history_does_not_advance_user_turn_count():
 
 
 def test_production_code_contains_hydration_block():
-    """Smoke test: confirm the hydration code is actually wired into
-    run_conversation(). If someone deletes it, tests above still pass
-    against the inline replica — this fails them awake.
+    """Smoke test: confirm the hydration code is actually wired into the
+    turn path. If someone deletes it, tests above still pass against the
+    inline replica — this fails them awake.
+
+    The agent-loop prologue now lives in ``agent/turn_context.py``
+    (``build_turn_context``), with the loop body in
+    ``agent/conversation_loop.py``.  Assert the block is present in the
+    turn subsystem — if it disappears entirely, this guard fails loudly.
+    Either module counts so the guard tolerates legitimate relocation
+    within the turn subsystem.
     """
     from pathlib import Path
-    src = Path(__file__).resolve().parents[2] / "run_agent.py"
-    content = src.read_text(encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    turn_src = "".join(
+        (repo / "agent" / name).read_text(encoding="utf-8")
+        for name in ("conversation_loop.py", "turn_context.py")
+    )
     # Anchor on the unique comment + the modulo line.
-    assert "Hydrate per-session nudge counters from persisted history" in content
-    assert "self._turns_since_memory = prior_user_turns % self._memory_nudge_interval" in content
+    assert "Hydrate per-session nudge counters from persisted history" in turn_src, (
+        "Hydration comment missing from the turn subsystem "
+        "(conversation_loop.py / turn_context.py)"
+    )
+    assert (
+        "agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval"
+        in turn_src
+    ), "Hydration modulo assignment missing from the turn subsystem"

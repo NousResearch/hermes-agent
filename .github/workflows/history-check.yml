@@ -14,8 +14,7 @@ name: History Check
 # the PR head and main to be non-empty.
 
 on:
-  pull_request:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
@@ -24,9 +23,9 @@ jobs:
   check-common-ancestor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0  # full history both sides for merge-base
+          fetch-depth: 0 # full history both sides for merge-base
 
       - name: Reject PRs with no common ancestor on main
         run: |

@@ -7,6 +7,8 @@ printf) to verify it behaves like a PTY you can read/write/resize/close.
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import sys
 import time
 
@@ -66,7 +68,7 @@ class TestPtyBridgeIO:
     def test_write_sends_to_child_stdin(self):
         # `cat` with no args echoes stdin back to stdout.  We write a line,
         # read it back, then signal EOF to let cat exit cleanly.
-        bridge = PtyBridge.spawn(["/bin/cat"])
+        bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
         try:
             bridge.write(b"hello-pty\n")
             output = _read_until(bridge, b"hello-pty")
@@ -119,6 +121,72 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
+    def test_resize_clamps_wsl_garbage_dimensions(self):
+        # WSL2 reports columns=131072, rows=1 from a broken winsize probe.
+        # 131072 > 65535 (unsigned short max) used to raise struct.error in
+        # resize() — uncaught, since only OSError was handled — and broke the
+        # dashboard /chat resize path (blank/disappearing text). The clamp
+        # must coerce the width down to the sane max and never raise.
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.1); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
+        bridge = PtyBridge.spawn(
+            [sys.executable, "-c", winsize_script],
+            cols=80,
+            rows=24,
+        )
+        try:
+            # Must not raise struct.error.
+            bridge.resize(cols=131072, rows=1)
+            output = _read_until(bridge, b"\n", timeout=5.0)
+            # Width clamped to the sane maximum (2000), height floored to 1.
+            assert b"2000" in output
+        finally:
+            bridge.close()
+
+
+@skip_on_windows
+class TestClampDimension:
+    def test_clamps_above_max(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
+        assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
+
+    def test_floors_at_one(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(0, _MAX_COLS) == 1
+        assert _clamp_dimension(-5, _MAX_COLS) == 1
+
+    def test_passes_through_sane_values(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(80, _MAX_COLS) == 80
+        assert _clamp_dimension(2000, _MAX_COLS) == 2000
+
+    def test_non_numeric_falls_back_to_min(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(None, _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("nan"), _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
+
+    def test_clamped_values_pack_as_unsigned_short(self):
+        # The whole point: clamped output must never raise struct.error.
+        import struct as _struct
+
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        cols = _clamp_dimension(131072, _MAX_COLS)
+        rows = _clamp_dimension(1, _MAX_ROWS)
+        # Should not raise.
+        _struct.pack("HHHH", rows, cols, 0, 0)
+
 
 @skip_on_windows
 class TestPtyBridgeClose:
@@ -143,6 +211,75 @@ class TestPtyBridgeClose:
                 reaped = True
                 break
         assert reaped, f"pid {pid} still running after close()"
+
+    def test_close_signals_child_process_group(self, monkeypatch):
+        sent: list[tuple[int, signal.Signals]] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                raise AssertionError(f"single-process kill used: {sig}")
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+
+        def fake_killpg(pgid, sig):
+            sent.append((pgid, sig))
+            fake.alive = False
+
+        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [(67890, signal.SIGHUP)]
+        assert bridge._closed is True
+
+    def test_close_falls_back_to_single_process_signal_when_group_unknown(self, monkeypatch):
+        sent: list[signal.Signals] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                sent.append(sig)
+                self.alive = False
+
+            def close(self, force=False):
+                self.closed = force
+
+        monkeypatch.setattr(os, "getpgid", lambda pid: (_ for _ in ()).throw(OSError()))
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = _FakeProc()
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [signal.SIGHUP]
 
 
 @skip_on_windows

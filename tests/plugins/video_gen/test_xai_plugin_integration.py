@@ -56,7 +56,7 @@ class _FakeAsyncClient:
         return _FakeResponse(200, {
             "status": "done",
             "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
-            "model": "grok-imagine-video",
+            "model": self.posts[-1]["json"]["model"],
         })
 
 
@@ -113,6 +113,7 @@ class TestXAIPayload:
         provider, captured = xai_provider
         provider.generate("a dog at sunset")
         payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video"
         assert payload["prompt"] == "a dog at sunset"
         assert "image" not in payload
         assert "reference_images" not in payload
@@ -121,7 +122,30 @@ class TestXAIPayload:
         provider, captured = xai_provider
         provider.generate("animate this", image_url="https://example.com/cat.png")
         payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
         assert payload["image"] == {"url": "https://example.com/cat.png"}
+
+    def test_local_image_path_is_sent_as_data_uri(self, xai_provider, tmp_path):
+        provider, captured = xai_provider
+        image_path = tmp_path / "frame.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+        provider.generate("animate this", image_url=str(image_path))
+
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+
+    def test_explicit_model_override_is_honored_for_image(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            model="grok-imagine-video",
+            _model_override_explicit=True,
+        )
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video"
 
     def test_reference_images_payload(self, xai_provider):
         provider, captured = xai_provider

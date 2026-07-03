@@ -240,11 +240,11 @@ def _clear_auth_store_provider(provider: str) -> bool:
 def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     """Nous OAuth lives in auth.json providers.nous — clear it and suppress.
 
-    We suppress in addition to clearing because nothing else stops the
-    user's next `hermes login` run from writing providers.nous again
-    before they decide to.  Suppression forces them to go through
-    `hermes auth add nous` to re-engage, which is the documented re-add
-    path and clears the suppression atomically.
+    We suppress in addition to clearing because nothing else stops a future
+    `hermes auth add nous` (or any other path that writes providers.nous)
+    from re-seeding before the user has decided to.  Suppression forces
+    them to go through `hermes auth add nous` to re-engage, which is the
+    documented re-add path and clears the suppression atomically.
     """
     result = RemovalResult()
     if _clear_auth_store_provider(provider):
@@ -265,7 +265,7 @@ def _remove_minimax_oauth(provider: str, removed) -> RemovalResult:
     return result
 
 
-def _remove_xai_oauth_loopback_pkce(provider: str, removed) -> RemovalResult:
+def _remove_xai_oauth_device_code(provider: str, removed) -> RemovalResult:
     """xAI OAuth tokens live in auth.json providers.xai-oauth — clear them.
 
     Without this step, ``hermes auth remove xai-oauth <N>`` silently undoes
@@ -275,17 +275,12 @@ def _remove_xai_oauth_loopback_pkce(provider: str, removed) -> RemovalResult:
     entry from the still-present singleton — credentials reappear with no
     user feedback. Clearing the singleton in step with the suppression set
     by the central dispatcher makes the removal stick.
-
-    Belt-and-braces against the manual entry path: ``hermes auth add
-    xai-oauth`` produces a ``manual:xai_pkce`` entry whose removal step
-    falls through to "unregistered → nothing to clean up" (correct —
-    manual entries are pool-only).
     """
     result = RemovalResult()
     if _clear_auth_store_provider(provider):
         result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
     result.hints.append(
-        "Run `hermes model` → xAI Grok OAuth (SuperGrok Subscription) to re-authenticate if needed."
+        "Run `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) to re-authenticate if needed."
     )
     return result
 
@@ -423,8 +418,8 @@ def _register_all_sources() -> None:
         description="auth.json providers.openai-codex + ~/.codex/auth.json",
     ))
     register(RemovalStep(
-        provider="xai-oauth", source_id="loopback_pkce",
-        remove_fn=_remove_xai_oauth_loopback_pkce,
+        provider="xai-oauth", source_id="device_code",
+        remove_fn=_remove_xai_oauth_device_code,
         description="auth.json providers.xai-oauth",
     ))
     register(RemovalStep(

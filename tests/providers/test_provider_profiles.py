@@ -1,6 +1,5 @@
 """Tests for the provider module registry and profiles."""
 
-import pytest
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
@@ -69,10 +68,12 @@ class TestKimiProfile:
         assert kimi.base_url != cn.base_url
 
     def test_thinking_enabled(self):
+        # xor contract (fix ce4e74b3): an explicit recognized effort sends
+        # reasoning_effort ONLY — never paired with extra_body.thinking.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True, "effort": "high"})
-        assert eb["thinking"] == {"type": "enabled"}
         assert tl["reasoning_effort"] == "high"
+        assert "thinking" not in eb
 
     def test_thinking_disabled(self):
         p = get_provider_profile("kimi")
@@ -81,15 +82,18 @@ class TestKimiProfile:
         assert "reasoning_effort" not in tl
 
     def test_reasoning_effort_default(self):
+        # enabled with no effort → thinking toggle only, no top-level effort.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True})
-        assert tl["reasoning_effort"] == "medium"
+        assert eb["thinking"] == {"type": "enabled"}
+        assert "reasoning_effort" not in tl
 
     def test_no_config_defaults(self):
+        # No reasoning_config → thinking on, server picks depth; no effort.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
         assert eb["thinking"] == {"type": "enabled"}
-        assert tl["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in tl
 
 
 class TestOpenRouterProfile:
@@ -97,6 +101,11 @@ class TestOpenRouterProfile:
         p = get_provider_profile("openrouter")
         body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})
         assert body["provider"] == {"allow": ["anthropic"]}
+
+    def test_extra_body_session_id(self):
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(session_id="test-session-123")
+        assert body["session_id"] == "test-session-123"
 
     def test_extra_body_no_prefs(self):
         p = get_provider_profile("openrouter")
@@ -160,6 +169,77 @@ class TestOpenRouterProfile:
         )
         assert eb["reasoning"] == {"enabled": False}
 
+    def test_reasoning_disable_omitted_for_mandatory_anthropic(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) reject any disable
+        form: OpenRouter translates ``reasoning: {enabled: false}`` into
+        Anthropic's ``thinking: {type: disabled}``, which 400s. The profile must
+        omit ``reasoning`` so the model falls back to adaptive thinking instead.
+        """
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-fable-5",          # new named model
+            "anthropic/claude-some-future-7",    # unknown → default mandatory
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-4.6",
+        ):
+            for cfg in ({"enabled": False}, {"effort": "none"}):
+                eb, _ = p.build_api_kwargs_extras(
+                    reasoning_config=cfg,
+                    supports_reasoning=True,
+                    model=model,
+                )
+                assert "reasoning" not in eb, (model, cfg, eb)
+
+    def test_reasoning_disable_kept_for_legacy_anthropic(self):
+        """Older Anthropic models still accept an explicit disable form, so the
+        profile must keep forwarding it."""
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-3.7-sonnet",
+            "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.5",
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_disable_kept_for_non_anthropic(self):
+        """Non-Anthropic models (DeepSeek, Qwen, …) disable reasoning fine; the
+        Anthropic-mandatory guard must not touch them."""
+        p = get_provider_profile("openrouter")
+        for model in ("deepseek/deepseek-chat", "qwen/qwen3-max", "openai/gpt-5.4"):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_omitted_for_mandatory_anthropic_even_when_enabled(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) use adaptive
+        thinking — OpenRouter ignores reasoning.effort for them, and sending any
+        reasoning field makes OpenRouter emit thinking.type.disabled on
+        tool-continuation turns (whose assistant tool_calls carry no thinking
+        block), 400ing every turn after the first tool call. The profile must
+        omit reasoning entirely so the model defaults to adaptive.
+        """
+        p = get_provider_profile("openrouter")
+        for cfg in (
+            {"enabled": True, "effort": "medium"},
+            {"enabled": True, "effort": "xhigh"},
+            {"effort": "high"},
+            {"enabled": True},
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config=cfg,
+                supports_reasoning=True,
+                model="anthropic/claude-fable-5",
+            )
+            assert "reasoning" not in eb, (cfg, eb)
+
     def test_default_reasoning(self):
         p = get_provider_profile("openrouter")
         eb, _ = p.build_api_kwargs_extras(supports_reasoning=True)
@@ -210,6 +290,121 @@ class TestOpenRouterProfile:
         )
         assert eb["reasoning"] == {"enabled": True, "effort": "high"}
         assert tl["extra_headers"]["x-grok-conv-id"] == "sess-123"
+
+    # --- reasoning-mandatory Anthropic effort → top-level verbosity (#43432) ---
+    #
+    # These models (Claude 4.6+ / fable / mythos-class) ignore
+    # ``reasoning.effort`` and use adaptive thinking. OpenRouter honors the
+    # requested effort on the top-level ``verbosity`` field instead (maps to
+    # Anthropic ``output_config.effort``). The profile must route the existing
+    # ``reasoning_config["effort"]`` there while still NEVER emitting a
+    # ``reasoning`` field (which would 400 — see #42991). Gate every fixture on
+    # the real predicate so this stays a behavior contract, not a name snapshot.
+
+    @staticmethod
+    def _is_mandatory(model):
+        import inspect
+        p = get_provider_profile("openrouter")
+        mod = inspect.getmodule(type(p))
+        return mod._anthropic_reasoning_is_mandatory(model)
+
+    def test_mandatory_anthropic_effort_routes_to_verbosity(self):
+        """effort set + reasoning enabled → top-level verbosity == effort,
+        and NO reasoning field in extra_body.
+
+        Covers the full real config range produced by
+        ``hermes_constants.parse_reasoning_effort`` —
+        ``VALID_REASONING_EFFORTS = (minimal, low, medium, high, xhigh)``.
+        """
+        p = get_provider_profile("openrouter")
+        model = "anthropic/claude-fable-5"
+        assert self._is_mandatory(model)  # fixture really is mandatory
+        for effort in ("minimal", "low", "medium", "high", "xhigh"):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": effort},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert tl["verbosity"] == effort, (effort, tl)
+            assert "reasoning" not in eb, (effort, eb)
+
+    def test_mandatory_anthropic_effort_without_enabled_key_routes(self):
+        """effort present without an explicit ``enabled`` key still routes to
+        verbosity (enabled defaults to True)."""
+        p = get_provider_profile("openrouter")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"effort": "xhigh"},
+            supports_reasoning=True,
+            model="anthropic/claude-fable-5",
+        )
+        assert tl["verbosity"] == "xhigh"
+        assert "reasoning" not in eb
+
+    def test_mandatory_anthropic_verbosity_is_value_agnostic_passthrough(self):
+        """The mapping passes the effort value through verbatim — it must NOT
+        clamp or whitelist. ``xhigh`` is a real config value; ``max`` is not
+        producible by ``parse_reasoning_effort`` today but OpenRouter accepts it
+        for Claude (live-proven in #43432), so a forward value must survive
+        rather than be silently dropped. The OpenAI SDK type only literals
+        ``low|medium|high`` but it's a TypedDict (no runtime validation), so the
+        extended scale reaches the wire untouched."""
+        p = get_provider_profile("openrouter")
+        for effort in ("xhigh", "max"):
+            _, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": effort},
+                supports_reasoning=True,
+                model="anthropic/claude-fable-5",
+            )
+            assert tl["verbosity"] == effort
+
+    def test_mandatory_anthropic_no_verbosity_when_effort_absent(self):
+        """No effort / none / disabled → no verbosity emitted, so the model
+        keeps its own adaptive default. Still no reasoning field."""
+        p = get_provider_profile("openrouter")
+        model = "anthropic/claude-fable-5"
+        for cfg in (
+            None,
+            {},
+            {"enabled": True},
+            {"effort": "none"},
+            {"enabled": True, "effort": "none"},
+            {"enabled": False, "effort": "high"},  # explicitly disabled wins
+        ):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config=cfg,
+                supports_reasoning=True,
+                model=model,
+            )
+            assert "verbosity" not in tl, (cfg, tl)
+            assert "reasoning" not in eb, (cfg, eb)
+
+    def test_non_mandatory_reasoning_model_unchanged_no_verbosity(self):
+        """Non-mandatory reasoning models (DeepSeek, Qwen, GPT) keep getting
+        ``reasoning`` in extra_body and never get a ``verbosity`` field — the
+        new path must not touch them."""
+        p = get_provider_profile("openrouter")
+        for model in ("deepseek/deepseek-chat", "qwen/qwen3-max", "openai/gpt-5.4"):
+            assert not self._is_mandatory(model)  # fixture really is non-mandatory
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": True, "effort": "high"}, (model, eb)
+            assert "verbosity" not in tl, (model, tl)
+
+    def test_mandatory_anthropic_verbosity_coexists_with_grok_header(self):
+        """A reasoning-mandatory Anthropic model is never a Grok model, but the
+        top-level dict must remain a single merged dict — verify the verbosity
+        path doesn't clobber the extra_headers slot used by Grok affinity."""
+        p = get_provider_profile("openrouter")
+        # mandatory anthropic + effort → verbosity, no extra_headers
+        _, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True,
+            model="anthropic/claude-fable-5",
+        )
+        assert tl == {"verbosity": "high"}
 
 
 class TestNousProfile:

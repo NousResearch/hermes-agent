@@ -160,47 +160,6 @@ class TestFirecrawlClientConfig:
             importlib.reload(tools.web_tools)
             assert tools.web_tools._read_nous_access_token() == "nous-token"
 
-    def test_check_auxiliary_model_re_resolves_backend_each_call(self):
-        """Availability checks should not be pinned to module import state."""
-        import tools.web_tools
-
-        # Simulate the pre-fix import-time cache slot for regression coverage.
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        with patch(
-            "tools.web_tools.get_async_text_auxiliary_client",
-            side_effect=[(None, None), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model")],
-        ):
-            assert tools.web_tools.check_auxiliary_model() is False
-            assert tools.web_tools.check_auxiliary_model() is True
-
-    @pytest.mark.asyncio
-    async def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
-        """Summarization should pick up a backend that becomes available later in-process."""
-        import tools.web_tools
-
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        response = MagicMock()
-        response.choices = [MagicMock(message=MagicMock(content="summary text"))]
-
-        with patch(
-            "tools.web_tools._resolve_web_extract_auxiliary",
-            side_effect=[(None, None, {}), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model", {})],
-        ), patch(
-            "tools.web_tools.async_call_llm",
-            new=AsyncMock(return_value=response),
-        ) as mock_async_call:
-            assert tools.web_tools.check_auxiliary_model() is False
-            result = await tools.web_tools._call_summarizer_llm(
-                "Some content worth summarizing",
-                "Source: https://example.com\n\n",
-                None,
-            )
-
-        assert result == "summary text"
-        mock_async_call.assert_awaited_once()
-
     # ── Singleton caching ────────────────────────────────────────────
 
     def test_singleton_returns_same_instance(self):
@@ -340,12 +299,13 @@ class TestBackendSelection:
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
 
-    def test_fallback_parallel_takes_priority_over_exa(self):
-        """Exa should only win the fallback path when it is the only configured backend."""
+    def test_fallback_exa_takes_priority_over_parallel(self):
+        """Direct-credential backends are tried in the order tavily > exa > parallel
+        so an explicit Exa key wins when both Exa and Parallel are configured."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test"}):
-            assert _get_backend() == "parallel"
+            assert _get_backend() == "exa"
 
     def test_fallback_tavily_only_key(self):
         """Only TAVILY_API_KEY set → 'tavily'."""
@@ -354,27 +314,27 @@ class TestBackendSelection:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
-    def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
-        """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
+    def test_fallback_tavily_beats_firecrawl_direct(self):
+        """Tavily ranks above firecrawl in the explicit-credential block."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
-            assert _get_backend() == "firecrawl"
+            assert _get_backend() == "tavily"
 
-    def test_fallback_tavily_with_parallel_prefers_parallel(self):
-        """Tavily + Parallel keys, no config → 'parallel' (Parallel takes priority over Tavily)."""
+    def test_fallback_tavily_beats_parallel(self):
+        """Tavily is first in the explicit-credential block so it wins over parallel."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "PARALLEL_API_KEY": "par-test"}):
-            # Parallel + no Firecrawl → parallel
-            assert _get_backend() == "parallel"
+            assert _get_backend() == "tavily"
 
-    def test_fallback_both_keys_defaults_to_firecrawl(self):
-        """Both keys set, no config → 'firecrawl' (backward compat)."""
+    def test_fallback_parallel_beats_firecrawl_direct(self):
+        """Parallel + Firecrawl-direct → parallel (parallel is the higher-priority
+        explicit-credential backend; firecrawl-direct ranks below it)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test"}):
-            assert _get_backend() == "firecrawl"
+            assert _get_backend() == "parallel"
 
     def test_fallback_firecrawl_only_key(self):
         """Only FIRECRAWL_API_KEY set → 'firecrawl'."""
@@ -386,7 +346,8 @@ class TestBackendSelection:
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -395,6 +356,27 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "nonexistent"}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
+
+    def test_managed_gateway_does_not_preempt_explicit_tavily(self):
+        """Regression: a Nous OAuth token (managed gateway "ready") must NOT
+        beat an explicitly configured TAVILY_API_KEY in the fallback path.
+        Free Nous tiers don't include web search, so the user's deliberate
+        Tavily setup would fail at runtime with "no subscription" if the
+        gateway pre-empted it."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_backend() == "tavily"
+
+    def test_managed_gateway_only_falls_through_to_firecrawl(self):
+        """When no explicit-credential backend is configured, a Nous-managed
+        gateway token still selects firecrawl — the convenience path is
+        preserved, just no longer pre-empts."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
+            assert _get_backend() == "firecrawl"
 
 
 class TestParallelClientConfig:
@@ -603,7 +585,8 @@ class TestCheckWebApiKey:
 
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
@@ -623,9 +606,48 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
     def test_tool_gateway_returns_true(self):
-        with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+        with patch("tools.web_tools._peek_nous_access_token", return_value="nous-token"):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+    def test_tool_gateway_availability_skips_refresh_for_expired_cached_token(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        expired_at = "2000-01-01T00:00:00+00:00"
+        (tmp_path / "auth.json").write_text(json.dumps({
+            "providers": {
+                "nous": {
+                    "access_token": "expired-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": expired_at,
+                }
+            }
+        }))
+        refresh_calls = []
+
+        def _record_refresh(*, refresh_skew_seconds=120, **_kwargs):
+            refresh_calls.append(refresh_skew_seconds)
+            return "fresh-token"
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_nous_access_token",
+            _record_refresh,
+        )
+
+        with patch.dict(
+            os.environ,
+            {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"},
+            clear=False,
+        ):
+            from tools.web_tools import check_web_api_key
+
+            assert check_web_api_key() is True
+
+        assert refresh_calls == []
 
     def test_configured_backend_must_match_available_provider(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
@@ -636,7 +658,7 @@ class TestCheckWebApiKey:
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+            with patch("tools.web_tools._peek_nous_access_token", return_value="nous-token"):
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True

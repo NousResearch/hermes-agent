@@ -477,6 +477,17 @@ class TestSkillView:
         assert result["success"] is True
         assert "Endpoint info" in result["content"]
 
+    def test_view_learning_file(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            learnings_dir = skill_dir / "learnings"
+            learnings_dir.mkdir()
+            (learnings_dir / "LEARNINGS.md").write_text("# Learnings\nDecision history.")
+            raw = skill_view("my-skill", file_path="learnings/LEARNINGS.md")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Decision history" in result["content"]
+
     def test_view_nonexistent_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "my-skill")
@@ -490,10 +501,14 @@ class TestSkillView:
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
             (refs_dir / "guide.md").write_text("guide content")
+            learnings_dir = skill_dir / "learnings"
+            learnings_dir.mkdir()
+            (learnings_dir / "LEARNINGS.md").write_text("decision history")
             raw = skill_view("my-skill")
         result = json.loads(raw)
         assert result["linked_files"] is not None
         assert "references" in result["linked_files"]
+        assert result["linked_files"]["learnings"] == ["learnings/LEARNINGS.md"]
 
     def test_view_tags_from_metadata(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

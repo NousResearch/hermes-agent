@@ -9,7 +9,7 @@ and optional supporting files like references, templates, and examples.
 Inspired by Anthropic's Claude Skills system with progressive disclosure architecture:
 - Metadata (name ≤64 chars, description ≤1024 chars) - shown in skills_list
 - Full Instructions - loaded via skill_view when needed
-- Linked Files (references, templates) - loaded on demand
+- Linked Files (references, templates, scripts, assets, learnings) - loaded on demand
 
 Directory Structure:
     skills/
@@ -1293,11 +1293,12 @@ def skill_view(
         # Reuse the parse from the platform check above
         frontmatter = parsed_frontmatter
 
-        # Get reference, template, asset, and script files if this is a directory-based skill
+        # Get reference, template, asset, script, and learning files if this is a directory-based skill
         reference_files = []
         template_files = []
         asset_files = []
         script_files = []
+        learning_files = []
 
         if skill_dir:
             references_dir = skill_dir / "references"
@@ -1338,6 +1339,14 @@ def skill_view(
                         [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
                     )
 
+            learnings_dir = skill_dir / "learnings"
+            if learnings_dir.exists():
+                learning_files = [
+                    str(f.relative_to(skill_dir))
+                    for f in learnings_dir.rglob("*.md")
+                    if f.is_file()
+                ]
+
         # Read tags/related_skills with backward compat:
         # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
         hermes_meta = {}
@@ -1360,6 +1369,8 @@ def skill_view(
             linked_files["assets"] = asset_files
         if script_files:
             linked_files["scripts"] = script_files
+        if learning_files:
+            linked_files["learnings"] = learning_files
 
         try:
             rel_path = str(skill_md.relative_to(SKILLS_DIR))
@@ -1460,7 +1471,7 @@ def skill_view(
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
+            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md', 'assets/config.yaml', or 'learnings/LEARNINGS.md'"
             if linked_files
             else None,
             "required_environment_variables": required_env_vars,
@@ -1576,7 +1587,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts, templates, and learnings. Load a skill's full content or access its linked files (references, templates, scripts, assets, learnings). First call returns SKILL.md content plus a 'linked_files' dict showing available support files. To access those, call again with file_path parameter.",
     "parameters": {
         "type": "object",
         "properties": {

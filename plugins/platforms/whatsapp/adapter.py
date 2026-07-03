@@ -288,6 +288,7 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -1067,6 +1068,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
+                                if msg_data.get("agentDispatchAllowed") is False:
+                                    await self._handle_ingest_only_event(event)
+                                    continue
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -1082,6 +1086,43 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _handle_ingest_only_event(self, event: MessageEvent) -> None:
+        """Expose a WhatsApp event to plugins, then drop it fail-closed.
+
+        The Node bridge marks non-allowlisted bot-mode senders with
+        ``agentDispatchAllowed=false`` when
+        ``WHATSAPP_FORWARD_UNAUTHORIZED_EVENTS`` is enabled. Those events are
+        useful for business inbox ingestion, but must never enter normal agent
+        dispatch if the business plugin is disabled or buggy.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            results = _invoke_hook(
+                "pre_gateway_dispatch",
+                event=event,
+                gateway=None,
+                session_store=None,
+            )
+            handled = any(
+                isinstance(result, dict) and result.get("action") == "skip"
+                for result in results
+            )
+            if not handled:
+                logger.info(
+                    "[%s] Dropped WhatsApp ingest-only event without plugin handler: chat=%s user=%s",
+                    self.name,
+                    getattr(event.source, "chat_id", None),
+                    getattr(event.source, "user_id", None),
+                )
+        except Exception as exc:
+            logger.warning(
+                "[%s] WhatsApp ingest-only plugin hook failed; dropping event fail-closed: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
 
     # ── Text debounce batching ──────────────────────────────────────
 

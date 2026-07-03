@@ -111,8 +111,9 @@ class TestBuildCallKwargsMaxTokens:
     Most chat-completions providers treat an omitted max_tokens as "use the
     model max", which is what we want for auxiliary tasks. An explicit cap only
     risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
-    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
-    the one exception — max_tokens is a mandatory field there.
+    max_tokens; ZAI vision rejects it entirely). Exceptions: the Anthropic
+    Messages wire requires max_tokens, and ZAI text models need the cap for
+    low-latency micro-label/classifier calls.
     """
 
     @pytest.mark.parametrize(
@@ -159,6 +160,134 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
+
+    def test_keeps_max_tokens_on_zai_text_models_for_fast_micro_calls(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5.1",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+        assert kwargs["max_tokens"] == 1234
+        assert "max_completion_tokens" not in kwargs
+
+    def test_omits_max_tokens_on_zai_vision_models(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5v-turbo",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_task_model_alias_resolves_for_auxiliary_and_supplies_fallback_chain(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        cfg = {
+            "auxiliary": {
+                "title_generation": {
+                    "provider": "zai",
+                    "model": "smart-cheap",
+                }
+            },
+            "model_aliases": {
+                "smart-cheap": {
+                    "provider": "zai",
+                    "model": "glm-5.2",
+                    "fallback_chain": [
+                        {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.4",
+                            "api_mode": "codex_responses",
+                        }
+                    ],
+                }
+            },
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        provider, model, base_url, api_key, api_mode = aux._resolve_task_provider_model("title_generation")
+        assert provider == "zai"
+        assert model == "glm-5.2"
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+        sentinel = object()
+        monkeypatch.setattr(aux, "_resolve_fallback_entry", lambda entry: (sentinel, entry["model"]))
+        client, resolved_model, label = aux._try_configured_fallback_chain(
+            "title_generation",
+            "zai",
+            reason="rate limit",
+        )
+        assert client is sentinel
+        assert resolved_model == "gpt-5.4"
+        assert label == "fallback_chain[0](openai-codex)"
+
+    def test_explicit_known_provider_base_url_preserves_provider_identity(self):
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="zai",
+            model="glm-5.1",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+
+        assert provider == "zai"
+        assert model == "glm-5.1"
+        assert base_url == "https://api.z.ai/api/coding/paas/v4"
+        assert api_key is None
+        assert api_mode is None
+
+    def test_explicit_provider_base_url_skips_pool_endpoint_probe(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        with aux._client_cache_lock:
+            aux._client_cache.clear()
+
+        sentinel_client = SimpleNamespace(base_url="https://api.z.ai/api/coding/paas/v4")
+
+        def fail_pool_peek(provider):
+            raise AssertionError("explicit base_url should not peek credential pool")
+
+        def fake_resolve_provider_client(
+            provider,
+            model=None,
+            async_mode=False,
+            raw_codex=False,
+            explicit_base_url=None,
+            explicit_api_key=None,
+            api_mode=None,
+            main_runtime=None,
+            is_vision=False,
+            task=None,
+        ):
+            assert provider == "zai"
+            assert model == "glm-5.1"
+            assert explicit_base_url == "https://api.z.ai/api/coding/paas/v4"
+            assert explicit_api_key is None
+            return sentinel_client, "glm-5.1"
+
+        monkeypatch.setattr(aux, "_peek_pool_entry", fail_pool_peek)
+        monkeypatch.setattr(aux, "resolve_provider_client", fake_resolve_provider_client)
+
+        try:
+            client, model = aux._get_cached_client(
+                "zai",
+                "glm-5.1",
+                base_url="https://api.z.ai/api/coding/paas/v4",
+            )
+            assert client is sentinel_client
+            assert model == "glm-5.1"
+        finally:
+            with aux._client_cache_lock:
+                aux._client_cache.clear()
 
 
 class TestNousTagsScoping:

@@ -16,7 +16,7 @@ Actions:
   edit       -- Replace the SKILL.md content of a user skill (full rewrite)
   patch      -- Targeted find-and-replace within SKILL.md or any supporting file
   delete     -- Remove a user skill entirely
-  write_file -- Add/overwrite a supporting file (reference, template, script, asset)
+  write_file -- Add/overwrite a supporting file (reference, template, script, asset, learning)
   remove_file-- Remove a supporting file from a user skill
 
 Directory layout for user skills:
@@ -26,7 +26,8 @@ Directory layout for user skills:
     │   ├── references/
     │   ├── templates/
     │   ├── scripts/
-    │   └── assets/
+    │   ├── assets/
+    │   └── learnings/
     └── category-name/
         └── another-skill/
             └── SKILL.md
@@ -336,7 +337,7 @@ MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
-ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets", "learnings"}
 
 
 # =============================================================================
@@ -431,7 +432,7 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
             f"{label} content is {len(content):,} characters "
             f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
             f"Consider splitting into a smaller SKILL.md with supporting files "
-            f"in references/ or templates/."
+            "under references/, templates/, or learnings/."
         )
     return None
 
@@ -686,6 +687,21 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
+    # Scaffold durable per-skill decision memory. New skills start with an
+    # empty-ish learning log so future production corrections and rejected
+    # alternatives have a canonical home from day one.
+    learnings_dir = skill_dir / "learnings"
+    learnings_dir.mkdir(parents=True, exist_ok=True)
+    learnings_md = learnings_dir / "LEARNINGS.md"
+    _atomic_write_text(
+        learnings_md,
+        (
+            f"# {name} Learnings\n\n"
+            "Purpose: preserve durable production lessons, decision history, "
+            "rejected alternatives, and guardrails for future edits.\n"
+        ),
+    )
+
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
@@ -707,12 +723,13 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "message": f"Skill '{name}' created.",
         "path": str(skill_dir.relative_to(SKILLS_DIR)),
         "skill_md": str(skill_md),
+        "learnings_md": str(learnings_md),
         "_change": {"description": _desc},
     }
     if category:
         result["category"] = category
     result["hint"] = (
-        "To add reference files, templates, or scripts, use "
+        "learnings/LEARNINGS.md was scaffolded automatically. To add reference files, templates, scripts, assets, or additional learnings, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
     return result
@@ -1234,8 +1251,9 @@ SKILL_MANAGE_SCHEMA = {
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Good skills: precise YAML descriptions, numbered steps with exact commands, "
+        "pitfalls section, verification steps, and learnings/ for durable correction history. "
+        "Use skill_view() to see format examples.\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
@@ -1296,7 +1314,7 @@ SKILL_MANAGE_SCHEMA = {
                 "description": (
                     "Path to a supporting file within the skill directory. "
                     "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
+                    "templates/, scripts/, assets/, or learnings/. "
                     "For 'patch': optional, defaults to SKILL.md if omitted."
                 )
             },

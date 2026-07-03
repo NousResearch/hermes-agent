@@ -44,6 +44,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -3353,6 +3354,10 @@ def _try_configured_fallback_chain(
 
     task_config = _get_auxiliary_task_config(task)
     chain = task_config.get("fallback_chain")
+    if not chain:
+        alias = _task_model_alias(task_config)
+        if alias is not None:
+            chain = alias.get("fallback_chain")
     if not chain or not isinstance(chain, list):
         return None, None, ""
 
@@ -4284,7 +4289,26 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
-        creds = resolve_api_key_provider_credentials(provider)
+        if explicit_base_url:
+            creds = {"api_key": "", "base_url": explicit_base_url, "source": "explicit_base_url"}
+            if explicit_api_key:
+                creds["api_key"] = explicit_api_key.strip()
+            else:
+                try:
+                    from hermes_cli.config import get_env_value
+                except Exception:
+                    get_env_value = None  # type: ignore[assignment]
+                for env_name in pconfig.api_key_env_vars:
+                    candidate = ""
+                    if get_env_value is not None:
+                        candidate = str(get_env_value(env_name) or "").strip()
+                    candidate = candidate or os.getenv(env_name, "").strip()
+                    if candidate:
+                        creds["api_key"] = candidate
+                        creds["source"] = f"env:{env_name}"
+                        break
+        else:
+            creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
         # Honour an explicit api_key override (e.g. from a fallback_model entry
         # or a custom_providers entry) so callers that pass an explicit
@@ -4848,7 +4872,7 @@ def _client_cache_key(
     # so the task participates in the cache key. Non-auto providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.
     task_key = (task or "") if provider == "auto" else ""
-    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
+    pool_hint = "" if (base_url or api_key) else _pool_cache_hint(provider, main_runtime=main_runtime)
     return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task_key, pool_hint)
 
 
@@ -5110,7 +5134,7 @@ def _get_cached_client(
     # after key #1 is marked exhausted the retry would still get key #1 from
     # the env var and fail again, causing the retry2_err handler to mark key #2.
     effective_api_key = api_key
-    if not effective_api_key:
+    if not effective_api_key and not base_url:
         _pe = _peek_pool_entry(_normalize_aux_provider(provider))
         if _pe is not None:
             _pk = _pool_runtime_api_key(_pe)
@@ -5162,6 +5186,55 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
+def _model_alias_entry(alias_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return config.yaml model_aliases.<alias_name> when it is usable.
+
+    Auxiliary task configs historically accepted only concrete provider/model
+    pairs. Adam's cheap-worker aliases carry the same pair plus a fallback_chain;
+    resolving them here lets auxiliary.<task>.model: smart-cheap inherit that
+    routing without copying fallback blocks into every task/profile.
+    """
+    key = str(alias_name or "").strip().lower()
+    if not key:
+        return None
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except Exception:
+        return None
+    aliases = config.get("model_aliases") if isinstance(config, dict) else None
+    if not isinstance(aliases, dict):
+        return None
+    for name, entry in aliases.items():
+        if str(name or "").strip().lower() != key or not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or not model:
+            return None
+        return dict(entry)
+    return None
+
+
+def _alias_api_mode(alias: Dict[str, Any]) -> Optional[str]:
+    raw = str(alias.get("api_mode") or alias.get("transport") or "").strip()
+    if raw:
+        return raw
+    api_format = str(alias.get("api_format") or "").strip().lower()
+    if api_format in {"anthropic", "anthropic_messages"}:
+        return "anthropic_messages"
+    if api_format in {"openai", "chat_completions", "openai_chat"}:
+        return "chat_completions"
+    if api_format == "codex_responses":
+        return "codex_responses"
+    return None
+
+
+def _task_model_alias(task_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    alias_name = task_config.get("model_alias") or task_config.get("model")
+    return _model_alias_entry(str(alias_name or "").strip())
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -5194,6 +5267,21 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        # If auxiliary.<task>.model names a configured model_alias, treat the
+        # alias as the task's concrete provider/model and inherit its fallback
+        # chain. Explicit call-time provider/model args still win below. A
+        # base_url/api_mode is inherited only when the alias uses base_url;
+        # legacy alias endpoint fields can point at transport-specific final
+        # paths and are not safe to blindly reuse for auxiliary clients.
+        if not model:
+            alias = _task_model_alias(task_config)
+            if alias is not None:
+                cfg_provider = str(alias.get("provider") or cfg_provider or "").strip() or cfg_provider
+                cfg_model = str(alias.get("model") or cfg_model or "").strip() or cfg_model
+                alias_base_url = str(alias.get("base_url") or "").strip() or None
+                if alias_base_url:
+                    cfg_base_url = cfg_base_url or alias_base_url
+                    cfg_api_mode = cfg_api_mode or _alias_api_mode(alias)
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
@@ -5218,6 +5306,9 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        provider_norm = _normalize_aux_provider(provider) if provider else ""
+        if provider_norm and provider_norm != "custom":
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
@@ -5329,6 +5420,14 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
         return True
     url_lower = (base_url or "").lower()
     return "/anthropic" in url_lower
+
+
+
+def _is_zai_vision_model(model: str) -> bool:
+    """Return True for GLM vision/multimodal model IDs that reject max_tokens."""
+    model_l = (model or "").lower()
+    return bool(re.search(r"(?:^|[/])glm-[\w.]*v(?:-|$)", model_l))
+
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
@@ -5453,23 +5552,18 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
-        #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
+        # Most chat-completions providers can omit max_tokens safely, which is
+        # useful for long auxiliary tasks. ZAI text models are the exception in
+        # practice for micro-label/classifier calls: when uncapped they can burn
+        # seconds producing hidden reasoning even for tiny prompts. Keep the cap
+        # for ZAI text models, but still omit it for ZAI vision models, which
+        # reject max_tokens with error 1210.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
+        if _is_anthropic_compat_endpoint(provider, _effective_base) or (
+            provider == "zai" and not _is_zai_vision_model(model)
+        ):
             kwargs["max_tokens"] = max_tokens
 
     if tools:
@@ -5610,6 +5704,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    allow_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -5628,6 +5723,10 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        allow_fallback: When False, provider/model capacity failures are raised
+            to the caller instead of falling through Hermes' auxiliary fallback
+            layers. Internal orchestrators use this when they own a narrower
+            ordered fallback chain (for example model_aliases.fast-cheap).
 
     Returns:
         Response object with .choices[0].message.content
@@ -6023,7 +6122,7 @@ def call_llm(
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
-        if should_fallback and (is_auto or is_capacity_error):
+        if allow_fallback and should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be

@@ -1633,6 +1633,28 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Optional classic-CLI voice cue emitted only after the input queue is
+        # fully drained.  Disabled by default.  `source=llm` may use a configured
+        # cheap/fast model alias for a semantic task-locator label, then route
+        # the cue through completion-specific TTS modes without changing global
+        # `tts.provider`.
+        "completion_voice": {
+            "enabled": False,
+            "source": "prompt",       # prompt | session_title | fixed | llm
+            "label": "",              # Exact text when source=fixed, or override when set
+            "suffix": "",
+            "max_words": 7,
+            "fallback_source": "prompt",
+            "model_alias": "",
+            "llm_timeout": 4,
+            "llm_max_input_chars": 4000,
+            "llm_extra_body": {},
+            "telemetry": True,
+            "suppress_when_voice_tts": True,
+            "tts_mode": "",           # active key under tts_modes; empty = global tts.provider
+            "tts_provider": "",       # optional direct provider override when not using tts_modes
+            "tts_modes": {},
+        },
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the

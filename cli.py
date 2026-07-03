@@ -15338,6 +15338,11 @@ def main(
     
     # Handle query shorthand
     query = query or q
+    # Non-interactive one-shot runs are auxiliary/subagent-like evidence. They
+    # should be distinguishable from human main sessions in state.db so commit
+    # synthesis/capsule systems can exclude them without title heuristics.
+    if query is not None and not os.environ.get("HERMES_SESSION_SOURCE"):
+        os.environ["HERMES_SESSION_SOURCE"] = "cli_oneshot"
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools

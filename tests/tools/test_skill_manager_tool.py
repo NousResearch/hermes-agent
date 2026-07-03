@@ -156,6 +156,7 @@ class TestValidateFilePath:
         assert _validate_file_path("templates/config.yaml") is None
         assert _validate_file_path("scripts/train.py") is None
         assert _validate_file_path("assets/image.png") is None
+        assert _validate_file_path("learnings/LEARNINGS.md") is None
 
     def test_empty_path(self):
         assert _validate_file_path("") == "file_path is required."
@@ -209,12 +210,17 @@ class TestCreateSkill:
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
+        learnings_md = tmp_path / "my-skill" / "learnings" / "LEARNINGS.md"
+        assert learnings_md.exists()
+        assert "my-skill Learnings" in learnings_md.read_text()
+        assert result["learnings_md"] == str(learnings_md)
 
     def test_create_with_category(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
         assert result["success"] is True
         assert (tmp_path / "devops" / "my-skill" / "SKILL.md").exists()
+        assert (tmp_path / "devops" / "my-skill" / "learnings" / "LEARNINGS.md").exists()
         assert result["category"] == "devops"
 
     def test_create_duplicate_blocked(self, tmp_path):
@@ -450,6 +456,17 @@ class TestWriteFile:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_write_learning_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file(
+                "my-skill",
+                "learnings/LEARNINGS.md",
+                "# Learnings\n\n2026-01-01 — Issue: test. Change: test. Guardrail: test.\n",
+            )
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "learnings" / "LEARNINGS.md").exists()
+
     def test_write_to_nonexistent_skill(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _write_file("nonexistent", "references/doc.md", "content")
@@ -489,6 +506,14 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_learning_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "learnings/LEARNINGS.md", "content")
+            result = _remove_file("my-skill", "learnings/LEARNINGS.md")
+        assert result["success"] is True
+        assert not (tmp_path / "my-skill" / "learnings" / "LEARNINGS.md").exists()
 
     def test_remove_nonexistent_file(self, tmp_path):
         with _skill_dir(tmp_path):

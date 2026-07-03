@@ -1718,6 +1718,74 @@ class TestHermesIndexSearch:
         assert any(h.name == "cuda" for h in hits)
         assert hits[0].name == "cuda"
 
+    def test_search_multi_word_and_semantics(self):
+        """Multi-word queries must find skills where words appear
+        non-contiguously and in any order."""
+        skills = [
+            {
+                "name": "Disk Cleanup",
+                "description": "Automated disk space cleanup and maintenance.",
+                "source": "clawhub",
+                "identifier": "clawhub/disk-cleanup",
+                "tags": ["disk", "cleanup"],
+            },
+            {
+                "name": "Windows Disk Cleaner",
+                "description": "Safe Windows disk cleanup assistant.",
+                "source": "clawhub",
+                "identifier": "clawhub/windows-disk-cleaner",
+                "tags": ["windows", "disk"],
+            },
+            {
+                "name": "Disk Space Analyzer",
+                "description": "Analyze disk usage and find large files.",
+                "source": "clawhub",
+                "identifier": "clawhub/disk-analyzer",
+                "tags": ["disk", "analysis"],
+            },
+            {
+                "name": "Cleanup Dashboards",
+                "description": "Audit HubSpot reporting dashboards.",
+                "source": "clawhub",
+                "identifier": "clawhub/cleanup-dashboards",
+                "tags": ["hubspot"],
+            },
+            {
+                "name": "unrelated",
+                "description": "nothing here",
+                "source": "clawhub",
+                "identifier": "clawhub/unrelated",
+                "tags": [],
+            },
+        ]
+        src = _make_index_source(skills)
+
+        # "disk cleanup" — both words present non-contiguously in Disk Cleanup
+        # (name="Disk Cleanup" has "Disk", description has "cleanup")
+        # and Windows Disk Cleaner (name has both).
+        hits = src.search("disk cleanup", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "clawhub/disk-cleanup" in ids, (
+            f"Expected disk-cleanup found, got: {ids}")
+        assert "clawhub/windows-disk-cleaner" in ids, (
+            f"Expected windows-disk-cleaner found, got: {ids}")
+        assert "clawhub/unrelated" not in ids
+
+        # "disk" alone (single word) must still work
+        hits = src.search("disk", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "clawhub/disk-cleanup" in ids
+        assert "clawhub/windows-disk-cleaner" in ids
+        assert "clawhub/disk-analyzer" in ids
+        assert "clawhub/cleanup-dashboards" not in ids  # no "disk" in name/desc/tags
+
+        # Order independence: "cleanup disk" must find the same skills
+        hits = src.search("cleanup disk", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "clawhub/disk-cleanup" in ids
+        assert "clawhub/windows-disk-cleaner" in ids
+        assert "clawhub/unrelated" not in ids
+
 
 class TestProviderFilter:
     def test_filter_results_by_provider_narrows_exactly(self):

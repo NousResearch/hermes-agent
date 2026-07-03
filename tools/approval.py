@@ -224,6 +224,22 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+# General-purpose interpreters run with an inline script, and the flag that
+# triggers inline execution for each. Matches versioned binary names
+# (python3.11, python3.12, perl5.36, ruby3.2 — common on real systems via
+# pyenv/homebrew/distro packaging, where the unversioned name is often just a
+# symlink) and the flag whether it's glued to its value with no space
+# (`-c"..."`), combined with other short flags (`-uc`, `-Bc`), or given in
+# long form (`--eval`, `--eval=`). A bare `-[ec]\s+` check (the historical
+# form of this pattern) misses all of these — see the "script execution via
+# -e/-c flag" and interpreter-script-referencing-Hermes-config/env rules
+# below, which both depend on this.
+_INLINE_SCRIPT_INTERPRETER = (
+    r'(?:python[23]?(?:\.\d+)?|perl[0-9]*(?:\.\d+)*|ruby(?:[0-9.]+)?|node(?:js)?)'
+)
+_INLINE_SCRIPT_FLAG = (
+    r"(?:-[A-Za-z]*[ec][A-Za-z]*(?:\s+|=|(?=['\"]))|--eval(?:\s+|=))"
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -537,7 +553,21 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
-    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
+    # Interpreter-native file I/O bypasses ALL of the shell-syntax patterns
+    # elsewhere in this list (no redirection operator, no sed/perl -i flag,
+    # no cp/mv/install) because the write happens through the interpreter's
+    # own file API instead of shell syntax. `python3 -c "open(
+    # os.path.expanduser('~/.hermes/config.yaml'),'a').write(payload)"`
+    # would already be caught by the generic "script execution via -e/-c
+    # flag" rule below — but placed AFTER it, that generic wording would win
+    # and give no hint this specific script also targets the security-policy
+    # file. Since approvals.mode/yolo/the allowlist all live in config.yaml,
+    # an agent silently rewriting it is equivalent to an agent silently
+    # disabling its own approval gate, so this goes first and gets an
+    # unambiguous reason instead of a generic one a reviewer might
+    # rubber-stamp without realizing what it touches.
+    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_INLINE_SCRIPT_FLAG}.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "interpreter script referencing Hermes config/env"),
+    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_INLINE_SCRIPT_FLAG}', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)

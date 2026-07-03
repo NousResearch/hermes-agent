@@ -619,11 +619,92 @@ class TestHermesConfigWriteProtection:
 
     def test_perl_eval_no_inplace_safe(self):
         # `perl -e` with no -i flag is code evaluation, not file mutation —
-        # the perl/ruby -i pattern must not fire on it.
+        # the perl/ruby -i (in-place edit) pattern specifically must not fire
+        # on it, since there is no file to protect from a mutation that isn't
+        # happening. `-wne` combines -w -n -e, so this genuinely is inline
+        # code execution ('print' run as Perl per input line) and IS caught
+        # by the separate "script execution via -e/-c flag" rule — that's
+        # correct; this test only asserts the -i in-place pattern isn't the
+        # one doing the catching.
         dangerous, key, desc = detect_dangerous_command(
             "perl -wne 'print' ~/.hermes/config.yaml"
         )
-        assert dangerous is False
+        assert "in-place edit" not in (desc or "")
+
+    def test_perl_eval_no_config_reference_not_flagged_as_config_write(self):
+        # A plain perl -e with no Hermes config/env path in it must not be
+        # mistaken for the config-write-specific rule (it can still trip the
+        # generic script-execution rule — that's fine and expected).
+        dangerous, key, desc = detect_dangerous_command("perl -e 'print 1'")
+        assert "Hermes config/env" not in (desc or "")
+
+    def test_python_native_write_to_config(self):
+        # Interpreter-native file I/O bypasses every shell-syntax pattern
+        # above (no redirection operator, no sed/perl -i flag, no
+        # cp/mv/install) because the write happens through the
+        # interpreter's own file API. approvals.mode/yolo/the allowlist all
+        # live in config.yaml, so an agent silently rewriting it is
+        # equivalent to silently disabling its own approval gate.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -c \"import os; open(os.path.expanduser("
+            "'~/.hermes/config.yaml'),'a').write('mode: off')\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
+
+    def test_python_native_write_to_config_combined_flags(self):
+        # Combined short flags (-uc = -u unbuffered + -c inline code) must
+        # not evade detection just because -c isn't its own token.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -uc \"open('~/.hermes/config.yaml','a').write(1)\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
+
+    def test_python_native_write_to_config_versioned_binary(self):
+        # Versioned interpreter binaries (python3.11, python3.12 — common
+        # via pyenv/homebrew/distro packaging where the unversioned name is
+        # just a symlink) must be recognized the same as the bare name.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3.11 -c \"open(os.path.expanduser("
+            "'~/.hermes/config.yaml'),'a').write(1)\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
+
+    def test_node_native_write_to_config_long_flag(self):
+        # The long-form --eval flag must be recognized the same as -e.
+        dangerous, key, desc = detect_dangerous_command(
+            "node --eval=\"require('fs').appendFileSync("
+            "'~/.hermes/config.yaml', 'x')\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
+
+    def test_python_native_write_to_env_no_space_glue(self):
+        # -c glued directly to its quoted argument with no space is valid
+        # shell syntax and must not evade detection.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -c\"open('~/.hermes/.env','a').write(1)\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
+
+    def test_python_read_of_config_also_flagged(self):
+        # The pattern intentionally does not try to distinguish read from
+        # write intent — parsing out which file-API calls are read-only vs
+        # mutating is itself evadable (aliasing, indirection, a helper
+        # function name that doesn't look like "write"). Flagging any
+        # interpreter script that references the path at all is a
+        # deliberate over-approximation: a human reviewing "this script
+        # touches config.yaml" for a read-only case pays a small extra
+        # approval prompt, which is a fair trade against silently missing a
+        # write disguised as a read.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -c \"print(open('~/.hermes/config.yaml').read())\""
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower()
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
@@ -634,6 +715,72 @@ class TestHermesConfigWriteProtection:
         # A non-Hermes config.yaml in a project dir is handled by the project
         # patterns, but a plain temp write must not false-positive.
         dangerous, key, desc = detect_dangerous_command("echo data > /tmp/scratch.txt")
+        assert dangerous is False
+
+
+class TestInlineScriptInterpreterObfuscation:
+    """The "script execution via -e/-c flag" rule (and the Hermes
+    config/env-specific rule that shares its interpreter/flag matching)
+    used to require a bare, space-separated `-c`/`-e` right after the
+    literal interpreter name. Real, unremarkable command shapes evade
+    that: combined short flags (-uc), no-space flag gluing (-c"..."),
+    long-form flags (--eval), and versioned interpreter binaries
+    (python3.11, python3.12 — the norm under pyenv/homebrew/most distro
+    packaging). These tests pin that the broadened pattern catches them
+    without over-matching benign, non-inline-script invocations."""
+
+    def test_combined_short_flags(self):
+        dangerous, key, desc = detect_dangerous_command('python3 -uc "print(1)"')
+        assert dangerous is True
+
+    def test_no_space_flag_glue_double_quote(self):
+        dangerous, key, desc = detect_dangerous_command('python3 -c"print(1)"')
+        assert dangerous is True
+
+    def test_no_space_flag_glue_single_quote(self):
+        dangerous, key, desc = detect_dangerous_command("python3 -c'print(1)'")
+        assert dangerous is True
+
+    def test_long_form_eval_flag(self):
+        dangerous, key, desc = detect_dangerous_command('node --eval="1+1"')
+        assert dangerous is True
+
+    def test_long_form_eval_flag_with_space(self):
+        dangerous, key, desc = detect_dangerous_command('node --eval "1+1"')
+        assert dangerous is True
+
+    def test_versioned_python_binary(self):
+        dangerous, key, desc = detect_dangerous_command('python3.11 -c "print(1)"')
+        assert dangerous is True
+
+    def test_versioned_python_binary_combined_flags(self):
+        dangerous, key, desc = detect_dangerous_command('python3.12 -uc "print(1)"')
+        assert dangerous is True
+
+    def test_versioned_perl_binary(self):
+        dangerous, key, desc = detect_dangerous_command('perl5.36 -e "print 1"')
+        assert dangerous is True
+
+    def test_versioned_ruby_binary(self):
+        dangerous, key, desc = detect_dangerous_command('ruby3.2 -e "puts 1"')
+        assert dangerous is True
+
+    def test_module_invocation_not_flagged(self):
+        # -m runs a module as __main__, not an inline script — no -c/-e/-r
+        # flag is present, so this must not trip.
+        dangerous, key, desc = detect_dangerous_command("python3 -m my_mcp_server")
+        assert dangerous is False
+
+    def test_version_check_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("python3 --version")
+        assert dangerous is False
+
+    def test_plain_script_file_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("node server.js")
+        assert dangerous is False
+
+    def test_plain_python_script_file_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("python3 my_server.py")
         assert dangerous is False
 
 

@@ -1488,6 +1488,13 @@ def _tui_need_npm_install(root: Path) -> bool:
     ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
+    if ws_root != root:
+        # Monorepo: ``npm install --workspace ui-tui`` only installs the
+        # TUI workspace, not apps/desktop or other workspaces.  The full
+        # lockfile comparison below would flag every other-workspace
+        # package as "missing" and trigger a reinstall on every launch.
+        # @hermes/ink presence is a sufficient canary.
+        return False
     if not lock.is_file():
         return False
     marker = ws_root / "node_modules" / ".package-lock.json"

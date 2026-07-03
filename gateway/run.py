@@ -12608,11 +12608,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             ctx_display = str(context_length)
 
+        # Resolve the effective reasoning effort for the fresh session.
+        # Uses the global config (not a per-session override): this banner
+        # renders on /reset and /new, which clear any /reasoning session
+        # override, so config.yaml is the effective level at reset time.
+        reasoning_label = None
+        try:
+            reasoning_cfg = self._load_reasoning_config()
+            if reasoning_cfg is None:
+                reasoning_label = "medium (default)"
+            elif not reasoning_cfg.get("enabled", True):
+                reasoning_label = "none"
+            else:
+                reasoning_label = str(reasoning_cfg.get("effort", "medium"))
+        except Exception:
+            reasoning_label = None
+
         lines = [
             f"◆ Model: `{model}`",
             f"◆ Provider: {provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+        if reasoning_label:
+            lines.append(f"◆ Reasoning: {reasoning_label}")
+        lines.append(f"◆ Context: {ctx_display} tokens ({ctx_source})")
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):

@@ -107,3 +107,50 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+
+class TestFormatSessionInfoReasoning:
+    """The ◆ Reasoning: row reflects the effective reasoning effort."""
+
+    def _run(self, runner, tmp_path, reasoning_cfg):
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
+            "test-model", {"provider": "openrouter", "base_url": "", "api_key": ""})
+        with p1, p2, p3, patch.object(
+            type(runner), "_load_reasoning_config", return_value=reasoning_cfg
+        ):
+            return runner._format_session_info()
+
+    def test_explicit_effort_shown(self, runner, tmp_path):
+        info = self._run(runner, tmp_path, {"enabled": True, "effort": "xhigh"})
+        assert "◆ Reasoning: xhigh" in info
+
+    def test_none_when_disabled(self, runner, tmp_path):
+        info = self._run(runner, tmp_path, {"enabled": False})
+        assert "◆ Reasoning: none" in info
+
+    def test_default_when_unset(self, runner, tmp_path):
+        # parse_reasoning_effort returns None for unset → default (medium)
+        info = self._run(runner, tmp_path, None)
+        assert "◆ Reasoning: medium (default)" in info
+
+    def test_row_ordered_between_provider_and_context(self, runner, tmp_path):
+        info = self._run(runner, tmp_path, {"enabled": True, "effort": "high"})
+        lines = info.splitlines()
+        prov = next(i for i, l in enumerate(lines) if l.startswith("◆ Provider:"))
+        reas = next(i for i, l in enumerate(lines) if l.startswith("◆ Reasoning:"))
+        ctx = next(i for i, l in enumerate(lines) if l.startswith("◆ Context:"))
+        assert prov < reas < ctx
+
+    def test_reasoning_resolution_failure_omits_row(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
+            "test-model", {"provider": "openrouter", "base_url": "", "api_key": ""})
+        with p1, p2, p3, patch.object(
+            type(runner), "_load_reasoning_config", side_effect=RuntimeError("boom")
+        ):
+            info = runner._format_session_info()
+        # Banner still renders; the reasoning row is simply omitted.
+        assert "◆ Model:" in info
+        assert "◆ Context:" in info
+        assert "Reasoning" not in info

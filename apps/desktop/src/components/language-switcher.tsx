@@ -130,10 +130,10 @@ function LanguageCommand({
 
   // Own the search term and filter manually. cmdk's built-in shouldFilter
   // reorders items by its fuzzy-match score (≈alphabetical with an empty
-  // query), which destroys the curated en→zh→zh-hant→ja order. We disable it
+  // query), which destroys the curated en→zh→zh-hant→ja→ko order. We disable it
   // and do a plain substring filter that preserves array order — matching
   // model-picker.tsx. Match against the endonym, the (hidden) English name,
-  // and the locale code so "日本"/"japanese"/"ja" all find Japanese.
+  // and the locale code so "한국"/"korean"/"ko" all find Korean.
   const q = search.trim().toLowerCase()
 
   const filtered = allLocales.filter(

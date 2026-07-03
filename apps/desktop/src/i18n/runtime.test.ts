@@ -46,6 +46,16 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
   })
 
+  it('translates core desktop copy for Korean', () => {
+    setRuntimeI18nLocale('ko')
+
+    expect(translateNow('common.save')).toBe('저장')
+    expect(translateNow('language.searchPlaceholder')).toBe('언어 검색…')
+    expect(translateNow('settings.appearance.title')).toBe('화면')
+    expect(translateNow('composer.lookupNoMatches')).toBe('일치 항목 없음.')
+    expect(translateNow('assistant.tool.statusRecovered')).toBe('복구됨')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

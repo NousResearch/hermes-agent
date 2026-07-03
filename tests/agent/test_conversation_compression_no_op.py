@@ -17,8 +17,6 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-
 from hermes_state import SessionDB
 from agent.conversation_compression import compress_context
 

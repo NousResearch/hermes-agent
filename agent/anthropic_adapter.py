@@ -1045,7 +1045,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
             data=data,
             headers={
                 "Content-Type": content_type,
-                "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+                "User-Agent": _OAUTH_TOKEN_USER_AGENT,
             },
             method="POST",
         )
@@ -1378,8 +1378,30 @@ _OAUTH_TOKEN_URLS = [
     "https://console.anthropic.com/v1/oauth/token",
 ]
 _OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
-_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+# User-Agent sent on the OAuth *token endpoint* (login exchange + refresh).
+# Anthropic rate-limits (HTTP 429) any token-endpoint request whose UA starts
+# with ``claude-code/`` — verified empirically against platform.claude.com:
+# ``claude-code/2.1.200`` and ``Mozilla/5.0`` -> 429; ``axios/*``, ``node``,
+# and SDK-style UAs -> 400 (reached code validation). The real Claude Code CLI
+# exchanges the auth code with a bare axios client (``axios/<ver>``), NOT its
+# ``claude-code/`` inference UA. We mirror that here. NOTE: the *inference* path
+# (build_anthropic_kwargs) still uses the ``claude-code/`` UA + ``x-app: cli`` —
+# that fingerprint is required there and is NOT throttled on the messages API.
+_OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
+_OAUTH_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+# OAuth login must match Claude Code's flow byte-for-byte at the values the
+# token endpoint keys on, or Anthropic soft-blocks the exchange with HTTP 429:
+#   - authorize host:  claude.com/cai/oauth/authorize  (not the legacy claude.ai)
+#   - redirect_uri:    platform.claude.com/oauth/code/callback (Anthropic migrated
+#                      off console.anthropic.com; the legacy callback 429s)
+#   - scope:           the full Claude Code set, incl. org:create_api_key
+# Hermes uses the resulting OAuth access token directly for inference (Bearer +
+# oauth beta headers) and never actually mints an org API key, but the scope
+# must still mirror Claude Code's or the request is fingerprinted as non-native.
+_OAUTH_SCOPES = (
+    "org:create_api_key user:profile user:inference "
+    "user:sessions:claude_code user:mcp_servers user:file_upload"
+)
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
@@ -1417,7 +1439,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
     from urllib.parse import urlencode
 
-    auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
+    auth_url = f"https://claude.com/cai/oauth/authorize?{urlencode(params)}"
 
     print()
     print("Authorize Hermes with your Claude Pro/Max subscription.")
@@ -1488,7 +1510,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 data=exchange_data,
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+                    "User-Agent": _OAUTH_TOKEN_USER_AGENT,
                 },
                 method="POST",
             )

@@ -1048,6 +1048,67 @@ def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
     assert gateway_prov["models"] == ["gateway-model"]
 
 
+def test_switch_model_validation_uses_custom_provider_extra_headers(monkeypatch):
+    """Validation must use the selected tenant's headers and Anthropic auth."""
+    captured = {}
+    custom_providers = [
+        {
+            "name": "Tenant A",
+            "api_key": "local-key",
+            "base_url": "http://localhost:8081/v1",
+            "api_mode": "anthropic_messages",
+            "extra_headers": {"X-Tenant": "alpha"},
+        },
+        {
+            "name": "Tenant B",
+            "api_key": "local-key",
+            "base_url": "http://localhost:8081/v1",
+            "api_mode": "anthropic_messages",
+            "extra_headers": {"X-Tenant": "beta"},
+        },
+    ]
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"gateway-model"}]}'
+
+    def fake_urlopen(request, *, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("hermes_cli.models._urlopen_model_catalog_request", fake_urlopen)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.load_config",
+        lambda: {"custom_providers": custom_providers},
+    )
+
+    result = switch_model(
+        raw_input="gateway-model",
+        current_provider="custom:tenant-b",
+        current_model="old-model",
+        current_base_url="http://localhost:8081/v1",
+        current_api_key="local-key",
+        custom_providers=custom_providers,
+    )
+
+    assert result.success is True
+    assert captured["request"].full_url == "http://localhost:8081/v1/models"
+    assert captured["request"].get_header("X-tenant") == "beta"
+    assert captured["request"].get_header("X-api-key") == "local-key"
+    assert captured["request"].get_header("Anthropic-version") == "2023-06-01"
+    assert captured["request"].get_header("Authorization") is None
+
+
 def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
     """Entries sharing (api_url, credential, api_mode) but declaring different
     extra_headers must NOT collapse into one picker row — each is a distinct

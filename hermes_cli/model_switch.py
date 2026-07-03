@@ -23,7 +23,9 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import Any, List, NamedTuple, Optional
+from urllib.parse import urlsplit
 
 from hermes_cli.providers import (
     ProviderDef,
@@ -1167,6 +1169,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    validation_headers: dict[str, str] = {}
 
     if provider_changed or explicit_provider:
         import os
@@ -1184,6 +1187,7 @@ def switch_model(
         if _user_pdef is not None and _user_pdef.base_url:
             _ucfg = (user_providers or {}).get(explicit_provider.strip().lower()) \
                 or (user_providers or {}).get(target_provider) or {}
+            validation_headers = _extra_headers_from_config(_ucfg)
             _ukey = str(_ucfg.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
                 _ukey = os.environ.get(_ukey[2:-1], "").strip()
@@ -1218,6 +1222,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                validation_headers = _extra_headers_from_config(runtime)
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1242,6 +1247,7 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            validation_headers = _extra_headers_from_config(runtime)
         except Exception:
             pass
 
@@ -1250,8 +1256,12 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
+            endpoint_changed = not _same_validation_endpoint(_da.base_url, base_url)
+            if endpoint_changed:
+                validation_headers = {}
+                api_key = ""
+                api_mode = ""  # force URL-based re-detection for the new endpoint
             base_url = _da.base_url
-            api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
 
@@ -1266,6 +1276,7 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
             api_mode=api_mode or None,
+            request_headers=validation_headers or None,
         )
     except Exception as e:
         validation = {
@@ -1419,6 +1430,54 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     from hermes_cli.config import normalize_extra_headers
 
     return normalize_extra_headers(entry.get("extra_headers"))
+
+
+def _same_validation_endpoint(left: str, right: str) -> bool:
+    """Compare endpoints without collapsing case-sensitive path/query data."""
+    def _normalized(value: str):
+        try:
+            parsed = urlsplit(str(value or "").strip())
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            return None
+        if not parsed.scheme or not hostname:
+            return None
+        scheme = parsed.scheme.lower()
+        if "%" in hostname:
+            address, zone = hostname.split("%", 1)
+        else:
+            address, zone = hostname, ""
+        try:
+            normalized_address = ip_address(address).compressed.lower()
+        except ValueError:
+            normalized_address = address.lower()
+        normalized_hostname = (
+            f"{normalized_address}%{zone}" if zone else normalized_address
+        )
+        if (scheme, port) in {("http", 80), ("https", 443)}:
+            port = None
+        path = parsed.path
+        if path == "/":
+            path = ""
+        elif path.endswith("/"):
+            path = path[:-1]
+        return (
+            scheme,
+            normalized_hostname,
+            port,
+            parsed.username,
+            parsed.password,
+            path,
+            parsed.query,
+            parsed.fragment,
+        )
+
+    normalized_left = _normalized(left)
+    normalized_right = _normalized(right)
+    if normalized_left is None or normalized_right is None:
+        return str(left or "").strip() == str(right or "").strip()
+    return normalized_left == normalized_right
 
 
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:

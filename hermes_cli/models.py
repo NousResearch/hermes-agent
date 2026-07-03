@@ -4087,6 +4087,7 @@ def validate_requested_model(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
+    request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.
@@ -4182,9 +4183,18 @@ def validate_requested_model(
     if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                request_headers=request_headers,
+            )
         else:
-            probe = probe_api_models(api_key, base_url)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                request_headers=request_headers,
+            )
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -4415,7 +4425,12 @@ def validate_requested_model(
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.
     if api_mode == "anthropic_messages":
-        api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
+        api_models = fetch_api_models(
+            api_key,
+            base_url,
+            api_mode=api_mode,
+            headers=request_headers,
+        )
         if api_models is not None:
             if requested_for_lookup in set(api_models):
                 return {
@@ -4448,7 +4463,7 @@ def validate_requested_model(
         }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = fetch_api_models(api_key, base_url, headers=request_headers)
 
     if api_models is not None:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs

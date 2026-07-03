@@ -4545,6 +4545,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    signal_fn=None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -4577,8 +4578,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    routed_to = "blocked"
+    worker_pid, claim_lock = _read_task_worker_handles(conn, task_id)
     recurrences = 0
+    run_id = None
+    _blocked_task = None
+    blocked_ok = False
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -4628,73 +4632,24 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
-            routed_to = "todo"
-            _blocked_task = get_task(conn, task_id)
-            _fire_kanban_lifecycle_hook(
-                "kanban_task_blocked",
-                task_id,
-                board=get_current_board(),
-                assignee=_blocked_task.assignee if _blocked_task else None,
-                run_id=run_id,
-                reason=reason,
-            )
-            return True
-
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
-
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked.
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status        = 'triage',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL,
-                       block_kind    = ?,
-                       block_recurrences = ?
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
-            )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="blocked", summary=reason,
-                )
-            _append_event(
-                conn, task_id, "block_loop_detected",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
-                },
-                run_id=run_id,
-            )
-            routed_to = "triage"
+            blocked_ok = True
         else:
-            if expected_run_id is None:
+            # Truly-blocked kinds. Increment the unblock-loop counter when this is a
+            # re-block for the SAME reason after a prior unblock. block_task only
+            # fires from running/ready (i.e. AFTER an unblock returned the task to
+            # the work pool), so a stored block_kind that matches the incoming kind
+            # means: blocked → unblocked → about-to-re-block for the same cause.
+            # An un-typed (None) block compares as "same" to a prior un-typed block.
+            same_cause = prev_kind == kind
+            recurrences = prev_recurrences + 1 if same_cause else 1
+
+            if recurrences >= BLOCK_RECURRENCE_LIMIT:
+                # Loop detected — stop letting the unblocker spin this task. Route
+                # to triage for a human-in-the-loop decision instead of blocked.
                 cur = conn.execute(
                     """
                     UPDATE tasks
-                       SET status        = 'blocked',
+                       SET status        = 'triage',
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
@@ -4702,46 +4657,92 @@ def block_task(
                            block_recurrences = ?
                      WHERE id = ?
                        AND status IN ('running', 'ready')
-                    """,
-                    (kind, recurrences, task_id),
+                    """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                    (kind, recurrences, task_id) if expected_run_id is None
+                    else (kind, recurrences, task_id, int(expected_run_id)),
                 )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                       AND current_run_id = ?
-                    """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
-                )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            # Synthesize a run when blocking a never-claimed task so the
-            # reason is preserved in attempt history.
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
                     conn, task_id,
-                    outcome="blocked",
+                    outcome="blocked", status="blocked",
                     summary=reason,
                 )
-            _append_event(
-                conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
-                run_id=run_id,
-            )
-        _blocked_task = get_task(conn, task_id)
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "block_loop_detected",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "recurrences": recurrences,
+                        "limit": BLOCK_RECURRENCE_LIMIT,
+                    },
+                    run_id=run_id,
+                )
+                blocked_ok = True
+            else:
+                if expected_run_id is None:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status        = 'blocked',
+                               claim_lock    = NULL,
+                               claim_expires = NULL,
+                               worker_pid    = NULL,
+                               block_kind    = ?,
+                               block_recurrences = ?
+                         WHERE id = ?
+                           AND status IN ('running', 'ready')
+                        """,
+                        (kind, recurrences, task_id),
+                    )
+                else:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status        = 'blocked',
+                               claim_lock    = NULL,
+                               claim_expires = NULL,
+                               worker_pid    = NULL,
+                               block_kind    = ?,
+                               block_recurrences = ?
+                         WHERE id = ?
+                           AND status IN ('running', 'ready')
+                           AND current_run_id = ?
+                        """,
+                        (kind, recurrences, task_id, int(expected_run_id)),
+                    )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="blocked", status="blocked",
+                    summary=reason,
+                )
+                # Synthesize a run when blocking a never-claimed task so the
+                # reason is preserved in attempt history.
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id,
+                        outcome="blocked",
+                        summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "blocked",
+                    {"reason": reason, "kind": kind, "recurrences": recurrences},
+                    run_id=run_id,
+                )
+                blocked_ok = True
+        if blocked_ok:
+            _blocked_task = get_task(conn, task_id)
+    if not blocked_ok:
+        return False
+    _terminate_reclaimed_worker(
+        worker_pid, claim_lock, signal_fn=signal_fn,
+    )
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -5204,7 +5205,8 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+    worker_pid, claim_lock = _read_task_worker_handles(conn, task_id)
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -5223,6 +5225,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    _terminate_reclaimed_worker(
+        worker_pid, claim_lock, signal_fn=signal_fn,
+    )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -5910,6 +5915,19 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
+
+
+def _read_task_worker_handles(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[Optional[int], Optional[str]]:
+    """Return ``(worker_pid, claim_lock)`` for a task before claim release."""
+    row = conn.execute(
+        "SELECT worker_pid, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return None, None
+    return row["worker_pid"], row["claim_lock"]
 
 
 def _terminate_reclaimed_worker(

@@ -201,6 +201,34 @@ def test_tail_summary_marker_does_not_decay_first_compaction_head():
     assert tail_summary in result_text
 
 
+def test_restart_handoff_in_protected_tail_is_folded_not_preserved():
+    """Short resumed transcripts should not copy old summaries as tail."""
+    compressor = _compressor(protect_first_n=3)
+    old_summary = "TAIL-PROTECTED-OLD-SUMMARY durable facts"
+
+    msgs = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "original task"},
+        {"role": "assistant", "content": "original answer"},
+        {"role": "user", "content": "original follow-up"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": "active request"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+        result = compressor.compress(msgs)
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert prompt.count(old_summary) == 1
+    result_text = "\n".join(str(msg.get("content", "")) for msg in result)
+    assert old_summary not in result_text
+    assert "active request" in result_text
+    assert sum(
+        1 for msg in result if ContextCompressor._is_context_summary_message(msg)
+    ) == 1
+
+
 def test_restart_probe_boundary_summary_just_inside_window_decays():
     """A summary at the last restart-probe index should still decay."""
     compressor = _compressor(protect_first_n=3)

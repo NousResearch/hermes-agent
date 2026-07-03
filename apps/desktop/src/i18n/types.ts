@@ -520,6 +520,29 @@ export interface Translations {
       serverJson: string
       remove: string
       saveServer: string
+      test: string
+      testing: string
+      testOk: (count: number) => string
+      testFailed: string
+      enableServer: (name: string) => string
+      disableServer: (name: string) => string
+      serverEnabled: (name: string) => string
+      serverDisabled: (name: string) => string
+      toggleFailed: (name: string) => string
+      tabServers: string
+      tabCatalog: string
+      catalogLoading: string
+      catalogLoadFailed: string
+      catalogEmpty: string
+      catalogInstalled: string
+      catalogEnabled: string
+      catalogNeedsInstall: string
+      catalogInstall: string
+      catalogInstalling: string
+      catalogInstallStarted: (name: string) => string
+      catalogInstallFailed: (name: string) => string
+      catalogEnvPrompt: (name: string) => string
+      catalogEnvRequired: string
     }
     model: {
       loading: string
@@ -618,12 +641,22 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      loadingModels: string
+      modelSectionTitle: string
+      modelCount: (count: number) => string
+      modelInUse: string
+      modelDefault: string
+      modelInactiveHint: string
+      modelSelectedTitle: string
+      modelSelectedMessage: (model: string) => string
+      failedSelectModel: (model: string) => string
     }
   }
 
   skills: {
     tabSkills: string
     tabToolsets: string
+    tabHub: string
     all: string
     searchSkills: string
     searchToolsets: string
@@ -648,6 +681,48 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    hub: {
+      searchPlaceholder: string
+      search: string
+      searching: string
+      connectingHubs: string
+      connectedHubs: string
+      featured: string
+      landingHint: string
+      noResults: string
+      resultCount: (count: number, ms: number | null) => string
+      timedOut: (sources: string) => string
+      installed: string
+      install: string
+      installing: string
+      uninstall: string
+      updateAll: string
+      updating: string
+      preview: string
+      scan: string
+      scanning: string
+      close: string
+      files: string
+      noReadme: string
+      trust: Record<string, string>
+      verdictSafe: string
+      verdictCaution: string
+      verdictDangerous: string
+      policyAllow: string
+      policyAsk: string
+      policyBlock: string
+      findings: (count: number) => string
+      noFindings: string
+      installStarted: (name: string) => string
+      uninstallStarted: (name: string) => string
+      updateStarted: string
+      actionFailed: string
+      actionLog: string
+      loadFailed: string
+      previewFailed: string
+      scanFailed: string
+      searchFailed: string
+    }
   }
 
   starmap: {
@@ -780,8 +855,8 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'sessions' | 'system' | 'usage', string>
+    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -825,6 +900,53 @@ export interface Translations {
     topSkills: string
     noSkillActivity: string
     actions: (count: string) => string
+    logFile: string
+    logLevel: string
+    logSearchPlaceholder: string
+    maintenance: {
+      runOps: string
+      doctor: string
+      doctorDesc: string
+      securityAudit: string
+      securityAuditDesc: string
+      backup: string
+      backupDesc: string
+      debugShare: string
+      debugShareDesc: string
+      debugShareRunning: string
+      debugShareLinks: string
+      debugShareFailed: string
+      copyLink: string
+      linkCopied: string
+      curator: string
+      curatorDesc: string
+      curatorPaused: string
+      curatorActive: string
+      curatorDisabled: string
+      curatorLastRun: (when: string) => string
+      curatorNeverRan: string
+      pause: string
+      resume: string
+      runNow: string
+      memoryData: string
+      memoryDataDesc: string
+      memoryProvider: (name: string) => string
+      builtinMemory: string
+      memoryFile: string
+      userFile: string
+      bytes: (size: string) => string
+      empty: string
+      resetMemory: string
+      resetUser: string
+      resetAll: string
+      resetConfirm: (target: string) => string
+      resetDone: (files: string) => string
+      resetFailed: string
+      actionStarted: (name: string) => string
+      actionFailed: (name: string) => string
+      running: string
+      viewLog: string
+    }
   }
 
   messaging: {

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolsetConfig } from '@/types/hermes'
 
 const getToolsetConfig = vi.fn()
+const getToolsetModels = vi.fn()
+const selectToolsetModel = vi.fn()
 const selectToolsetProvider = vi.fn()
 const setEnvVar = vi.fn()
 const deleteEnvVar = vi.fn()
@@ -13,6 +15,8 @@ const getActionStatus = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
+  getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
+  selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
   selectToolsetProvider: (name: string, provider: string) => selectToolsetProvider(name, provider),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
@@ -63,6 +67,14 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
 
 beforeEach(() => {
   getToolsetConfig.mockResolvedValue(config())
+  getToolsetModels.mockResolvedValue({
+    name: 'tts',
+    has_models: false,
+    models: [],
+    current: null,
+    default: null
+  })
+  selectToolsetModel.mockResolvedValue({ ok: true, name: 'image_gen', model: 'z-image-turbo' })
   selectToolsetProvider.mockResolvedValue({ ok: true, name: 'tts', provider: 'ElevenLabs' })
   setEnvVar.mockResolvedValue({ ok: true })
   deleteEnvVar.mockResolvedValue({ ok: true })
@@ -91,6 +103,58 @@ describe('ToolsetConfigPanel', () => {
     fireEvent.click(elevenlabs)
 
     await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('tts', 'ElevenLabs'))
+  })
+
+  it('shows a backend model catalog for image_gen and persists a pick', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'image_gen',
+        active_provider: 'FAL.ai',
+        providers: [
+          {
+            name: 'FAL.ai',
+            badge: 'paid',
+            tag: 'Multi-model image generation',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true
+          }
+        ]
+      })
+    )
+    getToolsetModels.mockResolvedValue({
+      name: 'image_gen',
+      has_models: true,
+      provider: 'FAL.ai',
+      plugin: 'fal',
+      models: [
+        { id: 'z-image-turbo', display: 'Z-Image Turbo', speed: 'fast', strengths: 'cheap drafts', price: '$0.005' },
+        { id: 'flux-2-pro', display: 'FLUX 2 Pro', speed: 'slow', strengths: 'quality', price: '$0.05' }
+      ],
+      current: 'z-image-turbo',
+      default: 'z-image-turbo'
+    })
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="image_gen" />)
+
+    // Both catalog rows render with their picker metadata.
+    expect(await screen.findByText('Z-Image Turbo')).toBeTruthy()
+    expect(screen.getByText('FLUX 2 Pro')).toBeTruthy()
+    expect(getToolsetModels).toHaveBeenCalledWith('image_gen', 'FAL.ai')
+
+    // Picking a different model persists via the model endpoint.
+    fireEvent.click(screen.getByRole('button', { name: /FLUX 2 Pro/ }))
+    await waitFor(() => expect(selectToolsetModel).toHaveBeenCalledWith('image_gen', 'flux-2-pro', 'FAL.ai'))
+  })
+
+  it('does not fetch model catalogs for toolsets without them', async () => {
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    await screen.findByText('Microsoft Edge TTS')
+    expect(getToolsetModels).not.toHaveBeenCalled()
   })
 
   it('saves an API key for a provider env var', async () => {

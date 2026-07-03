@@ -104,6 +104,15 @@ _oauth_interactive_enabled: "contextvars.ContextVar[bool]" = contextvars.Context
     "_oauth_interactive_enabled", default=True
 )
 
+# Forces _is_interactive() past the stdin-TTY check for flows driven from a
+# GUI (dashboard/desktop REST): the browser + localhost callback server do all
+# the work there, and the stdin paste fallback degrades harmlessly (EOF is
+# swallowed by _paste_callback_reader). Suppression still wins — background
+# discovery must never start a browser flow.
+_oauth_interactive_forced: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_oauth_interactive_forced", default=False
+)
+
 
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
 _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
@@ -150,10 +159,28 @@ def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
         return False
+    if _oauth_interactive_forced.get():
+        return True
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+@contextmanager
+def force_interactive_oauth():
+    """Treat the current execution context as interactive despite no TTY.
+
+    For GUI-driven auth (dashboard/desktop REST endpoint): the user IS present
+    — just not on stdin. Opens the browser + localhost callback flow that the
+    TTY heuristic would otherwise refuse. Same ContextVar propagation story as
+    suppress_interactive_oauth() (#35927).
+    """
+    token = _oauth_interactive_forced.set(True)
+    try:
+        yield
+    finally:
+        _oauth_interactive_forced.reset(token)
 
 
 @contextmanager

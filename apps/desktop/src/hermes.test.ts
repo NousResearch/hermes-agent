@@ -73,9 +73,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   it('uses a longer timeout for active profile refresh during desktop startup', async () => {
-    api
-      .mockResolvedValueOnce({ current: 'default' })
-      .mockResolvedValueOnce({ profiles: [] })
+    api.mockResolvedValueOnce({ current: 'default' }).mockResolvedValueOnce({ profiles: [] })
 
     await refreshActiveProfile()
 

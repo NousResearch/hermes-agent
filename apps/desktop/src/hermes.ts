@@ -22,7 +22,6 @@ import type {
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
-  McpServerTestResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -343,6 +342,7 @@ export function getLogs(params: {
   file?: string
   level?: string
   lines?: number
+  search?: string
 }): Promise<LogsResponse> {
   const query = new URLSearchParams()
 
@@ -360,6 +360,10 @@ export function getLogs(params: {
 
   if (params.component && params.component !== 'all') {
     query.set('component', params.component)
+  }
+
+  if (params.search) {
+    query.set('search', params.search)
   }
 
   const suffix = query.toString()
@@ -589,6 +593,49 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
+  })
+}
+
+export interface McpTestResult {
+  ok: boolean
+  error?: string
+  tools: { name: string; description: string }[]
+  /** Capability counts (absent on older backends / failed probes). */
+  prompts?: number
+  resources?: number
+}
+
+/** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
+ *  for real) — well past the 15s default fetch timeout. */
+export function testMcpServer(name: string): Promise<McpTestResult> {
+  return window.hermesDesktop.api<McpTestResult>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+    method: 'POST',
+    timeoutMs: 60_000
+  })
+}
+
+/** Replace the whole `mcp_servers` map (the mcp.json editor's save). Unlike
+ *  `saveHermesConfig`, this REPLACES rather than deep-merges, so deletes,
+ *  re-enables (dropping `enabled: false`), and removed nested fields persist. */
+export function saveMcpServers(servers: Record<string, Record<string, unknown>>): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/mcp/servers',
+    method: 'PUT',
+    body: { servers }
+  })
+}
+
+/** Run the OAuth flow for an HTTP server — opens the system browser and blocks
+ *  until the user finishes (or gives up), hence the very generous timeout. */
+export function authMcpServer(name: string): Promise<McpTestResult> {
+  return window.hermesDesktop.api<McpTestResult>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+    method: 'POST',
+    timeoutMs: 300_000
   })
 }
 
@@ -1030,16 +1077,6 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
   return window.hermesDesktop.api<{ servers: McpServerSummary[] }>({
     ...profileScoped(),
     path: '/api/mcp/servers'
-  })
-}
-
-export function testMcpServer(name: string): Promise<McpServerTestResponse> {
-  return window.hermesDesktop.api<McpServerTestResponse>({
-    ...profileScoped(),
-    path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
-    method: 'POST',
-    // Connect + list tools can be slow for stdio servers that boot a process.
-    timeoutMs: 60_000
   })
 }
 

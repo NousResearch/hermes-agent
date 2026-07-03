@@ -207,6 +207,11 @@ class TestFlushAfterCompression:
             agent.compression_in_place = False
             agent._ensure_db_session()
 
+            # Plain marked messages only: the exact-equality assertion below
+            # relies on `compressed` containing no message that _flush filters
+            # for a reason INDEPENDENT of _db_persisted (ephemeral scaffolding,
+            # synthetic recovery turns). Keep this fixture free of such messages
+            # or the row count would legitimately differ from len(compressed).
             messages = [
                 {
                     "role": "user" if i % 2 == 0 else "assistant",

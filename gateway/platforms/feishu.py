@@ -718,11 +718,45 @@ def _parse_table_element(lines: List[str]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _compute_scale_factor(headers: List[str], rows: List[List[str]]) -> int:
+    """Compute optimal device_scale_factor based on table content density.
+
+    Sparse tables (short cell values like 'Yes'/'No') get higher DPI so text
+    renders razor-sharp.  Dense tables (long paragraphs in cells) use lower DPI
+    to keep image file sizes manageable without visible quality loss.
+
+    Returns an integer scale factor in the range [3, 10].
+    """
+    all_cells = [cell for row in rows for cell in row] + list(headers)
+    if not all_cells:
+        return 6
+
+    avg_len = sum(len(c) for c in all_cells) / len(all_cells)
+    max_len = max(len(c) for c in all_cells)
+
+    # Blend: 70% average + 30% maximum — a single long cell in an otherwise
+    # sparse table shouldn't push the DPI all the way down.
+    effective_len = avg_len * 0.7 + max_len * 0.3
+
+    if effective_len < 8:
+        return 10   # boolean tables, tiny labels
+    elif effective_len < 16:
+        return 8    # short identifiers, compact status values
+    elif effective_len < 35:
+        return 6    # moderate: current default, user-approved for 8×8 tables
+    elif effective_len < 70:
+        return 4    # sentence-length cells
+    else:
+        return 3    # paragraphs in cells — dense enough already
+
+
 def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
     """Render a table as a PNG image using Playwright.
 
     Returns the raw PNG bytes suitable for upload to the Feishu image store.
     """
+    scale = _compute_scale_factor(headers, rows)
+
     th_cells = "".join(f"<th>{_esc(h)}</th>" for h in headers)
     tr_rows = "".join(
         "<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>"
@@ -748,7 +782,7 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
         try:
             page = browser.new_page(
                 viewport={"width": 1600, "height": 100},
-                device_scale_factor=6,
+                device_scale_factor=scale,
             )
             page.set_content(html)
             page.wait_for_timeout(100)  # let fonts settle

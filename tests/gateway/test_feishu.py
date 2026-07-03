@@ -4953,6 +4953,7 @@ class TestFeishuOutboundPayload(unittest.TestCase):
         from gateway.platforms.feishu import (
             _STRUCTURED_MD_RE,
             _build_interactive_card_payload,
+            _compute_scale_factor,
             _extract_card_header,
         )
         from gateway.platforms.feishu import FeishuAdapter
@@ -4965,6 +4966,7 @@ class TestFeishuOutboundPayload(unittest.TestCase):
             "_STRUCTURED_MD_RE": _STRUCTURED_MD_RE,
             "_build_outbound_payload": adapter._build_outbound_payload,
             "_build_interactive_card_payload": _build_interactive_card_payload,
+            "_compute_scale_factor": _compute_scale_factor,
             "_extract_card_header": _extract_card_header,
         }
 
@@ -5168,3 +5170,116 @@ class TestFeishuOutboundPayload(unittest.TestCase):
         # Single table_img placeholder
         self.assertEqual(len(card["elements"]), 1)
         self.assertEqual(card["elements"][0]["tag"], "table_img")
+
+    # ------------------------------------------------------------------
+    # _compute_scale_factor — dynamic DPI for table images
+    # ------------------------------------------------------------------
+
+    def test_scale_factor_boolean_table_returns_10(self):
+        """Sparse tables (effective < 8 chars) get 10x DPI."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        # "Yes"/"No"/"✅"/"❌" — avg < 3 chars per cell
+        self.assertEqual(
+            _compute_scale_factor(
+                ["Feature", "Supported"],
+                [["OAuth 2.0", "Yes"], ["SAML", "No"], ["LDAP", "Yes"]],
+            ),
+            10,
+        )
+
+    def test_scale_factor_short_labels_returns_8(self):
+        """Compact tables (effective 8-16 chars) get 8x DPI."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        self.assertEqual(
+            _compute_scale_factor(
+                ["Service Name", "Status", "Region"],
+                [
+                    ["API Gateway", "Healthy", "us-east-1"],
+                    ["Auth Service", "Degraded", "us-west-2"],
+                ],
+            ),
+            8,
+        )
+
+    def test_scale_factor_moderate_table_returns_6(self):
+        """Moderate content (effective 16-35 chars) gets 6x DPI — current default."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        self.assertEqual(
+            _compute_scale_factor(
+                ["Component", "Description", "Owner"],
+                [
+                    ["Ingress Controller", "Handles external traffic routing", "Platform Team"],
+                    ["Metrics Pipeline", "Collects and aggregates system metrics", "Observability"],
+                ],
+            ),
+            6,
+        )
+
+    def test_scale_factor_dense_table_returns_4(self):
+        """Sentence-length cells (effective 35-70 chars) get 4x DPI."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        self.assertEqual(
+            _compute_scale_factor(
+                ["Issue", "Resolution"],
+                [
+                    [
+                        "Memory leak in connection pool",
+                        "Patched the pool to evict idle connections after 30 seconds of inactivity.",
+                    ],
+                    [
+                        "Race condition on startup",
+                        "Added a distributed lock so only one instance initializes the schema.",
+                    ],
+                ],
+            ),
+            4,
+        )
+
+    def test_scale_factor_very_dense_table_returns_3(self):
+        """Paragraphs in cells (effective >= 70 chars) get 3x DPI — smallest file."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        self.assertEqual(
+            _compute_scale_factor(
+                ["Section", "Details"],
+                [
+                    [
+                        "Architecture Overview",
+                        "The system follows a microservices architecture with event-driven communication between components, using Kafka for message brokering and PostgreSQL for persistent storage.",
+                    ],
+                ],
+            ),
+            3,
+        )
+
+    def test_scale_factor_empty_table_returns_6(self):
+        """Empty table returns default 6x."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        self.assertEqual(_compute_scale_factor([], []), 6)
+
+    def test_scale_factor_mixed_cells_uses_blend(self):
+        """One long cell among short ones shouldn't collapse DPI entirely."""
+        builders = self._import_builders()
+        _compute_scale_factor = builders["_compute_scale_factor"]
+
+        # Mostly short labels but one very long header (51 chars)
+        # Without blend: max=51 → would push to 4x
+        # With blend: eff = avg*0.7+max*0.3 = 11.7*0.7+51*0.3 = 23.5 → 6x
+        self.assertEqual(
+            _compute_scale_factor(
+                ["ID", "This column has a very long descriptive header text"],
+                [["1", "short"], ["2", "also short"]],
+            ),
+            6,  # blend keeps it in moderate range despite long header
+        )

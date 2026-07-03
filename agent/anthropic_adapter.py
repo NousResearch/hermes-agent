@@ -903,12 +903,12 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         return None
 
     raw = result.stdout.strip()
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -954,6 +954,10 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
     }
 
 
+# Back-compat for tests/plugins that imported the previous helper name.
+_read_claude_code_credentials_file = _read_claude_code_credentials_from_file
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
@@ -970,8 +974,8 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
-    and native direct Anthropic provider usage should follow that path rather
-    than auto-detecting Claude's first-party managed key.
+    and native direct Anthropic provider usage should follow that path
+    rather than auto-detecting Claude's first-party managed key.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """

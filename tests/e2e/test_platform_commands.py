@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform
+import gateway.run as gateway_run
 from gateway.platforms.base import SendResult
 from tests.e2e.conftest import make_event, send_and_capture
 
@@ -89,6 +90,23 @@ class TestSlashCommands:
             pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
+        runner.request_restart = MagicMock(return_value=True)
+
+        send = await send_and_capture(adapter, "restart gateway", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "restart" in response_text.lower() or "draining" in response_text.lower()
+        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+    @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_uses_service_path_under_launchd(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+        monkeypatch.setattr(gateway_run.os, "getppid", lambda: 1)
         runner.request_restart = MagicMock(return_value=True)
 
         send = await send_and_capture(adapter, "restart gateway", platform)

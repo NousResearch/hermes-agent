@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -42,7 +43,21 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+VALID_OUTBOUND_BOT_MSG = "\n".join(
+    [
+        "<@777>",
+        "BOT_MSG v1",
+        "reply_expected: true",
+        "kind: status",
+        "correlation_id: out-1",
+        "---",
+        "status body",
+    ]
+)
 
 
 @pytest.mark.asyncio
@@ -158,6 +173,77 @@ async def test_send_does_not_retry_on_unrelated_errors():
     # Only the first attempt happens — no reference-retry replay.
     assert channel.send.await_count == 1
     assert send_calls[0]["reference"] is reference_obj
+
+
+@pytest.mark.asyncio
+async def test_send_disables_replied_user_when_source_is_bot_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    allowed_mentions_seen = []
+
+    class FakeAllowedMentions:
+        def __init__(self, *, everyone, roles, users, replied_user):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+
+    async def fake_send(*, content, reference=None, allowed_mentions=None):
+        allowed_mentions_seen.append(allowed_mentions)
+        return SimpleNamespace(id=1234)
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=SimpleNamespace(id=99, to_reference=MagicMock(return_value=object()))),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    import gateway.platforms.discord as discord_platform
+    discord_platform.discord.AllowedMentions = FakeAllowedMentions
+
+    result = await adapter.send("555", "hello", reply_to="99", metadata={"source_is_bot": True})
+
+    assert result.success is True
+    assert allowed_mentions_seen
+    assert allowed_mentions_seen[0].replied_user is False
+
+
+@pytest.mark.asyncio
+async def test_send_allows_raw_discord_bot_mentions(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def fake_send(*, content, reference=None, allowed_mentions=None):
+        sent.append(content)
+        return SimpleNamespace(id=1234)
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "plain ping <@777>")
+
+    assert result.success is True
+    assert sent == ["plain ping <@777>"]
+
+
+def test_discord_adapter_no_longer_exposes_send_bot_message():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    assert not hasattr(adapter, "send_bot_message")
+
+
+def test_connect_no_longer_checks_bot_msg_protocol_env(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_MSG_PROTOCOL", "v2")
+    source = Path(discord_adapter.__file__).read_text(encoding="utf-8")
+
+    assert "DISCORD_BOT_MSG_PROTOCOL" not in source
 
 
 # ---------------------------------------------------------------------------

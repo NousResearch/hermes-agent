@@ -2128,13 +2128,26 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            (b.get("text") or "").strip() == ""
+        # Drop blank text blocks (Anthropic rejects whitespace-only text
+        # blocks with HTTP 400). Fall back to the placeholder ONLY when nothing
+        # else survives. The previous guard replaced the WHOLE list with the
+        # placeholder whenever no non-blank text block existed, so an
+        # image-only user turn (a valid OpenAI request shape the API server
+        # accepts, see _content_has_visible_payload) had its image silently
+        # dropped: `all(... for b in blocks if b is a text block)` is vacuously
+        # True when the only blocks are images.
+        kept_blocks = [
+            b
             for b in converted_blocks
-            if isinstance(b, dict) and b.get("type") == "text"
-        ):
-            converted_blocks = [{"type": "text", "text": "(empty message)"}]
-        return {"role": "user", "content": converted_blocks}
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "text"
+                and (b.get("text") or "").strip() == ""
+            )
+        ]
+        if not kept_blocks:
+            kept_blocks = [{"type": "text", "text": "(empty message)"}]
+        return {"role": "user", "content": kept_blocks}
     else:
         if not content or (isinstance(content, str) and not content.strip()):
             content = "(empty message)"

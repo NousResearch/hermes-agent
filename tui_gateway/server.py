@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -230,6 +231,7 @@ _LONG_HANDLERS = frozenset(
         "shell.exec",
         "skills.manage",
         "slash.exec",
+        "voice.refine",
     }
 )
 
@@ -12844,7 +12846,7 @@ def _voice_refine_protected_tokens(text: str) -> list[str]:
     tokens: list[str] = []
     for match in _VOICE_REFINE_PROTECTED_RE.finditer(text):
         token = match.group(0).strip().strip(".,;:!?)]}\"'")
-        if token and token not in tokens:
+        if token:
             tokens.append(token)
     return tokens
 
@@ -12871,9 +12873,9 @@ def _voice_refine_valid(original: str, cleaned: str) -> bool:
     if len(cleaned) > len(original) * 2 + 120:
         return False
 
-    cleaned_norm = cleaned
-    for token in _voice_refine_protected_tokens(original):
-        if token not in cleaned_norm:
+    cleaned_tokens = Counter(_voice_refine_protected_tokens(cleaned))
+    for token, count in Counter(_voice_refine_protected_tokens(original)).items():
+        if cleaned_tokens[token] < count:
             return False
     return True
 

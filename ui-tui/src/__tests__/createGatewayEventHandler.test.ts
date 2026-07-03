@@ -17,6 +17,18 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const ref = <T>(current: T) => ({ current })
 
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
+}
+
 const buildCtx = (appended: Msg[]) =>
   ({
     composer: {
@@ -109,6 +121,43 @@ describe('createGatewayEventHandler', () => {
     await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.refine', { text: 'um please please test this' }))
     await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('please test this'))
     expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+  })
+
+  it('serializes refined voice transcripts so submissions keep speech order', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const refineCalls: Array<ReturnType<typeof deferred<{ text: string }>> & { rawText: string }> = []
+    ctx.gateway.rpc = vi.fn((method: string, params: any) => {
+      if (method === 'config.get') {
+        return Promise.resolve({ config: { voice: { refine: { enabled: true }, submit_mode: 'direct' } } })
+      }
+
+      if (method === 'voice.refine') {
+        const call = { ...deferred<{ text: string }>(), rawText: params.text }
+        refineCalls.push(call)
+
+        return call.promise
+      }
+
+      return Promise.resolve(null)
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'first raw' }, type: 'voice.transcript' } as any)
+    onEvent({ payload: { text: 'second raw' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(refineCalls).toHaveLength(1))
+    expect(refineCalls[0].rawText).toBe('first raw')
+    refineCalls[0].resolve({ text: 'first refined' })
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('first refined'))
+    await vi.waitFor(() => expect(refineCalls).toHaveLength(2))
+    expect(refineCalls[1].rawText).toBe('second raw')
+    refineCalls[1].resolve({ text: 'second refined' })
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('second refined'))
+    expect(ctx.submission.submitRef.current).toHaveBeenNthCalledWith(1, 'first refined')
+    expect(ctx.submission.submitRef.current).toHaveBeenNthCalledWith(2, 'second refined')
   })
 
   it('falls back to the original voice transcript when refine fails', async () => {

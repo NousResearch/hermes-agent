@@ -682,7 +682,7 @@ def test_voice_refine_disabled_returns_original_without_llm(monkeypatch):
         types.SimpleNamespace(call_llm=fail_call_llm),
     )
 
-    resp = server.dispatch(
+    resp = server.handle_request(
         {
             "id": "voice-refine-disabled",
             "method": "voice.refine",
@@ -697,6 +697,47 @@ def test_voice_refine_disabled_returns_original_without_llm(monkeypatch):
         "reason": "disabled",
         "text": "ähm bitte morgen testen",
     }
+
+
+def test_voice_refine_dispatch_runs_on_long_handler_pool(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "medium", "min_chars": 1}}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(
+            call_llm=lambda **_kwargs: _voice_refine_llm_response("clean transcript"),
+        ),
+    )
+
+    written: list[dict] = []
+    done = threading.Event()
+
+    class CaptureTransport:
+        def write(self, obj: dict) -> bool:
+            written.append(obj)
+            done.set()
+            return True
+
+        def close(self) -> None:
+            return None
+
+    resp = server.dispatch(
+        {
+            "id": "voice-refine-pooled",
+            "method": "voice.refine",
+            "params": {"text": "um clean transcript"},
+        },
+        transport=CaptureTransport(),
+    )
+
+    assert resp is None
+    assert done.wait(2)
+    assert written[0]["id"] == "voice-refine-pooled"
+    assert written[0]["result"]["text"] == "clean transcript"
 
 
 def test_voice_refine_uses_auxiliary_llm_with_language_agnostic_prompt(monkeypatch):
@@ -717,7 +758,7 @@ def test_voice_refine_uses_auxiliary_llm_with_language_agnostic_prompt(monkeypat
         types.SimpleNamespace(call_llm=fake_call_llm),
     )
 
-    resp = server.dispatch(
+    resp = server.handle_request(
         {
             "id": "voice-refine",
             "method": "voice.refine",
@@ -758,7 +799,7 @@ def test_voice_refine_rejects_output_that_drops_protected_tokens(monkeypatch):
     )
 
     original = "Bitte deploye /tmp/app auf Port 443 und ping ops@example.com."
-    resp = server.dispatch(
+    resp = server.handle_request(
         {
             "id": "voice-refine-protected",
             "method": "voice.refine",
@@ -768,6 +809,46 @@ def test_voice_refine_rejects_output_that_drops_protected_tokens(monkeypatch):
 
     assert resp is not None
     assert "result" in resp
+    assert resp["result"] == {
+        "changed": False,
+        "reason": "validation_failed",
+        "text": original,
+    }
+
+
+@pytest.mark.parametrize(
+    ("original", "cleaned"),
+    [
+        ("Bitte nutze 5 statt 15.", "Bitte nutze 15."),
+        ("Bitte zahle €5 statt €15.", "Bitte zahle €15."),
+        ("Bitte öffne /tmp/app statt /tmp/application.", "Bitte öffne /tmp/application."),
+    ],
+)
+def test_voice_refine_rejects_structured_token_substring_changes(
+    monkeypatch, original, cleaned
+):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "strict", "min_chars": 1}}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(
+            call_llm=lambda **_kwargs: _voice_refine_llm_response(cleaned),
+        ),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "voice-refine-substring-token",
+            "method": "voice.refine",
+            "params": {"text": original},
+        }
+    )
+
+    assert resp is not None
     assert resp["result"] == {
         "changed": False,
         "reason": "validation_failed",

@@ -126,6 +126,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
+  let voiceTranscriptChain: Promise<void> = Promise.resolve()
 
   // Request IDs of clarify prompts we've already flushed to the transcript as
   // an abandoned-prompt record, so the tool.complete and message.complete
@@ -222,33 +223,38 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     setTimeout(() => submitRef.current(text), 0)
   }
 
-  const handleVoiceTranscript = (rawText: string) => {
-    void (async () => {
-      const cfg = await getFullConfigOnce()
-      const voiceCfg = cfg?.config?.voice
-      const voiceRecord = isRecord(voiceCfg) ? voiceCfg : {}
-      const submitMode = normalizeVoiceSubmitMode(voiceRecord.submit_mode)
-      let text = rawText
+  const processVoiceTranscript = async (rawText: string) => {
+    const cfg = await getFullConfigOnce()
+    const voiceCfg = cfg?.config?.voice
+    const voiceRecord = isRecord(voiceCfg) ? voiceCfg : {}
+    const submitMode = normalizeVoiceSubmitMode(voiceRecord.submit_mode)
+    let text = rawText
 
-      if (isVoiceRefineEnabled(voiceRecord.refine)) {
-        setVoiceProcessing(true)
+    if (isVoiceRefineEnabled(voiceRecord.refine)) {
+      setVoiceProcessing(true)
 
-        try {
-          const refined = await rpc<VoiceRefineResponse>('voice.refine', { text: rawText })
-          const refinedText = typeof refined?.text === 'string' ? refined.text.trim() : ''
+      try {
+        const refined = await rpc<VoiceRefineResponse>('voice.refine', { text: rawText })
+        const refinedText = typeof refined?.text === 'string' ? refined.text.trim() : ''
 
-          if (refinedText) {
-            text = refinedText
-          }
-        } catch (err) {
-          sys(`voice refine failed; using original transcript (${rpcErrorMessage(err)})`)
-        } finally {
-          setVoiceProcessing(false)
+        if (refinedText) {
+          text = refinedText
         }
+      } catch (err) {
+        sys(`voice refine failed; using original transcript (${rpcErrorMessage(err)})`)
+      } finally {
+        setVoiceProcessing(false)
       }
+    }
 
-      finishVoiceTranscript(text, submitMode)
-    })()
+    finishVoiceTranscript(text, submitMode)
+  }
+
+  const handleVoiceTranscript = (rawText: string) => {
+    voiceTranscriptChain = voiceTranscriptChain
+      .catch(() => undefined)
+      .then(() => processVoiceTranscript(rawText))
+      .catch(err => sys(`voice transcript handling failed (${rpcErrorMessage(err)})`))
   }
 
   // ── Nudge toward /agents on delegation ───────────────────────────────

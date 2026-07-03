@@ -145,14 +145,14 @@ def _browser_cdp_private_guard(
         if not bt._eval_ssrf_guard_active(task_id):  # type: ignore[attr-defined]
             return None
 
-        if method == "Page.navigate":
+        if method in {"Page.navigate", "Target.createTarget"}:
             target_url = str((params or {}).get("url") or "").strip()
             if target_url and (
                 bt._is_always_blocked_url(target_url)  # type: ignore[attr-defined]
                 or not bt._is_safe_url(target_url)  # type: ignore[attr-defined]
             ):
                 return tool_error(
-                    "Blocked: CDP Page.navigate target is a private or "
+                    f"Blocked: CDP {method} target is a private or "
                     f"internal address ({target_url}).",
                     method=method,
                     cdp_docs=CDP_DOCS_URL,

@@ -1084,3 +1084,88 @@ class TestInsecureNoAuthSafetyRail:
         finally:
             await adapter.disconnect()
 
+
+# ===================================================================
+# [SILENT] sentinel suppression
+# ===================================================================
+
+
+class TestSilentSentinelSuppression:
+    """``send()`` must drop responses carrying the [SILENT] sentinel.
+
+    Webhook subscriptions used for monitoring/triage (HA alerts, GitHub
+    event filters, etc.) follow the same "stay quiet unless noteworthy"
+    convention as cron watchdogs.  The cron scheduler suppresses delivery
+    when SILENT_MARKER is present anywhere in the agent's response; this
+    test class enforces the same behaviour for the webhook adapter so a
+    triage prompt that returns ``[SILENT]`` does not leak the literal
+    sentinel to Telegram / Discord / Slack / etc.
+    """
+
+    def _setup(self, deliver_type="telegram"):
+        adapter = _make_adapter()
+        chat_id = "webhook:triage:d-1"
+        adapter._delivery_info[chat_id] = {
+            "deliver": deliver_type,
+            "deliver_extra": {"chat_id": "12345"},
+            "payload": {"x": 1},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        if deliver_type == "log":
+            mock_runner.adapters = {}
+        else:
+            mock_runner.adapters = {Platform(deliver_type): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+        return adapter, chat_id, mock_target
+
+    @pytest.mark.asyncio
+    async def test_bare_silent_suppressed(self):
+        adapter, chat_id, mock_target = self._setup()
+        result = await adapter.send(chat_id, "[SILENT]")
+        assert result.success is True
+        mock_target.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_silent_with_trailing_explanation_suppressed(self):
+        """Agent may append [SILENT] after an explanation (cron behaviour)."""
+        adapter, chat_id, mock_target = self._setup()
+        result = await adapter.send(
+            chat_id, "Routine state change; nothing actionable.\n\n[SILENT]"
+        )
+        assert result.success is True
+        mock_target.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_silent_with_surrounding_whitespace_suppressed(self):
+        adapter, chat_id, mock_target = self._setup()
+        result = await adapter.send(chat_id, "  \n  [SILENT]\n  ")
+        assert result.success is True
+        mock_target.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_silent_response_still_delivers(self):
+        """A normal response must reach the cross-platform target."""
+        adapter, chat_id, mock_target = self._setup()
+        result = await adapter.send(chat_id, "Water leak detected in kitchen.")
+        assert result.success is True
+        mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_silent_suppressed_even_with_deliver_log(self):
+        """Suppression runs before the deliver_type branch — log routes
+        also stay quiet so test webhooks do not litter the gateway log."""
+        adapter, chat_id, _ = self._setup(deliver_type="log")
+        with patch("gateway.platforms.webhook.logger") as mock_logger:
+            result = await adapter.send(chat_id, "[SILENT]")
+        assert result.success is True
+        # The "Suppressed" log line fires, the "Response for ..." one does not.
+        suppressed_logged = any(
+            "Suppressed" in str(c.args[0])
+            for c in mock_logger.info.call_args_list
+        )
+        assert suppressed_logged is True
+

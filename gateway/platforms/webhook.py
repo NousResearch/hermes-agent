@@ -255,6 +255,22 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
+        # Monitoring-style webhook subscriptions (e.g. Home Assistant alert
+        # triage, GitHub event filters) often need the same semantics as
+        # cron watchdogs: reason about every inbound event, but stay quiet
+        # when nothing warrants interrupting the user.  Suppress responses
+        # containing the [SILENT] sentinel before any cross-platform delivery.
+        # Matches the substring-in-uppercase check used in cron.scheduler so
+        # the agent can append [SILENT] anywhere in the response (or return
+        # the bare token) and stop delivery uniformly.
+        from cron.scheduler import SILENT_MARKER
+
+        if SILENT_MARKER in content.strip().upper():
+            logger.info(
+                "[webhook] Suppressed %s response for %s", SILENT_MARKER, chat_id
+            )
+            return SendResult(success=True)
+
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)

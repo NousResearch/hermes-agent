@@ -446,3 +446,84 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
+    """Initial connection failures must park, not permanently exit the task.
+
+    Regression for #57129's remaining live case: a slow HTTP/SSE server or
+    late-starting stdio server could exhaust the initial-connect budget before
+    it ever registered tools. The run loop returned, leaving no task alive to
+    hear a later manual /mcp refresh.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import MCPServerTask
+
+    monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 2)
+
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    state = {"transport_calls": 0, "deregistered": 0, "revived": False}
+
+    async def _scenario():
+        class _Task(MCPServerTask):
+            def _is_http(self):
+                return False
+
+            def _deregister_tools(self):
+                state["deregistered"] += 1
+                self._registered_tool_names = []
+
+            async def _run_stdio(self, config):
+                state["transport_calls"] += 1
+                if not state["revived"]:
+                    raise RuntimeError("server still booting")
+                self.session = object()
+                self._ready.set()
+                await self._wait_for_lifecycle_event()
+                return
+
+        task = _Task("srv")
+        run_task = asyncio.ensure_future(task.run({"command": "x"}))
+
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["deregistered"] >= 1:
+                break
+
+        await _real_sleep(0)
+        assert state["transport_calls"] == 3
+        assert state["deregistered"] >= 1
+        assert task._ready.is_set()
+        assert task._error is not None
+        assert not run_task.done(), "initial failure exited instead of parking"
+
+        state["revived"] = True
+        before = state["transport_calls"]
+        task._reconnect_event.set()
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["transport_calls"] > before and task.session is not None:
+                break
+
+        assert state["transport_calls"] > before
+        assert task.session is not None
+        assert task._error is None
+
+        task._shutdown_event.set()
+        task._reconnect_event.set()
+        try:
+            await asyncio.wait_for(run_task, timeout=2)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            run_task.cancel()
+
+    asyncio.run(_scenario())

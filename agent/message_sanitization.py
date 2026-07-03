@@ -95,10 +95,10 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str) and _SURROGATE_RE.search(text):
-                        part["text"] = _SURROGATE_RE.sub('\ufffd', text)
-                        found = True
+                    for pkey, pval in part.items():
+                        if isinstance(pval, str) and _SURROGATE_RE.search(pval):
+                            part[pkey] = _SURROGATE_RE.sub('\ufffd', pval)
+                            found = True
         name = msg.get("name")
         if isinstance(name, str) and _SURROGATE_RE.search(name):
             msg["name"] = _SURROGATE_RE.sub('\ufffd', name)
@@ -341,12 +341,12 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        sanitized = _strip_non_ascii(text)
-                        if sanitized != text:
-                            part["text"] = sanitized
-                            found = True
+                    for pkey, pval in part.items():
+                        if isinstance(pval, str):
+                            sanitized = _strip_non_ascii(pval)
+                            if sanitized != pval:
+                                part[pkey] = sanitized
+                                found = True
         # Sanitize name field (can contain non-ASCII in tool results)
         name = msg.get("name")
         if isinstance(name, str):

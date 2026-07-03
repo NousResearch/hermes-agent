@@ -378,6 +378,9 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
+// When set (e.g. by a system package manager), hides self-update and uninstall
+// affordances so the system owns version management instead of the app.
+const NO_UPDATES = process.env.HERMES_DISABLE_UPDATES === '1'
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -3961,8 +3964,7 @@ function buildApplicationMenu() {
       label: APP_NAME,
       submenu: [
         { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
-        checkForUpdatesItem,
-        { type: 'separator' },
+        ...(NO_UPDATES ? [] : [checkForUpdatesItem, { type: 'separator' }]),
         { role: 'services' },
         { type: 'separator' },
         { role: 'hide' },
@@ -4047,11 +4049,13 @@ function buildApplicationMenu() {
       ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
       : [{ role: 'minimize' }, { role: 'close' }]
   })
-  template.push({
-    label: 'Help',
-    role: 'help',
-    submenu: [checkForUpdatesItem]
-  })
+  if (!NO_UPDATES) {
+    template.push({
+      label: 'Help',
+      role: 'help',
+      submenu: [checkForUpdatesItem]
+    })
+  }
 
   return Menu.buildFromTemplate(template)
 }
@@ -7166,31 +7170,33 @@ ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
 })
 ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
 
-ipcMain.handle('hermes:updates:check', async () =>
-  checkUpdates().catch(error => ({
-    supported: true,
-    branch: readDesktopUpdateConfig().branch,
-    error: 'check-failed',
-    message: error?.message || String(error),
-    fetchedAt: Date.now()
-  }))
-)
+if (!NO_UPDATES) {
+  ipcMain.handle('hermes:updates:check', async () =>
+    checkUpdates().catch(error => ({
+      supported: true,
+      branch: readDesktopUpdateConfig().branch,
+      error: 'check-failed',
+      message: error?.message || String(error),
+      fetchedAt: Date.now()
+    }))
+  )
 
-ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates(payload || {}).catch(error => ({
-    ok: false,
-    error: 'apply-failed',
-    message: error?.message || String(error)
-  }))
-)
+  ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
+    applyUpdates(payload || {}).catch(error => ({
+      ok: false,
+      error: 'apply-failed',
+      message: error?.message || String(error)
+    }))
+  )
 
-ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
+  ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
-ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
-  const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  writeDesktopUpdateConfig({ branch })
-  return { branch }
-})
+  ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
+    const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+    writeDesktopUpdateConfig({ branch })
+    return { branch }
+  })
+}
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in
 // hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
@@ -7426,11 +7432,13 @@ async function runDesktopUninstall(mode) {
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
 
-ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
-ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
-  const mode = payload && typeof payload === 'object' ? payload.mode : payload
-  return runDesktopUninstall(String(mode || ''))
-})
+if (!NO_UPDATES) {
+  ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
+  ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
+    const mode = payload && typeof payload === 'object' ? payload.mode : payload
+    return runDesktopUninstall(String(mode || ''))
+  })
+}
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON
 // it contributes. No theme code is executed — we only read JSON from the .vsix.

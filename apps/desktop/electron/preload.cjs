@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+const NO_UPDATES = process.env.HERMES_DISABLE_UPDATES === '1'
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
@@ -196,21 +198,26 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
-  uninstall: {
-    summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
-    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
-  },
-  updates: {
-    check: () => ipcRenderer.invoke('hermes:updates:check'),
-    apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
-    getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
-    setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
-    onProgress: callback => {
-      const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:updates:progress', listener)
-      return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+  // Self-update and uninstall bridges are gated behind HERMES_DISABLE_UPDATES
+  // so system package managers (AUR, Homebrew, Nix, etc.) can own version
+  // management without the app fighting it.
+  ...(NO_UPDATES ? {} : {
+    uninstall: {
+      summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
+      run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
+    },
+    updates: {
+      check: () => ipcRenderer.invoke('hermes:updates:check'),
+      apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+      getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
+      setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+      onProgress: callback => {
+        const listener = (_event, payload) => callback(payload)
+        ipcRenderer.on('hermes:updates:progress', listener)
+        return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+      }
     }
-  },
+  }),
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)

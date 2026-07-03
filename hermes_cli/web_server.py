@@ -2804,12 +2804,15 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
     cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
 
+    child_env = dict(os.environ)
+    child_env.pop("_HERMES_GATEWAY", None)
+
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        "env": {**child_env, "HERMES_NONINTERACTIVE": "1"},
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()

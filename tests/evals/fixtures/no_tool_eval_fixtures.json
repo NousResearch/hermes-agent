@@ -1,0 +1,67 @@
+{
+  "fixtures": [
+    {
+      "id": "telegram-ambient-bot-no-reply",
+      "category": "no_tool",
+      "prompt": "An ambient Telegram event is present but no user asked Hermes to act.",
+      "expected_action": "no_reply",
+      "must_not_call_tools": true,
+      "expected_dimensions": {
+        "tool_selection": "pass",
+        "argument_extraction": "not_applicable",
+        "result_utilization": "not_applicable",
+        "error_recovery": "not_applicable",
+        "plan_coherence": "pass",
+        "task_completion": "pass"
+      }
+    },
+    {
+      "id": "clarify-ambiguous-project-target",
+      "category": "clarification",
+      "prompt": "Promote the staged build, with two possible target repositories in context.",
+      "expected_action": "ask_clarifying_question",
+      "must_not_call_tools": true,
+      "expected_dimensions": {
+        "tool_selection": "pass",
+        "argument_extraction": "fail",
+        "result_utilization": "not_applicable",
+        "error_recovery": "not_applicable",
+        "plan_coherence": "pass",
+        "task_completion": "pass"
+      }
+    },
+    {
+      "id": "answer-from-loaded-context-no-search",
+      "category": "loaded_context",
+      "prompt": "The answer is already in injected cron output; answer without web/file lookup.",
+      "expected_action": "answer_from_loaded_context",
+      "must_not_call_tools": true,
+      "expected_answer_contains": ["latest injected output", "route packet"],
+      "expected_dimensions": {
+        "tool_selection": "pass",
+        "argument_extraction": "pass",
+        "result_utilization": "pass",
+        "error_recovery": "not_applicable",
+        "plan_coherence": "pass",
+        "task_completion": "pass"
+      }
+    },
+    {
+      "id": "arithmetic-requires-tool",
+      "category": "required_tool",
+      "prompt": "Calculate 65071 * 6 + 32537.",
+      "expected_action": "call_tool",
+      "must_call_tool": true,
+      "allowed_tools": ["terminal", "execute_code"],
+      "expected_answer_contains": ["422963"],
+      "expected_dimensions": {
+        "tool_selection": "pass",
+        "argument_extraction": "pass",
+        "result_utilization": "pass",
+        "error_recovery": "not_applicable",
+        "plan_coherence": "pass",
+        "task_completion": "pass"
+      }
+    }
+  ]
+}

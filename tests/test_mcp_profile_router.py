@@ -797,6 +797,107 @@ def test_profile_router_policy_parses_explicit_capability_groups(tmp_path):
         route_policy.capability_enabled("model")
 
 
+def test_profile_router_profile_defaults_and_auto_profiles_cover_future_profiles(hermes_home, tmp_path):
+    worktree_parent = tmp_path / "worktrees"
+    main_root = worktree_parent / "main-bot"
+    future_root = worktree_parent / "future-bot"
+    main_root.mkdir(parents=True)
+    future_root.mkdir(parents=True)
+    future_profile_dir = hermes_home / "profiles" / "future-bot"
+    future_profile_dir.mkdir(parents=True)
+
+    config = {
+        "profile_router": {
+            "hosts": {
+                "local": {
+                    "enabled": True,
+                    "allowed_roots": [str(worktree_parent)],
+                }
+            },
+            "profile_defaults": {
+                "enabled": True,
+                "allowed_tool_groups": [PROFILE_ROUTER_TOOL_GROUP],
+                "context": {
+                    "skills": {"read": True},
+                    "sessions": {"search": True},
+                },
+                "filesystem": {"read": True, "write": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {
+                        "enabled": True,
+                        "allowed_commands": ["pwd", "git status --short"],
+                        "require_no_shell": True,
+                    },
+                },
+                "git": {"enabled": True, "allow_push": False},
+                "cron": {"enabled": True, "allowed_scripts": []},
+                "messaging": {
+                    "enabled": True,
+                    "allowed_recipients": ["telegram:dry-run-test"],
+                },
+                "skills": {"enabled": True, "write": True, "delete": True},
+                "memory": {"enabled": True, "write": True},
+                "model_tools": {
+                    "allow_model_tools": False,
+                    "allowed_cost_classes": [COST_CLASS_NO_MODEL],
+                },
+            },
+            "auto_profiles": {
+                "enabled": True,
+                "root_patterns": [str(worktree_parent / "{profile}")],
+                "metadata_only_without_root": True,
+            },
+            "profiles": {
+                "local:main-bot": {
+                    "enabled": True,
+                    "allowed_roots": [str(main_root)],
+                }
+            },
+        }
+    }
+
+    policy = load_profile_router_policy(config=config)
+
+    explicit_policy = policy.get_profile_policy(parse_profile_ref("local:main-bot"))
+    assert explicit_policy.allowed_roots == (str(main_root),)
+    assert explicit_policy.allow_filesystem_write is True
+    assert explicit_policy.allow_terminal is True
+    assert explicit_policy.terminal_execution_policy.enabled is True
+    assert explicit_policy.capability_enabled("git") is True
+    assert explicit_policy.cron_policy.enabled is True
+    assert explicit_policy.allow_messaging is True
+    assert explicit_policy.allow_skills_write is True
+    assert explicit_policy.allow_memory_write is True
+
+    future_policy = policy.get_profile_policy(parse_profile_ref("local:future-bot"))
+    assert future_policy.allowed_roots == (str(future_root),)
+    assert future_policy.allow_filesystem_write is True
+    assert future_policy.allow_terminal is True
+    assert future_policy.capability_enabled("git") is True
+
+    metadata_only_policy = policy.get_profile_policy(parse_profile_ref("local:maker"))
+    assert metadata_only_policy.allowed_roots == ()
+    assert metadata_only_policy.allow_filesystem_read is False
+    assert metadata_only_policy.allow_filesystem_write is False
+    assert metadata_only_policy.allow_terminal is False
+    assert metadata_only_policy.capability_enabled("git") is False
+    assert metadata_only_policy.allow_skills_write is True
+    assert metadata_only_policy.allow_memory_write is True
+
+
+def test_profile_router_auto_profile_root_patterns_must_be_profile_scoped(tmp_path):
+    with pytest.raises(ProfileRouterError, match="must include"):
+        load_profile_router_policy(
+            config={
+                "profile_router": {
+                    "hosts": {"local": {"enabled": True, "allowed_roots": [str(tmp_path)]}},
+                    "auto_profiles": {"enabled": True, "root_patterns": [str(tmp_path)]},
+                }
+            }
+        )
+
+
 def test_profile_router_policy_rejects_invalid_hosts_and_outside_roots(tmp_path):
     with pytest.raises(ProfileRouterError, match="Unsupported profile host"):
         load_profile_router_policy(

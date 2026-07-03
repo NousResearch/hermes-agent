@@ -596,6 +596,97 @@ def _policy_allowed_roots(value: Any, field: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(roots))
 
 
+def _policy_root_patterns(value: Any, field: str) -> tuple[str, ...]:
+    patterns = []
+    for pattern in _policy_string_tuple(value, field):
+        if "{profile}" not in pattern:
+            raise ProfileRouterError(
+                "invalid_policy",
+                f"{field} entries must include '{{profile}}'",
+            )
+        if not pattern.startswith("/"):
+            raise ProfileRouterError(
+                "invalid_policy",
+                f"{field} entries must be absolute host-local paths",
+            )
+        patterns.append(posixpath.normpath(pattern))
+    return tuple(dict.fromkeys(patterns))
+
+
+def _deep_merge_policy(defaults: MappingABC, override: MappingABC) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(defaults)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, MappingABC) and isinstance(value, MappingABC):
+            merged[key] = _deep_merge_policy(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _profile_ref_value(host: str, profile_name: str) -> str:
+    return f"{host}:{normalize_profile_name(profile_name)}"
+
+
+def _auto_profile_roots(
+    profile_name: str,
+    root_patterns: Iterable[str],
+    host_policy: HostRoutePolicy | None,
+) -> tuple[str, ...]:
+    if host_policy is None or not host_policy.allowed_roots:
+        return ()
+    roots: list[str] = []
+    normalized_profile = normalize_profile_name(profile_name)
+    for pattern in root_patterns:
+        candidate = posixpath.normpath(pattern.replace("{profile}", normalized_profile))
+        if _is_secret_path(candidate):
+            continue
+        if not any(_path_within_root(candidate, allowed_root) for allowed_root in host_policy.allowed_roots):
+            continue
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_dir():
+            continue
+        roots.append(str(resolved))
+    return tuple(dict.fromkeys(roots))
+
+
+def _disable_workspace_bound_capabilities(raw_policy: MappingABC) -> dict[str, Any]:
+    policy = _deep_merge_policy({}, raw_policy)
+    filesystem = _deep_merge_policy(
+        _policy_mapping(policy.get("filesystem"), "filesystem"),
+        {"read": False, "write": False},
+    )
+    terminal = _deep_merge_policy(
+        _policy_mapping(policy.get("terminal"), "terminal"),
+        {"enabled": False, "execution": {"enabled": False}},
+    )
+    git = _deep_merge_policy(
+        _policy_mapping(policy.get("git"), "git"),
+        {"enabled": False, "allow_push": False},
+    )
+    cron = _deep_merge_policy(
+        _policy_mapping(policy.get("cron"), "cron"),
+        {"enabled": False},
+    )
+    messaging = _deep_merge_policy(
+        _policy_mapping(policy.get("messaging"), "messaging"),
+        {"enabled": False},
+    )
+    policy.update(
+        {
+            "filesystem": filesystem,
+            "terminal": terminal,
+            "git": git,
+            "cron": cron,
+            "messaging": messaging,
+        }
+    )
+    return policy
+
+
 def _policy_terminal_command_tuple(value: Any, field: str) -> tuple[str, ...]:
     commands = _policy_string_tuple(value, field)
     for command in commands:
@@ -1090,6 +1181,27 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
     raw_profiles = _policy_mapping(
         section.get("profiles"), f"{PROFILE_ROUTER_CONFIG_KEY}.profiles"
     )
+    profile_defaults = _policy_mapping(
+        section.get("profile_defaults"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.profile_defaults",
+    )
+    auto_profiles = _policy_mapping(
+        section.get("auto_profiles"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles",
+    )
+    auto_profiles_enabled = _policy_bool(
+        auto_profiles.get("enabled"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.enabled",
+    )
+    auto_root_patterns = _policy_root_patterns(
+        auto_profiles.get("root_patterns"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.root_patterns",
+    )
+    auto_metadata_only_without_root = _policy_bool(
+        auto_profiles.get("metadata_only_without_root"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.metadata_only_without_root",
+        default=True,
+    )
     global_context = _policy_mapping(
         section.get("context"), f"{PROFILE_ROUTER_CONFIG_KEY}.context"
     )
@@ -1105,12 +1217,47 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
         host: _parse_host_policy(host, host_policy)
         for host, host_policy in raw_hosts.items()
     }
-    profiles = {
-        parse_profile_ref(profile_ref).value: _parse_profile_policy(
-            profile_ref, profile_policy, hosts
+    profile_sources: dict[str, MappingABC] = {}
+    for profile_ref, profile_policy in raw_profiles.items():
+        profile_sources[parse_profile_ref(profile_ref).value] = _policy_mapping(
+            profile_policy,
+            f"{PROFILE_ROUTER_CONFIG_KEY}.profiles.{profile_ref}",
         )
-        for profile_ref, profile_policy in raw_profiles.items()
-    }
+
+    if auto_profiles_enabled:
+        local_host_policy = hosts.get(LOCAL_HOST)
+        for info in _list_local_profile_infos():
+            profile_ref = _profile_ref_value(LOCAL_HOST, info.name)
+            if profile_ref in profile_sources:
+                continue
+            auto_roots = _auto_profile_roots(
+                info.name,
+                auto_root_patterns,
+                local_host_policy,
+            )
+            profile_policy: MappingABC = {
+                "enabled": True,
+                "display_name": info.name,
+                "description": "Auto-discovered profile policy generated from profile_router.profile_defaults.",
+                "allowed_roots": list(auto_roots),
+            }
+            if not auto_roots and auto_metadata_only_without_root:
+                profile_policy = _disable_workspace_bound_capabilities(
+                    _policy_mapping(profile_policy, f"{PROFILE_ROUTER_CONFIG_KEY}.auto_profiles.{profile_ref}")
+                )
+            profile_sources[profile_ref] = profile_policy
+
+    profiles: dict[str, ProfileRoutePolicy] = {}
+    for profile_ref, profile_policy in profile_sources.items():
+        merged_policy = _deep_merge_policy(profile_defaults, profile_policy)
+        roots = _policy_allowed_roots(
+            merged_policy.get("allowed_roots"),
+            f"{PROFILE_ROUTER_CONFIG_KEY}.profiles.{profile_ref}.allowed_roots",
+        )
+        if not roots and auto_metadata_only_without_root:
+            merged_policy = _disable_workspace_bound_capabilities(merged_policy)
+        profiles[profile_ref] = _parse_profile_policy(profile_ref, merged_policy, hosts)
+
     return ProfileRouterPolicy(
         hosts=hosts,
         profiles=profiles,

@@ -325,21 +325,20 @@ class TestGeminiModelsDev:
             result = list_agentic_models("gemini")
         assert "gemini-3-flash-preview" in result
         assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" in result
+        assert "gemma-4-31b-it" not in result
         # Filtered out:
         assert "gemini-embedding-001" not in result      # no tool_call
         assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
 
-    def test_list_provider_models_hides_stale_gemini_slugs(self):
-        """Gemma models are no longer hidden — only stale Gemini slugs are."""
+    def test_list_provider_models_hides_low_tpm_google_gemmas(self):
         mock_data = {
             "google": {
                 "models": {
                     "gemini-2.5-pro": {},
                     "gemma-4-31b-it": {},
-                    "gemma-4-26b-a4b-it": {},
+                    "gemma-3-27b-it": {},
                     "gemini-1.5-pro": {},
                     "gemini-2.0-flash": {},
                 }
@@ -351,7 +350,7 @@ class TestGeminiModelsDev:
             result = list_provider_models("gemini")
 
         assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" in result
-        assert "gemma-4-26b-a4b-it" in result
+        assert "gemma-4-31b-it" not in result
+        assert "gemma-3-27b-it" not in result
         assert "gemini-1.5-pro" not in result
         assert "gemini-2.0-flash" not in result

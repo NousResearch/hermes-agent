@@ -66,6 +66,68 @@ def test_complete_task_rejects_done_without_evidence_path(kanban_home, state):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "completion_kwargs",
+    [
+        pytest.param({}, id="missing-fields"),
+        pytest.param({"evidence_paths": None}, id="top-level-paths-null"),
+        pytest.param({"evidence_paths": ""}, id="top-level-path-empty-string"),
+        pytest.param({"evidence_paths": "   "}, id="top-level-path-whitespace"),
+        pytest.param({"evidence_paths": []}, id="top-level-paths-empty-list"),
+        pytest.param(
+            {"evidence_paths": [None, "", "   "]},
+            id="top-level-paths-null-and-empty",
+        ),
+        pytest.param({"evidence_refs": None}, id="top-level-refs-null"),
+        pytest.param({"evidence_refs": ""}, id="top-level-ref-empty-string"),
+        pytest.param(
+            {"metadata": {"evidence_refs": None}},
+            id="metadata-refs-null",
+        ),
+        pytest.param(
+            {"metadata": {"evidence_refs": ""}},
+            id="metadata-ref-empty-string",
+        ),
+        pytest.param(
+            {"metadata": {"evidence_refs": [None, "", "   "]}},
+            id="metadata-refs-null-and-empty",
+        ),
+        pytest.param(
+            {"metadata": {"evidence_paths": None}},
+            id="metadata-paths-null",
+        ),
+        pytest.param(
+            {"metadata": {"artifacts": []}},
+            id="metadata-artifacts-empty-list",
+        ),
+    ],
+)
+def test_complete_task_rejects_missing_empty_and_null_evidence_fields(
+    kanban_home, completion_kwargs
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="no meaningful evidence", assignee="worker")
+
+        with pytest.raises(kb.CompletionEvidenceError) as exc:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="done without meaningful proof",
+                **completion_kwargs,
+            )
+
+        assert "evidence path" in str(exc.value)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        events = kb.list_events(conn, tid)
+        blocked = [e for e in events if e.kind == "completion_blocked_missing_evidence"]
+        assert len(blocked) == 1
+    finally:
+        conn.close()
+
+
 def test_complete_task_rejects_relative_and_missing_evidence_paths(kanban_home, tmp_path):
     conn = kb.connect()
     try:
@@ -99,7 +161,9 @@ def test_complete_task_rejects_relative_and_missing_evidence_paths(kanban_home, 
 
 
 def test_complete_task_rejects_sensitive_looking_evidence_path(kanban_home, tmp_path):
-    secretish = tmp_path / "token-proof.md"
+    secretish_dir = tmp_path / "token"
+    secretish_dir.mkdir()
+    secretish = secretish_dir / "proof.md"
     secretish.write_text("do not read me\n", encoding="utf-8")
 
     conn = kb.connect()

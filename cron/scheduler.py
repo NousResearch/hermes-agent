@@ -3114,7 +3114,26 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
-        success, output, final_response, error = run_job(job)
+        # Run the job under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is in play (multiple
+        # gateway profiles / room→profile multiplexing), and cron fires from
+        # the ticker thread where no per-turn scope is installed — so
+        # resolve_runtime_provider() raised UnscopedSecretError before model
+        # selection, breaking every cron job. Mirrors the per-turn pattern in
+        # gateway/run.py (_profile_runtime_scope).
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home())
+        )
+        try:
+            success, output, final_response, error = run_job(job)
+        finally:
+            reset_secret_scope(_scope_token)
 
         output_file = save_job_output(job["id"], output)
         if verbose:

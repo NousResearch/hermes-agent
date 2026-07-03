@@ -1,0 +1,88 @@
+{
+  "id": "intelius",
+  "name": "Intelius",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": [
+    "US"
+  ],
+  "parent": "peopleconnect",
+  "owns": [
+    "truthfinder",
+    "instantcheckmate",
+    "ussearch",
+    "zabasearch",
+    "classmates",
+    "peoplefinder",
+    "peoplelookup",
+    "addresses",
+    "anywho",
+    "publicrecords"
+  ],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.intelius.com/",
+    "fetch": "web_extract",
+    "match_signal": "result",
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
+    "url_patterns": {
+      "name": "https://www.intelius.com/people-search/{First}-{Last}/",
+      "name_state": "https://www.intelius.com/people-search/{first}-{last}/{state-name}/",
+      "full_report": "https://www.intelius.com/search/?firstName={First}&lastName={Last}&city={City}&state={ST}&traffic%5Bsource%5D=INTSEO"
+    },
+    "url_format_quirks": [
+      "Name summary page: /people-search/{First}-{Last}/ (hyphen join; case-insensitive, both Jane-Public and jane-public work). Readable via web_extract (no hard bot gate as of 2026-06-30).",
+      "State refine: /people-search/{first}-{last}/{state-name}/ with the state SPELLED OUT lowercase, e.g. /jane-public/new-york/ (NOT the 2-letter code).",
+      "The summary shows last-known address + a 'possible relatives' list + a FAQ ('Where does X live?'). Corroborate the subject by address before acting; the 'Top People with the Last Name {Last}' block is unrelated namesakes.",
+      "Part of PeopleConnect: same data surfaces on Truthfinder/InstantCheckmate/USSearch; one suppression at suppression.peopleconnect.us covers the cluster."
+    ]
+  },
+  "optout": {
+    "tier": "T1",
+    "method": "web_form",
+    "url": "https://suppression.peopleconnect.us/login",
+    "email": "privacy@peopleconnect.us",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": [
+      "contact_email"
+    ],
+    "deletion": {
+      "via": "in_flow",
+      "url": "https://suppression.peopleconnect.us/guided-mode",
+      "email": "privacy@peopleconnect.us",
+      "kinds": ["ccpa", "generic"],
+      "notes": "The portal's 'Right to Delete / DELETE MY USER DATA' (bottom of guided-mode) is the verified deletion path and covers the whole cluster. privacy@peopleconnect.us is the documented rights-request address (their 2025 CPRA metrics: 33,513 delete requests, median response < 1 day) - use it as the fallback if the portal breaks."
+    },
+    "playbook": [
+      "PeopleConnect portal (suppression.peopleconnect.us/login, privacy-center entry at /privacy-center) -- ONE flow here clears Truthfinder, Instant Checkmate, US Search, ZabaSearch, Classmates and ~15 more. DO THIS PARENT FIRST.",
+      "Step 1 asks ONLY for an email + consent checkbox (no name/DOB, no CAPTCHA) -> sends a verification email. Least-disclosure entry: just the contact email.",
+      "poll-verification will pick up the verify link. The link authenticates a SESSION bound to the browser that OPENS it: the SAME agent browser must open the link and drive /guided-mode (a different browser is bounced to /login).",
+      "SUPPRESSION != DELETION -- guided-mode's default flow only HIDES the report (data retained, can re-list). Scroll to the BOTTOM of guided-mode and use 'Right to Delete / DELETE MY USER DATA' (CCPA/CPRA) -- this actually deletes across the cluster and emails its own confirmation link; poll and open that too.",
+      "If the portal breaks: email privacy@peopleconnect.us (rights-request address, median response < 1 day per their published metrics), or sister addresses privacy@intelius.com / privacy@truthfinder.com / privacy@instantcheckmate.com / support@ussearch.com / privacy@classmates.com; phone 1-888-245-1655.",
+      "After the deletion confirms, re-scan the covered children (they normally drop out) before submitting any duplicate child opt-out."
+    ],
+    "notes": "PeopleConnect portal covers the cluster. Authorized-agent requests: signed written authorization (full name, address, phone, the email the consumer uses) or POA; for Right-to-Delete they verify agent authority with the consumer by email. Verified from the live privacy policy 2026-07-01 (policy dated 2026-06-30).",
+    "quirks": [
+      "Step 1 (suppression.peopleconnect.us/login) asks ONLY for an email + a consent checkbox, then 'Continue' -> a verification email with a link. No CAPTCHA, no name/DOB at step 1. Least-disclosure entry: just the contact email. Verified live 2026-06-30.",
+      "The verification link authenticates a SESSION and lands on /guided-mode. That session is bound to the browser that OPENED it; a different browser hitting /guided-mode is redirected back to /login. So for hands-off automation the SAME agent browser must open the verify link (Mode B: read inbox -> agent browser navigates the link -> drive guided-mode).",
+      "SUPPRESSION != DELETION. The guided-mode/suppression flow only HIDES the background report (data retained, can re-list). At the BOTTOM of guided-mode there is a separate 'Right to Delete' section with a 'DELETE MY USER DATA' button (CCPA/CPRA) that removes the user data across the cluster - this is the stronger action and should be preferred. It also emails a confirmation link. (Confirmed via security.org Instant Checkmate guide + live flow 2026-06-30.)",
+      "Their published request metrics (2025, all US users regardless of state): 33,513 deletion requests, 26,603 complied, median response < 1 day - the deletion lane is real and fast. Verified from privacy policy 2026-07-01."
+    ],
+    "est_processing_days": 7,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": "2026-07-01",
+  "source": "BADBOOL"
+}

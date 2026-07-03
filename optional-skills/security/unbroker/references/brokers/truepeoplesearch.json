@@ -1,0 +1,43 @@
+{
+  "id": "truepeoplesearch",
+  "name": "TruePeopleSearch",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": ["US"],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.truepeoplesearch.com/",
+    "fetch": "browser",
+    "antibot": "datadome",
+    "match_signal": "result",
+    "by": ["name", "phone", "address", "email"],
+    "url_patterns": {
+      "name": "https://www.truepeoplesearch.com/results?name={First%20Last}&citystatezip={City,%20ST}"
+    },
+    "url_format_quirks": [
+      "Search results URL is QUERY-PARAM, not path: /results?name=Jane%20Public&citystatezip=Anytown,%20NY (space-encoded; comma between city and state). Confirmed as the canonical form the site's own search box generates.",
+      "On-site search tabs: Name / Phone / Address / Email / Neighbors (so name-, phone-, address-, and email-searchable).",
+      "HARD-BLOCKED for automated reads (2026-06-30): Cloudflare 'Just a moment...' interstitial -> DataDome device-check CAPTCHA (geo.captcha-delivery.com) on every results navigation. Page chrome (header/footer) may render while the result body stays blocked; submitting any search bounces to DataDome. web_extract/Firecrawl 504-timed out. Needs a residential-proxy/stealth browser (e.g. Browserbase) to scan; otherwise record 'blocked'."
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.truepeoplesearch.com/removal",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": true,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "notes": "Removal page renders even when results are blocked. Flow: name+email+captcha -> emailed link -> fill opt-out form matching the record -> confirmation ('allow 3 days'). Fields: dropdown 'Exercise my rights as a: The subject of the request / An authorized agent of the subject', First Name*, Middle Name, Last Name*, Email Address*, consent checkbox. CAPTCHA-gated: hCaptcha ('I am human'). Contact support@truepeoplesearch.com; PO Box 7775 PMB 29296, San Francisco CA 94120-7775. Verified read-only 2026-06-30; not submitted. (Record previously mis-declared email_verification:false.)",
+    "est_processing_days": 3,
+    "reappearance_risk": "high"
+  },
+  "last_verified": "2026-06-30",
+  "source": "BADBOOL"
+}

@@ -42,7 +42,8 @@ dependencies = [
   # extra and gets lazy-installed via `tools/lazy_deps.py` when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
-  "openai==2.24.0",
+  "openai==2.44.0",
+  "openai-agents==0.17.7",
   "certifi==2026.5.20",
   "python-dotenv==1.2.2",
   "fire==0.7.1",

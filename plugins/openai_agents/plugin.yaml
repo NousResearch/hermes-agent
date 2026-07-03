@@ -1,0 +1,13 @@
+name: openai_agents
+version: 1.2.0
+description: "Governed OpenAI Agents SDK bridge — review/execute/verify lanes plus architecture workflow with structured proof outputs. Requires OPENAI_API_KEY."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENAI_API_KEY
+provides_tools:
+  - openai_agents_review
+  - openai_agents_execute
+  - openai_agents_verify
+  - openai_agents_architecture
+  - openai_agents_run

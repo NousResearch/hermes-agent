@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/openai-agents-receipt.schema.json",
+  "title": "Hermes OpenAI Agents SDK Receipt",
+  "type": "object",
+  "required": ["success", "lane", "model", "max_turns", "max_tokens", "usage", "governance_contract", "receipt", "result", "truncated"],
+  "properties": {
+    "success": {"type": "boolean"},
+    "lane": {"type": "string", "enum": ["review", "execute", "verify", "architecture"]},
+    "sdk_version": {"type": ["string", "null"]},
+    "model": {"type": "string"},
+    "max_turns": {"type": "integer", "minimum": 1, "maximum": 10},
+    "max_tokens": {"type": "integer", "minimum": 64, "maximum": 8000},
+    "usage": {
+      "type": "object",
+      "required": ["available"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "total_tokens": {"type": "integer", "minimum": 0},
+        "cached_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_tokens": {"type": "integer", "minimum": 0},
+        "cost_estimate_usd": {"type": ["number", "null"], "minimum": 0},
+        "cost_estimate_status": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "governance_contract": {
+      "type": "array",
+      "minItems": 5,
+      "items": {"type": "string"}
+    },
+    "receipt": {
+      "type": "object",
+      "required": ["generated_at", "worker", "structured_output", "preflight_enforced", "sdk_guardrails_attached", "postconditions_enforced", "trace_sensitive_data"],
+      "properties": {
+        "generated_at": {"type": "string"},
+        "worker": {"type": "string"},
+        "structured_output": {"type": "boolean", "const": true},
+        "preflight_enforced": {"type": "boolean", "const": true},
+        "sdk_guardrails_attached": {"type": "boolean"},
+        "postconditions_enforced": {"type": "boolean", "const": true},
+        "trace_sensitive_data": {"type": "boolean", "const": false}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["status", "summary", "actions_taken", "proof", "risks", "requires_human_approval"],
+      "properties": {
+        "status": {"type": "string", "enum": ["verified", "partial", "blocked"]},
+        "summary": {"type": "string"},
+        "actions_taken": {"type": "array", "items": {"type": "string"}},
+        "proof": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "next_required_action": {"type": ["string", "null"]},
+        "requires_human_approval": {"type": "boolean"}
+      }
+    },
+    "truncated": {"type": "boolean"},
+    "receipt_path": {"type": "string"},
+    "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

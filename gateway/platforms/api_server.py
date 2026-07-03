@@ -2193,13 +2193,15 @@ class APIServerAdapter(BasePlatformAdapter):
             _started_tool_call_ids: set[str] = set()
 
             def _on_tool_start(tool_call_id, function_name, function_args):
-                """Emit ``hermes.tool.progress`` with ``status: running``.
+                """Emit ``hermes.tool.progress`` with ``status: running``,
+                and an OpenAI ``delta.tool_calls`` SSE chunk so standard
+                frontends (Open WebUI, LobeChat, etc.) can render tool
+                cards from the streaming response.
 
-                Replaces the old ``tool_progress_callback("tool.started",
-                ...)`` emit so SSE consumers receive a single event per
-                tool start, carrying both the legacy ``tool``/``emoji``/
-                ``label`` payload (for #6972 frontends) and the new
-                ``toolCallId``/``status`` correlation fields (#16588).
+                Also emits the custom ``hermes.tool.progress`` event
+                (with ``emoji``/``label`` and ``toolCallId``/``status``
+                correlation fields) for Hermes-aware frontends (#6972,
+                #16588).
 
                 Skips tools whose names start with ``_`` so internal
                 events (``_thinking``, …) stay off the wire — matching
@@ -2210,10 +2212,40 @@ class APIServerAdapter(BasePlatformAdapter):
                 _started_tool_call_ids.add(tool_call_id)
                 from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
+                # OpenAI-compatible tool_call delta chunk — renders as tool
+                # card in Open WebUI and similar OpenAI frontends.
+                # Prepend the tool emoji to the function name so the card
+                # shows a nice icon alongside the tool name.
+                emoji = get_tool_emoji(function_name)
+                display_name = f"{emoji} {function_name}" if emoji else function_name
+                tool_call_payload = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": len(_started_tool_call_ids) - 1,
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": display_name,
+                                    "arguments": json.dumps(function_args) if function_args else "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": None,
+                    }],
+                }
+                _stream_q.put(("__tool_call_delta__", tool_call_payload))
+                # Legacy custom event for Hermes-aware frontends.
                 _stream_q.put(("__tool_progress__", {
                     "tool": function_name,
                     "emoji": get_tool_emoji(function_name),
                     "label": label,
+                    "args": function_args,
                     "toolCallId": tool_call_id,
                     "status": "running",
                 }))
@@ -2425,17 +2457,28 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
+                Tagged tuples with ``__tool_call_delta__`` payloads are
+                written as standard OpenAI ``data: {delta: {tool_calls: [...]}}``
+                SSE events so frontends like Open WebUI can render tool
+                cards natively.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
                 as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Hermes-aware frontends can display them without storing
+                the markers in conversation history.  See #6972 for the
+                original event, #16588 for the ``toolCallId``/``status``
+                lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
+                if isinstance(item, tuple) and len(item) == 2:
+                    tag, payload = item
+                    if tag == "__tool_call_delta__":
+                        await response.write(
+                            f"data: {json.dumps(payload)}\n\n".encode()
+                        )
+                    elif tag == "__tool_progress__":
+                        event_data = json.dumps(payload)
+                        await response.write(
+                            f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                        )
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",

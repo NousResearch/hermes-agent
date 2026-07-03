@@ -128,6 +128,52 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     assert response.status_code == 413
 
 
+def test_fs_write_text_writes_safe_file(client, tmp_path):
+    target = tmp_path / "notes.txt"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert target.read_text() == "hello"
+
+
+def test_fs_write_text_rejects_protected_oauth_file(client, tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = hermes_home / ".anthropic_oauth.json"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "not json"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+def test_fs_write_text_rejects_mcp_token_files(client, tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    token_dir = hermes_home / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = token_dir / "github.json"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "{}"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

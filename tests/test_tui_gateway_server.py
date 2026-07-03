@@ -2004,6 +2004,37 @@ def test_notification_event_routing_by_session_key(monkeypatch):
     assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
 
 
+def test_notification_event_routing_follows_compression_chain(monkeypatch):
+    """#57576: a completion dispatched under a pre-compression key still routes
+    to the launching session after it compresses (session_key rotates)."""
+    # Dispatcher launched a background job under key "orig", then compressed:
+    # its current key is now "cont" but "orig" is preserved in the chain.
+    dispatcher = _session(session_key="cont", session_key_chain=["orig"])
+    # An unrelated session that never owned "orig" must NOT claim the event.
+    bystander = _session(session_key="other")
+    monkeypatch.setattr(server, "_sessions", {"a": dispatcher, "b": bystander})
+
+    # The dispatcher owns the event via its chain → it must handle it,
+    # not treat it as belonging elsewhere.
+    assert server._notification_event_belongs_elsewhere(
+        dispatcher, {"session_key": "orig"}
+    ) is False
+    # The bystander must defer: the event belongs to the live dispatcher.
+    assert server._notification_event_belongs_elsewhere(
+        bystander, {"session_key": "orig"}
+    ) is True
+
+
+def test_record_session_key_history_dedupes_and_preserves_order():
+    """#57576: rotated-out keys accumulate in order without duplicates."""
+    session = _session(session_key="k0")
+    server._record_session_key_history(session, "k0")
+    server._record_session_key_history(session, "k1")
+    server._record_session_key_history(session, "k1")  # dup ignored
+    server._record_session_key_history(session, "")  # empty ignored
+    assert session["session_key_chain"] == ["k0", "k1"]
+
+
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     """A negative truncate_before_user_ordinal must be rejected, not honoured.
 

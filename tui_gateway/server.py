@@ -2938,6 +2938,7 @@ def _sync_session_key_after_compress(
             unregister_gateway_notify(old_key)
         except Exception:
             pass
+        _record_session_key_history(session, old_key)
         session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
@@ -2960,6 +2961,7 @@ def _sync_session_key_after_compress(
         # Even if the approval module fails to import, still anchor the
         # session_key on the new continuation id so downstream lookups
         # don't keep targeting the ended row.
+        _record_session_key_history(session, old_key)
         session["session_key"] = new_session_id
 
     if clear_pending_title:
@@ -8229,6 +8231,45 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _record_session_key_history(session: dict, old_key: str) -> None:
+    """Append a rotated-out session key to the session's compression chain.
+
+    Called when compression re-anchors ``session["session_key"]`` to a new
+    continuation id. Preserving the prior keys lets ``_session_owns_key``
+    still recognize background-job completions that were dispatched under an
+    earlier key. See #57576.
+    """
+    if not old_key:
+        return
+    chain = session.get("session_key_chain")
+    if not isinstance(chain, list):
+        chain = []
+        session["session_key_chain"] = chain
+    if old_key not in chain:
+        chain.append(old_key)
+
+
+def _session_owns_key(session: dict, key: str) -> bool:
+    """True if ``key`` is the session's current key or a prior key of its
+    compression chain.
+
+    Context compression rotates ``session["session_key"]`` to a new
+    continuation id (see ``_reanchor_session_key_after_compression``). A
+    background job dispatched *before* compression recorded the old key, so
+    ownership must be checked against the full history — not just the current
+    key — otherwise the dispatching session stops recognizing its own
+    completion event once it compresses. See #57576.
+    """
+    if not key:
+        return False
+    if key == str(session.get("session_key") or ""):
+        return True
+    chain = session.get("session_key_chain")
+    if chain and key in chain:
+        return True
+    return False
+
+
 def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session.
 
@@ -8239,11 +8280,17 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     whichever poller happened to dequeue first. Orphaned events (owner gone)
     and global/system events (empty ``session_key``) return False so the
     current poller still handles them rather than losing them.
+
+    Ownership is matched against each session's compression chain, not just
+    its current ``session_key``: an async delegation dispatched before the
+    launching session compressed still belongs to that (now-rotated) session
+    rather than being treated as an orphan and grabbed by whichever poller
+    dequeues first. See #57576.
     """
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
         return False
-    if evt_key == str(session.get("session_key") or ""):
+    if _session_owns_key(session, evt_key):
         return False
     try:
         with _sessions_lock:
@@ -8254,7 +8301,7 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
         return False
 
     return any(
-        s is not session and str(s.get("session_key") or "") == evt_key
+        s is not session and _session_owns_key(s, evt_key)
         for s in snapshot
     )
 

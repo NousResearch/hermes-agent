@@ -196,15 +196,19 @@ def _best_effort_sweep_expired_pastes() -> None:
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
-⚠️  This will upload the following to a public paste service:
-  • System info (OS, Python version, Hermes version, provider, which API keys
-    are configured — NOT the actual keys)
-  • Recent log lines (agent.log, errors.log, gateway.log, gui.log, desktop.log
-    — may contain conversation fragments and file paths)
-  • Full agent.log, gateway.log, gui.log, and desktop.log (up to 512 KB each —
-    likely contains conversation content, tool outputs, and file paths)
+⚠️  This will upload system info + logs to a PUBLIC paste service.
 
-Pastes auto-delete after 6 hours.
+Cryptographic secrets (API keys, tokens, passwords) are redacted before
+upload, but the following personal data is NOT redacted and will be public:
+  • Your display name and persistent platform user ID
+  • Verbatim content of your recent messages (prompts, responses, tool output)
+  • Local filesystem paths
+  • Any other PII present in the logs
+
+The resulting URL is public to anyone who has the link. Pastes auto-delete
+after 6 hours, but may be archived by third parties in the meantime.
+
+Use --local to view the report without uploading.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
@@ -774,6 +778,38 @@ def build_debug_share(
     )
 
 
+def _confirm_upload(args) -> bool:
+    """Require explicit consent before any debug-share upload.
+
+    The privacy notice is printed by the caller. This gates the actual
+    upload: with ``--yes`` (or ``-y``) we proceed unprompted; otherwise we
+    ask an interactive ``[y/N]`` question. In a non-interactive context
+    (no TTY on stdin — scripts, CI, piped input) we refuse rather than
+    hang or upload silently, so debug data can't be exposed without a
+    deliberate ``--yes``.
+
+    Returns True to proceed with the upload, False to abort.
+    """
+    if bool(getattr(args, "yes", False)):
+        return True
+    if not sys.stdin.isatty():
+        print(
+            "ERROR: Non-interactive mode requires --yes to confirm upload.\n"
+            "       This prevents accidental exposure of personal data.\n"
+            "       Use --local to view the report without uploading.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        answer = input("Upload debug report? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("y", "yes"):
+        print("Aborted.")
+        return False
+    return True
+
+
 def run_debug_share(args):
     """Collect debug report + full logs, upload each, print URLs."""
     log_lines = getattr(args, "lines", 200)
@@ -805,10 +841,12 @@ def run_debug_share(args):
         return
 
     if nous:
-        _run_debug_share_nous(log_lines=log_lines, redact=redact)
+        _run_debug_share_nous(args, log_lines=log_lines, redact=redact)
         return
 
     print(_PRIVACY_NOTICE)
+    if not _confirm_upload(args):
+        return
     print("Collecting debug report...")
     print("Uploading...")
 
@@ -856,7 +894,7 @@ _NOUS_PRIVACY_NOTICE = """\
 """
 
 
-def _run_debug_share_nous(*, log_lines: int, redact: bool) -> None:
+def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     """Handle ``hermes debug share --nous``: upload the bundle to Nous-S3.
 
     Collects the same force-redacted bundle as the paste path, gzips it into
@@ -867,6 +905,8 @@ def _run_debug_share_nous(*, log_lines: int, redact: bool) -> None:
     from hermes_cli.diagnostics_upload import share_to_nous
 
     print(_NOUS_PRIVACY_NOTICE)
+    if not _confirm_upload(args):
+        return
     if not redact:
         print(
             "⚠️  --no-redact is set: secrets in your logs will NOT be redacted "

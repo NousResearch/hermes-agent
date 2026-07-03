@@ -212,6 +212,16 @@ _LONG_HANDLERS = frozenset(
         "projects.for_cwd",
         "projects.tree",
         "projects.project_sessions",
+        # Setup readiness RPCs are polled by the Desktop frontend on connect
+        # and periodically (use-status-snapshot → evaluateRuntimeReadiness).
+        # setup.runtime_check calls resolve_runtime_provider() which reads
+        # config, checks auth state, and may probe the provider endpoint;
+        # setup.status calls _has_any_provider_configured() which scans
+        # provider config + credential files. Under GIL pressure from
+        # concurrent agent turns, either can take seconds inline, blocking
+        # the WS read loop and causing false "needs setup" (#50005 family).
+        "setup.runtime_check",
+        "setup.status",
         "session.branch",
         "session.compress",
         "session.list",
@@ -284,6 +294,14 @@ class _SlashWorker:
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        # start_new_session=True detaches the slash worker into its own
+        # process group / session. Without this, the worker inherits the
+        # gateway's pgid (= TUI parent PID). When mcp_tool's
+        # _kill_orphaned_mcp_children races with slash_worker spawn and sweeps
+        # the gateway's child set, it captures the worker PID, records the
+        # inherited pgid, and killpg() then kills the TUI parent itself.
+        # See agent/lsp/client.py for the symmetric LSP server fix and
+        # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -296,6 +314,7 @@ class _SlashWorker:
             # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
             creationflags=windows_hide_flags(),
+            start_new_session=True,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -2309,10 +2328,12 @@ def _display_mouse_tracking(display: dict) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(
-        (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
-    ).strip()
-    return parse_reasoning_effort(effort)
+    # Pass the raw value through — ``or ""`` would coerce a YAML boolean
+    # False (``reasoning_effort: false``/``off``/``no``) to "", silently
+    # re-enabling thinking for users who explicitly turned it off.
+    return parse_reasoning_effort(
+        (_load_cfg().get("agent") or {}).get("reasoning_effort", "")
+    )
 
 
 def _load_service_tier() -> str | None:
@@ -2964,12 +2985,31 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        # context_used is the *current-window* occupancy. Do NOT fall back to
+        # usage["total"] (cumulative lifetime session_total_tokens): for an
+        # external context engine that doesn't report last_prompt_tokens that
+        # substitution showed lifetime totals as the live context fill, yielding
+        # impossible readings such as 1.9m/120k clamped to 100% (#50421).
+        #
+        # Per the issue, populate context_used/percent only from a *real*
+        # current-occupancy value and "leave it unknown otherwise" — so a falsy
+        # last_prompt_tokens (0 or missing, i.e. an engine that doesn't track
+        # per-window occupancy) intentionally emits no gauge rather than a
+        # fabricated 0% or the old cumulative reading. The built-in compressor
+        # always reports a real last_prompt_tokens once a turn runs, so it is
+        # unaffected.
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (conversation_compression.py) to 0 so the transitional turn reads as
+        # unknown (no gauge) instead of leaking context_used=-1. Matches the
+        # CLI status-bar path (cli.py _get_status_bar_snapshot).
+        last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        if last_prompt < 0:
+            last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max:
-            usage["context_used"] = ctx_used
+        if ctx_max and last_prompt:
+            usage["context_used"] = last_prompt
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+            usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
@@ -3067,11 +3107,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            # Disabled must be distinguishable from unset ("" = provider
+            # default). Reporting "" here made the desktop adopt the empty
+            # value after the first turn, wiping its sticky "thinking off"
+            # pick and re-creating every later chat at the default effort.
+            reasoning_effort = "none"
+        else:
+            reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config
@@ -4027,15 +4071,21 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
+        # Preserve this session's chosen model AND reasoning across /new so a
+        # reset doesn't silently revert to global config (or to a model
+        # another session set). See the cross-session-contamination note in
+        # _apply_model_switch.
+        reset_kw = {"model_override": session.get("model_override")}
+        old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
+        if old_reasoning is None:
+            old_reasoning = session.get("create_reasoning_override")
+        if isinstance(old_reasoning, dict):
+            reset_kw["reasoning_config_override"] = old_reasoning
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
-            # Preserve this session's chosen model across /new so a reset
-            # doesn't silently revert to global config (or to a model another
-            # session set). See the cross-session-contamination note in
-            # _apply_model_switch.
-            model_override=session.get("model_override"),
+            **reset_kw,
         )
     finally:
         _clear_session_context(tokens)
@@ -8121,7 +8171,12 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
+            # Reject out-of-range ordinals on BOTH ends. A negative value would
+            # otherwise sail past the upper-bound check and hit Python's negative
+            # indexing below (user_indices[-1] -> the LAST user turn), silently
+            # truncating history to everything before it and persisting that loss
+            # via replace_messages — an unrecoverable overwrite of the session DB.
+            if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -10060,15 +10115,23 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
-                _persist_live_session_runtime(session)
-                _emit(
-                    "session.info",
-                    params.get("session_id", ""),
-                    _session_info(session["agent"], session),
-                )
+            if session is not None:
+                # Session-scoped, like the messaging gateway's `/reasoning
+                # <level>` (global persistence is `--global` / Settings →
+                # Model territory). Writing config.yaml here let every
+                # desktop model-menu selection rewrite the user's global
+                # agent.reasoning_effort to the preset default.
+                session["create_reasoning_override"] = parsed
+                if session.get("agent") is not None:
+                    session["agent"].reasoning_config = parsed
+                    _persist_live_session_runtime(session)
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(session["agent"], session),
+                    )
+            else:
+                _write_config_key("agent.reasoning_effort", arg)
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -10743,9 +10806,26 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(
-            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
-        )
+        effort = ""
+        # Prefer the session's live value — `config.set reasoning` is
+        # session-scoped, so the global key may not reflect this chat.
+        session = _sessions.get(params.get("session_id", ""))
+        live = getattr((session or {}).get("agent"), "reasoning_config", None)
+        if live is None and session is not None:
+            live = session.get("create_reasoning_override")
+        if isinstance(live, dict):
+            if live.get("enabled") is False:
+                effort = "none"
+            else:
+                effort = str(live.get("effort", "") or "")
+        if not effort:
+            raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
+            if raw_effort is False:
+                # YAML `reasoning_effort: false`/`off`/`no` — thinking
+                # disabled, not "unset, show the medium default".
+                effort = "none"
+            else:
+                effort = str(raw_effort or "medium")
         display = (
             "show"
             if bool((cfg.get("display") or {}).get("show_reasoning", False))
@@ -11310,6 +11390,11 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            # Sanitize env to prevent credential leakage —
+            # quick commands run in the TUI server process which
+            # has all API keys in os.environ.
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
@@ -11317,12 +11402,16 @@ def _(rid, params: dict) -> dict:
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
                 + (r.stderr or "")
             ).strip()[:4000]
+            if output:
+                from agent.redact import redact_sensitive_text
+                output = redact_sensitive_text(output)
             if r.returncode != 0:
                 return _err(
                     rid,

@@ -111,24 +111,9 @@ def _get_subagent_approval_callback():
         return _subagent_auto_approve
     return _subagent_auto_deny
 
-# Build a description fragment listing toolsets available for subagents.
-# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
-#
-# NOTE: "delegation" is in this exclusion set so the subagent-facing
-# capability hint string (_TOOLSET_LIST_STR) doesn't advertise it as a
-# toolset to request explicitly — the correct mechanism for nested
-# delegation is role='orchestrator', which re-adds "delegation" in
-# _build_child_agent regardless of this exclusion.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "rl"})
-_SUBAGENT_TOOLSETS = sorted(
-    name
-    for name, defn in TOOLSETS.items()
-    if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
-    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-)
-_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
+# NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
+# "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
+# — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
@@ -407,36 +392,34 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-_DEFAULT_MAX_ASYNC_CHILDREN = 3
+_LEGACY_MAX_ASYNC_WARNED = False
 
 
 def _get_max_async_children() -> int:
-    """Read delegation.max_async_children from config (floor 1, no ceiling).
+    """Concurrency cap for background (``background=true``) delegations.
 
-    Caps how many background (``background=true``) subagents can run at once.
-    When at capacity, a new async dispatch is REJECTED (not queued) so a
-    runaway model can't pile up unbounded background work. Separate from
-    max_concurrent_children, which bounds a single synchronous batch.
+    DEPRECATED KNOB: ``delegation.max_async_children`` has been unified into
+    ``delegation.max_concurrent_children`` — one cap governs both a single
+    synchronous batch's parallelism and how many background delegation units
+    may run at once. When at capacity, a new async dispatch is REJECTED (not
+    queued) so a runaway model can't pile up unbounded background work; the
+    caller falls back to running the work synchronously.
+
+    A leftover ``max_async_children`` in config.yaml is ignored (the config
+    migration removes it, folding a raised value into
+    ``max_concurrent_children``); we log a one-time deprecation warning if
+    one is still present.
     """
+    global _LEGACY_MAX_ASYNC_WARNED
     cfg = _load_config()
-    val = cfg.get("max_async_children")
-    if val is not None:
-        try:
-            return max(1, int(val))
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.max_async_children=%r is not a valid integer; "
-                "using default %d",
-                val, _DEFAULT_MAX_ASYNC_CHILDREN,
-            )
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
-    if env_val:
-        try:
-            return max(1, int(env_val))
-        except (TypeError, ValueError):
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    return _DEFAULT_MAX_ASYNC_CHILDREN
+    if cfg.get("max_async_children") is not None and not _LEGACY_MAX_ASYNC_WARNED:
+        _LEGACY_MAX_ASYNC_WARNED = True
+        logger.warning(
+            "delegation.max_async_children is deprecated and ignored; "
+            "delegation.max_concurrent_children now caps background "
+            "delegations too. Remove the stale key from config.yaml."
+        )
+    return _get_max_concurrent_children()
 
 
 def _get_child_timeout() -> Optional[float]:
@@ -1272,8 +1255,11 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
+        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # False (``reasoning_effort: false``) to "" and inherit the parent
+        # instead of disabling thinking for children.
+        delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
@@ -1904,7 +1890,11 @@ def _run_single_child(
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
+        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
+        # below; a stdlib non-daemon worker would then block interpreter
+        # exit at atexit-join time if the child never unwinds.
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
             # so dangerous-command prompts from the subagent don't fall back to
@@ -2051,9 +2041,16 @@ def _run_single_child(
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
 
+        # The child emits the literal "(empty)" sentinel (see run_agent.py) when
+        # it gives up after repeated empty-LLM-response retries — typically a
+        # transport bug (misrouted provider, adapter returning empty
+        # ChatCompletion, etc.). Treat it as a failure so the parent surfaces
+        # it instead of silently accepting zero-content "success".
+        _empty_sentinel = summary.strip() == "(empty)"
+
         if interrupted:
             status = "interrupted"
-        elif summary:
+        elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
             # tells the parent *how* the task ended.
@@ -2347,7 +2344,6 @@ def _recover_tasks_from_json_string(
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
-    toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
@@ -2454,9 +2450,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
-        ]
+        task_list = [{"goal": goal, "context": context, "role": top_role}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2500,7 +2494,9 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg).
+                toolsets=None,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2546,7 +2542,11 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            # Daemon workers (tools.daemon_pool): the `with` block still joins
+            # normally, but if the parent is interrupted while a child is
+            # wedged, the abandoned worker must not block interpreter exit.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2841,7 +2841,9 @@ def delegate_task(
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
-            toolsets=toolsets,
+            # Metadata for the completion block only; subagents inherit the
+            # parent's toolsets (no model-facing toolsets arg).
+            toolsets=None,
             role=top_role,
             model=creds["model"],
             session_key=_session_key,
@@ -2882,7 +2884,16 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
-        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+        _cap_result = _execute_and_aggregate()
+        if isinstance(_cap_result, dict):
+            _cap_result["note"] = (
+                "The background delegation pool was at capacity "
+                "(delegation.max_concurrent_children), so the subagent(s) ran "
+                "SYNCHRONOUSLY and the result is included above. Raise "
+                "delegation.max_concurrent_children in config.yaml to allow "
+                "more concurrent background delegations."
+            )
+        return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
@@ -3000,7 +3011,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
-    if configured_base_url:
+    # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
+    # wire protocol — they cannot be reached via OpenAI chat_completions against
+    # a base_url. For these, always fall through to resolve_runtime_provider()
+    # so the proper SDK path is taken. The configured base_url is still
+    # forwarded through runtime-provider resolution when applicable (e.g. a
+    # custom Bedrock regional endpoint).
+    _NATIVE_SDK_PROVIDERS = {"bedrock", "vertex", "google", "google-genai"}
+    _provider_lower = (configured_provider or "").strip().lower()
+    _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
+
+    if configured_base_url and not _is_native_sdk_provider:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -3370,18 +3391,6 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
-                ),
-            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3391,11 +3400,6 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
-                        },
-                        "toolsets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -3495,7 +3499,6 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),

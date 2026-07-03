@@ -92,6 +92,20 @@ describe('desktop filesystem facade', () => {
     expect(api).not.toHaveBeenCalled()
   })
 
+  it('falls back to active gateway filesystem when local IPC cannot see a backend path', async () => {
+    $connection.set({ mode: 'local' } as never)
+    readFileText.mockRejectedValueOnce(new Error('Text preview failed: file does not exist.'))
+    readFileDataUrl.mockRejectedValueOnce(new Error('File preview failed: ENOENT'))
+
+    await expect(readDesktopFileText('/home/chris/artifact.md')).resolves.toMatchObject({ text: 'remote' })
+    await expect(readDesktopFileDataUrl('/home/chris/artifact.png')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
+
+    expect(readFileText).toHaveBeenCalledWith('/home/chris/artifact.md')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/home/chris/artifact.png')
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fchris%2Fartifact.md' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fchris%2Fartifact.png' })
+  })
+
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {
     $connection.set({ mode: 'remote' } as never)
 

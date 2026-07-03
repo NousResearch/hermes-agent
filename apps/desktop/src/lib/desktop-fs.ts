@@ -58,6 +58,12 @@ function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T
   )
 }
 
+function shouldTryGatewayFsFallback(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /file does not exist|ENOENT|no such file/i.test(message)
+}
+
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readDir(path)
@@ -68,7 +74,15 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
 
 export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileText(path)
+    try {
+      return await bridge().readFileText(path)
+    } catch (error) {
+      if (!shouldTryGatewayFsFallback(error)) {
+        throw error
+      }
+
+      return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+    }
   }
 
   return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
@@ -96,7 +110,17 @@ export async function writeDesktopFileText(path: string, content: string): Promi
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileDataUrl(path)
+    try {
+      return await bridge().readFileDataUrl(path)
+    } catch (error) {
+      if (!shouldTryGatewayFsFallback(error)) {
+        throw error
+      }
+
+      const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+
+      return typeof result === 'string' ? result : result.dataUrl || ''
+    }
   }
 
   const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))

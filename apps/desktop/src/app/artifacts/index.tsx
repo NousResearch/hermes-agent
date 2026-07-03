@@ -23,8 +23,10 @@ import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { setSessionPreviewTarget } from '@/store/preview'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -90,7 +92,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -221,18 +223,29 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [artifacts])
 
   const openArtifact = useCallback(
-    async (href: string) => {
+    async (artifact: ArtifactRecord) => {
       try {
+        if (artifact.kind === 'file') {
+          const preview = await normalizeOrLocalPreviewTarget(artifact.value)
+
+          if (preview) {
+            setSessionPreviewTarget(artifact.sessionId, preview, 'file-browser', artifact.value)
+            navigate(sessionRoute(artifact.sessionId))
+
+            return
+          }
+        }
+
         if (window.hermesDesktop?.openExternal) {
-          await window.hermesDesktop.openExternal(href)
+          await window.hermesDesktop.openExternal(artifact.href)
         } else {
-          window.open(href, '_blank', 'noopener,noreferrer')
+          window.open(artifact.href, '_blank', 'noopener,noreferrer')
         }
       } catch (err) {
         notifyError(err, a.openFailed)
       }
     },
-    [a]
+    [a, navigate]
   )
 
   const markImageFailed = useCallback((id: string) => {
@@ -544,7 +557,7 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">

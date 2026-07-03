@@ -4015,6 +4015,15 @@ def complete_task(
     """
     now = int(time.time())
 
+    # Snapshot worker_pid/claim_lock before the UPDATE clears them so we
+    # can terminate the orphaned subprocess after the DB transition (#57596).
+    _snap = conn.execute(
+        "SELECT worker_pid, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    _prev_pid = _snap["worker_pid"] if _snap else None
+    _prev_lock = _snap["claim_lock"] if _snap else None
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
@@ -4149,6 +4158,13 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
+    # Terminate the worker process if the task was running.
+    # complete_task clears worker_pid in the DB but the subprocess
+    # keeps running unless we signal it (#57596). Normally the worker
+    # itself calls kanban_complete() and exits, but external completion
+    # (dashboard, CLI) leaves the process alive.
+    if _prev_pid:
+        _terminate_reclaimed_worker(_prev_pid, _prev_lock)
     # Successful completion — wipe the consecutive-failures counter.
     # Failure history stays on the event log for audit; the counter
     # just tracks "is there a current pathology the breaker should
@@ -4581,11 +4597,13 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, worker_pid, claim_lock FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
+        prev_pid = cur_row["worker_pid"] if "worker_pid" in cur_row.keys() else None
+        prev_lock = cur_row["claim_lock"] if "claim_lock" in cur_row.keys() else None
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
         prev_recurrences = (
             int(cur_row["block_recurrences"])
@@ -4638,6 +4656,11 @@ def block_task(
                 run_id=run_id,
                 reason=reason,
             )
+            # Terminate the worker process if the task was running.
+            # block_task clears worker_pid in the DB but the subprocess
+            # keeps running unless we signal it (#57596).
+            if prev_pid:
+                _terminate_reclaimed_worker(prev_pid, prev_lock)
             return True
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
@@ -4742,6 +4765,11 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    # Terminate the worker process if the task was running.
+    # block_task clears worker_pid in the DB but the subprocess
+    # keeps running unless we signal it (#57596).
+    if prev_pid:
+        _terminate_reclaimed_worker(prev_pid, prev_lock)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -5205,6 +5233,14 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    # Snapshot worker_pid/claim_lock before the UPDATE clears them so we
+    # can terminate the orphaned subprocess after the DB transition (#57596).
+    _snap = conn.execute(
+        "SELECT worker_pid, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    _prev_pid = _snap["worker_pid"] if _snap else None
+    _prev_lock = _snap["claim_lock"] if _snap else None
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -5223,6 +5259,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    # Terminate the worker process if the task was running.
+    # archive_task clears worker_pid in the DB but the subprocess
+    # keeps running unless we signal it (#57596).
+    if _prev_pid:
+        _terminate_reclaimed_worker(_prev_pid, _prev_lock)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.

@@ -993,7 +993,7 @@ def _set_status_direct(
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if prev is None:
@@ -1015,6 +1015,8 @@ def _set_status_direct(
                 return False
 
         was_running = prev["status"] == "running"
+        prev_pid = prev["worker_pid"] if was_running else None
+        prev_lock = prev["claim_lock"] if was_running else None
         reopening_satisfied_parent = (
             prev["status"] in {"done", "archived"}
             and new_status not in {"done", "archived"}
@@ -1073,6 +1075,11 @@ def _set_status_direct(
                             int(time.time()),
                         ),
                     )
+    # Terminate the worker process if the task was running.
+    # _set_status_direct clears worker_pid in the DB but the subprocess
+    # keeps running unless we signal it (#57596).
+    if prev_pid:
+        kanban_db._terminate_reclaimed_worker(prev_pid, prev_lock)
     # If we re-opened something, children may have gone stale.
     if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)

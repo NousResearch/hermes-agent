@@ -233,6 +233,49 @@ class TestSessionTokenInjection:
         assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
 
 
+def test_spawn_hermes_action_strips_gateway_sentinel(monkeypatch, tmp_path):
+    import hermes_cli.web_server as web_server
+
+    captured = {}
+
+    class Proc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return Proc()
+
+    class _LogDir:
+        def mkdir(self, *args, **kwargs):
+            return None
+
+        def __truediv__(self, name):
+            return tmp_path / name
+
+    monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", _LogDir())
+    monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-1")
+    web_server._ACTION_PROCS.pop("gateway-restart", None)
+    web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+
+    try:
+        proc = web_server._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+    finally:
+        web_server._ACTION_PROCS.pop("gateway-restart", None)
+        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+
+    assert proc.pid == 12345
+    env = captured["kwargs"]["env"]
+    assert env["HERMES_NONINTERACTIVE"] == "1"
+    assert env["HERMES_SESSION_KEY"] == "session-1"
+    assert "_HERMES_GATEWAY" not in env
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------

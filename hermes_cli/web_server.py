@@ -155,6 +155,52 @@ def _warm_gateway_module() -> None:
         import hermes_cli.gateway  # noqa: F401
     except Exception:
         pass
+    # Pre-warm gateway.config and hermes_state so the first /api/status
+    # call (which imports these inline, L2188/L2242) doesn't stall the
+    # event loop for 49-78s on Windows (.pyc compilation + Defender
+    # scans).  The cost is paid in this executor thread while the server
+    # socket is already open and accepting probes.
+    try:
+        import gateway.config  # noqa: F401
+    except Exception:
+        pass
+    try:
+        import hermes_state  # noqa: F401
+    except Exception:
+        pass
+
+
+def _resolve_configured_platforms() -> set[str] | None:
+    """Resolve configured gateway platforms with off-import, off the event loop."""
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        return {
+            platform.value for platform in gateway_config.get_connected_platforms()
+        }
+    except Exception:
+        return None
+
+
+def _resolve_active_sessions() -> int:
+    """Resolve active session count with off-import, off the event loop."""
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_sessions_rich(limit=50)
+            now = time.time()
+            return sum(
+                1 for s in sessions
+                if s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+        finally:
+            db.close()
+    except Exception:
+        return 0
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -183,7 +229,20 @@ async def _lifespan(app: "FastAPI"):
     # and Defender real-time scans that can stall the event loop for 15-30s.
     # Running in an executor means the cost is paid in a worker thread while
     # the server socket is already open and accepting probes.
-    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    #
+    # On Desktop (HERMES_DESKTOP=1) the frontend polls /api/status immediately
+    # after HERMES_DASHBOARD_READY with a 15s timeout.  If the cold imports of
+    # gateway.config and hermes_state haven't finished yet, the first poll
+    # blocks the event loop for 49-78s — way past the timeout.  So for desktop
+    # mode we AWAIT the warmup before yielding, delaying the socket open until
+    # the heavy imports are done.  The cost is a longer initial wait (~1 min)
+    # but a working dashboard on the first try.
+    warm_future = asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    if os.getenv("HERMES_DESKTOP") == "1":
+        try:
+            await asyncio.wait_for(warm_future, timeout=120.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -2183,16 +2242,10 @@ async def get_status(profile: Optional[str] = None):
         gateway_platforms: dict = {}
         gateway_exit_reason = None
         gateway_updated_at = None
-        configured_gateway_platforms: set[str] | None = None
-        try:
-            from gateway.config import load_gateway_config
-
-            gateway_config = load_gateway_config()
-            configured_gateway_platforms = {
-                platform.value for platform in gateway_config.get_connected_platforms()
-            }
-        except Exception:
-            configured_gateway_platforms = None
+        loop = asyncio.get_running_loop()
+        configured_gateway_platforms: set[str] | None = await loop.run_in_executor(
+            None, _resolve_configured_platforms
+        )
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
@@ -2237,22 +2290,9 @@ async def get_status(profile: Optional[str] = None):
         if gateway_running and gateway_state is None and remote_health_body is not None:
             gateway_state = "running"
 
-        active_sessions = 0
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-            try:
-                sessions = db.list_sessions_rich(limit=50)
-                now = time.time()
-                active_sessions = sum(
-                    1 for s in sessions
-                    if s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            finally:
-                db.close()
-        except Exception:
-            pass
+        active_sessions = await asyncio.get_running_loop().run_in_executor(
+            None, _resolve_active_sessions
+        )
 
         # Busy/drainable readout (NAS lifecycle-safety gate).  active_agents is
         # the in-flight gateway-turn count the gateway now persists at every
@@ -14390,24 +14430,31 @@ def start_server(
         asyncio.run(_serve())
         return
 
-    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
-    # to a hand-installed Windows selector policy only when uvicorn predates the
-    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
-    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
-    # propagate normally instead of being swallowed and double-run.
+    # Windows-only path. Force SelectorEventLoop for uvicorn compatibility.
+    # uvicorn's ProactorEventLoop (Windows default) binds the socket but never
+    # accepts TCP connections — the dashboard prints HERMES_DASHBOARD_READY
+    # but HTTP requests time out (#50641).
+    #
+    # We must do two things:
+    #   1. Set WindowsSelectorEventLoopPolicy so asyncio.run() falls back to
+    #      SelectorEventLoop when no loop_factory is passed.
+    #   2. Override the loop factory to *None* so the runner doesn't create a
+    #      ProactorEventLoop from config.get_loop_factory() and override step 1.
+    try:
+        asyncio.set_event_loop_policy(
+            asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+        )
+    except Exception:
+        pass
+
+    # Resolve the runner — override loop_factory to None on win32 to prevent
+    # ProactorEventLoop from being used regardless of uvicorn version.
     try:
         from uvicorn._compat import asyncio_run as _runner
-
-        _loop_factory = config.get_loop_factory()
     except Exception:
         _runner = None
-        _loop_factory = None
-        try:
-            asyncio.set_event_loop_policy(
-                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
-            )
-        except Exception:
-            pass
+
+    _loop_factory = None
 
     if _runner is not None:
         _runner(_serve(), loop_factory=_loop_factory)

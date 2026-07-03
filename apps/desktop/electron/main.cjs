@@ -3840,7 +3840,7 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  const deadline = Date.now() + 120_000
   let lastError = null
 
   while (Date.now() < deadline) {

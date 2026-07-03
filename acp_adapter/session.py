@@ -637,6 +637,16 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        # The CLI and gateway read agent.disabled_toolsets from config and
+        # pass it to AIAgent; without it the ACP tool-registry rebuild
+        # (server.py, get_tool_definitions) sees disabled_toolsets=None and
+        # config-disabled toolsets stay executable in editor sessions.
+        agent_cfg = config.get("agent")
+        if isinstance(agent_cfg, dict):
+            disabled_toolsets = agent_cfg.get("disabled_toolsets")
+            if disabled_toolsets:
+                kwargs["disabled_toolsets"] = list(disabled_toolsets)
+
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(

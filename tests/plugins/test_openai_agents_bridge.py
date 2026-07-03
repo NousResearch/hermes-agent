@@ -142,6 +142,36 @@ def test_architecture_workflow_composes_execute_review_verify(monkeypatch, tmp_p
     assert Path(payload["receipt_path"]).exists()
 
 
+def test_architecture_workflow_returns_blocked_aggregate_on_stage_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def fake_run(lane, args):
+        assert lane == "execute"
+        assert args["max_tokens"] >= oat._ARCHITECTURE_MIN_TOKENS
+        return json.dumps({
+            "error": "OpenAI Agents SDK execute lane failed: ModelBehaviorError: invalid JSON",
+            "receipt_path": str(tmp_path / "execute-blocked.json"),
+            "receipt_sha256": "0" * 64,
+        })
+
+    monkeypatch.setattr(oat, "_run_governed_lane", fake_run)
+
+    raw = oat._handle_openai_agents_architecture({
+        "task": "Design a safe architecture workflow",
+        "constraints": ["analysis only; no mutation"],
+    })
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["workflow"] == "architecture"
+    assert payload["status"] == "blocked"
+    assert payload["stages"]["proposal"]["status"] == "blocked"
+    assert payload["stages"]["review"]["status"] == "blocked"
+    assert payload["stage_receipts"]["proposal"].endswith("execute-blocked.json")
+    assert "proposal" in payload["stage_errors"]
+    assert Path(payload["receipt_path"]).exists()
+
+
 def test_architecture_schema_registers_architecture_tool_name():
     assert oat.OPENAI_AGENTS_ARCHITECTURE_SCHEMA["name"] == "openai_agents_architecture"
     assert "architecture workflow" in oat.OPENAI_AGENTS_ARCHITECTURE_SCHEMA["description"].lower()

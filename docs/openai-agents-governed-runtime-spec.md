@@ -41,7 +41,7 @@ The SDK is not allowed to silently become the top-level orchestrator.
 | `openai_agents_execute` | bounded drafting/execution inside SDK context | limited; no Hermes filesystem/terminal/browser inheritance |
 | `openai_agents_verify` | independent verification/falsification pass | advisory/no mutation, high skepticism |
 | `openai_agents_run` | backward-compatible alias | maps to execute lane |
-| `openai_agents_architecture` | composed architecture workflow | runs execute → review → verify lanes and emits aggregate receipt |
+| `openai_agents_architecture` | composed architecture workflow | runs execute → review → verify lanes and emits aggregate receipt; stage failures return blocked aggregate receipts instead of unstructured tool errors |
 
 ## 5. Structured proof contract
 
@@ -65,6 +65,8 @@ Postconditions:
 2. Review/verify lanes that report mutation-like actions are downgraded.
 3. Unstructured output is coerced to `partial`.
 4. High-risk tasks without explicit scope/approval are rejected before model spend.
+5. Architecture workflow stage failures return a structured `blocked` aggregate with stage receipts/errors, preserving auditability instead of collapsing into an unstructured tool error.
+6. Architecture workflow stages enforce a 1400-token minimum and concise-output constraint to reduce structured JSON truncation failures while keeping the run bounded.
 
 ## 6. Governance controls
 

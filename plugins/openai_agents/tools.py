@@ -29,6 +29,7 @@ _MAX_ITEM_CHARS = 1000
 _DEFAULT_MAX_TURNS = 4
 _DEFAULT_MAX_TOKENS = 1600
 _DEFAULT_OUTPUT_CHARS = 12000
+_ARCHITECTURE_MIN_TOKENS = 1400
 
 # Scott's trust policy: never route SDK workers through Chinese-origin models or
 # provider/model aliases, even if a caller passes one explicitly.
@@ -759,6 +760,60 @@ def _parse_tool_json(raw: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"error": "tool result was not a JSON object", "raw": payload}
 
 
+def _blocked_architecture_stage(stage: str, parsed: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "summary": f"Architecture {stage} stage failed before verified output.",
+        "actions_taken": ["analysis workflow stopped before downstream stages"],
+        "proof": [],
+        "risks": [str(parsed.get("error") or "unknown stage failure")[:1000]],
+        "next_required_action": "Inspect the stage receipt/error and retry with adjusted bounds or narrower task.",
+        "requires_human_approval": False,
+    }
+
+
+def _skipped_architecture_stage(reason: str) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "summary": "Architecture stage skipped because an upstream stage failed.",
+        "actions_taken": [],
+        "proof": [],
+        "risks": [reason],
+        "next_required_action": "Resolve the upstream stage failure first.",
+        "requires_human_approval": False,
+    }
+
+
+def _architecture_aggregate_result(
+    *,
+    status: str,
+    stages: dict[str, dict[str, Any]],
+    stage_receipts: dict[str, str | None],
+    stage_errors: dict[str, str] | None = None,
+) -> str:
+    aggregate = {
+        "success": True,
+        "workflow": "architecture",
+        "status": status,
+        "governance_contract": _GOVERNANCE_CONTRACT,
+        "stages": stages,
+        "stage_receipts": stage_receipts,
+        "stage_errors": stage_errors or {},
+        "receipt": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "worker": "HermesOpenAIAgentsArchitectureWorkflow",
+            "structured_output": True,
+            "preflight_enforced": True,
+            "sdk_guardrails_attached": True,
+            "postconditions_enforced": True,
+            "trace_sensitive_data": False,
+        },
+    }
+    aggregate["receipt_path"] = _write_receipt({"lane": "architecture", "result": {"status": status}, **aggregate})
+    aggregate["receipt_sha256"] = _sha256_file(aggregate["receipt_path"])
+    return tool_result(aggregate)
+
+
 def _handle_openai_agents_architecture(args: dict, **kw) -> str:
     """Run a deterministic architecture workflow over the governed SDK lanes."""
     try:
@@ -772,12 +827,16 @@ def _handle_openai_agents_architecture(args: dict, **kw) -> str:
             "architecture workflow; analysis/drafting only unless explicitly authorized",
             "no mutation; no filesystem, terminal, browser, memory, or network side effects",
             "separate evidence from assumptions and identify approval boundaries",
+            "keep each structured field concise; do not quote full prompt/context/constraints",
         ]
         _preflight_request("review", task, workflow_constraints)
         shared = {
             "model": args.get("model"),
             "max_turns": _clamp_int(args.get("max_turns"), default=_DEFAULT_MAX_TURNS, minimum=1, maximum=10),
-            "max_tokens": _clamp_int(args.get("max_tokens"), default=_DEFAULT_MAX_TOKENS, minimum=64, maximum=8000),
+            "max_tokens": max(
+                _ARCHITECTURE_MIN_TOKENS,
+                _clamp_int(args.get("max_tokens"), default=_DEFAULT_MAX_TOKENS, minimum=64, maximum=8000),
+            ),
             "max_output_chars": _clamp_int(args.get("max_output_chars"), default=_DEFAULT_OUTPUT_CHARS, minimum=1000, maximum=30000),
         }
         proposal_raw = _run_governed_lane("execute", {
@@ -791,7 +850,21 @@ def _handle_openai_agents_architecture(args: dict, **kw) -> str:
         })
         proposal = _parse_tool_json(proposal_raw)
         if proposal.get("error"):
-            return tool_error("Architecture proposal lane failed", detail=proposal.get("error"))
+            reason = "proposal stage failed; downstream architecture stages were not run"
+            return _architecture_aggregate_result(
+                status="blocked",
+                stages={
+                    "proposal": _blocked_architecture_stage("proposal", proposal),
+                    "review": _skipped_architecture_stage(reason),
+                    "verification": _skipped_architecture_stage(reason),
+                },
+                stage_receipts={
+                    "proposal": proposal.get("receipt_path"),
+                    "review": None,
+                    "verification": None,
+                },
+                stage_errors={"proposal": str(proposal.get("error"))[:1000]},
+            )
 
         review_raw = _run_governed_lane("review", {
             "task": "Skeptically review the architecture proposal for gaps, unsafe assumptions, and missing proof.",
@@ -804,7 +877,21 @@ def _handle_openai_agents_architecture(args: dict, **kw) -> str:
         })
         review = _parse_tool_json(review_raw)
         if review.get("error"):
-            return tool_error("Architecture review lane failed", detail=review.get("error"))
+            reason = "review stage failed; verification stage was not run"
+            return _architecture_aggregate_result(
+                status="blocked",
+                stages={
+                    "proposal": (proposal.get("result") or {}) if isinstance(proposal.get("result"), dict) else {},
+                    "review": _blocked_architecture_stage("review", review),
+                    "verification": _skipped_architecture_stage(reason),
+                },
+                stage_receipts={
+                    "proposal": proposal.get("receipt_path"),
+                    "review": review.get("receipt_path"),
+                    "verification": None,
+                },
+                stage_errors={"review": str(review.get("error"))[:1000]},
+            )
 
         verify_raw = _run_governed_lane("verify", {
             "task": "Verify whether the architecture workflow output is ready for Hermes orchestration planning.",
@@ -817,7 +904,20 @@ def _handle_openai_agents_architecture(args: dict, **kw) -> str:
         })
         verification = _parse_tool_json(verify_raw)
         if verification.get("error"):
-            return tool_error("Architecture verification lane failed", detail=verification.get("error"))
+            return _architecture_aggregate_result(
+                status="blocked",
+                stages={
+                    "proposal": (proposal.get("result") or {}) if isinstance(proposal.get("result"), dict) else {},
+                    "review": (review.get("result") or {}) if isinstance(review.get("result"), dict) else {},
+                    "verification": _blocked_architecture_stage("verification", verification),
+                },
+                stage_receipts={
+                    "proposal": proposal.get("receipt_path"),
+                    "review": review.get("receipt_path"),
+                    "verification": verification.get("receipt_path"),
+                },
+                stage_errors={"verification": str(verification.get("error"))[:1000]},
+            )
 
         verification_result = (verification.get("result") or {}) if isinstance(verification.get("result"), dict) else {}
         review_result = (review.get("result") or {}) if isinstance(review.get("result"), dict) else {}

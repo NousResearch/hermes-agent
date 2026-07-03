@@ -119,6 +119,43 @@ _NATURAL_TASK_RECENT_FOLLOWUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DISCORD_ENGINEERING_PR_RE = re.compile(
+    r"(PR|Pull Request|プルリク|GitHub|CI|VPS|本番|デプロイ|マージ|push|"
+    r"ブランチ|コミット|Actions|workflow)",
+    re.IGNORECASE,
+)
+
+_DISCORD_APPROVAL_RE = re.compile(
+    r"^(承認|許可|OK|ok|はい|進めて|すすめて|マージして|本番反映して)[。.!！?？\s]*$",
+    re.IGNORECASE,
+)
+
+_DISCORD_INCIDENT_RE = re.compile(
+    r"(セキュリティ|権限|警告|漏洩|不正|侵入|攻撃|認証|token|トークン|"
+    r"秘密情報|個人情報|支払い|請求|契約)",
+    re.IGNORECASE,
+)
+
+_DISCORD_RESPONSE_MODE_PROMPTS: dict[str, str] = {
+    "casual_conversation": (
+        "Discord応答モード: casual_conversation\n"
+        "- このターンは通常会話として扱う。\n"
+        "- SOUL.mdのリノ人格とDiscord通常会話ルールを最優先する。\n"
+        "- 敬語で、自然に、1〜3文を目安に短く返す。\n"
+        "- 求められていない箇条書き、作業説明、PR報告、カンバン報告、長い背景説明は出さない。\n"
+        "- 絵文字は原則使わない。\n"
+        "- PR通知フォーマットは、実際にPull Requestを作った時だけ使う。"
+    ),
+    "question_answer": (
+        "Discord応答モード: question_answer\n"
+        "- このターンは質問、不満、違和感、確認への返答として扱う。\n"
+        "- まず結論を一文で返す。必要なら一言だけ補足する。\n"
+        "- 作業開始、タスク登録、PR報告、手順説明、長い箇条書きは、ユーザーが明示的に求めた時だけにする。\n"
+        "- SOUL.mdのリノ人格とDiscord通常会話ルールを、AGENTS.mdの業務運用・PR定型より前に出す。\n"
+        "- 敬語で短く返し、絵文字は原則使わない。"
+    ),
+}
+
 
 def _normalize_task_prompt_for_maintenance(prompt: str) -> str:
     """Return a task instruction framed as authorized maintenance work."""
@@ -3227,6 +3264,34 @@ class DiscordAdapter(BasePlatformAdapter):
         return bool(_NATURAL_TASK_RECENT_FOLLOWUP_RE.search(normalized))
 
     @staticmethod
+    def _classify_discord_response_mode(prompt: str) -> str:
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        if not normalized or normalized.startswith("/"):
+            return "task_execution"
+        if _DISCORD_APPROVAL_RE.search(normalized):
+            return "approval_required"
+        if _DISCORD_INCIDENT_RE.search(normalized):
+            return "incident/security"
+        if _DISCORD_ENGINEERING_PR_RE.search(normalized) and _NATURAL_TASK_ACTION_RE.search(normalized):
+            return "engineering_pr"
+        if DiscordAdapter._looks_like_natural_task_request(normalized):
+            return "task_execution"
+        if _NATURAL_TASK_INFORMATION_QUESTION_RE.search(normalized) or normalized.endswith(("?", "？")):
+            return "question_answer"
+        if _NATURAL_TASK_CONTEXT_ONLY_RE.search(normalized):
+            return "question_answer"
+        return "casual_conversation"
+
+    @staticmethod
+    def _discord_response_mode_prompt(mode: str) -> Optional[str]:
+        return _DISCORD_RESPONSE_MODE_PROMPTS.get(mode)
+
+    @staticmethod
+    def _combine_channel_prompt(*parts: Optional[str]) -> Optional[str]:
+        combined = "\n\n".join(str(part).strip() for part in parts if str(part or "").strip())
+        return combined or None
+
+    @staticmethod
     def _natural_task_context_key(chat_id: str, thread_id: Optional[str]) -> str:
         return str(thread_id or chat_id or "")
 
@@ -5646,6 +5711,11 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+        _response_mode = self._classify_discord_response_mode(event_text)
+        _channel_prompt = self._combine_channel_prompt(
+            _channel_prompt,
+            self._discord_response_mode_prompt(_response_mode),
+        )
 
         reply_to_id = None
         reply_to_text = None

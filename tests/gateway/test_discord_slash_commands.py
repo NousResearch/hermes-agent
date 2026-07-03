@@ -1120,6 +1120,17 @@ def test_natural_language_classifier_registers_regular_discord_messages():
     assert not DiscordAdapter._looks_like_natural_task_request("/status")
 
 
+def test_discord_response_mode_classifier_separates_chat_from_work():
+    assert DiscordAdapter._classify_discord_response_mode("で、お前の見解と違うの？") == "question_answer"
+    assert DiscordAdapter._classify_discord_response_mode("じゃあなんで直んねーの？") == "question_answer"
+    assert DiscordAdapter._classify_discord_response_mode("意味わかる？") == "question_answer"
+    assert DiscordAdapter._classify_discord_response_mode("ありがとう") == "question_answer"
+    assert DiscordAdapter._classify_discord_response_mode("この表示を直してください") == "task_execution"
+    assert DiscordAdapter._classify_discord_response_mode("PR作って本番に反映して") == "engineering_pr"
+    assert DiscordAdapter._classify_discord_response_mode("許可") == "approval_required"
+    assert DiscordAdapter._classify_discord_response_mode("OpenAIから権限警告が来た") == "incident/security"
+
+
 @pytest.mark.asyncio
 async def test_natural_language_context_question_stays_in_chat(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -1139,6 +1150,61 @@ async def test_natural_language_context_question_stays_in_chat(adapter, monkeypa
     fake_create_task.assert_not_called()
     adapter.handle_message.assert_awaited_once()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_question_answer_mode_adds_conversation_prompt(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+
+    fake_create_task = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+    adapter.send = AsyncMock()
+
+    msg = _fake_message(_FakeTextChannel(), content="で、お前の見解と違うの？")
+
+    await adapter._handle_message(msg)
+
+    fake_create_task.assert_not_called()
+    assert len(captured_events) == 1
+    prompt = captured_events[0].channel_prompt or ""
+    assert "Discord応答モード: question_answer" in prompt
+    assert "まず結論を一文で返す" in prompt
+    assert "PR報告" in prompt
+    assert "絵文字は原則使わない" in prompt
+
+
+@pytest.mark.asyncio
+async def test_discord_casual_mode_preserves_existing_channel_prompt(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "false")
+    adapter._resolve_channel_prompt = MagicMock(return_value="既存のチャンネル指示")
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(), content="おはよう")
+
+    await adapter._handle_message(msg)
+
+    assert len(captured_events) == 1
+    prompt = captured_events[0].channel_prompt or ""
+    assert "既存のチャンネル指示" in prompt
+    assert "Discord応答モード: casual_conversation" in prompt
+    assert "1〜3文" in prompt
 
 
 @pytest.mark.asyncio

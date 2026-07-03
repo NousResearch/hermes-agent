@@ -112,6 +112,73 @@ def test_discord_completion_strips_generic_no_op_safety_footer(tmp_path, monkeyp
     assert "GitHub push" not in adapter.sent[0]["text"]
 
 
+def test_discord_completion_suppresses_internal_orchestration_summary(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-orchestration.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "依頼を3タスクに分解しました。Hermesスキル整理、"
+        "GootHands Web流入・検索状況調査を並行で進め、"
+        "その結果をbusiness-advisorが内田さん向けの短い回答に統合する流れにしました。"
+    )
+    tid = _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_discord_completion_keeps_actual_result_summary(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "自然検索からの流入は前月比で増えています。"
+        "主要流入元はGoogle検索と指名検索です。"
+    )
+    _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["text"] == summary
+
+
+def test_discord_skill_inventory_summary_starts_with_result(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-skill-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "Hermesスキルを再確認しました。現在この環境では102個のスキルが有効で、"
+        "`hermes skills list` と `hermes skills search test` の動作も確認済みです。"
+        "カテゴリはAI Company、GitHub、カンバン、Google Workspace、デザイン、調査です。"
+    )
+    _create_completed_subscription(summary=summary, platform="discord")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.DISCORD)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["text"].startswith("有効なスキルは102個です。")
+    assert not adapter.sent[0]["text"].startswith("確認しました。")
+
+
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
     db_path = tmp_path / "single-owner.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

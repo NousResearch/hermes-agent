@@ -148,6 +148,19 @@ _DISCORD_NO_OP_SAFETY_FOOTERS = (
     "外部送信、公開、削除、GitHub push/PR、VPS変更、本番再起動は行っていません。",
 )
 
+_DISCORD_INTERNAL_ORCHESTRATION_RE = re.compile(
+    r"("
+    r"依頼を\s*\d+\s*タスクに分解しました"
+    r"|タスクに分解しました"
+    r"|(?:並行|順番)で進め(?:ます|る|、)"
+    r"|(?:business-advisor|operations-orchestrator|orchestrator|worker|ワーカー)"
+    r"|(?:担当|担当者|担当AI|実行担当|レビュー担当).*(?:割り振|統合|進め)"
+    r"|(?:結果|回答|成果物).*(?:統合する流れ|統合します|まとめる流れ)"
+    r"|(?:内部|段取り|分解|割り振り|割り振る|アサイン).*(?:流れ|しました|します)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _discord_sanitize_completion_summary(text: str) -> str:
     """Keep Discord completion summaries human-facing while preserving facts."""
@@ -162,6 +175,8 @@ def _discord_sanitize_completion_summary(text: str) -> str:
 
     cleaned = "\n".join(kept_lines).strip()
     if not cleaned:
+        return ""
+    if _DISCORD_INTERNAL_ORCHESTRATION_RE.search(cleaned):
         return ""
 
     for footer in _DISCORD_NO_OP_SAFETY_FOOTERS:
@@ -201,7 +216,7 @@ def _discord_naturalize_completion_summary(text: str) -> str:
         cleaned,
     )
     if skill_inventory and "スキル" in cleaned:
-        parts = [f"確認しました。有効なスキルは{skill_inventory.group(1)}個です。"]
+        parts = [f"有効なスキルは{skill_inventory.group(1)}個です。"]
         if re.search(r"skills\s+list|skills\s+search|一覧|検索|動作も確認", cleaned):
             parts.append("一覧表示と検索も確認できています。")
         category_labels = [
@@ -225,7 +240,7 @@ def _discord_naturalize_completion_summary(text: str) -> str:
     )
     if skill_audit:
         parts = [
-            f"見ました。未使用候補は{skill_audit.group(1)}件、低使用候補は{skill_audit.group(2)}件でした。"
+            f"未使用候補は{skill_audit.group(1)}件、低使用候補は{skill_audit.group(2)}件でした。"
         ]
         if re.search(r"削除|アーカイブ|archive|設定変更|外部影響", cleaned, re.IGNORECASE):
             parts.append("削除やアーカイブ、設定変更はしていません。")
@@ -237,8 +252,8 @@ def _discord_naturalize_completion_summary(text: str) -> str:
 def _discord_kanban_completion_message(task: object, event: object, title: str) -> str:
     handoff = _kanban_completion_handoff(task, event, title)
     if not handoff:
-        return f"「{title}」が完了しました。"
-    return _discord_naturalize_completion_summary(handoff) or f"「{title}」が完了しました。"
+        return ""
+    return _discord_naturalize_completion_summary(handoff)
 
 
 def _clean_kanban_reason(reason: object, *, task_title: str = "", limit: int = 240) -> str:

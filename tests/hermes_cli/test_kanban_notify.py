@@ -389,7 +389,7 @@ async def test_discord_completed_notification_naturalizes_worker_summary(kanban_
 
     fake_adapter.send.assert_called_once()
     msg = fake_adapter.send.call_args[0][1]
-    assert msg == "見ました。未使用候補は79件、低使用候補は1件でした。削除やアーカイブ、設定変更はしていません。"
+    assert msg == "未使用候補は79件、低使用候補は1件でした。削除やアーカイブ、設定変更はしていません。"
     assert "調査レポートとJSON" not in msg
     assert "ワークスペース" not in msg
     assert "/home/hermes" not in msg
@@ -452,7 +452,7 @@ async def test_discord_completed_notification_compacts_skill_inventory_summary(k
     fake_adapter.send.assert_called_once()
     msg = fake_adapter.send.call_args[0][1]
     assert msg == (
-        "確認しました。有効なスキルは102個です。"
+        "有効なスキルは102個です。"
         "一覧表示と検索も確認できています。"
         "主なカテゴリはAI Company、開発、GitHub、カンバン、Google Workspace、デザイン、調査です。"
     )

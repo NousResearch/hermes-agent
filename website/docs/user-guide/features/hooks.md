@@ -473,6 +473,24 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| [`pre_skill_create:guard`](#pre_skill_create-guard) | Directive/control (Python only) | After input validation, before existence/policy checks; first valid directive wins. | `name`, `content`, `category` | Full skill content and destination category. |
+| [`pre_skill_create`](#pre_skill_create) | Directive/control (Python only) | After the existence check, immediately before create. | `name`, `content`, `category` | Full skill content and destination category. |
+| [`post_skill_create`](#post_skill_create) | Observer | Once after an attempted create; success bookkeeping/cache invalidation precedes it. | `name`, `category`, `path`, `success`, `error` | Absolute path on success; empty on failure before a destination is known. |
+| [`pre_skill_edit:guard`](#pre_skill_edit-guard) | Directive/control (Python only) | After input validation, before lookup/write guards. | `name`, `content` | Full replacement content. |
+| [`pre_skill_edit`](#pre_skill_edit) | Directive/control (Python only) | After lookup/write/read guards, immediately before rewrite. | `name`, `content`, `old_content` | Both old and replacement SKILL.md content. |
+| [`post_skill_edit`](#post_skill_edit) | Observer | Once after an attempted full rewrite. | `name`, `path`, `success`, `error` | Skill path on core success; empty on failure/unknown handled location. |
+| [`pre_skill_patch:guard`](#pre_skill_patch-guard) | Directive/control (Python only) | After input validation, before lookup/write guards. | `name`, `old_string`, `new_string`, `file_path`, `replace_all` | Patch text may contain user-authored content. |
+| [`pre_skill_patch`](#pre_skill_patch) | Directive/control (Python only) | After lookup, path, read, match, size, and frontmatter checks; immediately before write. | `name`, `old_string`, `new_string`, `file_path`, `replace_all` | Patch text may contain user-authored content. |
+| [`post_skill_patch`](#post_skill_patch) | Observer | Once after an attempted targeted patch. | `name`, `file_path`, `replace_all`, `success`, `error` | Path and errors may reveal project layout/content. |
+| [`pre_skill_write_file:guard`](#pre_skill_write_file-guard) | Directive/control (Python only) | After input validation, before lookup/write guards. | `name`, `file_path`, `file_content` | Full supporting-file content. |
+| [`pre_skill_write_file`](#pre_skill_write_file) | Directive/control (Python only) | After lookup, path, and read guards; immediately before write. | `name`, `file_path`, `file_content` | Full supporting-file content. |
+| [`post_skill_write_file`](#post_skill_write_file) | Observer | Once after an attempted supporting-file write. | `name`, `file_path`, `success`, `error` | Relative file path and possible error text. |
+| [`pre_skill_remove_file:guard`](#pre_skill_remove_file-guard) | Directive/control (Python only) | After input validation, before lookup/write guards. | `name`, `file_path` | Relative file path. |
+| [`pre_skill_remove_file`](#pre_skill_remove_file) | Directive/control (Python only) | After lookup, path, existence, and read guards; immediately before unlink. | `name`, `file_path` | Relative file path. |
+| [`post_skill_remove_file`](#post_skill_remove_file) | Observer | Once after an attempted supporting-file removal. | `name`, `file_path`, `success`, `error` | Relative file path and possible error text. |
+| [`pre_skill_delete:guard`](#pre_skill_delete-guard) | Directive/control (Python only) | After input validation, before lookup/delete guards. | `name`, `absorbed_into` | Skill names and consolidation intent. |
+| [`pre_skill_delete`](#pre_skill_delete) | Directive/control (Python only) | After lookup, org/review/curator/pin/target guards; immediately before archive/delete. | `name`, `absorbed_into` | Skill names and consolidation intent. |
+| [`post_skill_delete`](#post_skill_delete) | Observer | Once after an attempted archive/delete. | `name`, `absorbed_into`, `success`, `error` | Skill names and possible error text. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1640,6 +1658,207 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 #### `pre_auxiliary_call` / `post_auxiliary_call`
 
 Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+
+### Skill mutation hooks (18)
+
+`skill_manage` exposes exactly **18 skill mutation hooks**: six early
+`pre_skill_<action>:guard` directive hooks, six policy-checked
+`pre_skill_<action>` directive hooks, and six `post_skill_<action>` observers
+for `create`, `edit`, `patch`, `write_file`, `remove_file`, and `delete`.
+These are separate from [`on_skill_lifecycle`](#on_skill_lifecycle), which
+reports skill-*usage* state rather than filesystem mutations.
+
+The order for an operation that reaches its handler is:
+
+```text
+input validation → :guard hook → lookup/policy/read guards → pre hook → mutation
+                 → success bookkeeping + prompt-cache clear → post hook
+```
+
+A `:guard` hook intentionally runs before existence, org-mirror,
+background-review, curator, and pin checks. Returning `handled` at that phase
+means the plugin owns those checks. The ordinary `pre` hook runs only after the
+operation-specific core guards pass. For patch/write/remove, path and
+read-before-write validation also pass before the ordinary `pre` hook.
+
+Directive hooks are **Python-plugin only**; shell configuration rejects them
+rather than silently discarding a directive. Callbacks run in registration
+order and the first valid directive wins:
+
+| Return | Behavior |
+|---|---|
+| `None`, non-dict, or unknown action | Continue to the next callback/core operation. |
+| `{"action": "block", "reason": "..."}` | Return a failed tool result. `message` is accepted as a compatibility alias for `reason`. |
+| `{"action": "handled", "path": "..."}` | Treat the operation as successful without the core mutation. Create requires a non-empty absolute `path`; it is optional for other actions. |
+| `{"action": "redirect", "path": "/.../<name>"}` | Create only. The absolute target must end in the skill name and be below `skills.create_dir` or a `skills.external_dirs` root, so the skill remains discoverable. |
+
+Every attempted handler emits its matching `post` hook **once**, for success,
+block, or core error. All post payloads contain `name`, `success`, and `error`
+(`None` on success). Calls rejected before handler dispatch by preflight,
+approval, argument-shape, or name validation emit no skill mutation hook. A
+successful `handled` directive follows the normal success bookkeeping path,
+including system-prompt skill-cache invalidation, before the post observer.
+Callback and dispatch errors are logged and fail open.
+
+Handled results include `hook_handled: true`. The plugin owns the mutation, so
+the rest of the result is intentionally smaller than a core result; handled
+create also carries the plugin-reported absolute `path` required by its post
+payload contract.
+
+Atomic `operations` batches buffer post events. They are emitted only after the
+batch commits; if a later op fails and rollback succeeds, every attempted op is
+emitted exactly once with `success=False` and the batch rollback error. No
+rolled-back op is announced as a durable success. A `handled` directive is
+rejected in a multi-operation batch because plugin-owned effects have no generic
+rollback primitive; `block` and create `redirect` retain their normal semantics.
+
+```python
+def guard_remote(name, content, category, **kwargs):
+    if remote_catalog_owns(name):
+        remote_catalog_write(name, content, category=category)
+        return {"action": "handled", "path": remote_catalog_path(name)}
+    return None
+
+
+def audit_create(name, category, path, success, error, **kwargs):
+    audit_log("create", name=name, path=path, success=success, error=error)
+
+
+def register(ctx):
+    ctx.register_hook("pre_skill_create:guard", guard_remote)
+    ctx.register_hook("post_skill_create", audit_create)
+```
+
+<a id="pre_skill_create-guard"></a>
+#### `pre_skill_create:guard`
+
+Signature: `callback(name: str, content: str, category: str | None, **kwargs)`.
+Fires after create input validation but before the duplicate/existence check.
+Returns `block`, `handled`, or create-only `redirect` as described above.
+For `handled`, the callback must supply a non-empty absolute `path`.
+
+<a id="pre_skill_create"></a>
+#### `pre_skill_create`
+
+Signature: `callback(name: str, content: str, category: str | None, **kwargs)`.
+Fires after the duplicate/existence check and before directory creation. Returns
+`block`, `handled`, or `redirect`.
+For `handled`, the callback must supply a non-empty absolute `path`.
+
+<a id="post_skill_create"></a>
+#### `post_skill_create`
+
+Signature: `callback(name: str, category: str | None, path: str, success: bool, error: str | None, **kwargs)`.
+`path` is the absolute created directory on core success, the required absolute
+handler-provided path for a handled create, and `""` on failures where no
+destination is known. Return
+values are ignored.
+
+<a id="pre_skill_edit-guard"></a>
+#### `pre_skill_edit:guard`
+
+Signature: `callback(name: str, content: str, **kwargs)`. Fires before lookup
+and write/read guards. `old_content` is deliberately unavailable at this phase.
+Returns `block` or `handled`.
+
+<a id="pre_skill_edit"></a>
+#### `pre_skill_edit`
+
+Signature: `callback(name: str, content: str, old_content: str, **kwargs)`.
+Fires after lookup, write guards, and the read-before-write guard, immediately
+before the atomic full rewrite. Returns `block` or `handled`.
+
+<a id="post_skill_edit"></a>
+#### `post_skill_edit`
+
+Signature: `callback(name: str, path: str, success: bool, error: str | None, **kwargs)`.
+Fires once after an attempted full rewrite. A legacy `action="edit"` and the
+current full-rewrite `action="patch", content=...` shape both use edit hooks.
+Return values are ignored.
+
+<a id="pre_skill_patch-guard"></a>
+#### `pre_skill_patch:guard`
+
+Signature: `callback(name: str, old_string: str, new_string: str, file_path: str | None, replace_all: bool, **kwargs)`.
+Fires before lookup and write guards. Returns `block` or `handled`.
+
+<a id="pre_skill_patch"></a>
+#### `pre_skill_patch`
+
+Signature: `callback(name: str, old_string: str, new_string: str, file_path: str | None, replace_all: bool, **kwargs)`.
+Fires only after target resolution, existence/read checks, fuzzy matching, size
+validation, and SKILL.md frontmatter validation pass. Returns `block` or
+`handled`.
+
+<a id="post_skill_patch"></a>
+#### `post_skill_patch`
+
+Signature: `callback(name: str, file_path: str | None, replace_all: bool, success: bool, error: str | None, **kwargs)`.
+Fires once after an attempted targeted patch. Return values are ignored.
+
+<a id="pre_skill_write_file-guard"></a>
+#### `pre_skill_write_file:guard`
+
+Signature: `callback(name: str, file_path: str, file_content: str, **kwargs)`.
+Fires after argument/content validation but before lookup and write guards.
+Returns `block` or `handled`.
+
+<a id="pre_skill_write_file"></a>
+#### `pre_skill_write_file`
+
+Signature: `callback(name: str, file_path: str, file_content: str, **kwargs)`.
+Fires after lookup, containment, and any read-before-write guard, immediately
+before the atomic write. Returns `block` or `handled`.
+
+<a id="post_skill_write_file"></a>
+#### `post_skill_write_file`
+
+Signature: `callback(name: str, file_path: str, success: bool, error: str | None, **kwargs)`.
+Fires once after an attempted supporting-file write. Return values are ignored.
+
+<a id="pre_skill_remove_file-guard"></a>
+#### `pre_skill_remove_file:guard`
+
+Signature: `callback(name: str, file_path: str, **kwargs)`. Fires after path
+shape validation but before lookup and write guards. Returns `block` or
+`handled`.
+
+<a id="pre_skill_remove_file"></a>
+#### `pre_skill_remove_file`
+
+Signature: `callback(name: str, file_path: str, **kwargs)`. Fires after lookup,
+containment, existence, and read-before-write checks, immediately before
+unlink. Returns `block` or `handled`.
+
+<a id="post_skill_remove_file"></a>
+#### `post_skill_remove_file`
+
+Signature: `callback(name: str, file_path: str, success: bool, error: str | None, **kwargs)`.
+Fires once after an attempted supporting-file removal. Return values are
+ignored.
+
+<a id="pre_skill_delete-guard"></a>
+#### `pre_skill_delete:guard`
+
+Signature: `callback(name: str, absorbed_into: str | None, **kwargs)`. Fires
+before lookup and every delete policy guard. Returns `block` or `handled`; a
+handler assumes responsibility for existence, provenance, pin, and
+consolidation policy.
+
+<a id="pre_skill_delete"></a>
+#### `pre_skill_delete`
+
+Signature: `callback(name: str, absorbed_into: str | None, **kwargs)`. Fires
+after lookup, org-mirror/background-review, curator-consolidation, pin,
+`absorbed_into`, and recursive-delete target validation. Returns `block` or
+`handled`.
+
+<a id="post_skill_delete"></a>
+#### `post_skill_delete`
+
+Signature: `callback(name: str, absorbed_into: str | None, success: bool, error: str | None, **kwargs)`.
+Fires once after an attempted hard delete or recoverable curator archive. Return
+values are ignored.
 
 ### `on_skill_lifecycle`
 

@@ -113,6 +113,26 @@ def test_transient_classifier_does_not_infinite_loop_on_cyclic_cause():
     assert _is_transient_network_error(exc) is False
 
 
+def test_transient_classifier_tolerates_traceback_exception():
+    """A ``TracebackException`` (no ``__cause__`` attr) is walked safely.
+
+    Regression for #57294: ``_is_transient_network_error`` crashed with
+    ``AttributeError`` when the exception chain contained a
+    ``traceback.TracebackException`` object instead of a live exception.
+    """
+    import traceback as tb_mod
+
+    try:
+        raise ConnectError("boom")
+    except ConnectError as e:
+        tb_exc = tb_mod.TracebackException.from_exception(e)
+    # A TracebackException object does not expose ``__cause__`` as an
+    # instance attribute; the pre-fix walker accessed it directly and
+    # crashed. The fixed walker uses getattr() so this returns False
+    # (TracebackException is not a transient class name) without raising.
+    assert _is_transient_network_error(tb_exc) is False
+
+
 # ---------------------------------------------------------------------
 # Loop handler
 # ---------------------------------------------------------------------

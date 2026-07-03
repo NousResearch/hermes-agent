@@ -410,6 +410,10 @@ class AIAgent(
         self._provider_hook_failures = set()
         # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
         self._is_user_initiated_turn = False
+        # A restart note is scoped to the resumed session's next turn.  A
+        # /new, /resume or /branch boundary must not leak a staged note into
+        # the destination session; resume owners stage a fresh one afterward.
+        self._session_resume_note = ""
 
         self._transition_context_engine_session(
             old_session_id=old_session_id, new_session_id=getattr(self, "session_id", None),

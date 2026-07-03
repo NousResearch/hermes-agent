@@ -653,7 +653,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
-    if not allowed:
+    if allowed is False:
         c.print(f"\n[bold red]Installation blocked:[/] {reason}")
         # Clean up quarantine
         shutil.rmtree(q_path, ignore_errors=True)
@@ -662,6 +662,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
         return
+
+    if allowed is None:
+        # "ask" verdict — findings were already printed above via
+        # format_scan_report(); fall through to the confirmation prompt
+        # below instead of treating this the same as a hard block.
+        c.print(f"\n[bold yellow]Review required:[/] {reason}")
 
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)

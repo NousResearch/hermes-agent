@@ -317,6 +317,75 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     assert scanned["source"] == canonical_identifier
 
 
+def test_do_install_ask_verdict_falls_through_to_install_instead_of_blocking(
+    monkeypatch, tmp_path, hub_env
+):
+    """should_allow_install() returning None ("ask") must not be treated the
+    same as a hard block. Before this fix, `if not allowed:` in do_install
+    truthy-checked the result, and None is falsy in Python, so an "ask"
+    verdict (e.g. a trusted-source skill with medium-risk findings) got
+    hard-blocked with a "Requires confirmation" reason printed under an
+    "Installation blocked" header, and never reached the actual y/N
+    confirmation flow it was supposed to."""
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    canonical_identifier = "skills-sh/anthropics/skills/frontend-design"
+
+    class _ResolvedSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": canonical_identifier,
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "frontend-design",
+                "files": {"SKILL.md": "# Frontend Design"},
+                "source": "skills.sh",
+                "identifier": canonical_identifier,
+                "trust_level": "trusted",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "frontend-design"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Frontend Design")
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_ResolvedSource()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "scan_skill", lambda skill_path, source="community": guard.ScanResult(
+        skill_name="frontend-design", source=source, trust_level="trusted", verdict="caution",
+    ))
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan report with findings")
+    monkeypatch.setattr(
+        guard, "should_allow_install",
+        lambda result, force=False: (None, "Requires confirmation (trusted source + caution verdict, 1 findings)"),
+    )
+    monkeypatch.setattr(
+        hub, "install_from_quarantine",
+        lambda q_path, name, category, bundle, result: tmp_path / "skills" / "frontend-design",
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    # skip_confirm=True bypasses the y/N prompt itself (needed for
+    # non-interactive test execution) but must NOT bypass the ask-verdict
+    # handling — the fixed code should still fall through past the "ask"
+    # branch to the actual install step, unlike the "blocked" (False) case
+    # which returns before ever reaching it.
+    do_install(canonical_identifier, console=console, skip_confirm=True)
+
+    output = sink.getvalue()
+    assert "Installation blocked" not in output
+    assert "Review required" in output
+    assert "Installed:" in output
+
+
 def test_do_install_scans_official_bundles_with_source_provenance(
     monkeypatch, tmp_path, hub_env
 ):

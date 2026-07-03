@@ -511,6 +511,12 @@ DANGEROUS_PATTERNS = [
     # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
+    # -File was intentionally excluded from the destructive-delete pattern
+    # above (a benign path containing "del"/"rm" would false-positive), but
+    # that left running an arbitrary .ps1 script via -File completely
+    # unmatched by any pattern in this file — auto-approved with no warning
+    # at all, unlike bash/python/node script execution above.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:File|f)\s+', "PowerShell script execution via -File flag"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),

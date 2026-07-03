@@ -525,6 +525,7 @@ SCANNABLE_EXTENSIONS = {
     '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
     '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
     '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
+    '.ps1', '.psm1', '.psd1', '.bat', '.cmd',
 }
 
 # Known binary extensions that should NOT be in a skill
@@ -573,7 +574,17 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if not rel_path:
         rel_path = file_path.name
 
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+    # Extensionless files (unix-style executables with no suffix, e.g.
+    # "run"/"setup") are still scanned as text — most THREAT_PATTERNS are
+    # language-agnostic (egress tools, persistence paths), so this catches
+    # the same abuse shapes regardless of what interpreter would run them.
+    # The UnicodeDecodeError guard below still protects against attempting
+    # to scan an actual binary that happens to lack an extension.
+    if (
+        file_path.suffix.lower() not in SCANNABLE_EXTENSIONS
+        and file_path.name != "SKILL.md"
+        and file_path.suffix != ""
+    ):
         return []
 
     try:

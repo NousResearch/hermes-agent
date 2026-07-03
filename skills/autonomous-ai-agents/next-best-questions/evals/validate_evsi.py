@@ -268,6 +268,8 @@ def main(argv=None):
                         "run, sample K candidate solutions once and re-judge the SAME records "
                         "(Δplan = invalidated/K), sharing the realized measurement. Rows tagged "
                         "method=absolute|solution. Mutually exclusive with --ab/--ab-probs.")
+    p.add_argument("--value-judge-mode", choices=["absolute", "behavior"], default=None,
+                   help="#28 proxy-sanity: elicit projected Δplan with the behavior judge.")
     p.add_argument("--answer-prob-mode", choices=["stated", "sampled"], default=None,
                    help="pin the P(a) estimate for the run (#26). Use `sampled` here iff #26 was "
                         "adopted, so a #27 A/B runs both arms on the winning P mode.")
@@ -302,6 +304,8 @@ def main(argv=None):
         cfg["answer_prob_mode"] = "sampled"  # the run itself samples; the stated arm is a re-score
     elif args.answer_prob_mode:
         cfg["answer_prob_mode"] = args.answer_prob_mode  # e.g. pin the #26 winner under --ab-solution
+    if getattr(args, "value_judge_mode", None):
+        cfg["value_judge_mode"] = args.value_judge_mode  # #28 proxy-sanity: behavior-Δ elicitation
     if args.families:
         cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
     judge_model = pipeline.resolve_alias(args.judge_model)  # alias -> real model name

@@ -60,6 +60,16 @@ Fixes #
 - [ ] I've considered cross-platform impact (Windows, macOS) per the [compatibility guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#cross-platform-compatibility) — or N/A
 - [ ] I've updated tool descriptions/schemas if I changed tool behavior — or N/A
 
+### AGENTS.md Impact
+
+<!-- Complete this section if your PR edits AGENTS.md. Otherwise check N/A. AGENTS.md is injected into coding-agent context, so changes affect latency, cost, and instruction salience. -->
+
+- [ ] N/A — this PR does not edit `AGENTS.md`
+- [ ] I treated `AGENTS.md` as runtime prompt surface, not ordinary documentation
+- [ ] I classified each `AGENTS.md` change as invariant vs reference; invariants remain inline
+- [ ] I considered moving long rationale/examples to developer docs or references and leaving only a short summary/link in `AGENTS.md`
+- [ ] Net `AGENTS.md` size change: <!-- e.g. +420 chars / -3,200 chars -->
+
 ## For New Skills
 
 <!-- Only fill this out if you're adding a skill. Delete this section otherwise. -->

@@ -2246,6 +2246,18 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
         if not path_str:
             return  # in-memory or unnamed DB; skip
         path = path_str
+        # WAL-mode DBs allocate new pages in the -wal file until a checkpoint,
+        # and a checkpoint updates the main file's header page-count and its
+        # physical length non-atomically. So reading the main file directly can
+        # observe header_page_count > on-disk pages as a normal transient — not
+        # a torn extend. WAL frames also carry per-frame checksums, so SQLite
+        # itself detects a genuinely torn extend on a WAL DB. This raw-file
+        # invariant is only meaningful for rollback-journal mode, which extends
+        # the main file in place mid-transaction. Skip it under WAL to avoid
+        # false "torn-extend detected" errors that wedge the kanban dispatcher.
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()
+        if journal_mode and str(journal_mode[0]).lower() == "wal":
+            return
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         file_size = os.path.getsize(path)
         with open(path, "rb") as f:

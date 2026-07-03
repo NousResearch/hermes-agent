@@ -260,6 +260,52 @@ class TestShrinkImagePartsHelper:
         assert seen["max_dimension"] == 2000
         assert msgs[0]["content"][0]["image_url"]["url"] == shrunk
 
+    def test_anthropic_base64_image_source_rewritten(self, monkeypatch):
+        """Anthropic-native image blocks are shrinkable after adapter conversion."""
+        agent = _make_agent()
+        _install_fake_pillow(monkeypatch, (2501, 100), shrunk_size=(1500, 60))
+        original = _big_png_data_url(100)
+        _, _, original_data = original.partition(",")
+        shrunk = "data:image/jpeg;base64," + "N" * 1000
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["mime_type"] = mime_type
+            seen["max_dimension"] = max_dimension
+            return shrunk
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": original_data,
+                    },
+                },
+            ],
+        }]
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=2000,
+        )
+        source = msgs[0]["content"][0]["source"]
+
+        assert changed is True
+        assert seen["mime_type"] == "image/png"
+        assert seen["max_dimension"] == 2000
+        assert source["type"] == "base64"
+        assert source["media_type"] == "image/jpeg"
+        assert source["data"] == "N" * 1000
+
     def test_oversized_input_image_string_shape_rewritten(self, monkeypatch):
         """OpenAI Responses shape: {type: input_image, image_url: "data:..."}."""
         agent = _make_agent()

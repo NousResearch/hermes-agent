@@ -19,17 +19,32 @@ export interface TerminalReadOptions {
 
 type Reader = (opts: TerminalReadOptions) => TerminalReadResult
 
-// The persistent terminal is a singleton (one xterm mounted forever), so a
-// module-level slot is enough — set while the session is live, cleared on
-// dispose. The gateway `terminal.read.request` handler reads through this.
-let activeReader: Reader | null = null
+// Each live terminal registers a reader keyed by its id; a single `activeId`
+// (driven by the tab selection) decides which one the agent's `read_terminal`
+// tool sees. Keying by id keeps switching race-free — a deactivating tab's
+// cleanup can't null out the tab that just activated.
+const readers = new Map<string, Reader>()
+let activeId: string | null = null
 
-export function setActiveTerminalReader(reader: Reader | null): void {
-  activeReader = reader
+/** Register a live terminal's reader; returns an idempotent unregister. */
+export function registerTerminalReader(id: string, reader: Reader): () => void {
+  readers.set(id, reader)
+
+  return () => {
+    if (readers.get(id) === reader) {
+      readers.delete(id)
+    }
+  }
+}
+
+export function setActiveTerminalId(id: string | null): void {
+  activeId = id
 }
 
 export function readActiveTerminal(opts: TerminalReadOptions = {}): TerminalReadResult | null {
-  return activeReader ? activeReader(opts) : null
+  const reader = activeId === null ? null : readers.get(activeId)
+
+  return reader ? reader(opts) : null
 }
 
 export function makeTerminalReader(term: Terminal): Reader {

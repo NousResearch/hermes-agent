@@ -642,7 +642,7 @@ def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod
 
-    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("", {}))
 
     assert oneshot_mod.run_oneshot("hello") == 1
     captured = capsys.readouterr()
@@ -654,7 +654,7 @@ def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod
 
-    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "done")
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("done", {}))
 
     assert oneshot_mod.run_oneshot("hello") == 0
     captured = capsys.readouterr()
@@ -678,11 +678,36 @@ def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
     assert "not a TTY" in captured.err
 
 
+def test_oneshot_exit_code_when_failed_without_response(monkeypatch):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: ("", {"failed": True, "partial": False}),
+    )
+    assert run_oneshot("hi") == 2
+
+
+def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: (
+            "API call failed after 3 retries: HTTP 404: model not found",
+            {"failed": True, "partial": False},
+        ),
+    )
+    assert run_oneshot("hi") == 0
+    assert "HTTP 404" in capsys.readouterr().out
+
+
 def test_oneshot_agent_disables_next_turn_prefetch(monkeypatch):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod
 
     captured = {}
+    result = {"final_response": "ok"}
 
     class FakeAgent:
         def __init__(self, **kwargs):
@@ -693,8 +718,8 @@ def test_oneshot_agent_disables_next_turn_prefetch(monkeypatch):
             self.messages = [{"role": "user", "content": "hello"}]
             self.shutdown_calls = []
 
-        def chat(self, _prompt):
-            return "ok"
+        def run_conversation(self, _prompt):
+            return result
 
         def shutdown_memory_provider(self, messages):
             self.shutdown_calls.append(messages)
@@ -707,7 +732,7 @@ def test_oneshot_agent_disables_next_turn_prefetch(monkeypatch):
     monkeypatch.setattr(runtime_provider_mod, "resolve_runtime_provider", lambda **_kw: {})
     monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: object())
 
-    assert oneshot_mod._run_agent("hello") == "ok"
+    assert oneshot_mod._run_agent("hello") == ("ok", result)
     assert captured["prefetch_after_turn"] is False
     assert captured["shutdown_calls"] == [[{"role": "user", "content": "hello"}]]
 
@@ -840,9 +865,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
-            return "ok"
+            return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
         def __new__(cls):
@@ -886,7 +911,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    assert _run_agent("recall this") == "ok"
+    text, result = _run_agent("recall this")
+    assert text == "ok"
+    assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"

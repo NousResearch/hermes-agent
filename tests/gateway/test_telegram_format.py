@@ -213,6 +213,39 @@ async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adap
             assert not re.match(r"^```\s+\(\d+/\d+\)$", line), text
 
 
+@pytest.mark.asyncio
+async def test_final_send_does_not_retrigger_typing(adapter):
+    """The final reply (metadata['notify']) must NOT re-arm Telegram's typing
+    timer. The gateway has already torn down the refresh loop by then, so a
+    re-trigger here would leave the '...typing' bubble lingering after the
+    answer (Telegram has no stop-typing API). See #48678."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "All done.", metadata={"notify": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_intermediate_send_still_retriggers_typing(adapter):
+    """Intermediate/progress sends (no notify marker) keep re-triggering typing
+    so the '...typing' bubble survives across progress messages while the agent
+    is still working."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "Checking:", metadata={"expect_edits": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_awaited()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================
@@ -875,12 +908,12 @@ class TestEditMessageStreamingSafety:
 
     @pytest.mark.asyncio
     async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
-        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit, the
-        adapter must split the content across the existing message + new
-        continuation messages so the user gets the full reply.  Previously
-        the adapter best-effort truncated the content with '…' and returned
-        success=True, dropping everything past the truncation boundary
-        (#19537)."""
+        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit on
+        finalize, the adapter must split the content across the existing
+        message + new continuation messages so the user gets the full reply.
+        Previously the adapter best-effort truncated the content with '…' and
+        returned success=True, dropping everything past the truncation
+        boundary (#19537)."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
         adapter._bot = MagicMock()
         adapter._bot.edit_message_text = AsyncMock()
@@ -893,7 +926,7 @@ class TestEditMessageStreamingSafety:
 
         # 6000-char content well over the 4096 UTF-16 limit.
         oversized = "x" * 6000
-        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+        result = await adapter.edit_message("123", "456", oversized, finalize=True)
 
         # Adapter reports success with continuations populated.
         assert result.success is True
@@ -928,7 +961,7 @@ class TestEditMessageStreamingSafety:
             "-100123",
             "456",
             "x" * 6000,
-            finalize=False,
+            finalize=True,
             metadata={"thread_id": "17585"},
         )
 
@@ -936,6 +969,60 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs, "expected at least one overflow continuation"
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_overflow_truncates_instead_of_splitting(self):
+        """During streaming (finalize=False), oversized content must be
+        truncated to fit one message rather than split into continuations.
+        Splitting mid-stream creates new message IDs that the stream consumer
+        then edits with the full accumulated text, causing an infinite
+        duplication loop (#48648)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+
+        # Must NOT create continuation messages during streaming.
+        assert result.success is True
+        assert adapter._bot.send_message.await_count == 0, (
+            "mid-stream overflow must not send continuation messages"
+        )
+        # message_id stays the original — no shift to a new ID.
+        assert result.message_id == "456"
+        # The edit must contain truncated content (≤ MAX_MESSAGE_LENGTH).
+        edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
+        assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_reactive_overflow_retries_truncated_edit(self):
+        """If Telegram rejects a streaming edit as too long, retry with a
+        one-message preview instead of splitting into continuations."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[Exception("Bad Request: message is too long"), None]
+        )
+        adapter._bot.send_message = AsyncMock()
+
+        content = "x" * adapter.MAX_MESSAGE_LENGTH
+        result = await adapter.edit_message("123", "456", content, finalize=False)
+
+        assert result.success is True
+        assert result.message_id == "456"
+        adapter._bot.send_message.assert_not_called()
+        assert adapter._bot.edit_message_text.await_count == 2
+        retry_text = adapter._bot.edit_message_text.await_args_list[1].kwargs["text"]
+        assert len(retry_text) <= adapter.MAX_MESSAGE_LENGTH
+
 
 # =========================================================================
 # Telegram guest mention gating

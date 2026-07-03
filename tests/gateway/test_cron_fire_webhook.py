@@ -53,7 +53,7 @@ async def test_valid_token_accepts_and_fires(adapter, monkeypatch):
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     # verifier returns claims (valid token)
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire", "aud": "agent:x"}),
     )
 
@@ -80,7 +80,7 @@ async def test_invalid_token_401_and_no_fire(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: None),  # verification fails
     )
 
@@ -114,7 +114,7 @@ async def test_missing_job_id_400(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -134,7 +134,7 @@ async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 

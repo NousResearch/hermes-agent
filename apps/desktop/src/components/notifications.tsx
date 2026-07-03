@@ -83,7 +83,13 @@ export function NotificationStack() {
       {expanded && olderNotifications.map(n => <NotificationItem key={n.id} notification={n} />)}
       {overflowCount > 0 && (
         <div className={cn(STACK_SURFACE, 'flex min-h-8 items-center justify-between rounded-lg px-3 text-xs')}>
-          <Button className="-ml-2 font-medium" onClick={() => setExpanded(v => !v)} size="xs" type="button" variant="text">
+          <Button
+            className="-ml-2 font-medium"
+            onClick={() => setExpanded(v => !v)}
+            size="xs"
+            type="button"
+            variant="text"
+          >
             {expanded ? copy.hide : copy.show} {copy.more(overflowCount)}
           </Button>
           <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">

@@ -236,6 +236,21 @@ class TestExtractAttachments(unittest.TestCase):
 class TestDispatchMessage(unittest.TestCase):
     """Test email message dispatch logic."""
 
+    def setUp(self):
+        # These tests exercise dispatch mechanics (subject formatting,
+        # attachment typing, source building), not the authorization gate.
+        # The adapter now fails closed at dispatch when no allowlist / allow-all
+        # is configured (SECURITY.md 2.6), so opt into allow-all here to keep
+        # exercising the dispatch path. Auth-contract tests below override this.
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
     def _make_adapter(self):
         """Create an EmailAdapter with mocked env vars."""
         from gateway.config import PlatformConfig
@@ -537,19 +552,24 @@ class TestDispatchMessage(unittest.TestCase):
                 "body": "Hello",
                 "attachments": [],
                 "date": "",
+                # Authenticated From: (SPF/DKIM/DMARC passed at the receiving
+                # server). Allowlisted senders must be authenticated to proceed.
+                "sender_authenticated": True,
+                "auth_reason": "dmarc=pass",
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))
             self.assertEqual(len(captured_events), 1)
             self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
 
-    def test_empty_allowlist_allows_all(self):
-        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+    def test_empty_allowlist_denies_without_optin(self):
+        """No allowlist and no allow-all opt-in → adapter fails closed (2.6)."""
         import asyncio
         with patch.dict(os.environ, {}, clear=False):
-            # Ensure EMAIL_ALLOWED_USERS is not in the env
-            if "EMAIL_ALLOWED_USERS" in os.environ:
-                del os.environ["EMAIL_ALLOWED_USERS"]
+            # No allowlist, and explicitly no allow-all opt-in.
+            for k in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS",
+                      "GATEWAY_ALLOW_ALL_USERS"):
+                os.environ.pop(k, None)
 
             adapter = self._make_adapter()
             adapter._message_handler = MagicMock()
@@ -567,12 +587,181 @@ class TestDispatchMessage(unittest.TestCase):
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))
-            # Handler should be called when no allowlist is configured
+            # Fail closed: an unset allowlist without allow-all drops the sender.
+            adapter._message_handler.assert_not_called()
+
+    def test_empty_allowlist_allows_all_with_optin(self):
+        """EMAIL_ALLOW_ALL_USERS=true with no allowlist → all senders proceed."""
+        import asyncio
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}, clear=False):
+            os.environ.pop("EMAIL_ALLOWED_USERS", None)
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # With explicit allow-all opt-in the handler is called.
             adapter._message_handler.assert_called()
+
+    def test_spoofed_from_rejected_when_allowlisted(self):
+        """A forged From: matching the allowlist is dropped when unauthenticated.
+
+        Core of GHSA-rxqh-5572-8m77: an attacker forges From: an-allowlisted
+        address. With an allowlist in effect and no allow-all, an unauthenticated
+        From: must be rejected before it can be matched against the allowlist.
+        """
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+            "EMAIL_ALLOW_ALL_USERS": "",
+            "GATEWAY_ALLOW_ALL_USERS": "",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"200",
+                "sender_addr": "admin@test.com",  # forged From: matching allowlist
+                "sender_name": "Admin",
+                "subject": "Spoofed",
+                "message_id": "<spoof@evil.com>",
+                "in_reply_to": "",
+                "body": "rm -rf /",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,  # SPF/DKIM/DMARC did not pass
+                "auth_reason": "authentication failed (spf=fail)",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            adapter._message_handler.assert_not_called()
+            self.assertNotIn("admin@test.com", adapter._thread_context)
+
+    def test_unauthenticated_denied_without_allowlist_optin(self):
+        """No allowlist, no allow-all → adapter fails closed regardless of From auth."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            for k in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
+                      "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+                os.environ.pop(k, None)
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"201",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hi",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Fail closed at the adapter — no allowlist and no allow-all opt-in.
+            adapter._message_handler.assert_not_called()
+
+    def test_unauthenticated_allowed_with_trust_from_header(self):
+        """EMAIL_TRUST_FROM_HEADER=true disables the gate even with an allowlist."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+            "EMAIL_TRUST_FROM_HEADER": "true",
+        }):
+            adapter = self._make_adapter()
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"202",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Trusted",
+                "message_id": "<t@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured), 1)
+
+    def test_unauthenticated_allowed_with_allow_all(self):
+        """EMAIL_ALLOW_ALL_USERS=true makes sender identity moot — gate skipped.
+
+        With allow-all and no restrictive allowlist, an unauthenticated sender
+        is forwarded: the operator has explicitly chosen to accept anyone.
+        """
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOW_ALL_USERS": "true",
+        }):
+            os.environ.pop("EMAIL_ALLOWED_USERS", None)
+            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
+            adapter = self._make_adapter()
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"203",
+                "sender_addr": "stranger@elsewhere.com",
+                "sender_name": "Stranger",
+                "subject": "Hi",
+                "message_id": "<s@elsewhere.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured), 1)
 
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
+
+    def setUp(self):
+        # Thread-context storage is a dispatch-mechanics test, not an auth test.
+        # The adapter fails closed at dispatch without allow-all (SECURITY.md 2.6),
+        # so opt into allow-all to keep exercising the threading path.
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
@@ -1390,6 +1579,200 @@ class TestConnectSmtp(unittest.TestCase):
             "smtp.test.com", 587, _socket.AF_INET, _socket.SOCK_STREAM,
         )
         self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
+
+
+class TestConnectionConfigResolution(unittest.TestCase):
+    """Host/address resolution and pre-connect validation (#49736)."""
+
+    def test_host_and_address_whitespace_stripped(self):
+        """A stray space/newline must not reach IMAP4_SSL as part of the host.
+
+        Whitespace in the host produced the misleading
+        ``[Errno 8] nodename nor servname`` (unresolvable name) instead of a
+        successful connection.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "  hermes@test.com\n",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": " imap.test.com ",
+            "EMAIL_SMTP_HOST": "smtp.test.com\n",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._imap_host, "imap.test.com")
+        self.assertEqual(adapter._smtp_host, "smtp.test.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_falls_back_to_platform_config_extra(self):
+        """When env vars are absent, settings come from PlatformConfig.extra —
+        the same dict gateway.config populates and `hermes config show` reads."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "address": "hermes@test.com",
+            "imap_host": "imap.test.com",
+            "smtp_host": "smtp.test.com",
+        })
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "", "EMAIL_IMAP_HOST": "", "EMAIL_SMTP_HOST": "",
+            "EMAIL_PASSWORD": "secret",
+        }, clear=False):
+            adapter = EmailAdapter(cfg)
+        self.assertEqual(adapter._imap_host, "imap.test.com")
+        self.assertEqual(adapter._smtp_host, "smtp.test.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_connect_aborts_without_attempting_imap_when_host_missing(self):
+        """A missing host returns False without the cryptic DNS error, and marks
+        the failure non-retryable so the gateway stops reconnecting (#40715)."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        mock_imap.assert_not_called()
+        # The OOM fix (#40715): a blank host must NOT leave the platform in the
+        # retryable reconnect loop — it is a permanent config error.
+        self.assertTrue(adapter.has_fatal_error)
+        self.assertEqual(adapter.fatal_error_code, "email_missing_configuration")
+        self.assertFalse(adapter.fatal_error_retryable)
+        self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
+
+    def test_blank_present_env_vars_are_not_required(self):
+        """Blank/whitespace EMAIL_* values must read as missing (#40715) — an
+        abandoned setup with empty keys must not enable the platform."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        for blank in ("", "   ", "\n"):
+            with patch.dict(os.environ, {
+                "EMAIL_ADDRESS": blank, "EMAIL_PASSWORD": blank,
+                "EMAIL_IMAP_HOST": blank, "EMAIL_SMTP_HOST": blank,
+            }, clear=False):
+                self.assertFalse(check_email_requirements())
+
+    def test_all_settings_present_satisfies_requirements(self):
+        """The connected check passes only when all four settings are non-blank."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            self.assertTrue(check_email_requirements())
+
+
+class TestSenderAuthentication(unittest.TestCase):
+    """Verify _verify_sender_authentication parses Authentication-Results
+    correctly and resists From: spoofing (GHSA-rxqh-5572-8m77)."""
+
+    def _msg(self, from_addr, auth_results=None):
+        """Build an email.message.Message with the given From: and
+        zero or more Authentication-Results headers (first = topmost/trusted)."""
+        msg = MIMEText("body")
+        msg["From"] = from_addr
+        for ar in auth_results or []:
+            msg["Authentication-Results"] = ar
+        return msg
+
+    def _verify(self, from_addr, auth_results=None, authserv_id=""):
+        from plugins.platforms.email.adapter import (
+            _verify_sender_authentication,
+            _extract_email_address,
+        )
+        msg = self._msg(from_addr, auth_results)
+        addr = _extract_email_address(from_addr)
+        return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
+
+    def test_dmarc_pass_authenticates(self):
+        ok, reason = self._verify(
+            "Admin <admin@example.com>",
+            ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_spf_pass_aligned_authenticates(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; spf=pass smtp.mailfrom=admin@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_dkim_pass_aligned_authenticates(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_spf_pass_misaligned_rejected(self):
+        # SPF passes for the envelope domain, but it doesn't match From: domain.
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_pass_misaligned_rejected(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=evil.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_all_fail_rejected(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dmarc=fail; spf=fail; dkim=fail"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_no_authentication_results_rejected(self):
+        ok, reason = self._verify("admin@example.com", [])
+        self.assertFalse(ok)
+        self.assertIn("no Authentication-Results", reason)
+
+    def test_relaxed_alignment_subdomain(self):
+        # mail.example.com (DKIM signer) aligns with example.com (From).
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=mail.example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_injected_header_below_trusted_does_not_authenticate(self):
+        """An attacker-injected Authentication-Results sorts BELOW the receiving
+        server's. With authserv-id pinning, only the trusted (first) header is
+        consulted, so a forged 'dmarc=pass' lower in the stack is ignored."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                # Trusted: stamped by our server, real verdict = fail
+                "mx.ourserver.com; dmarc=fail header.from=example.com",
+                # Forged by attacker, claims pass
+                "mx.ourserver.com; dmarc=pass header.from=example.com",
+            ],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
+
+    def test_authserv_id_mismatch_skips_untrusted_header(self):
+        """A header from an authserv-id we don't trust is skipped entirely."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["attacker.relay.com; dmarc=pass header.from=example.com"],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
 
 
 if __name__ == "__main__":

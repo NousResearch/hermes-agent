@@ -126,7 +126,6 @@ Good defaults:
 | **AWS Bedrock** | Claude, Nova, Llama, DeepSeek via native Converse API | IAM role or `aws configure` ([guide](../guides/aws-bedrock.md)) |
 | **Azure Foundry** | Azure AI Foundry-hosted models | Set `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | **Google AI Studio** | Gemini models via direct API | Set `GOOGLE_API_KEY` / `GEMINI_API_KEY` |
-| **Google Gemini (OAuth)** | Gemini via the `google-gemini-cli` OAuth flow — no key needed | `hermes model` → Google Gemini (OAuth) |
 | **xAI** | Grok models via direct API | Set `XAI_API_KEY` |
 | **xAI Grok OAuth** | SuperGrok / Premium+ subscription, no API key needed | `hermes model` → xAI Grok OAuth |
 | **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |

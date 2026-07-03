@@ -5215,11 +5215,27 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   })
 }
 
+// Falls back to the CLI's sticky ~/.hermes/active_profile when the desktop
+// has no stored preference of its own (mirrors hermes_cli/main.py's
+// _apply_profile_override step 2), so a profile picked via `hermes profile
+// use` is honored on the desktop's first launch too, not just "default".
+function readCliActiveProfile() {
+  try {
+    const raw = fs.readFileSync(path.join(HERMES_HOME, 'active_profile'), 'utf8').trim()
+    if (raw && (raw === 'default' || PROFILE_NAME_RE.test(raw))) {
+      return raw
+    }
+  } catch {
+    // No sticky CLI preference → matches Python's default-to-"default".
+  }
+  return null
+}
+
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// returns the desktop's stored preference, or null when unset — in which case
+// we defer to the CLI's sticky active_profile, then finally "default".
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return readActiveDesktopProfile() || readCliActiveProfile() || 'default'
 }
 
 // Resolve a backend connection for the given profile. Routes the primary
@@ -5538,11 +5554,12 @@ async function startHermes() {
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
-    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
-    // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
-    if (activeProfile) {
+    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI.
+    // primaryProfileKey() already falls back through the desktop's own
+    // preference, then the CLI's sticky active_profile, so this stays in sync
+    // with the routing decisions in ensureBackend()/resolveRemoteBackend().
+    const activeProfile = primaryProfileKey()
+    if (activeProfile !== 'default') {
       backendArgs.unshift('--profile', activeProfile)
     }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
@@ -6348,7 +6365,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Renderer boot (use-gateway-boot.ts) calls this to learn which profile the
+// primary window backend came up as, to seed $activeGatewayProfile — the
+// switcher's displayed/highlighted profile. Must agree with primaryProfileKey()
+// (desktop preference → CLI's sticky active_profile → "default"), not just the
+// desktop's own preference, or the switcher shows "default" on first launch
+// even when the backend actually booted into the CLI's sticky profile (#57757).
+ipcMain.handle('hermes:profile:get', async () => ({ profile: primaryProfileKey() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

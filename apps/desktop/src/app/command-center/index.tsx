@@ -17,7 +17,8 @@ import {
   BookmarkFilled,
   Download,
   MessageCircle,
-  Trash2
+  Trash2,
+  Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
@@ -30,9 +31,14 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-export type CommandCenterSection = 'sessions' | 'system' | 'usage'
+import { MaintenancePanel } from './maintenance'
 
-const SECTIONS = ['sessions', 'system', 'usage'] as const satisfies readonly CommandCenterSection[]
+export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+
+const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+
+const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
+const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -125,6 +131,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
+  const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
+  const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('ALL')
+  const [logQuery, setLogQuery] = useState('')
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
@@ -165,8 +174,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       const [nextStatus, nextLogs] = await Promise.all([
         getStatus(),
         getLogs({
-          file: 'agent',
-          lines: 120
+          file: logFile,
+          level: logLevel,
+          lines: 200
         })
       ])
 
@@ -177,7 +187,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     } finally {
       setSystemLoading(false)
     }
-  }, [])
+  }, [logFile, logLevel])
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -203,10 +213,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [])
 
   useEffect(() => {
-    if (section === 'system' && !status && !systemLoading) {
+    // Refetch when the panel opens and whenever the log file/level filters
+    // change (refreshSystem's identity tracks them).
+    if (section === 'system') {
       void refreshSystem()
     }
-  }, [refreshSystem, section, status, systemLoading])
+  }, [refreshSystem, section])
 
   useEffect(() => {
     if (section === 'usage') {
@@ -223,6 +235,17 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+
+  // Client-side substring filter over the fetched tail (matches `hermes logs --search`).
+  const visibleLogs = useMemo(() => {
+    const needle = logQuery.trim().toLowerCase()
+
+    if (!needle) {
+      return logs
+    }
+
+    return logs.filter(line => line.toLowerCase().includes(needle))
+  }, [logQuery, logs])
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
@@ -272,7 +295,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={value === 'sessions' ? MessageCircle : value === 'system' ? Activity : BarChart3}
+              icon={
+                value === 'sessions'
+                  ? MessageCircle
+                  : value === 'system'
+                    ? Activity
+                    : value === 'maintenance'
+                      ? Wrench
+                      : BarChart3
+              }
               key={value}
               label={cc.sections[value]}
               onClick={() => setSection(value)}
@@ -368,6 +399,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               period={usagePeriod}
               usage={usage}
             />
+          ) : section === 'maintenance' ? (
+            <MaintenancePanel />
           ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
               <div>
@@ -416,10 +449,31 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               </div>
 
               <div className="flex min-h-0 flex-col pt-2">
-                <div className="mb-2 flex items-center justify-between">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
                     {cc.recentLogs}
                   </span>
+                  <div className="flex items-center gap-2">
+                    <SegmentedControl
+                      onChange={id => setLogFile(id)}
+                      options={LOG_FILES.map(value => ({ id: value, label: value }))}
+                      value={logFile}
+                    />
+                    <SegmentedControl
+                      onChange={id => setLogLevel(id)}
+                      options={LOG_LEVELS.map(value => ({
+                        id: value,
+                        label: value === 'ALL' ? 'all' : value.toLowerCase()
+                      }))}
+                      value={logLevel}
+                    />
+                    <SearchField
+                      containerClassName="w-44"
+                      onChange={next => setLogQuery(next)}
+                      placeholder={cc.logSearchPlaceholder}
+                      value={logQuery}
+                    />
+                  </div>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -431,7 +485,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)"
                   data-selectable-text="true"
                 >
-                  {logs.length ? logs.join('\n') : cc.noLogs}
+                  {visibleLogs.length ? visibleLogs.join('\n') : cc.noLogs}
                 </pre>
               </div>
             </div>

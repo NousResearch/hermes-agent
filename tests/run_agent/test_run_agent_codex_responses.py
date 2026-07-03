@@ -958,7 +958,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
 def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):
     """An xai-oauth agent constructed with a non-singleton credential
     (e.g. a manual pool entry whose tokens belong to a different account
-    than the loopback_pkce singleton, or an explicit ``api_key=`` arg)
+    than the device_code singleton, or an explicit ``api_key=`` arg)
     MUST NOT silently adopt the singleton's tokens on a 401 reactive
     refresh.  Otherwise a 401 mid-conversation would re-route the rest
     of the conversation onto a different account, with no user feedback.

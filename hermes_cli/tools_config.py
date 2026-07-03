@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-
 from hermes_cli.config import (
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
@@ -33,6 +32,12 @@ from tools.tool_backend_helpers import fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def subprocess_text_kwargs():
+    if sys.platform == "win32":
+        return {"encoding": "utf-8", "errors": "replace"}
+    return {}
 
 # Platforms already warned about an all-invalid platform_toolsets list, so the
 # runtime check in _get_platform_tools warns once per platform instead of on
@@ -641,6 +646,7 @@ def _pip_install(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, timeout=timeout,
                 env=uv_env,
+                **subprocess_text_kwargs(),
             )
             if result.returncode == 0:
                 return result
@@ -655,6 +661,7 @@ def _pip_install(
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            **subprocess_text_kwargs(),
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -663,6 +670,7 @@ def _pip_install(
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                **subprocess_text_kwargs(),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
@@ -674,6 +682,7 @@ def _pip_install(
     return subprocess.run(
         pip_cmd + ["install", *args],
         capture_output=capture_output, text=True, timeout=timeout,
+        **subprocess_text_kwargs(),
     )
 
 

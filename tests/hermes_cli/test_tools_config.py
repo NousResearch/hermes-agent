@@ -1,6 +1,7 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,6 +27,29 @@ from hermes_cli.tools_config import (
     _visible_providers,
     tools_command,
 )
+
+
+def test_pip_install_uses_explicit_text_encoding(monkeypatch):
+    import hermes_cli.tools_config as tc
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(
+        tc.shutil, "which", lambda name: "uv" if name == "uv" else None
+    )
+    monkeypatch.setattr(tc.subprocess, "run", fake_run)
+    monkeypatch.setattr(tc.sys, "platform", "win32")
+
+    result = tc._pip_install(["demo==1"])
+
+    assert result.returncode == 0
+    assert calls
+    assert calls[0][1]["encoding"] == "utf-8"
+    assert calls[0][1]["errors"] == "replace"
 
 
 def test_agent_disabled_toolsets_suppresses_across_platforms():

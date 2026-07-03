@@ -10176,6 +10176,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     force=True,
                     defer_context_engine_notification=True,
                 )
+
+                # If _compress_context returned unchanged because a
+                # concurrent compression lock is held, tell the user
+                # clearly instead of showing the misleading
+                # "No changes from compression" no-op text.
+                if getattr(self.agent, "_compression_skipped_due_to_lock", None):
+                    holder = self.agent._compression_skipped_due_to_lock
+                    if isinstance(holder, str):
+                        print(f"  ⏳ Compression already in progress for this "
+                              f"session (holder: {holder}). "
+                              f"Please wait for it to finish.")
+                    else:
+                        print(f"  ⏳ Compression already in progress for this "
+                              f"session. Please wait for it to finish.")
+                    self.agent._compression_skipped_due_to_lock = None
+                    return
+
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
                 self.conversation_history = compressed

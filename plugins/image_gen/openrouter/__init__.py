@@ -97,16 +97,10 @@ def _to_image_url_part(ref: str) -> Optional[str]:
     if ref.startswith(("http://", "https://", "data:")):
         return ref
     path = Path(ref)
-    try:
-        from agent.file_safety import get_read_block_error
+    # Enforce the shared credential-read guard before inlining local bytes.
+    from agent.file_safety import raise_if_read_blocked
 
-        blocked = get_read_block_error(ref)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - keep local image refs best-effort
-        logger.debug("OpenRouter image input read guard unavailable: %s", exc)
+    raise_if_read_blocked(ref)
     try:
         raw = path.read_bytes()
     except OSError as exc:

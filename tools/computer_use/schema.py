@@ -139,6 +139,20 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 },
                 "description": "Modifier keys held during the action.",
             },
+            "dispatch": {
+                "type": "string",
+                "enum": ["background", "foreground", "auto"],
+                "description": (
+                    "Optional input delivery mode for mutating actions "
+                    "(click, drag, scroll, type, key, set_value). "
+                    "`background` (default) preserves the normal co-work "
+                    "model and does not steal focus. `foreground` uses real "
+                    "foreground input where supported, which can be more "
+                    "reliable for Windows Explorer desktop icons and Qt apps "
+                    "such as Telegram/WeChat but may disrupt the user. `auto` "
+                    "asks the backend to choose or fall back when supported."
+                ),
+            },
             # ── drag ───────────────────────────────────────────────
             "from_element": {"type": "integer",
                               "description": "Source element index (drag)."},

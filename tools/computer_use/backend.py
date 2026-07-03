@@ -112,6 +112,7 @@ class ComputerUseBackend(ABC):
         button: str = "left",           # left | right | middle
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,  # background | foreground | auto
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -124,6 +125,7 @@ class ComputerUseBackend(ABC):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,  # background | foreground | auto
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -136,14 +138,15 @@ class ComputerUseBackend(ABC):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,  # background | foreground | auto
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
-    def type_text(self, text: str) -> ActionResult: ...
+    def type_text(self, text: str, dispatch: Optional[str] = None) -> ActionResult: ...
 
     @abstractmethod
-    def key(self, keys: str) -> ActionResult:
+    def key(self, keys: str, dispatch: Optional[str] = None) -> ActionResult:
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     # ── Introspection ───────────────────────────────────────────────
@@ -157,7 +160,8 @@ class ComputerUseBackend(ABC):
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+    def set_value(self, value: str, element: Optional[int] = None,
+                  dispatch: Optional[str] = None) -> ActionResult:
         """Set a native value on an element (e.g. AXPopUpButton selection).
 
         `element` is the 1-based SOM index returned by a prior capture call.

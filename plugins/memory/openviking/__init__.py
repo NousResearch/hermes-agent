@@ -384,6 +384,13 @@ class _VikingClient:
         """Validate authenticated OpenViking access without mutating state."""
         return self.get("/api/v1/system/status")
 
+    def authenticated_user_id(self) -> str:
+        """Return the user id reported by the authenticated OpenViking request."""
+        payload = self.validate_auth()
+        result = payload.get("result", {}) if isinstance(payload, dict) else {}
+        user = result.get("user", "") if isinstance(result, dict) else ""
+        return str(user or "").strip()
+
     def validate_root_access(self) -> dict:
         """Validate ROOT access against a read-only admin endpoint."""
         return self.get("/api/v1/admin/accounts")
@@ -1793,6 +1800,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        self._memory_user_id = ""
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the
         # MemoryManager's background sync executor while on_session_end /
         # on_session_switch run on the caller's thread, so the snapshot+reset
@@ -2160,6 +2168,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     warning_callback,
                 )
                 self._client = None
+            elif self._api_key:
+                self._memory_user_id = self._user or self._client.authenticated_user_id()
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -3235,7 +3245,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _build_memory_uri(self, subdir: str) -> str:
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        user_part = f"{self._memory_user_id.strip()}/" if self._memory_user_id else ""
+        return f"viking://user/{user_part}peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     @staticmethod
     def _memory_parent_uri(uri: str) -> str:

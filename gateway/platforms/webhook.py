@@ -708,19 +708,12 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately.  Wrap the agent run
-        # so that the per-delivery webhook session is marked ended in state.db
-        # once the run finishes.  A webhook delivery uses a unique one-shot
-        # session (delivery_id is baked into the session key above), so it
-        # will never receive another turn — it must be closed on completion,
-        # exactly like a cron run closes its session with "cron_complete"
-        # (cron/scheduler.py).  Without this, webhook sessions keep
-        # ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
-        # rows with ``ended_at`` set, so unclosed webhook sessions accumulate
-        # unbounded and drive state.db bloat (the ghost-session leak).
-        task = asyncio.create_task(
-            self._run_delivery_and_close(event, session_chat_id)
-        )
+        # Non-blocking — return 202 Accepted immediately.  The per-delivery
+        # session is closed by the ``on_processing_complete`` override below
+        # once the agent run actually finishes (``handle_message`` itself is
+        # fire-and-forget: it spawns ``_process_message_background`` and
+        # returns before the run starts, so nothing can be closed here).
+        task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
@@ -734,25 +727,29 @@ class WebhookAdapter(BasePlatformAdapter):
             status=202,
         )
 
-    async def _run_delivery_and_close(
-        self, event: "MessageEvent", session_chat_id: str
+    async def on_processing_complete(
+        self, event: "MessageEvent", outcome: Any
     ) -> None:
-        """Run the agent for one webhook delivery, then close its session.
+        """Close the per-delivery webhook session once its run finishes.
 
         A webhook delivery is one-shot: the ``delivery_id`` is baked into the
-        session key so the session will never receive a second turn.  Mirror
+        session key, so the session will never receive a second turn.  Mirror
         the cron completion path (``cron/scheduler.py`` →
         ``end_session(..., "cron_complete")``) by marking the session ended
-        once the run finishes.  ``end_session()`` is first-reason-wins and
-        no-ops on an already-ended row, so this is safe even when a terminal
-        path (compression split, ``/new``, ``agent_close``) already closed it.
-        The close runs in ``finally`` so an agent error still reaps the row —
-        otherwise the ghost-session leak persists on the failure path too.
+        when the run completes.  Without this, webhook sessions keep
+        ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
+        rows with ``ended_at`` set, so unclosed webhook sessions accumulate
+        unbounded and drive state.db bloat (the ghost-session leak).
+
+        This hook is the one seam that runs at the TRUE end of the run:
+        ``BasePlatformAdapter._process_message_background`` fires it after the
+        message handler returns, on the success, failure, and cancellation
+        paths alike — so error runs are reaped too.  (``handle_message`` is
+        fire-and-forget; wrapping IT closes before the run even starts.)
+        ``end_session()`` is first-reason-wins and no-ops on an already-ended
+        row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
-        try:
-            await self.handle_message(event)
-        finally:
-            await self._end_webhook_session(event, session_chat_id)
+        await self._end_webhook_session(event, event.source.chat_id)
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

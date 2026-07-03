@@ -1775,6 +1775,104 @@ class TestDeleteAndExport:
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
+    def test_delete_session_cascades_compression_chain(self, db):
+        """Deleting a compression tip must also remove the chain root."""
+        import time as _time
+
+        t0 = _time.time() - 3600
+        # root → mid (compression continuation) → tip
+        db.create_session("root", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0, "root")
+        )
+        db.append_message("root", "user", "first")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, "root"),
+        )
+
+        db.create_session("mid", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "mid")
+        )
+        db.append_message("mid", "user", "second")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 200, "mid"),
+        )
+
+        db.create_session("tip", "cli", parent_session_id="mid")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip")
+        )
+        db.append_message("tip", "user", "third")
+        db._conn.commit()
+
+        # Delete the tip — root and mid should be cascade-deleted too.
+        assert db.delete_session("tip") is True
+        assert db.get_session("tip") is None
+        assert db.get_session("mid") is None
+        assert db.get_session("root") is None
+
+    def test_delete_session_chain_root_cascades_to_tip(self, db):
+        """Deleting a compression root must also remove the tip."""
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0, "root")
+        )
+        db.append_message("root", "user", "first")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, "root"),
+        )
+
+        db.create_session("tip", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip")
+        )
+        db.append_message("tip", "user", "second")
+        db._conn.commit()
+
+        assert db.delete_session("root") is True
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+
+    def test_delete_sessions_bulk_cascades_compression_chains(self, db):
+        """Bulk delete must expand compression chains for every id."""
+        import time as _time
+
+        t0 = _time.time() - 3600
+        # Chain 1: root1 → tip1
+        db.create_session("root1", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1")
+        )
+        db.append_message("root1", "user", "a")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, "root1"),
+        )
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1")
+        )
+        db.append_message("tip1", "user", "b")
+
+        # Standalone session (no chain)
+        db.create_session("standalone", "cli")
+        db.append_message("standalone", "user", "c")
+        db._conn.commit()
+
+        # Bulk delete tip1 + standalone — root1 should be cascade-deleted.
+        deleted = db.delete_sessions(["tip1", "standalone"])
+        assert deleted == 3  # tip1 + root1 + standalone
+        assert db.get_session("tip1") is None
+        assert db.get_session("root1") is None
+        assert db.get_session("standalone") is None
+
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
         assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"

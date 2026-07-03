@@ -118,6 +118,90 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
 
+
+def _collect_compression_chain_ids(
+    conn: sqlite3.Connection, seed_ids: List[str]
+) -> List[str]:
+    """Walk compression chains bidirectionally from *seed_ids* and return
+    every session id that belongs to the same logical conversation.
+
+    When the dashboard lists sessions with ``project_compression_tips=True``,
+    compression chain roots are projected to show the tip's id / title /
+    message count.  If a user bulk-deletes the displayed (tip) id, the
+    underlying root — which still satisfies ``_LISTABLE_CHILD_SQL`` —
+    survives and reappears on the next page load, making the delete look
+    partial.
+
+    This helper walks **upstream** (child → parent where
+    ``end_reason='compression'``) and **downstream** (parent → child via
+    the same ``get_compression_tip`` ordering) so that deleting *any*
+    member of a chain deletes the entire chain.
+
+    Returns additional ids to delete (excludes *seed_ids* themselves so
+    callers don't double-count).
+    """
+    extra: set[str] = set()
+    # --- Walk upstream: find compression roots ---
+    queue = list(seed_ids)
+    visited_up: set[str] = set(seed_ids)
+    while queue:
+        current = queue.pop()
+        cursor = conn.execute(
+            "SELECT p.id FROM sessions p "
+            "JOIN sessions c ON c.parent_session_id = p.id "
+            "WHERE c.id = ? AND p.end_reason = 'compression'",
+            (current,),
+        )
+        row = cursor.fetchone()
+        if row:
+            pid = row["id"]
+            if pid not in visited_up:
+                visited_up.add(pid)
+                extra.add(pid)
+                queue.append(pid)
+
+    # --- Walk downstream: find compression tips ---
+    queue = list(seed_ids) + list(extra)
+    visited_down: set[str] = set(seed_ids) | extra
+    while queue:
+        current = queue.pop()
+        cursor = conn.execute(
+            """
+            SELECT child.id
+            FROM sessions parent
+            JOIN sessions child ON child.parent_session_id = parent.id
+            WHERE parent.id = ?
+              AND parent.end_reason = 'compression'
+              AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+              AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+              AND COALESCE(child.source, '') != 'tool'
+            ORDER BY
+              CASE
+                WHEN child.end_reason = 'compression' THEN 0
+                WHEN child.ended_at IS NULL THEN 1
+                ELSE 2
+              END,
+              COALESCE(
+                (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                child.started_at
+              ) DESC,
+              child.started_at DESC,
+              child.id DESC
+            LIMIT 1
+            """,
+            (current,),
+        )
+        row = cursor.fetchone()
+        if row:
+            cid = row["id"]
+            if cid not in visited_down:
+                visited_down.add(cid)
+                extra.add(cid)
+                queue.append(cid)
+
+    return list(extra)
+
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -4720,6 +4804,7 @@ class SessionDB:
         session. Returns True if the session was found and deleted.
         """
         removed_delegate_ids: List[str] = []
+        removed_chain_ids: List[str] = []
 
         def _do(conn):
             cursor = conn.execute(
@@ -4727,21 +4812,28 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
+            # Expand to include entire compression chain (#57543).
+            chain_extras = _collect_compression_chain_ids(conn, [session_id])
+            all_ids = [session_id] + chain_extras
+            removed_delegate_ids.extend(_delete_delegate_children(conn, all_ids))
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
+            ph = ",".join("?" * len(all_ids))
             conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                "WHERE parent_session_id = ?",
-                (session_id,),
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({ph})",
+                all_ids,
             )
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", all_ids)
+            conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", all_ids)
+            removed_chain_ids.extend(chain_extras)
             return True
 
         deleted = self._execute_write(_do)
         if deleted:
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
+            for chain_id in removed_chain_ids:
+                self._remove_session_files(sessions_dir, chain_id)
             self._remove_session_files(sessions_dir, session_id)
         return bool(deleted)
 
@@ -4839,6 +4931,15 @@ class SessionDB:
             existing = [row["id"] for row in cursor.fetchall()]
             if not existing:
                 return 0
+
+            # Expand the deletion set to include entire compression
+            # chains.  The dashboard projects chain roots to show the
+            # tip's id/title, so a bulk-delete sends tip ids; without
+            # expansion the orphaned root survives and reappears on the
+            # next page load (#57543).
+            chain_extras = _collect_compression_chain_ids(conn, existing)
+            if chain_extras:
+                existing = list(set(existing) | set(chain_extras))
 
             existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))

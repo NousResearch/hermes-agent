@@ -679,3 +679,44 @@ def test_main_console_subcommand_smoke(_isolate_hermes_home):
 
     assert result.returncode == 0
     assert "Hermes Console" in result.stdout
+
+
+def test_hosted_mcp_add_rejects_duplicate_url_scheme_bypass():
+    """A second --url with a non-http(s) scheme must not slip past the hosted
+    `mcp add` policy just because the first --url is allowed.
+
+    The guard used to validate only the first --url (`_flag_value`, first-wins)
+    while argparse executes the command with the LAST --url (store, last-wins),
+    so `--url https://ok --url ftp://evil` bypassed the http/https restriction.
+    """
+    from hermes_cli.console_engine import (
+        ConsoleCommandError,
+        _enforce_hosted_line_policy,
+    )
+
+    # Duplicated --url smuggling a non-http(s) scheme past the first-value
+    # check must now raise.
+    with pytest.raises(ConsoleCommandError):
+        _enforce_hosted_line_policy(
+            ("mcp", "add"),
+            ["myserver", "--url", "https://ok.example", "--url", "ftp://evil"],
+        )
+
+    # Same bypass via the --url=VALUE equals form must also raise.
+    with pytest.raises(ConsoleCommandError):
+        _enforce_hosted_line_policy(
+            ("mcp", "add"),
+            ["myserver", "--url=https://ok.example", "--url=ftp://evil"],
+        )
+
+    # No regression: a single valid https URL is still accepted.
+    _enforce_hosted_line_policy(
+        ("mcp", "add"),
+        ["myserver", "--url", "https://ok.example"],
+    )
+
+    # No regression: two URLs that are both http/https are still accepted.
+    _enforce_hosted_line_policy(
+        ("mcp", "add"),
+        ["myserver", "--url", "https://ok.example", "--url", "http://also-ok.example"],
+    )

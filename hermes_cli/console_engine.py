@@ -1424,6 +1424,26 @@ def _flag_value(args: Sequence[str], flag: str) -> str | None:
     return None
 
 
+def _flag_values(args: Sequence[str], flag: str) -> list[str]:
+    """Return every occurrence of ``flag``'s value (both ``--flag X`` and
+    ``--flag=X`` forms).
+
+    ``_flag_value`` returns only the first occurrence (first-wins), but
+    argparse's ``store`` action is last-wins, so a security guard that reads
+    only the first value validates a different argument than the one the
+    command actually executes. Callers enforcing a policy on a repeatable flag
+    must check them all — see :func:`_enforce_hosted_line_policy`.
+    """
+    values: list[str] = []
+    prefix = f"{flag}="
+    for index, arg in enumerate(args):
+        if arg == flag:
+            values.append(args[index + 1] if index + 1 < len(args) else "")
+        elif arg.startswith(prefix):
+            values.append(arg[len(prefix) :])
+    return values
+
+
 def _hosted_config_key_allowed(key: str) -> bool:
     normalized = key.strip().lower()
     if normalized in HOSTED_CONFIG_BLOCKED_NAMES:
@@ -1456,17 +1476,24 @@ def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> N
                 "Hosted Hermes Console does not add MCP presets directly. "
                 "Use `mcp install <catalog-name>`."
             )
-        url = _flag_value(args, "--url")
-        if not url:
+        # Validate EVERY --url occurrence, not just the first. The command is
+        # executed via argparse (`parser.parse_args`), whose store action is
+        # last-wins, so a first-wins guard (`_flag_value`) would validate a
+        # different value than the one that actually runs — e.g.
+        # `--url https://ok --url ftp://evil` would pass the check on the
+        # https URL while argparse forwards the ftp one. Rejecting any
+        # non-http(s) scheme closes the bypass regardless of ordering.
+        urls = _flag_values(args, "--url")
+        if not urls:
             raise ConsoleCommandError(
                 "Hosted Hermes Console requires `mcp add` to use --url with "
                 "an HTTP/SSE endpoint."
             )
-        scheme = urlparse(url).scheme.lower()
-        if scheme not in {"http", "https"}:
-            raise ConsoleCommandError(
-                "Hosted Hermes Console only accepts http:// or https:// MCP URLs."
-            )
+        for url in urls:
+            if urlparse(url).scheme.lower() not in {"http", "https"}:
+                raise ConsoleCommandError(
+                    "Hosted Hermes Console only accepts http:// or https:// MCP URLs."
+                )
         return
 
     if path in {("cron", "create"), ("cron", "edit")}:

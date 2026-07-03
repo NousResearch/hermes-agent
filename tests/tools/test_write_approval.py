@@ -439,3 +439,152 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+# ---------------------------------------------------------------------------
+# 3-state mode API: off | on | background_only  (background_only stages only
+# background-review writes; foreground user writes flow freely).
+# ---------------------------------------------------------------------------
+
+def _set_mode(subsystem, value):
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault(subsystem, {})["write_approval"] = value
+    cfg.save_config(c)
+
+
+def test_write_approval_mode_three_state(hermes_home):
+    from tools import write_approval as wa
+    _set_mode("memory", False)
+    assert wa.write_approval_mode("memory") == "off"
+    _set_mode("memory", True)
+    assert wa.write_approval_mode("memory") == "on"
+    _set_mode("memory", "background_only")
+    assert wa.write_approval_mode("memory") == "background_only"
+
+
+def test_enabled_is_compat_wrapper(hermes_home):
+    from tools import write_approval as wa
+    _set_mode("memory", "background_only")
+    # enabled() stays True for any non-off mode (back-compat).
+    assert wa.write_approval_enabled("memory") is True
+    _set_mode("memory", False)
+    assert wa.write_approval_enabled("memory") is False
+
+
+def test_background_only_allows_foreground(hermes_home):
+    from tools import write_approval as wa
+    _set_mode("memory", "background_only")
+    # foreground origin (default) → allow (no gate).
+    decision = wa.evaluate_gate("memory", inline_summary="s", inline_detail="d")
+    assert decision.allow is True
+    assert decision.stage is False
+
+
+def test_background_only_stages_background(hermes_home):
+    from tools import write_approval as wa
+    from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+    _set_mode("memory", "background_only")
+    token = set_current_write_origin("background_review")
+    try:
+        decision = wa.evaluate_gate("memory", inline_summary="s", inline_detail="d")
+    finally:
+        reset_current_write_origin(token)
+    assert decision.stage is True
+    assert decision.allow is False
+
+
+def test_background_only_memory_foreground_writes_directly(hermes_home):
+    from tools.memory_tool import memory_tool, MemoryStore
+    _set_mode("memory", "background_only")
+    store = MemoryStore()
+    r = json.loads(memory_tool("add", "memory", "foreground entry", store=store))
+    # foreground write under background_only must apply, not stage.
+    assert not r.get("staged")
+
+
+def test_background_only_memory_background_writes_stage(hermes_home):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+    _set_mode("memory", "background_only")
+    store = MemoryStore()
+    token = set_current_write_origin("background_review")
+    try:
+        r = json.loads(memory_tool("add", "memory", "bg entry", store=store))
+    finally:
+        reset_current_write_origin(token)
+    assert r.get("staged") is True
+
+
+# ---------------------------------------------------------------------------
+# CLI 3-state + /memory show (Step B continued)
+# ---------------------------------------------------------------------------
+
+def test_set_approval_accepts_background_only(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    captured = {}
+    out = handle_pending_subcommand(
+        "memory", ["approval", "background_only"], memory_store=None,
+        set_mode_fn=lambda value: captured.__setitem__("v", value),
+    )
+    assert captured.get("v") == "background_only"
+    assert "background_only" in out
+
+
+def test_fmt_state_shows_background_only(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    _set_mode("memory", "background_only")
+    out = handle_pending_subcommand("memory", ["approval"], memory_store=None)
+    assert "background_only" in out
+
+
+def test_memory_show_returns_full_payload(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write(
+        "memory",
+        {"action": "add", "target": "memory", "content": "FULL_PAYLOAD_MARKER_XYZ"},
+        summary="s: FULL_PAYLOAD", origin="background_review",
+    )
+    out = handle_pending_subcommand("memory", ["show", rec["id"]], memory_store=None)
+    assert "FULL_PAYLOAD_MARKER_XYZ" in out
+
+
+# ---------------------------------------------------------------------------
+# Integration: origin binding (turn_context.py:133 contract) + config round-trip
+# ---------------------------------------------------------------------------
+
+def test_origin_binding_drives_background_only_staging(hermes_home):
+    """Binding write-origin from an agent's _memory_write_origin (exactly as
+    turn_context does) makes a background_only memory write stage."""
+    from tools.skill_provenance import (
+        set_current_write_origin, reset_current_write_origin, get_current_write_origin,
+    )
+    from tools.memory_tool import memory_tool, MemoryStore
+    _set_mode("memory", "background_only")
+
+    class _ForkAgent:
+        _memory_write_origin = "background_review"
+
+    # Mirror turn_context.py:133 exactly.
+    token = set_current_write_origin(
+        getattr(_ForkAgent, "_memory_write_origin", "assistant_tool")
+    )
+    try:
+        assert get_current_write_origin() == "background_review"
+        r = json.loads(memory_tool("add", "memory", "bg via binding", store=MemoryStore()))
+    finally:
+        reset_current_write_origin(token)
+    assert r.get("staged") is True
+
+
+def test_background_only_config_round_trip(hermes_home):
+    """'background_only' survives save→load and resolves to the right mode
+    (no bool coercion clobbering it)."""
+    from tools import write_approval as wa
+    _set_mode("memory", "background_only")
+    import hermes_cli.config as cfg
+    reloaded = cfg.load_config()
+    assert reloaded.get("memory", {}).get("write_approval") == "background_only"
+    assert wa.write_approval_mode("memory") == "background_only"
+    assert wa.write_approval_enabled("memory") is True

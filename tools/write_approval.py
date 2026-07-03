@@ -71,22 +71,35 @@ CONFIG_KEY = "write_approval"
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def write_approval_enabled(subsystem: str) -> bool:
-    """Return whether the approval gate is enabled for ``subsystem``.
+def write_approval_mode(subsystem: str) -> str:
+    """Return the approval gate mode for ``subsystem``: ``off``/``on``/``background_only``.
 
-    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
-    ``False`` (gate off — writes flow freely) for any unset / invalid value so
-    existing installs keep their current behaviour until the user opts in.
+    Reads ``<subsystem>.write_approval`` from config.yaml. This is the primary
+    API — ``evaluate_gate`` interprets the three modes directly:
+      * ``off``             — gate off, all writes flow freely (default).
+      * ``on``              — gate on for every origin (foreground + background).
+      * ``background_only`` — stage only background-review writes; foreground
+                              user writes flow freely.
+    Defaults to ``off`` for any unset / invalid value so existing installs keep
+    their current behaviour until the user opts in.
     """
     if subsystem not in _SUBSYSTEMS:
-        return False
+        return "off"
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
     except Exception:
-        return False
-    return _normalize_enabled(raw)
+        return "off"
+    return _normalize_mode(raw)
+
+
+def write_approval_enabled(subsystem: str) -> bool:
+    """Back-compat wrapper: True when the gate is not ``off`` (``on`` or
+    ``background_only``). New code should call :func:`write_approval_mode` and
+    branch on the specific mode.
+    """
+    return write_approval_mode(subsystem) != "off"
 
 
 def _normalize_enabled(value: Any) -> bool:
@@ -101,6 +114,24 @@ def _normalize_enabled(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
     return False
+
+
+def _normalize_mode(value: Any) -> str:
+    """Coerce a config value to a 3-state mode: ``off``/``on``/``background_only``.
+
+    Accepts real bools (True→on, False→off) and strings. ``background_only`` and
+    its aliases map to the background-only mode; the usual truthy strings map to
+    ``on``; everything else (incl. YAML ``off``) maps to ``off``.
+    """
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"background_only", "background", "bg", "background_review"}:
+            return "background_only"
+        if v in {"on", "true", "yes", "1", "approve", "enabled"}:
+            return "on"
+    return "off"
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +302,16 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    mode = write_approval_mode(subsystem)
+    if mode == "off":
         return GateDecision(allow=True)
 
     background = is_background()
+
+    # background_only: only stage background-review writes. Foreground
+    # user-directed writes flow freely (no gate), so normal use is unaffected.
+    if mode == "background_only" and not background:
+        return GateDecision(allow=True)
 
     # Skills always stage — a SKILL.md is too large to review inline, and a
     # background skill write happens in a daemon thread with no user present.

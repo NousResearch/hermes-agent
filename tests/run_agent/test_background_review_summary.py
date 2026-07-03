@@ -128,3 +128,55 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+# ---------------------------------------------------------------------------
+# Staged (write-approval background_only) proposals — issue: staged bg-review
+# writes must surface as "proposed" with pending id + approval command, in
+# both on/verbose modes, and must NOT appear when notification_mode == "off".
+# ---------------------------------------------------------------------------
+
+def _staged_skill_msg(tool_call_id, pending_id="abc123", gist="add error-handling tip"):
+    return _tool_msg(tool_call_id, {
+        "success": True, "staged": True, "pending_id": pending_id, "gist": gist,
+        "message": (f"Staged for approval (skills.write_approval is on). "
+                    f"Not yet saved — review with /skills pending."),
+    })
+
+
+def _staged_memory_msg(tool_call_id, pending_id="def456"):
+    return _tool_msg(tool_call_id, {
+        "success": True, "staged": True, "pending_id": pending_id,
+        "message": (f"Staged for approval (memory.write_approval is on). "
+                    f"Not yet saved — review with /memory pending."),
+    })
+
+
+def test_staged_skill_surfaces_as_proposed_with_id_and_commands():
+    actions = _summarize([_staged_skill_msg("c1")], prior_snapshot=[])
+    joined = "\n".join(actions)
+    assert "proposed" in joined.lower()
+    assert "add error-handling tip" in joined          # gist preview
+    assert "/skills approve abc123" in joined
+    assert "/skills diff abc123" in joined
+    # must NOT be mislabeled as applied
+    assert "updated" not in joined.lower()
+
+
+def test_staged_memory_surfaces_with_show_and_approve():
+    actions = _summarize([_staged_memory_msg("c2")], prior_snapshot=[])
+    joined = "\n".join(actions)
+    assert "proposed" in joined.lower()
+    assert "/memory show def456" in joined
+    assert "/memory approve def456" in joined
+
+
+def test_staged_shows_in_verbose_mode():
+    actions = _summarize([_staged_skill_msg("c3")], prior_snapshot=[], notification_mode="verbose")
+    assert any("proposed" in a.lower() for a in actions)
+
+
+def test_staged_suppressed_when_notification_off():
+    actions = _summarize([_staged_skill_msg("c4"), _staged_memory_msg("c5")],
+                         prior_snapshot=[], notification_mode="off")
+    assert actions == []

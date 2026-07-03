@@ -100,10 +100,15 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.cjs')
 
-  assert.match(source, /windowsHide: false/)
   assert.match(source, /handOffWindowsBootstrapRecovery/)
   assert.match(source, /'--repair', '--branch'/)
   assert.match(source, /'--update', '--branch'/)
+  assert.doesNotMatch(source, /windowsHide: false/)
+  const updaterSpawns = [...source.matchAll(/spawn\(\s*updater,\s*updaterArgs/g)]
+  assert.equal(updaterSpawns.length, 2, 'expected both in-app update and bootstrap recovery updater spawns')
+  for (const match of updaterSpawns) {
+    requireHiddenChildOptions(source.slice(match.index), /spawn\(\s*updater,\s*updaterArgs/)
+  }
   assert.match(source, /nodePty\.spawn\(command, args/)
   assert.match(source, /spawn\('cmd\.exe', \['\/c', 'start'/)
 })

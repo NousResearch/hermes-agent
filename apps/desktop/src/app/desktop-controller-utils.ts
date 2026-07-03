@@ -7,5 +7,7 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
     return false
   }
 
-  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+  return a.every(
+    (session, i) => session.id === b[i]?.id && session.title === b[i]?.title && session.pinned === b[i]?.pinned
+  )
 }

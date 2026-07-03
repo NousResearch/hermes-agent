@@ -389,9 +389,9 @@ export function DesktopController() {
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
-      unpinSession(pinId)
+      void unpinSession(pinId)
     } else {
-      pinSession(pinId)
+      void pinSession(pinId)
     }
   }, [])
 

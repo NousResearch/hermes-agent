@@ -8,7 +8,14 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
-import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import {
+  $pinnedSessionIds,
+  $sessionsLimit,
+  bumpSessionsLimit,
+  migrateLegacyPinnedSessions,
+  setSessionPinned,
+  SIDEBAR_SESSIONS_PAGE_SIZE
+} from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $messagingSessions,
@@ -75,6 +82,7 @@ interface UseSessionListActionsArgs {
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+  const legacyPinnedMigrationStartedRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
@@ -181,6 +189,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
+
+        if (!legacyPinnedMigrationStartedRef.current && result.sessions.some(session => 'pinned' in session)) {
+          legacyPinnedMigrationStartedRef.current = true
+          void migrateLegacyPinnedSessions(result.sessions, id => setSessionPinned(id, true)).catch(() => {
+            legacyPinnedMigrationStartedRef.current = false
+          })
+        }
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {

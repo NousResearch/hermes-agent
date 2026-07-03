@@ -257,7 +257,7 @@ def test_get_sessions_offloads_sessiondb_page(monkeypatch):
             assert kwargs["limit"] == 5
             assert kwargs["offset"] == 1
             assert kwargs["order_by_last_active"] is True
-            return [{"id": "s1", "ended_at": None, "last_active": 0, "archived": 0}]
+            return [{"id": "s1", "ended_at": None, "last_active": 0, "archived": 0, "pinned": 0}]
 
         def session_count(self, **kwargs):
             self._record()
@@ -273,7 +273,14 @@ def test_get_sessions_offloads_sessiondb_page(monkeypatch):
 
     assert result == {
         "sessions": [
-            {"id": "s1", "ended_at": None, "last_active": 0, "archived": False, "is_active": False}
+            {
+                "id": "s1",
+                "ended_at": None,
+                "last_active": 0,
+                "archived": False,
+                "pinned": False,
+                "is_active": False,
+            }
         ],
         "total": 1,
         "limit": 5,
@@ -411,6 +418,10 @@ def test_rename_session_offloads_sessiondb_update_and_title_read(monkeypatch):
             self._record()
             assert (session_id, archived) == ("sid", True)
 
+        def set_session_pinned(self, session_id, pinned):
+            self._record()
+            assert (session_id, pinned) == ("sid", True)
+
         def get_session_title(self, session_id):
             self._record()
             assert session_id == "sid"
@@ -424,10 +435,10 @@ def test_rename_session_offloads_sessiondb_update_and_title_read(monkeypatch):
     result = asyncio.run(
         web_server.rename_session_endpoint(
             "s",
-            web_server.SessionRename(title="New title", archived=True),
+            web_server.SessionRename(title="New title", archived=True, pinned=True),
         )
     )
 
-    assert result == {"ok": True, "title": "New title", "archived": True}
+    assert result == {"ok": True, "title": "New title", "archived": True, "pinned": True}
     assert db_threads
     assert all(thread_id != loop_thread for thread_id in db_threads)

@@ -3519,6 +3519,7 @@ async def get_sessions(
                 s["is_default_profile"] = profile_name == "default"
             # SQLite stores the flag as 0/1; expose a real JSON boolean.
             s["archived"] = bool(s.get("archived"))
+            s["pinned"] = bool(s.get("pinned"))
         return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
     except HTTPException:
         raise
@@ -3667,6 +3668,7 @@ def get_profiles_sessions(
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
+                s["pinned"] = bool(s.get("pinned"))
                 merged.append(s)
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
@@ -8194,6 +8196,7 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    pinned: Optional[bool] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
     profile: Optional[str] = None
@@ -8204,7 +8207,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session. Either field may be omitted. ``profile`` targets
+    restores the session; ``pinned`` updates the sidebar pin flag. Any field may
+    be omitted. ``profile`` targets
     another profile's session.
     """
     return await _session_db_read(
@@ -8213,6 +8217,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         body.profile,
         body.title,
         body.archived,
+        body.pinned,
     )
 
 
@@ -8221,6 +8226,7 @@ def _rename_session_record(
     profile: Optional[str],
     title: Optional[str],
     archived: Optional[bool],
+    pinned: Optional[bool],
 ):
     """Blocking session update/read; callers must offload it."""
     db = _open_session_db_for_profile(profile)
@@ -8228,10 +8234,10 @@ def _rename_session_record(
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if title is None and archived is None:
+        if title is None and archived is None and pinned is None:
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title' and/or 'archived'.",
+                detail="Nothing to update; provide 'title', 'archived', and/or 'pinned'.",
             )
         if title is not None:
             try:
@@ -8241,9 +8247,13 @@ def _rename_session_record(
                 raise HTTPException(status_code=400, detail=str(e))
         if archived is not None:
             db.set_session_archived(sid, archived)
+        if pinned is not None:
+            db.set_session_pinned(sid, pinned)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if archived is not None:
             result["archived"] = bool(archived)
+        if pinned is not None:
+            result["pinned"] = bool(pinned)
         return result
     finally:
         db.close()

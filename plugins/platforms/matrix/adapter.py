@@ -2266,6 +2266,72 @@ class MatrixAdapter(BasePlatformAdapter):
         client = self._client
         # Resume from the token stored during the initial sync.
         next_batch = await client.sync_store.get_next_batch()
+
+        def _sync_error_status(error: Any) -> Optional[int]:
+            for attr in ("http_status", "status", "status_code"):
+                value = getattr(error, attr, None)
+                if value is None:
+                    continue
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+            message = getattr(error, "message", None)
+            text = message if isinstance(message, str) else str(error)
+            for pattern in (
+                r"\bHTTP(?:/\d(?:\.\d)?)?\s+(401|403)\b",
+                r"\bhttp_status\s*[=:]\s*(401|403)\b",
+                r"\bstatus(?:_code)?\s*[=:]\s*(401|403)\b",
+                r"\b(401|403)\s*[:,-]\s*(?:unauthorized|forbidden)\b",
+                r"\b(403)\s*[:,-]\s*access denied\b",
+            ):
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+            return None
+
+        def _sync_error_code(error: Any) -> str:
+            value = getattr(error, "errcode", None) or getattr(error, "err_code", None)
+            return str(value or "").upper()
+
+        def _is_permanent_sync_auth_error(error: Any) -> bool:
+            status = _sync_error_status(error)
+            errcode = _sync_error_code(error)
+            if status == 401:
+                return True
+            if errcode in {"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_UNAUTHORIZED"}:
+                return True
+            message = getattr(error, "message", None)
+            if isinstance(message, str):
+                lower = message.lower()
+                return (
+                    "m_unknown_token" in lower
+                    or "unknown_token" in lower
+                    or "unauthorized" in lower
+                )
+            return False
+
+        def _is_forbidden_sync_error(error: Any) -> bool:
+            status = _sync_error_status(error)
+            errcode = _sync_error_code(error)
+            return status == 403 or errcode == "M_FORBIDDEN"
+
+        async def _reset_rejected_sync_cursor(error: Any) -> None:
+            nonlocal next_batch
+            logger.warning(
+                "Matrix: sync cursor rejected (%s) — resetting cursor and retrying",
+                error,
+            )
+            next_batch = None
+            try:
+                await client.sync_store.put_next_batch(None)
+            except Exception as store_exc:
+                logger.warning(
+                    "Matrix: failed to persist cleared sync cursor: %s",
+                    store_exc,
+                )
+            await asyncio.sleep(5)
+
         while not self._closing:
             try:
                 # Wrap in asyncio.wait_for to guard against TCP-level hangs
@@ -2281,15 +2347,21 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 # nio returns SyncError objects (not exceptions) for auth
                 # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
-                _sync_msg = getattr(sync_data, "message", None)
-                if _sync_msg and isinstance(_sync_msg, str):
-                    _lower = _sync_msg.lower()
-                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
-                        logger.error(
-                            "Matrix: permanent auth error from sync: %s — stopping",
-                            _sync_msg,
-                        )
-                        return
+                if _is_permanent_sync_auth_error(sync_data):
+                    logger.error(
+                        "Matrix: permanent auth error from sync: %s — stopping",
+                        sync_data,
+                    )
+                    return
+                if _is_forbidden_sync_error(sync_data):
+                    if next_batch:
+                        await _reset_rejected_sync_cursor(sync_data)
+                        continue
+                    logger.error(
+                        "Matrix: permanent permission error from sync: %s — stopping",
+                        sync_data,
+                    )
+                    return
 
                 if isinstance(sync_data, dict):
                     self._last_sync_ts = time.time()
@@ -2323,16 +2395,17 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
-                ):
+                if _is_permanent_sync_auth_error(exc):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc
+                    )
+                    return
+                if _is_forbidden_sync_error(exc):
+                    if next_batch:
+                        await _reset_rejected_sync_cursor(exc)
+                        continue
+                    logger.error(
+                        "Matrix: permanent permission error: %s — stopping sync", exc
                     )
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)

@@ -1891,6 +1891,142 @@ class TestMatrixSyncLoop:
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
     @pytest.mark.asyncio
+    async def test_sync_loop_resets_forbidden_incremental_sync_cursor(self):
+        """A rejected incremental cursor should reset and retry from fresh sync."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        class ForbiddenSyncCursorError(Exception):
+            http_status = 403
+            errcode = "M_FORBIDDEN"
+
+            def __str__(self):
+                return "Access Denied"
+
+        sync_since = []
+
+        async def _sync(**kwargs):
+            sync_since.append(kwargs.get("since"))
+            if len(sync_since) == 1:
+                raise ForbiddenSyncCursorError()
+            adapter._closing = True
+            return {"rooms": {"join": {}}, "next_batch": "s-recovered"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-poisoned")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()):
+            await adapter._sync_loop()
+
+        assert sync_since == ["s-poisoned", None]
+        assert [
+            call.args[0]
+            for call in mock_sync_store.put_next_batch.await_args_list
+        ] == [None, "s-recovered"]
+        fake_client.handle_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_resets_access_denied_incremental_sync_cursor_text(self):
+        """A string-only 403 access-denied cursor rejection should recover."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        sync_since = []
+
+        async def _sync(**kwargs):
+            sync_since.append(kwargs.get("since"))
+            if len(sync_since) == 1:
+                raise RuntimeError("403: Access Denied")
+            adapter._closing = True
+            return {"rooms": {"join": {}}, "next_batch": "s-recovered"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-poisoned")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()):
+            await adapter._sync_loop()
+
+        assert sync_since == ["s-poisoned", None]
+        assert [
+            call.args[0]
+            for call in mock_sync_store.put_next_batch.await_args_list
+        ] == [None, "s-recovered"]
+        fake_client.handle_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_unknown_token(self):
+        """True token revocation should stay terminal."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        class UnknownTokenError(Exception):
+            http_status = 401
+            errcode = "M_UNKNOWN_TOKEN"
+
+            def __str__(self):
+                return "M_UNKNOWN_TOKEN"
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=UnknownTokenError())
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once()
+        mock_sync_store.put_next_batch.assert_not_awaited()
+        fake_client.handle_sync.assert_not_called()
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_http_401_exception_text(self):
+        """String-only HTTP 401 exceptions should stay terminal."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=RuntimeError("HTTP 401 Unauthorized"))
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once()
+        mock_sync_store.put_next_batch.assert_not_awaited()
+        fake_client.handle_sync.assert_not_called()
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_sync_loop_reconciles_pending_invites(self):
         """Pending rooms.invite entries should be joined if callbacks were missed."""
         adapter = _make_adapter()

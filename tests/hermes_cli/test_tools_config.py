@@ -1676,3 +1676,83 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
+def test_save_platform_tools_clears_newly_enabled_from_disabled_toolsets():
+    """Enabling a toolset via the picker must remove it from
+    agent.disabled_toolsets, or _get_platform_tools() permanently masks it
+    back to OFF on the next read no matter what platform_toolsets says.
+
+    Blank Slate installs pre-populate disabled_toolsets with ~27 toolsets,
+    making the desktop Toolsets UI's enable toggle effectively a no-op for
+    any of them (issue #49995).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory", "browser"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # The toolset the user just enabled is cleared from the block-list...
+    assert "todo" not in config["agent"]["disabled_toolsets"]
+    # ...but toolsets the user did NOT touch stay disabled (no over-reach).
+    assert "memory" in config["agent"]["disabled_toolsets"]
+    assert "browser" in config["agent"]["disabled_toolsets"]
+    assert "todo" in config["platform_toolsets"]["cli"]
+
+
+def test_save_platform_tools_resolves_to_enabled_after_disabled_toolsets_reconcile():
+    """End-to-end: after _save_platform_tools() reconciles disabled_toolsets,
+    _get_platform_tools() must actually resolve the toolset as enabled --
+    this is the exact symptom from issue #49995 (toggle saves but the UI/agent
+    still reads it as OFF after reopen).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory"]},
+    }
+
+    # Before: todo is masked off despite not being in platform_toolsets yet.
+    assert "todo" not in _get_platform_tools(config, "cli")
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # After: todo must resolve as enabled, and untouched 'memory' must
+    # remain masked off.
+    resolved = _get_platform_tools(config, "cli")
+    assert "todo" in resolved
+    assert "memory" not in resolved
+
+
+def test_save_platform_tools_no_disabled_toolsets_is_noop():
+    """When agent.disabled_toolsets is absent or empty, the reconcile step
+    must be a complete no-op (no KeyError, no spurious 'agent' key creation).
+    """
+    config = {"platform_toolsets": {"cli": ["file", "terminal"]}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    assert "todo" in config["platform_toolsets"]["cli"]
+    # No 'agent' key should be fabricated when none existed.
+    assert "agent" not in config
+
+
+def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolsets():
+    """Turning a toolset OFF (not present in enabled_toolset_keys) must not
+    remove anything from agent.disabled_toolsets -- only toolsets the user
+    just explicitly enabled are reconciled.
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal", "todo"]},
+        "agent": {"disabled_toolsets": ["memory"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        # User unchecks 'todo' -- it's no longer in enabled_toolset_keys.
+        _save_platform_tools(config, "cli", {"file", "terminal"})
+
+    assert "todo" not in config["platform_toolsets"]["cli"]
+    # disabled_toolsets is untouched by a disable action.
+    assert config["agent"]["disabled_toolsets"] == ["memory"]

@@ -141,6 +141,118 @@ class TestGetAndPoll:
         assert result["exit_code"] == 0
 
 
+def test_request_close_terminal_without_sink_is_desktop_only_error(registry):
+    """No UI close sink wired (CLI/messaging) → clear desktop-only error, no raise."""
+    s = _make_session(sid="proc_close_nosink")
+    registry._running[s.id] = s
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "error"
+    assert "desktop" in result["error"].lower()
+
+
+def test_request_close_terminal_invokes_sink_without_killing(registry):
+    """With a sink wired, close routes (session, process_id) to the UI and leaves
+    the process running — close is a view drop, not a kill."""
+    s = _make_session(sid="proc_close_live")
+    registry._running[s.id] = s
+    calls = []
+    registry.on_close = lambda session, pid: calls.append((session, pid))
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "ok"
+    assert result["closed"] == "proc_close_live"
+    assert calls == [(s, "proc_close_live")]
+    # Still tracked as running — closing the tab must not reap the process.
+    assert s.id in registry._running
+
+
+def test_close_terminal_tool_requires_process_id():
+    """The desktop-gated close_terminal tool rejects a missing process_id."""
+    from tools.close_terminal_tool import close_terminal_tool
+
+    assert json.loads(close_terminal_tool(""))["error"]
+
+
+def test_close_terminal_tool_routes_to_registry(monkeypatch):
+    """close_terminal delegates to process_registry.request_close_terminal."""
+    import tools.close_terminal_tool as ct
+
+    seen = {}
+
+    def _fake_close(sid):
+        seen["sid"] = sid
+
+        return {"status": "ok", "closed": sid}
+
+    monkeypatch.setattr(ct.process_registry, "request_close_terminal", _fake_close)
+
+    out = ct.close_terminal_tool("proc_abc")
+
+    assert json.loads(out)["closed"] == "proc_abc"
+    assert seen["sid"] == "proc_abc"
+
+
+def test_close_terminal_tool_gated_on_desktop(monkeypatch):
+    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
+    from tools.close_terminal_tool import check_close_terminal_requirements
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    assert check_close_terminal_requirements() is False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    assert check_close_terminal_requirements() is True
+
+
+def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
+    """Local reader must emit live chunks, not one EOF burst.
+
+    Regression for desktop agent terminals: ``stdout.read(4096)`` can buffer
+    until process exit for small periodic output. ``buffer.read1(4096)`` should
+    surface each chunk as it arrives.
+    """
+
+    class _FakeBuffer:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            return b""
+
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self.buffer = _FakeBuffer(chunks)
+
+    class _FakeProcess:
+        def __init__(self, chunks):
+            self.stdout = _FakeStdout(chunks)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    session = _make_session(sid="proc_reader_live")
+    session.process = _FakeProcess([b"tick 1\n", b"tick 2\n", b"tick 3\n", b""])
+    emitted = []
+    moved = []
+
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, chunk: emitted.append(chunk))
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._reader_loop(session)
+
+    assert emitted == ["tick 1\n", "tick 2\n", "tick 3\n"]
+    assert session.output_buffer == "tick 1\ntick 2\ntick 3\n"
+    assert session.exited is True
+    assert session.exit_code == 0
+    assert moved == ["proc_reader_live"]
+
+
 # =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
@@ -991,6 +1103,26 @@ class TestKillProcess:
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
 
+    def test_kill_local_popen_uses_host_tree_terminator(self, registry, monkeypatch):
+        s = _make_session(sid="proc_local", command="sleep 999")
+        s.process = MagicMock()
+        s.process.pid = 12345
+        s.host_start_time = 67890
+        registry._running[s.id] = s
+        terminate_calls = []
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda pid, expected_start=None: terminate_calls.append((pid, expected_start)),
+        )
+        monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert terminate_calls == [(12345, 67890)]
+
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
         s.pid = 424242
@@ -1652,3 +1784,59 @@ class TestSigkillEscalation:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             parent.wait()
+
+
+class TestHandleProcessRedaction:
+    """`_handle_process` redacts background-process output before it reaches the
+    model / session.db / CLI display — issue #43025.
+
+    Mirrors the foreground `terminal` redaction so the two surfaces can't
+    diverge. Env-dump commands (`printenv`/`env`) get the ENV-assignment pass
+    so opaque tokens are masked; other commands stay on the code_file path.
+    """
+
+    def _setup(self, monkeypatch, command, output):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact1", command=command)
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running.clear()
+        reg._finished[sess.id] = sess
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_log_redacts_env_dump_opaque_token(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "printenv",
+            "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u",
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "abc123randomopaquetokenvalue999" not in out["output"]
+        assert "HOME=/home/u" in out["output"]
+
+    def test_poll_redacts_prefix_key(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "python app.py",
+            "leaked OPENAI_API_KEY sk-proj-abc123def456ghi789jkl012 here",
+        )
+        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "abc123def456" not in out["output_preview"]
+
+    def test_disabled_passes_through(self, monkeypatch):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact2", command="printenv")
+        sess.output_buffer = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "zzzopaque1234567890abcdef" in out["output"]

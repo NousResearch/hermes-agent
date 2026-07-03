@@ -213,7 +213,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)/2+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (

@@ -33,6 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import zipfile
 
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
@@ -473,6 +474,73 @@ async def host_header_middleware(request: Request, call_next):
                     ),
                 },
             )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _plugin_api_runtime_gate(request: Request, call_next):
+    """Block requests to disabled plugin API routes at request time.
+
+    :func:`_mount_plugin_api_routes` gates at import time, but if a plugin
+    is disabled *after* the dashboard is already running, its FastAPI router
+    remains mounted until restart.  This middleware enforces the enabled/
+    disabled policy on every request to ``/api/plugins/{name}/...`` so that
+    runtime config changes take effect immediately.
+
+    Registered BEFORE the auth middlewares (so it executes AFTER them): a
+    request that hasn't cleared auth must get auth's 401 first, never this
+    gate's 404 — otherwise an unauthenticated caller could fingerprint which
+    plugins are installed/enabled by reading the status code. We only reach
+    the enabled/disabled check for a request that auth already let through.
+    """
+    path = request.url.path
+    if path.startswith("/api/plugins/"):
+        # Only gate authenticated requests. Unauthenticated ones fall
+        # through so auth_middleware / the OAuth gate return 401 first and
+        # this route can't be used as a plugin-name oracle.
+        _authed = (
+            getattr(request.state, "token_authenticated", False)
+            or getattr(request.app.state, "auth_required", False)
+            or _has_valid_session_token(request)
+            or _has_valid_query_token(request, path)
+        )
+        if _authed:
+            # Extract plugin name from /api/plugins/<name>/...
+            parts = path.split("/")
+            # parts: ['', 'api', 'plugins', '<name>', ...]
+            if len(parts) >= 4:
+                plugin_name = parts[3]
+                if plugin_name:
+                    try:
+                        from hermes_cli.plugins_cmd import (
+                            _get_enabled_set,
+                            _get_disabled_set,
+                        )
+                        enabled_set = _get_enabled_set()
+                        disabled_set = _get_disabled_set()
+                    except Exception:
+                        enabled_set = set()
+                        disabled_set = set()
+                    # Determine plugin source.  Check the cached plugin list;
+                    # if not found, assume user plugin (safe default — blocks).
+                    plugins = _get_dashboard_plugins()
+                    plugin = next(
+                        (p for p in plugins if p.get("name") == plugin_name),
+                        None,
+                    )
+                    source = plugin.get("source") if plugin else "user"
+                    if source == "user":
+                        if plugin_name in disabled_set or plugin_name not in enabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
+                    elif source == "bundled":
+                        if plugin_name in disabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
     return await call_next(request)
 
 
@@ -1910,6 +1978,169 @@ async def fs_default_cwd():
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
 
 
+# ---------------------------------------------------------------------------
+# Git ops — the remote half of the desktop coding rail + review pane.
+#
+# The desktop runs these as Electron-local git on the user's machine; over a
+# remote gateway that's the wrong filesystem, so we mirror them here (same auth
+# gate + path hardening as /api/fs). Logic lives in ``hermes_cli.web_git``;
+# these are thin, executor-offloaded wrappers (git/gh can block).
+# ---------------------------------------------------------------------------
+
+from hermes_cli import web_git as _web_git  # noqa: E402
+
+
+async def _git_op(fn, *args):
+    """Run a (blocking) git op off the event loop; map a failed mutation to 400."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, fn, *args)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
+
+
+def _git_path(path: str) -> str:
+    return str(_fs_path(path))
+
+
+class GitPathBody(BaseModel):
+    path: str
+
+
+class GitFileBody(BaseModel):
+    path: str
+    file: Optional[str] = None
+
+
+class GitCommitBody(BaseModel):
+    path: str
+    message: str
+    push: bool = False
+
+
+class GitWorktreeAddBody(BaseModel):
+    path: str
+    name: Optional[str] = None
+    branch: Optional[str] = None
+    base: Optional[str] = None
+    existingBranch: Optional[str] = None
+
+
+class GitWorktreeRemoveBody(BaseModel):
+    path: str
+    worktreePath: str
+    force: bool = False
+
+
+class GitBranchSwitchBody(BaseModel):
+    path: str
+    branch: str
+
+
+@app.get("/api/git/status")
+async def git_status_route(path: str):
+    return await _git_op(_web_git.repo_status, _git_path(path))
+
+
+@app.get("/api/git/worktrees")
+async def git_worktrees_route(path: str):
+    return {"worktrees": await _git_op(_web_git.worktree_list, _git_path(path))}
+
+
+@app.get("/api/git/branches")
+async def git_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
+
+
+@app.get("/api/git/review/list")
+async def git_review_list_route(path: str, scope: str = "uncommitted", base: Optional[str] = None):
+    return await _git_op(_web_git.review_list, _git_path(path), scope, base)
+
+
+@app.get("/api/git/review/diff")
+async def git_review_diff_route(
+    path: str, file: str, scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
+):
+    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged)}
+
+
+@app.get("/api/git/file-diff")
+async def git_file_diff_route(path: str, file: str):
+    return {"diff": await _git_op(_web_git.file_diff_vs_head, _git_path(path), file)}
+
+
+@app.get("/api/git/review/commit-context")
+async def git_commit_context_route(path: str):
+    return await _git_op(_web_git.review_commit_context, _git_path(path))
+
+
+@app.get("/api/git/review/rev-parse")
+async def git_rev_parse_route(path: str, ref: Optional[str] = None):
+    return {"sha": await _git_op(_web_git.review_rev_parse, _git_path(path), ref)}
+
+
+@app.get("/api/git/review/ship-info")
+async def git_ship_info_route(path: str):
+    return await _git_op(_web_git.review_ship_info, _git_path(path))
+
+
+@app.post("/api/git/review/stage")
+async def git_stage_route(body: GitFileBody):
+    return await _git_op(_web_git.review_stage, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/unstage")
+async def git_unstage_route(body: GitFileBody):
+    return await _git_op(_web_git.review_unstage, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/revert")
+async def git_revert_route(body: GitFileBody):
+    return await _git_op(_web_git.review_revert, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/commit")
+async def git_commit_route(body: GitCommitBody):
+    return await _git_op(_web_git.review_commit, _git_path(body.path), body.message, body.push)
+
+
+@app.post("/api/git/review/push")
+async def git_push_route(body: GitPathBody):
+    return await _git_op(_web_git.review_push, _git_path(body.path))
+
+
+@app.post("/api/git/review/create-pr")
+async def git_create_pr_route(body: GitPathBody):
+    return await _git_op(_web_git.review_create_pr, _git_path(body.path))
+
+
+@app.post("/api/git/worktree/add")
+async def git_worktree_add_route(body: GitWorktreeAddBody):
+    options = {
+        key: value
+        for key, value in {
+            "name": body.name,
+            "branch": body.branch,
+            "base": body.base,
+            "existingBranch": body.existingBranch,
+        }.items()
+        if value
+    }
+    return await _git_op(_web_git.worktree_add, _git_path(body.path), options)
+
+
+@app.post("/api/git/worktree/remove")
+async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
+    return await _git_op(
+        _web_git.worktree_remove, _git_path(body.path), _git_path(body.worktreePath), body.force
+    )
+
+
+@app.post("/api/git/branch/switch")
+async def git_branch_switch_route(body: GitBranchSwitchBody):
+    return await _git_op(_web_git.branch_switch, _git_path(body.path), body.branch)
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2286,6 +2517,70 @@ async def run_curator():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to run curator: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
+
+
+@app.get("/api/learning/graph")
+async def get_learning_graph(profile: Optional[str] = None):
+    """Learning graph payload for the desktop panel.
+
+    Profile-scoped view of learned, non-base skills plus memory chunks, with
+    graph links derived from skill relations and memory-skill overlap.
+    """
+    try:
+        from agent.learning_graph import build_learning_graph
+
+        with _profile_scope(profile):
+            return build_learning_graph()
+    except Exception:
+        _log.exception("GET /api/learning/graph failed")
+        raise HTTPException(status_code=500, detail="Failed to build learning graph")
+
+
+class LearningNodeRef(BaseModel):
+    id: str
+    profile: Optional[str] = None
+
+
+class LearningNodeEdit(BaseModel):
+    id: str
+    content: str
+    profile: Optional[str] = None
+
+
+@app.get("/api/learning/node")
+async def get_learning_node(id: str, profile: Optional[str] = None):
+    """Current content of a journey node (skill SKILL.md or memory chunk), for an edit prefill."""
+    from agent.learning_mutations import node_detail
+
+    with _profile_scope(profile):
+        res = node_detail(id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404, detail=res.get("message", "not found"))
+    return res
+
+
+@app.delete("/api/learning/node")
+async def delete_learning_node(body: LearningNodeRef):
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    from agent.learning_mutations import delete_node
+
+    with _profile_scope(body.profile):
+        res = delete_node(body.id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "delete failed"))
+    return res
+
+
+@app.put("/api/learning/node")
+async def update_learning_node(body: LearningNodeEdit):
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    from agent.learning_mutations import edit_node
+
+    with _profile_scope(body.profile):
+        res = edit_node(body.id, body.content)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "edit failed"))
+    return res
 
 
 def _safe_call(mod, fn_name: str, default):
@@ -2704,8 +2999,15 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(principal=str(principal))
-    _log.info("Gateway drain BEGIN requested by %s", principal)
+    payload = write_drain_request(
+        principal=str(principal),
+        suppress_notification=bool((body or {}).get("suppress_notification", False)),
+    )
+    _log.info(
+        "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
+        principal,
+        payload["suppress_notification"],
+    )
     return {
         "ok": True,
         "action": "drain",
@@ -2713,6 +3015,7 @@ async def gateway_drain(request: Request):
         # Echo so a caller polling /api/status knows the marker is now set;
         # the gateway watcher flips gateway_state -> draining within ~1s.
         "draining": drain_requested(),
+        "suppress_notification": payload["suppress_notification"],
     }
 
 
@@ -2983,6 +3286,28 @@ def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     return f"{name} ({category})" if category else name
 
 
+# Collapses repeated identical ElevenLabs voice-list failures (the desktop
+# re-polls on every settings open/focus) to a single log line. Re-arms on
+# success or when the error signature changes, so a real new failure is seen.
+_voice_list_last_error: Optional[str] = None
+
+
+def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
+    """Return True if ``signature`` is new and should be logged now.
+
+    Passing ``None`` clears the latch (call on success). Idempotent per
+    signature: the same error logs once until it changes.
+    """
+    global _voice_list_last_error
+    if signature is None:
+        _voice_list_last_error = None
+        return False
+    if signature == _voice_list_last_error:
+        return False
+    _voice_list_last_error = signature
+    return True
+
+
 @app.get("/api/audio/elevenlabs/voices")
 async def get_elevenlabs_voices():
     """Return ElevenLabs voices when an API key is configured.
@@ -3010,9 +3335,27 @@ async def get_elevenlabs_voices():
                 return json.loads(response.read().decode("utf-8"))
 
         payload = await loop.run_in_executor(None, _fetch)
-    except Exception as exc:
-        _log.warning("ElevenLabs voice list failed: %s", exc)
+    except urllib.error.HTTPError as exc:
+        # An auth failure (bad/expired/scoped key) is a persistent,
+        # user-fixable state, not a transient blip — the desktop polls this on
+        # every settings open/focus, so a per-poll WARNING floods the log
+        # (#voice-list-401-spam). Treat 401/403 as "integration unavailable":
+        # report it to the UI with a 200 and log at most once until the error
+        # signature changes (see _voice_list_error_logged_once).
+        if exc.code in (401, 403):
+            if _voice_list_error_logged_once(f"http-{exc.code}"):
+                _log.info(
+                    "ElevenLabs voices unavailable: %s — check ELEVENLABS_API_KEY", exc
+                )
+            return {"available": False, "voices": [], "error": "unauthorized"}
+        if _voice_list_error_logged_once(f"http-{exc.code}"):
+            _log.warning("ElevenLabs voice list failed: %s", exc)
         raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+    except Exception as exc:
+        if _voice_list_error_logged_once(str(exc)):
+            _log.warning("ElevenLabs voice list failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+    _voice_list_error_logged_once(None)  # success — re-arm logging for next failure
 
     voices = []
     for voice in payload.get("voices") or []:
@@ -3226,7 +3569,7 @@ async def get_sessions(
 
 
 @app.get("/api/profiles/sessions")
-async def get_profiles_sessions(
+def get_profiles_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -4503,6 +4846,25 @@ def _catalog_provider_env_metadata() -> dict:
                     "advanced": existing.get("advanced", True),
                     "category": "provider",
                 }
+
+        # Vertex AI authenticates via OAuth2 (service-account JSON or ADC), not a
+        # pasted API key, so it also has no api_key_env_vars. Tag its credential
+        # env var to the provider card so it appears on the Keys tab (otherwise
+        # Vertex — a `hermes model` provider — would be invisible in the desktop
+        # app). The value is a filesystem path, not a secret string, so it is
+        # not a password field.
+        if d.auth_type == "vertex":
+            existing = meta.get("VERTEX_CREDENTIALS_PATH", {})
+            meta["VERTEX_CREDENTIALS_PATH"] = {
+                "provider": d.slug,
+                "provider_label": d.label,
+                "description": existing.get("description")
+                or f"{d.label} — service account JSON path (or use ADC)",
+                "url": existing.get("url"),
+                "is_password": False,
+                "advanced": existing.get("advanced", True),
+                "category": "provider",
+            }
     return meta
 
 
@@ -4513,7 +4875,7 @@ async def get_env_vars(profile: Optional[str] = None):
     channel_keys = _channel_managed_env_keys()
     catalog_meta = _catalog_provider_env_metadata()
 
-    def _row(var_name: str, info: dict) -> dict:
+    def _row(var_name: str, info: dict, *, custom: bool = False) -> dict:
         value = env_on_disk.get(var_name)
         cat_meta = catalog_meta.get(var_name) or {}
         # Hand OPTIONAL_ENV_VARS prose wins where present; the catalog fills any
@@ -4536,6 +4898,12 @@ async def get_env_vars(profile: Optional[str] = None):
             # CLI `hermes model` picker uses (not desktop-only prefix guesses).
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            # True when this key exists in the user's .env but is NOT in any
+            # catalog (OPTIONAL_ENV_VARS or the provider catalog) — an
+            # arbitrary/custom env var the user added directly. Surfaced so the
+            # Keys page can list (and let the user manage) them instead of
+            # hiding everything it doesn't recognise.
+            "custom": custom,
         }
 
     result = {}
@@ -4547,6 +4915,19 @@ async def get_env_vars(profile: Optional[str] = None):
     for var_name in catalog_meta:
         if var_name not in result:
             result[var_name] = _row(var_name, {})
+    # Surface arbitrary/custom keys the user set in .env that aren't in any
+    # catalog. These are always "set" (they're on disk). Treated as secrets by
+    # default (is_password=True → redacted, reveal-gated) since an unrecognised
+    # key could hold anything. Channel-managed credentials are excluded — those
+    # belong to the Channels page. This makes the "add a custom key" surface
+    # round-trip: a key added there reappears here under its own section.
+    for var_name in env_on_disk:
+        if var_name in result or var_name in channel_keys:
+            continue
+        row = _row(var_name, {}, custom=True)
+        row["category"] = "custom"
+        row["is_password"] = True
+        result[var_name] = row
     return result
 
 
@@ -6046,7 +6427,7 @@ def _copilot_acp_status() -> Dict[str, Any]:
 # ``flow`` describes the OAuth shape so the modal can pick the right UI:
 # ``pkce`` = open URL + paste callback code, ``device_code`` = show code +
 # verification URL + poll, ``external`` = read-only (delegated to a third-party
-# CLI like Claude Code or Qwen), ``loopback`` = 127.0.0.1 callback listener.
+# CLI like Claude Code or Qwen).
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "nous",
@@ -6088,10 +6469,10 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "xai-oauth",
         "name": "xAI Grok OAuth (SuperGrok / Premium+)",
-        # Loopback PKCE: the desktop's local backend binds a 127.0.0.1
-        # callback server, the client opens the browser, and the redirect
-        # lands back on the loopback listener — no code to copy/paste.
-        "flow": "loopback",
+        # Device code is the default because it works in remote shells,
+        # containers, and desktop installs without requiring a reachable
+        # 127.0.0.1 callback.
+        "flow": "device_code",
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
@@ -6315,7 +6696,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
     Response shape (per provider):
         id              stable identifier (used in DELETE path)
         name            human label
-        flow            "pkce" | "device_code" | "external" | "loopback"
+        flow            "pkce" | "device_code" | "external"
         cli_command     fallback CLI command for users to run manually
         disconnect_command  shell command that clears an external provider's
                             creds (run in the embedded terminal), else null
@@ -6449,19 +6830,6 @@ async def disconnect_oauth_provider(
 #          every 2s until status != "pending".
 #     4. On "approved" the background thread has already saved creds; UI
 #        refreshes the providers list.
-#
-#   Loopback PKCE (xAI Grok):
-#     1. POST /api/providers/oauth/xai-oauth/start
-#          → server binds a 127.0.0.1 callback listener, builds the xAI
-#            authorize URL, spawns a background worker waiting on the redirect
-#          → returns { session_id, flow: "loopback", auth_url, expires_in }
-#     2. UI opens auth_url in the browser. There is NO user_code/code to
-#        paste — the redirect lands back on the loopback listener.
-#     3. UI polls GET /api/providers/oauth/{provider}/poll/{session_id}
-#          (same endpoint as device_code) until status != "pending".
-#     4. The worker exchanges the code, persists creds, sets "approved".
-#        DELETE /sessions/{id} cancels: the worker bails before persisting
-#        and the callback server is shut down to free the port immediately.
 #
 # Sessions are kept in-memory only (single-process FastAPI) and time out
 # after 15 minutes. A periodic cleanup runs on each /start call to GC
@@ -6722,7 +7090,7 @@ async def _start_device_code_flow(
     provider_id: str,
     profile: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
+    """Initiate a device-code flow (Nous, OpenAI Codex, MiniMax, or xAI).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
@@ -6891,222 +7259,43 @@ async def _start_device_code_flow(
             "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
         }
 
-    raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+    if provider_id == "xai-oauth":
+        from hermes_cli.auth import _xai_oauth_request_device_code
+        import httpx
 
+        def _do_xai_device_request():
+            with httpx.Client(
+                timeout=httpx.Timeout(20.0),
+                headers={"Accept": "application/json"},
+            ) as client:
+                return _xai_oauth_request_device_code(client)
 
-# xAI Grok OAuth uses a loopback-redirect PKCE flow (RFC 8252). Unlike the
-# device-code providers there is no user_code to display: the local backend
-# binds a 127.0.0.1 callback server, the client opens the authorize URL in
-# the browser, and the redirect lands back on the loopback listener. The
-# background worker waits for that callback, exchanges the code, and persists
-# the tokens exactly like `hermes auth add xai-oauth`.
-_XAI_LOOPBACK_TIMEOUT_SECONDS = 300.0
-
-
-def _start_xai_loopback_flow(profile: Optional[str] = None) -> Dict[str, Any]:
-    """Begin the xAI loopback PKCE flow.
-
-    Binds the local callback server, builds the authorize URL, and spawns a
-    background worker that waits for the redirect and finishes the exchange.
-    Returns the authorize URL for the client to open in the browser.
-    """
-    from hermes_cli import auth as hauth
-
-    discovery = hauth._xai_oauth_discovery()
-    server, thread, callback_result, redirect_uri = hauth._xai_start_callback_server()
-    try:
-        hauth._xai_validate_loopback_redirect_uri(redirect_uri)
-        verifier = hauth._oauth_pkce_code_verifier()
-        challenge = hauth._oauth_pkce_code_challenge(verifier)
-        state = secrets.token_hex(16)
-        nonce = secrets.token_hex(16)
-        authorize_url = hauth._xai_oauth_build_authorize_url(
-            authorization_endpoint=discovery["authorization_endpoint"],
-            redirect_uri=redirect_uri,
-            code_challenge=challenge,
-            state=state,
-            nonce=nonce,
+        device_data = await asyncio.get_running_loop().run_in_executor(
+            None, _do_xai_device_request
         )
-    except Exception:
-        # Binding succeeded but URL construction failed — release the socket
-        # and join the serving thread so we don't leak a listener (or a
-        # lingering daemon thread) on the loopback port.
-        try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
-        try:
-            thread.join(timeout=1.0)
-        except Exception:
-            pass
-        raise
-
-    sid, sess = _new_oauth_session("xai-oauth", "loopback", profile=profile)
-    sess["server"] = server
-    sess["thread"] = thread
-    sess["callback_result"] = callback_result
-    sess["redirect_uri"] = redirect_uri
-    sess["verifier"] = verifier
-    sess["challenge"] = challenge
-    sess["state"] = state
-    sess["token_endpoint"] = discovery["token_endpoint"]
-    sess["discovery"] = discovery
-    sess["expires_at"] = time.time() + _XAI_LOOPBACK_TIMEOUT_SECONDS
-    threading.Thread(
-        target=_xai_loopback_worker, args=(sid,), daemon=True,
-        name=f"oauth-xai-{sid[:6]}",
-    ).start()
-    return {
-        "session_id": sid,
-        "flow": "loopback",
-        "auth_url": authorize_url,
-        "expires_in": int(_XAI_LOOPBACK_TIMEOUT_SECONDS),
-    }
-
-
-def _xai_loopback_worker(session_id: str) -> None:
-    """Wait for the xAI loopback callback, exchange the code, persist tokens."""
-    from datetime import datetime, timezone
-
-    from hermes_cli import auth as hauth
-
-    with _oauth_sessions_lock:
-        sess = _oauth_sessions.get(session_id)
-    if not sess:
-        return
-
-    def _fail(message: str) -> None:
-        with _oauth_sessions_lock:
-            s = _oauth_sessions.get(session_id)
-            if s is not None:
-                s["status"] = "error"
-                s["error_message"] = message
-
-    def _cancelled() -> bool:
-        # The session is removed from the registry when the user cancels
-        # (DELETE /sessions/{id}). If that happened while we were blocked on
-        # the callback or token exchange, abort instead of persisting tokens
-        # the user no longer wants.
-        with _oauth_sessions_lock:
-            return session_id not in _oauth_sessions
-
-    try:
-        callback = hauth._xai_wait_for_callback(
-            sess["server"],
-            sess["thread"],
-            sess["callback_result"],
-            timeout_seconds=_XAI_LOOPBACK_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        _fail(f"xAI authorization timed out: {exc}")
-        return
-
-    if _cancelled():
-        return
-
-    if callback.get("error"):
-        detail = callback.get("error_description") or callback["error"]
-        _fail(f"xAI authorization failed: {detail}")
-        return
-    if callback.get("state") != sess["state"]:
-        _fail("xAI authorization failed: state mismatch.")
-        return
-    code = str(callback.get("code") or "").strip()
-    if not code:
-        _fail("xAI authorization failed: missing authorization code.")
-        return
-
-    try:
-        payload = hauth._xai_oauth_exchange_code_for_tokens(
-            token_endpoint=sess["token_endpoint"],
-            code=code,
-            redirect_uri=sess["redirect_uri"],
-            code_verifier=sess["verifier"],
-            code_challenge=sess["challenge"],
-        )
-        access_token = str(payload.get("access_token", "") or "").strip()
-        refresh_token = str(payload.get("refresh_token", "") or "").strip()
-        if not access_token or not refresh_token:
-            _fail("xAI token exchange did not return the expected tokens.")
-            return
-        base_url = hauth._xai_validate_inference_base_url(
-            os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-            or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
-            fallback=hauth.DEFAULT_XAI_OAUTH_BASE_URL,
-        )
-        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        tokens = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": str(payload.get("id_token", "") or "").strip(),
-            "expires_in": payload.get("expires_in"),
-            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        sid, sess = _new_oauth_session("xai-oauth", "device_code", profile=profile)
+        sess["device_code"] = str(device_data["device_code"])
+        sess["interval"] = int(device_data["interval"])
+        sess["expires_at"] = time.time() + int(device_data["expires_in"])
+        threading.Thread(
+            target=_xai_device_poller,
+            args=(sid,),
+            daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(device_data["user_code"]),
+            "verification_url": str(
+                device_data.get("verification_uri_complete")
+                or device_data["verification_uri"]
+            ),
+            "expires_in": int(device_data["expires_in"]),
+            "poll_interval": int(device_data["interval"]),
         }
-        if _cancelled():
-            return
-        with _profile_scope(_oauth_session_profile(session_id)):
-            hauth._save_xai_oauth_tokens(
-                tokens,
-                discovery=sess.get("discovery"),
-                redirect_uri=sess["redirect_uri"],
-                last_refresh=last_refresh,
-            )
-            _add_xai_oauth_pool_entry(access_token, refresh_token, base_url, last_refresh)
-    except Exception as exc:
-        _fail(f"xAI token exchange failed: {exc}")
-        return
 
-    with _oauth_sessions_lock:
-        s = _oauth_sessions.get(session_id)
-        if s is not None:
-            s["status"] = "approved"
-    _log.info("oauth/loopback: xai-oauth login completed (session=%s)", session_id)
-
-
-def _add_xai_oauth_pool_entry(
-    access_token: str, refresh_token: str, base_url: str, last_refresh: str
-) -> None:
-    """Mirror `hermes auth add xai-oauth`'s credential-pool insert.
-
-    Best-effort: the auth-store write in _save_xai_oauth_tokens is the source
-    of truth for runtime resolution; the pool entry only matters for the
-    rotation strategy.
-    """
-    try:
-        import uuid
-
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        pool = load_pool("xai-oauth")
-        existing = [
-            e for e in pool.entries()
-            if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_xai_pkce")
-        ]
-        for e in existing:
-            try:
-                pool.remove_entry(getattr(e, "id", ""))
-            except Exception:
-                pass
-        entry = PooledCredential(
-            provider="xai-oauth",
-            id=uuid.uuid4().hex[:6],
-            label="dashboard PKCE",
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:dashboard_xai_pkce",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            base_url=base_url,
-            last_refresh=last_refresh,
-        )
-        pool.add_entry(entry)
-    except Exception as e:
-        _log.warning("xai-oauth pool add (dashboard) failed: %s", e)
+    raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
 def _nous_poller(session_id: str) -> None:
@@ -7252,6 +7441,70 @@ def _minimax_poller(session_id: str) -> None:
         _log.info("oauth/device: minimax login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _xai_device_poller(session_id: str) -> None:
+    """Background poller for xAI's OAuth device-code flow."""
+    import httpx
+    from hermes_cli.auth import (
+        _save_xai_oauth_tokens,
+        _xai_oauth_discovery,
+        _xai_oauth_poll_device_token,
+        unsuppress_credential_source,
+    )
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    device_code = sess["device_code"]
+    interval = int(sess["interval"])
+    expires_in = max(60, int(sess["expires_at"] - time.time()))
+    try:
+        discovery = _xai_oauth_discovery(20.0)
+        with httpx.Client(
+            timeout=httpx.Timeout(20.0),
+            headers={"Accept": "application/json"},
+        ) as client:
+            token_data = _xai_oauth_poll_device_token(
+                client,
+                token_endpoint=discovery["token_endpoint"],
+                device_code=device_code,
+                expires_in=expires_in,
+                poll_interval=interval,
+            )
+        tokens = {
+            "access_token": str(token_data.get("access_token", "") or "").strip(),
+            "refresh_token": str(token_data.get("refresh_token", "") or "").strip(),
+            "id_token": str(token_data.get("id_token", "") or "").strip(),
+            "expires_in": token_data.get("expires_in"),
+            "token_type": str(token_data.get("token_type") or "Bearer").strip() or "Bearer",
+        }
+        with _profile_scope(_oauth_session_profile(session_id)):
+            _save_xai_oauth_tokens(
+                tokens,
+                discovery=discovery,
+                last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                auth_mode="oauth_device_code",
+            )
+            # The singleton write above is the single source of truth: the
+            # credential-pool load seeds it as the canonical ``device_code``
+            # entry. Do NOT also insert a parallel ``manual:dashboard_*`` pool
+            # entry — that duplicates the single-use refresh token across two
+            # entries and triggers rotation churn / ``refresh_token_reused``.
+            # An interactive dashboard login is also an explicit re-enable
+            # signal, so clear any ``device_code`` suppression left by a
+            # prior ``hermes auth remove xai-oauth`` (mirrors auth_add_command
+            # and the ``hermes model`` re-login path in _login_xai_oauth).
+            unsuppress_credential_source("xai-oauth", "device_code")
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: xai login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("xai device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)
@@ -7406,10 +7659,6 @@ async def start_oauth_login(
             return _start_anthropic_pkce(profile=profile)
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id, profile=profile)
-        if catalog_entry["flow"] == "loopback" and provider_id == "xai-oauth":
-            return await asyncio.get_running_loop().run_in_executor(
-                None, _start_xai_loopback_flow, profile,
-            )
     except HTTPException:
         raise
     except Exception as e:
@@ -7447,10 +7696,9 @@ async def poll_oauth_session(
 ):
     """Poll a session's status (no auth — read-only state).
 
-    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax) and the
-    loopback flow (xAI Grok). Both surface progress through the same
-    background-worker-updated ``status`` field, so a single poll endpoint
-    serves them all.
+    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax, xAI).
+    Each surfaces progress through the same background-worker-updated
+    ``status`` field, so a single poll endpoint serves them all.
     """
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -7478,33 +7726,6 @@ async def cancel_oauth_session(
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
-    # Loopback sessions own a bound 127.0.0.1 callback server. Without an
-    # explicit shutdown the worker would keep that port held until
-    # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
-    # an orphaned listener can't block a subsequent sign-in attempt.
-    if sess.get("flow") == "loopback":
-        # The worker is blocked in _xai_wait_for_callback, which polls
-        # callback_result rather than the server state. Flag the result as
-        # cancelled so that loop returns on its next tick instead of spinning
-        # until the timeout — otherwise repeated cancel/retry piles up daemon
-        # threads. (_cancelled() in the worker then short-circuits before any
-        # persist.)
-        result = sess.get("callback_result")
-        if isinstance(result, dict):
-            result["error"] = result.get("error") or "cancelled"
-        server = sess.get("server")
-        thread = sess.get("thread")
-        try:
-            if server is not None:
-                server.shutdown()
-                server.server_close()
-        except Exception:
-            pass
-        try:
-            if thread is not None:
-                thread.join(timeout=1.0)
-        except Exception:
-            pass
     return {"ok": True, "session_id": session_id}
 
 
@@ -9428,17 +9649,63 @@ class BackupRequest(BaseModel):
     output: Optional[str] = None
 
 
+def _dashboard_backup_dir() -> Path:
+    return get_hermes_home() / "backups"
+
+
+def _new_dashboard_backup_path() -> Path:
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    return _dashboard_backup_dir() / f"hermes-backup-{stamp}-{secrets.token_hex(4)}.zip"
+
+
 @app.post("/api/ops/backup")
 async def run_backup(body: BackupRequest):
     args = ["backup"]
+    archive: Optional[Path] = None
     if body.output:
         args.append(body.output.strip())
+    else:
+        archive = _new_dashboard_backup_path()
+        try:
+            archive.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not create backup directory: {exc}",
+            )
+        args.append(str(archive))
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
         _log.exception("Failed to spawn backup")
         raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "backup"}
+    response = {"ok": True, "pid": proc.pid, "name": "backup"}
+    if archive is not None:
+        response["archive"] = str(archive)
+    return response
+
+
+@app.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str):
+    try:
+        backup_dir = _dashboard_backup_dir().expanduser().resolve(strict=False)
+        target = Path(archive).expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid backup path")
+
+    if not _path_is_under(backup_dir, target):
+        raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return FileResponse(
+        path=str(target),
+        media_type="application/zip",
+        filename=target.name,
+        content_disposition_type="attachment",
+    )
 
 
 class ImportRequest(BaseModel):
@@ -9469,6 +9736,94 @@ async def run_import(body: ImportRequest):
         _log.exception("Failed to spawn import")
         raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "import"}
+
+
+def _safe_backup_upload_name(filename: str | None) -> str:
+    name = Path(filename or "backup.zip").name.strip()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    if not name:
+        name = "backup.zip"
+    if not name.lower().endswith(".zip"):
+        name = f"{name}.zip"
+    return name
+
+
+@app.post("/api/ops/import-upload")
+async def run_import_upload(
+    file: UploadFile = File(...),
+    force: bool = Form(False),
+):
+    staging_dir = _dashboard_backup_dir()
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create import staging directory: {exc}",
+        )
+
+    safe_name = _safe_backup_upload_name(file.filename)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{safe_name}"
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".upload",
+        dir=str(staging_dir),
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    renamed = False
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MANAGED_FILE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Archive is too large")
+                out.write(chunk)
+        os.replace(tmp_path, target)
+        renamed = True
+    except HTTPException:
+        raise
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Import staging directory is not writable",
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not write uploaded archive: {exc}",
+        )
+    finally:
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
+        await file.close()
+
+    if not zipfile.is_zipfile(target):
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded archive is not a valid zip file",
+        )
+
+    args = ["import", str(target)]
+    if force:
+        args.append("--force")
+    try:
+        proc = _spawn_hermes_action(args, "import")
+    except Exception as exc:
+        _log.exception("Failed to spawn import")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "name": "import",
+        "archive": str(target),
+        "uploaded_bytes": total,
+    }
 
 
 @app.get("/api/ops/hooks")
@@ -10362,7 +10717,9 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
@@ -12188,26 +12545,54 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:
-        while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-            )
-            if chunk is None:  # EOF
-                return
-            if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
-                continue
+        try:
+            while True:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
+                if chunk is None:  # EOF
+                    return
+                if not chunk:  # no data this tick; yield control and retry
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    return
+        finally:
+            # The child has exited (EOF) or the send side broke.  Close the
+            # WebSocket so the writer loop's ``ws.receive()`` returns instead
+            # of blocking forever — otherwise, when the browser's socket is
+            # half-open (no FIN delivered, common on macOS/launchd) the
+            # handler never reaches its ``finally`` and the PTY's fds leak.
+            # With dashboard auto-reconnect (#52962) every dropped socket then
+            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
+            #
+            # Reap the bridge here too (close() is idempotent): on child EOF the
+            # writer loop's ``finally`` is the usual closer, but if the handler
+            # task is cancelled the instant we close the WS, that ``finally``
+            # can be skipped, leaking the PTY. Closing from the EOF path makes
+            # the reap independent of that cancellation race (#54028).
             try:
-                await ws.send_bytes(chunk)
+                await asyncio.to_thread(bridge.close)
             except Exception:
-                return
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     try:
         while True:
-            msg = await ws.receive()
+            try:
+                msg = await ws.receive()
+            except RuntimeError:
+                # Raised when ws.receive() is called after the socket is
+                # already disconnected (e.g. closed by the reader task above).
+                break
             msg_type = msg.get("type")
             if msg_type == "websocket.disconnect":
                 break
@@ -12994,16 +13379,41 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """Return discovered dashboard plugins (excludes user-hidden ones)."""
+    """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     plugins = _get_dashboard_plugins()
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-    # Strip internal fields before sending to frontend and filter out hidden.
+    # Gate: only serve user plugins that are in plugins.enabled and not
+    # in plugins.disabled.  This prevents the frontend from loading JS/CSS
+    # from plugins the user has not explicitly activated.  (#46435)
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
+    def _is_active(p: dict) -> bool:
+        name = p.get("name", "")
+        if name in hidden:
+            return False
+        if p.get("source") == "user":
+            if name in disabled_set:
+                return False
+            if name not in enabled_set:
+                return False
+        elif p.get("source") == "bundled":
+            if name in disabled_set:
+                return False
+        return True
+
+    # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if p["name"] not in hidden
+        if _is_active(p)
     ]
 
 
@@ -13300,11 +13710,30 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     allowlist, anyone on the loopback port can curl the ``.py`` source
     of a private third-party plugin. Reject everything outside the
     browser-asset set.
+
+    User plugins must be in plugins.enabled before their assets are
+    served. (#46435, GHSA-mcfc-hp25-cjv7)
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
     if not plugin:
         raise HTTPException(status_code=404, detail="Plugin not found")
+
+    # Gate: user plugins must be enabled to serve assets;
+    # bundled plugins must not be explicitly disabled.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+    if plugin.get("source") == "user":
+        if plugin_name in disabled_set or plugin_name not in enabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+    elif plugin.get("source") == "bundled":
+        if plugin_name in disabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])
     target = (base / file_path).resolve()
@@ -13365,11 +13794,52 @@ def _mount_plugin_api_routes():
     opens a malicious repo; they can extend the dashboard UI via
     static JS/CSS but their Python ``api`` file is never auto-imported
     by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
+
+    Additionally, user plugins must be explicitly enabled via the
+    ``plugins.enabled`` allow-list in config.yaml before their backend
+    code is imported. Without this gate, an installed-but-not-enabled
+    plugin's Python code would execute at dashboard startup — a code
+    execution vector that bypasses the user's intent. (#46435,
+    GHSA-mcfc-hp25-cjv7)
     """
+    # Load the enabled/disabled sets once for the loop.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
+        plugin_name = plugin.get("name", "")
+        # Gate: user plugins must be in plugins.enabled and not in
+        # plugins.disabled before we import their Python code.
+        # Bundled plugins are trusted (they ship with the release) but
+        # still respect an explicit disable.
+        if plugin.get("source") == "user":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
+            if plugin_name not in enabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (not in plugins.enabled)",
+                    plugin_name,
+                )
+                continue
+        elif plugin.get("source") == "bundled":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
@@ -13648,6 +14118,26 @@ def start_server(
     # For explicit non-zero ports, if the port is taken uvicorn catches
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
+    # Loopback binds are the Desktop case: a single local client, no reverse
+    # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
+    # as agent turns, and a single synchronous GIL-holding call on a worker
+    # thread (e.g. a regex/scrub over a large model output, or a long
+    # delegate_task subagent turn) can starve that loop for *minutes* — the
+    # loop cannot process the incoming pong, so uvicorn declares the socket
+    # dead and closes it, dropping an otherwise-healthy local connection
+    # (#53773: "event loop stalled 226.3s"; #48445/#50005). A longer timeout
+    # only raises the threshold — a multi-minute stall sails past any finite
+    # window. The keepalive ping exists to detect *half-open* connections
+    # (reverse-proxy 524, dropped tunnels), which cannot happen on loopback:
+    # there is no network or proxy in the path, and a dead local client tears
+    # the socket down with a real FIN/RST that starlette surfaces as
+    # WebSocketDisconnect regardless of the ping. So on loopback the ping
+    # provides ~no liveness value while actively killing recoverable stalls —
+    # disable it entirely. Non-loopback binds sit behind a Cloudflare Tunnel
+    # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
+    # ping at 20/20 to detect it promptly and stay under the tunnel's idle
+    # window.
+    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -13658,12 +14148,12 @@ def start_server(
         # decide cookie Secure flags, so we flip proxy_headers on for that
         # mode.
         proxy_headers=bool(app.state.auth_required),
-        # Detect half-open WS connections (reverse-proxy 524, dropped
-        # tunnels) within ~20-40s so WebSocketDisconnect fires the
-        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.
-        ws_ping_interval=20.0,
-        ws_ping_timeout=20.0,
+        # Half-open detection for public binds only (see above). Loopback
+        # disables the protocol ping (None) so an event-loop stall can never
+        # trigger a false disconnect; a genuinely dead local client is still
+        # reaped via the WebSocketDisconnect → disconnect/reap path.
+        ws_ping_interval=None if _is_loopback else 20.0,
+        ws_ping_timeout=None if _is_loopback else 20.0,
     )
     server = uvicorn.Server(config)
 
@@ -13685,6 +14175,48 @@ def start_server(
             print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
             print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+
+            # Collapse the peer-hangup teardown flood (#50005). When the Desktop
+            # forcibly closes its WebSocket mid-write, asyncio logs a full
+            # traceback per pending connection-lost callback — 50+ identical
+            # WinError 10054 (ConnectionResetError) lines per disconnect on
+            # Windows. This filter downgrades exactly that class to one debug
+            # line and passes every other loop error through unchanged.
+            try:
+                from tui_gateway.loop_noise import install_loop_noise_filter
+
+                install_loop_noise_filter(asyncio.get_running_loop())
+            except Exception as exc:  # pragma: no cover - best-effort
+                _log.debug("loop noise filter install skipped: %s", exc)
+
+            # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
+            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
+            # tick and measure the drift between when it *should* fire and
+            # when it actually does: a healthy loop drifts ~0, but a turn that
+            # holds the GIL blocks the loop and the next tick fires late by the
+            # stall duration. We log that so a stalled-loop WS drop is
+            # diagnosable from the gateway log. Uses loop.time() (monotonic)
+            # for drift, and call_later (not a task) so it dies with the loop —
+            # nothing to cancel on shutdown.
+            _hb_interval = 2.0
+            _hb_stall_threshold = 5.0
+            _hb_loop = asyncio.get_running_loop()
+
+            def _loop_heartbeat(expected: float) -> None:
+                now = _hb_loop.time()
+                drift = now - expected
+                if drift > _hb_stall_threshold:
+                    _log.warning(
+                        "event loop stalled %.1fs (GIL pressure suspected)",
+                        drift,
+                    )
+                _hb_loop.call_later(
+                    _hb_interval, _loop_heartbeat, now + _hb_interval
+                )
+
+            _hb_loop.call_later(
+                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
+            )
 
             await server.main_loop()
             if server.started:

@@ -1362,8 +1362,16 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    # Managed installs should follow origin/$Branch exactly. If
+                    # the checkout has diverged (or has local-only commits),
+                    # ff-only pull cannot succeed — mirror ``hermes update`` and
+                    # reset to the fetched remote so bootstrap/install can recover.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
-                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
+                        git -c windows.appendAtomically=false reset --hard "origin/$Branch"
+                        if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                    }
                 }
 
                 if ($autostashRef) {
@@ -1852,6 +1860,48 @@ except Exception:
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+    }
+
+    if (-not $NoVenv) {
+        # uv on Windows can register hermes.exe in dist-info/RECORD but fail to
+        # materialise the .exe (file lock during self-update, distlib edge case).
+        # Catch it here so a fresh install/update does not finish with a broken
+        # `hermes` command while hermes-agent.exe / hermes-acp.exe exist
+        $scriptsDir = Join-Path $InstallDir "venv\Scripts"
+        $pythonExe = Join-Path $scriptsDir "python.exe"
+        if ((Test-Path $scriptsDir) -and (Test-Path $pythonExe)) {
+            $scriptNames = & $pythonExe -c @"
+import tomllib
+with open('pyproject.toml', 'rb') as fh:
+    scripts = tomllib.load(fh).get('project', {}).get('scripts', {}) or {}
+print(','.join(scripts))
+"@ 2>$null
+            if ($LASTEXITCODE -eq 0 -and $scriptNames) {
+                $expected = @($scriptNames.Trim().Split(',') | Where-Object { $_ })
+                $missing = @()
+                foreach ($name in $expected) {
+                    $exe = Join-Path $scriptsDir "$name.exe"
+                    if (-not (Test-Path $exe)) { $missing += "$name.exe" }
+                }
+                if ($missing.Count -gt 0) {
+                    Write-Warn "Console entry point(s) missing: $($missing -join ', ')"
+                    Write-Info "Reinstalling entry points..."
+                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+                    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --reinstall -e . }
+                    $stillMissing = @()
+                    foreach ($name in $expected) {
+                        $exe = Join-Path $scriptsDir "$name.exe"
+                        if (-not (Test-Path $exe)) { $stillMissing += "$name.exe" }
+                    }
+                    if ($stillMissing.Count -gt 0) {
+                        Write-Warn "Entry points still missing after repair: $($stillMissing -join ', ')"
+                        Write-Info "Workaround: `"$pythonExe`" -m hermes_cli.main <command>"
+                    } else {
+                        Write-Success "Console entry points restored"
+                    }
+                }
+            }
+        }
     }
 
     # Verify the dashboard deps specifically -- they're the most common thing

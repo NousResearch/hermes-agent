@@ -1355,6 +1355,8 @@ export const en: Translations = {
       menuSetActive: 'Set active',
       menuDelete: 'Delete',
       reveal: 'Reveal in folder',
+      remoteRevealUnavailable:
+        'This path lives on the gateway. Reveal in this Mac’s file manager is not available for remote workspaces; copy the path instead.',
       copyPath: 'Copy path',
       removeFromSidebar: 'Hide from sidebar',
       createFailed: 'Could not create project',

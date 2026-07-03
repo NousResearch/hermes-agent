@@ -1101,6 +1101,7 @@ export interface Translations {
       menuSetActive: string
       menuDelete: string
       reveal: string
+      remoteRevealUnavailable: string
       copyPath: string
       removeFromSidebar: string
       createFailed: string

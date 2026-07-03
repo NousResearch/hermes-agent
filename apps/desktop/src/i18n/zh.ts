@@ -1535,6 +1535,8 @@ export const zh: Translations = {
       menuSetActive: '设为活动',
       menuDelete: '删除',
       reveal: '在文件夹中显示',
+      remoteRevealUnavailable:
+        '此路径位于网关上。远程工作区无法在这台 Mac 的文件管理器中显示；请改为复制路径。',
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
       createFailed: '无法创建项目',

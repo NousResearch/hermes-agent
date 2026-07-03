@@ -2,14 +2,19 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBranch } from '@/global'
-import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { translateNow } from '@/i18n'
+import {
+  desktopDefaultCwd,
+  isDesktopFsRemoteMode,
+  selectDesktopPaths,
+  writeDesktopFileText
+} from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
-import { translateNow } from '@/i18n'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { notify } from '@/store/notifications'
 import { setSidebarAgentsGrouped } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
@@ -775,9 +780,17 @@ export async function removeWorktreePath(
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).
 export async function revealPath(path: null | string): Promise<void> {
-  if (path) {
-    await window.hermesDesktop?.revealPath?.(path)
+  if (!path) {
+    return
   }
+
+  if (isDesktopFsRemoteMode()) {
+    notify({ kind: 'warning', message: translateNow('sidebar.projects.remoteRevealUnavailable') })
+
+    return
+  }
+
+  await window.hermesDesktop?.revealPath?.(path)
 }
 
 // Copy a path to the clipboard (git-GUI standard).

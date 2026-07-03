@@ -10,15 +10,23 @@ import {
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileText,
+  REMOTE_MUTATION_UNAVAILABLE_MESSAGE,
+  REMOTE_REVEAL_UNAVAILABLE_MESSAGE,
+  renameDesktopFile,
+  revealDesktopFile,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  trashDesktopFile
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
 const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
+const revealPath = vi.fn(async () => true)
+const renamePath = vi.fn(async () => ({ path: '/work/renamed.txt' }))
 const selectPaths = vi.fn(async () => ['/local'])
+const trashPath = vi.fn(async () => undefined)
 
 const api = vi.fn(async ({ path }: { path: string }) => {
   if (path.startsWith('/api/fs/list?')) {
@@ -56,7 +64,10 @@ function stubBridge() {
       readDir,
       readFileDataUrl,
       readFileText,
-      selectPaths
+      renamePath,
+      revealPath,
+      selectPaths,
+      trashPath
     }
   })
 }
@@ -153,6 +164,30 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('keeps local reveal rename and delete on the local Electron bridge', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(revealDesktopFile('/work/file.txt')).resolves.toBeUndefined()
+    await expect(renameDesktopFile('/work/file.txt', 'renamed.txt')).resolves.toBe('/work/renamed.txt')
+    await expect(trashDesktopFile('/work/file.txt')).resolves.toBeUndefined()
+
+    expect(revealPath).toHaveBeenCalledWith('/work/file.txt')
+    expect(renamePath).toHaveBeenCalledWith('/work/file.txt', 'renamed.txt')
+    expect(trashPath).toHaveBeenCalledWith('/work/file.txt')
+  })
+
+  it('blocks local-only reveal rename and delete in remote mode with honest messages', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(revealDesktopFile('/remote/file.txt')).rejects.toThrow(REMOTE_REVEAL_UNAVAILABLE_MESSAGE)
+    await expect(renameDesktopFile('/remote/file.txt', 'renamed.txt')).rejects.toThrow(REMOTE_MUTATION_UNAVAILABLE_MESSAGE)
+    await expect(trashDesktopFile('/remote/file.txt')).rejects.toThrow(REMOTE_MUTATION_UNAVAILABLE_MESSAGE)
+
+    expect(revealPath).not.toHaveBeenCalled()
+    expect(renamePath).not.toHaveBeenCalled()
+    expect(trashPath).not.toHaveBeenCalled()
   })
 })
 

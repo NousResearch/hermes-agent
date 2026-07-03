@@ -226,9 +226,10 @@ async function readTextPreview(filePath: string) {
     }
   }
 
-  // Back-compat for a running Electron process whose preload hasn't been
-  // restarted since readFileText was added. readFileDataUrl already existed.
-  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePath)
+  // Back-compat for a running Electron process/backend whose text reader hasn't
+  // been updated yet. The remote-aware data URL facade still routes to the live
+  // gateway in remote mode.
+  const dataUrl = await readDesktopFileDataUrl(filePath)
   const [, metadata = '', data = ''] = dataUrl.match(/^data:([^,]*),(.*)$/) || []
   const base64 = metadata.includes(';base64')
   const mimeType = metadata.replace(/;base64$/, '') || undefined

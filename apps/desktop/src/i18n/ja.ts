@@ -1463,6 +1463,8 @@ export const ja = defineLocale({
       menuSetActive: 'アクティブに設定',
       menuDelete: '削除',
       reveal: 'フォルダで表示',
+      remoteRevealUnavailable:
+        'このパスはゲートウェイ上にあります。リモートワークスペースはこの Mac のファイルマネージャーで表示できません。代わりにパスをコピーしてください。',
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
       createFailed: 'プロジェクトを作成できませんでした',

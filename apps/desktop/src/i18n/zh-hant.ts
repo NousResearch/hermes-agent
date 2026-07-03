@@ -1416,6 +1416,8 @@ export const zhHant = defineLocale({
       menuSetActive: '設為使用中',
       menuDelete: '刪除',
       reveal: '在資料夾中顯示',
+      remoteRevealUnavailable:
+        '此路徑位於閘道上。遠端工作區無法在這台 Mac 的檔案管理器中顯示；請改為複製路徑。',
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',

@@ -38,6 +38,12 @@ export function desktopFsProfile(): string | undefined {
   return $connection.get()?.profile || undefined
 }
 
+export const REMOTE_REVEAL_UNAVAILABLE_MESSAGE =
+  'This path lives on the gateway. Reveal in this Mac’s file manager is not available for remote workspaces; copy the path instead.'
+
+export const REMOTE_MUTATION_UNAVAILABLE_MESSAGE =
+  'This file lives on the gateway. Rename/delete from the desktop file tree is disabled until the remote filesystem facade lands.'
+
 function fsPath(endpoint: string, filePath: string) {
   return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
 }
@@ -157,6 +163,14 @@ export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)
 }
 
+export async function revealDesktopFile(path: string): Promise<void> {
+  if (isDesktopFsRemoteMode()) {
+    throw new Error(REMOTE_REVEAL_UNAVAILABLE_MESSAGE)
+  }
+
+  await revealDesktopPath(path)
+}
+
 // Rename a file/folder in place; returns the new absolute path. Local only.
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()
@@ -170,6 +184,14 @@ export async function renameDesktopPath(path: string, newName: string): Promise<
   return result.path
 }
 
+export async function renameDesktopFile(path: string, newName: string): Promise<string> {
+  if (isDesktopFsRemoteMode()) {
+    throw new Error(REMOTE_MUTATION_UNAVAILABLE_MESSAGE)
+  }
+
+  return renameDesktopPath(path, newName)
+}
+
 // Move a file/folder to the OS trash (recoverable). Local only.
 export async function trashDesktopPath(path: string): Promise<void> {
   const desktop = bridge()
@@ -179,6 +201,14 @@ export async function trashDesktopPath(path: string): Promise<void> {
   }
 
   await desktop.trashPath(path)
+}
+
+export async function trashDesktopFile(path: string): Promise<void> {
+  if (isDesktopFsRemoteMode()) {
+    throw new Error(REMOTE_MUTATION_UNAVAILABLE_MESSAGE)
+  }
+
+  await trashDesktopPath(path)
 }
 
 export async function copyTextToClipboard(text: string): Promise<void> {

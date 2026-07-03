@@ -6,9 +6,9 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   notifyError: vi.fn(),
   notifyWorkspaceChanged: vi.fn(),
-  renameDesktopPath: vi.fn(async () => undefined),
-  revealDesktopPath: vi.fn(async () => undefined),
-  trashDesktopPath: vi.fn(async () => undefined)
+  renameDesktopFile: vi.fn(async () => undefined),
+  revealDesktopFile: vi.fn(async () => undefined),
+  trashDesktopFile: vi.fn(async () => undefined)
 }))
 
 vi.mock('@/i18n', () => ({
@@ -18,9 +18,9 @@ vi.mock('@/i18n', () => ({
 vi.mock('@/lib/desktop-fs', () => ({
   copyTextToClipboard: mocks.copyTextToClipboard,
   isDesktopFsRemoteMode: mocks.isDesktopFsRemoteMode,
-  renameDesktopPath: mocks.renameDesktopPath,
-  revealDesktopPath: mocks.revealDesktopPath,
-  trashDesktopPath: mocks.trashDesktopPath
+  renameDesktopFile: mocks.renameDesktopFile,
+  revealDesktopFile: mocks.revealDesktopFile,
+  trashDesktopFile: mocks.trashDesktopFile
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -61,9 +61,9 @@ describe('file action remote-mode guard', () => {
 
     expect($renamingPath.get()).toBeNull()
     expect($fileActionDialog.get()).toBeNull()
-    expect(mocks.revealDesktopPath).not.toHaveBeenCalled()
-    expect(mocks.renameDesktopPath).not.toHaveBeenCalled()
-    expect(mocks.trashDesktopPath).not.toHaveBeenCalled()
+    expect(mocks.revealDesktopFile).not.toHaveBeenCalled()
+    expect(mocks.renameDesktopFile).not.toHaveBeenCalled()
+    expect(mocks.trashDesktopFile).not.toHaveBeenCalled()
     expect(mocks.notifyWorkspaceChanged).not.toHaveBeenCalled()
     expect(mocks.notify).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -87,9 +87,9 @@ describe('file action remote-mode guard', () => {
 
     expect($renamingPath.get()).toBe('/local/repo/file.ts')
     expect($fileActionDialog.get()).toMatchObject({ kind: 'delete', path: '/local/repo/file.ts' })
-    expect(mocks.revealDesktopPath).toHaveBeenCalledWith('/local/repo/file.ts')
-    expect(mocks.renameDesktopPath).toHaveBeenCalledWith('/local/repo/file.ts', 'next.ts')
-    expect(mocks.trashDesktopPath).toHaveBeenCalledWith('/local/repo/file.ts')
+    expect(mocks.revealDesktopFile).toHaveBeenCalledWith('/local/repo/file.ts')
+    expect(mocks.renameDesktopFile).toHaveBeenCalledWith('/local/repo/file.ts', 'next.ts')
+    expect(mocks.trashDesktopFile).toHaveBeenCalledWith('/local/repo/file.ts')
     expect(mocks.notifyWorkspaceChanged).toHaveBeenCalledTimes(2)
   })
 })

@@ -1,6 +1,52 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { $connection } from '@/store/session'
+
+import { mediaSrc } from './markdown-text'
+
+describe('mediaSrc', () => {
+  const api = vi.fn(async () => ({ data_url: 'data:image/png;base64,cmVtb3Rl' }))
+  const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+  beforeEach(() => {
+    api.mockClear()
+    readFileDataUrl.mockClear()
+    $connection.set(null)
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+  })
+
+  afterEach(() => {
+    $connection.set(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('routes remote audio/video through the gateway opener before local stream fallback', async () => {
+    $connection.set({ mode: 'remote', profile: 'mbp' } as never)
+
+    await expect(mediaSrc('/tmp/a clip.mp4')).resolves.toBe(
+      'hermes-gateway-file://open?path=%2Ftmp%2Fa%20clip.mp4&profile=mbp'
+    )
+    expect(api).not.toHaveBeenCalled()
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('keeps local audio/video on the local streaming scheme', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(mediaSrc('/tmp/a clip.mp4')).resolves.toBe('hermes-media://stream/%2Ftmp%2Fa%20clip.mp4')
+    expect(api).not.toHaveBeenCalled()
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('fetches remote images through authenticated gateway media API', async () => {
+    $connection.set({ mode: 'remote', profile: 'mbp' } as never)
+
+    await expect(mediaSrc('/tmp/a image.png')).resolves.toBe('data:image/png;base64,cmVtb3Rl')
+    expect(api).toHaveBeenCalledWith({ path: '/api/media?path=%2Ftmp%2Fa%20image.png', profile: 'mbp' })
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+})
 
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {

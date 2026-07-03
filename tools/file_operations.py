@@ -1425,14 +1425,40 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-
-        try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+        # Post-write verification: re-read the file through the same
+        # executor (local/SSH/container — whichever backend actually did
+        # the write) and confirm the exact content landed. `mv` above can
+        # report exit 0 while the target ends up unreadable or different
+        # (race with another task, backend FS oddity, sandbox quirk);
+        # trusting the write's own exit code — or worse, falling back to
+        # len(content) when a lighter stat-only check fails — would
+        # fabricate a success result for a write that never actually
+        # happened. Mirrors the re-read-and-compare check patch_replace
+        # already does, so both mutation paths give real proof of landing
+        # instead of a self-report a caller could mistake for one.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return WriteResult(
+                error=f"Post-write verification failed: could not re-read {path}"
+            )
+        # Normalize line endings before comparing — see patch_replace's
+        # identical check for why: some backends legitimately translate
+        # bare LF to CRLF between the write and the read-back (e.g. a
+        # Windows local backend's text-mode file handling), which would
+        # otherwise flag every multi-line write as a false-negative
+        # "did not persist" even though it landed correctly.
+        _verify_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        _content_normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+        if _verify_normalized != _content_normalized:
+            return WriteResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write (wrote {len(_content_normalized)} "
+                f"chars, read back {len(_verify_normalized)} chars after "
+                "normalizing line endings). The write did not persist. "
+                "Re-read the file and try again."
+            ))
+        bytes_written = len(content.encode('utf-8'))
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)

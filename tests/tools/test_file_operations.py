@@ -835,6 +835,80 @@ class TestPatchReplacePostWriteVerification:
         assert "could not re-read" in result.error.lower()
 
 
+class TestWriteFilePostWriteVerification:
+    """Tests for the post-write verification in ``write_file`` itself.
+
+    write_file re-reads the file through the same executor that performed
+    the write and compares real content (mirroring patch_replace's existing
+    verification) instead of trusting `mv`'s exit code or fabricating a
+    byte count. Confirms both the "can't confirm at all" and "confirmed,
+    but wrong" failure shapes surface as real errors instead of a fabricated
+    success for a write that never actually landed.
+    """
+
+    def test_write_file_fails_when_post_write_read_errors(self, mock_env):
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:  # the atomic write itself
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                # Simulate the file being unreadable right after the "successful" mv.
+                return {"output": "", "returncode": 1}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/a.py", "hello world\n")
+
+        assert result.error is not None, (
+            "Unconfirmed post-write read must surface as error, got "
+            f"bytes_written={result.bytes_written}"
+        )
+        assert "could not re-read" in result.error.lower()
+
+    def test_write_file_fails_when_on_disk_content_differs(self, mock_env):
+        """`mv` reports success but the re-read comes back with different
+        bytes than what was written — must surface as an error, not a
+        fabricated success (the exact scenario the audit's PoC exploited
+        against the self-reported JSON)."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                # Stale/pre-existing content — the write never actually landed.
+                return {"output": "old stale content\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/a.py", "hello world\n")
+
+        assert result.error is not None
+        assert "did not persist" in result.error.lower()
+
+    def test_write_file_succeeds_when_post_write_read_confirms(self, mock_env):
+        content = "hello world\n"
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": content, "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/a.py", content)
+
+        assert result.error is None
+        assert result.bytes_written == len(content.encode())
+
+
 # =========================================================================
 # Git baseline check for write_file warning
 # =========================================================================

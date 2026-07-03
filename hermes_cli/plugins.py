@@ -229,6 +229,9 @@ VALID_HOOKS: Set[str] = {
     #   None / {}              → default: _find_skill + in-place rewrite
     # Kwargs: name, content (new full SKILL.md), old_content (str or None)
     "pre_skill_edit",
+    # Skill lifecycle — post-edit. Observer-only, fires after successful
+    # edit. Kwargs: name, path (abs str), success (bool)
+    "post_skill_edit",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

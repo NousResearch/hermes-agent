@@ -926,12 +926,21 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+
+    # ── post_skill_edit hook (observer only) ──
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_post_hook
+        _invoke_post_hook("post_skill_edit", name=name, path=str(existing["path"]), success=True)
+    except Exception:
+        pass
+
+    return result
 
 
 def _patch_skill(

@@ -104,7 +104,10 @@ try {
 # which never write a side log to %TEMP% through a provider cmdlet -- complete
 # fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
 # every downstream cmdlet (and child process) see a path the provider can
-# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+# resolve. When 8.3 generation is disabled (or the alias is stale), COM
+# expansion fails too — e.g. Stone.ZEN8 -> STONE~1.ZEN. Rebuild the default
+# profile temp dir from LocalApplicationData, which stays in long form.
+# (GH: Windows desktop installer fails at Node/Electron stages.)
 
 function ConvertTo-LongPath {
     param([string]$Path)
@@ -122,10 +125,34 @@ function ConvertTo-LongPath {
     return $Path
 }
 
+function Resolve-TempEnvPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+
+    $expanded = ConvertTo-LongPath $Path
+    if ($expanded -notmatch '~\d') { return $expanded }
+
+    # COM couldn't expand the profile's 8.3 alias. For the standard per-user
+    # temp location (%LOCALAPPDATA%\Temp), rebuild from the long
+    # LocalApplicationData folder — Windows keeps this in long form even when
+    # TEMP/TMP still point at STONE~1.ZEN-style aliases.
+    if ($Path -match '(?i)[\\/]AppData[\\/]Local[\\/]Temp(?:[\\/]|$)') {
+        $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+        if ($localAppData -and $localAppData -notmatch '~\d') {
+            $defaultTemp = Join-Path $localAppData 'Temp'
+            $tail = $Path -replace '(?i)^.*[\\/]AppData[\\/]Local[\\/]Temp[\\/]?', ''
+            if ($tail) { return Join-Path $defaultTemp $tail }
+            return $defaultTemp
+        }
+    }
+
+    return $expanded
+}
+
 foreach ($tmpVar in @('TEMP', 'TMP')) {
     $current = [Environment]::GetEnvironmentVariable($tmpVar)
     if ($current) {
-        $expanded = ConvertTo-LongPath $current
+        $expanded = Resolve-TempEnvPath $current
         if ($expanded -and $expanded -ne $current) {
             Set-Item -Path "Env:$tmpVar" -Value $expanded
         }
@@ -2674,7 +2701,7 @@ function Install-Desktop {
             throw "apps/desktop build failed (exit $code)"
         }
         Write-Success "Desktop app built"
-        Remove-Item -Force $buildLog -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $buildLog -Force -ErrorAction SilentlyContinue
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location

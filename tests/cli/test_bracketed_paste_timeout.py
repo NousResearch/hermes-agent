@@ -135,6 +135,49 @@ class TestBracketedPasteTimeout:
         assert not parser._in_bracketed_paste
         assert callback.call_count >= 1
 
+    def test_late_bytes_after_timeout_stay_paste_events(self, monkeypatch):
+        """Late bytes from a torn paste must not become Enter submits.
+
+        Regression for the interrupt storm seen when Hermes timed out a large
+        bracketed paste, returned to normal key parsing, then treated each
+        remaining pasted newline as a real Enter while the agent was running.
+        """
+        now = [0.0]
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+        parser, callback = self._make_parser()
+
+        parser.feed("\x1b[200~first line\n")
+        assert parser._in_bracketed_paste
+        assert not callback.called
+
+        now[0] = 3.0
+        parser.feed("second line\n")
+
+        assert not parser._in_bracketed_paste
+        paste_events = [
+            c[0][0]
+            for c in callback.call_args_list
+            if hasattr(c[0][0], "key") and c[0][0].key == Keys.BracketedPaste
+        ]
+        assert len(paste_events) == 1
+        assert paste_events[0].data == "first line\nsecond line\n"
+
+        callback.reset_mock()
+        now[0] = 3.2
+        parser.feed("late line\n")
+        now[0] = 3.4
+        parser.feed("late line 2\n")
+
+        late_events = [
+            c[0][0]
+            for c in callback.call_args_list
+            if hasattr(c[0][0], "key") and c[0][0].key == Keys.BracketedPaste
+        ]
+        assert [event.data for event in late_events] == [
+            "late line\n",
+            "late line 2\n",
+        ]
+
     def test_torn_end_mark_recovers(self):
         """If end mark arrives split across feeds within timeout, it still works."""
         parser, callback = self._make_parser()

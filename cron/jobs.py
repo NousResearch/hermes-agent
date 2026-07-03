@@ -792,6 +792,24 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_repeat_times(repeat: Any) -> Optional[int]:
+    """Normalize user/model supplied repeat counts.
+
+    The model tool schema asks for an integer, but LLMs occasionally pass
+    strings such as ``"once"`` for one-shot jobs. Treat non-numeric values as
+    unset so callers get the existing defaults (once for one-shot schedules,
+    forever for recurring schedules) instead of crashing on numeric
+    comparisons.
+    """
+    if repeat is None:
+        return None
+    try:
+        repeat_int = int(repeat)
+    except (TypeError, ValueError):
+        return None
+    return repeat_int if repeat_int > 0 else None
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -851,7 +869,7 @@ def create_job(
     prompt: Optional[str],
     schedule: str,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
@@ -915,9 +933,10 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: treat non-numeric strings, 0, or negative values as
+    # None (infinite/default). Models sometimes pass repeat="once" even
+    # though the schema asks for an integer.
+    repeat = _normalize_repeat_times(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

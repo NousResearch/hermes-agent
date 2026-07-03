@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    _normalize_repeat_times,
     claim_job_for_fire,
     create_job,
     get_job,
@@ -652,7 +653,7 @@ def cronjob(
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
@@ -932,8 +933,10 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: treat non-numeric strings, 0, or negative values
+                # as None (infinite/default). Models sometimes pass
+                # repeat="once" even though the schema asks for an integer.
+                normalized_repeat = _normalize_repeat_times(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

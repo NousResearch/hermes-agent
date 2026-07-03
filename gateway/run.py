@@ -19072,16 +19072,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                         )
                         return result
-                    next_message = await self._prepare_inbound_message_text(
-                        event=pending_event,
-                        source=next_source,
-                        history=updated_history,
-                        session_key=session_key,
-                    )
-                    if next_message is None:
-                        return result
-                    next_message_id = self._reply_anchor_for_event(pending_event)
-                    next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    # Resolve the follow-up's session key BEFORE preparing the
+                    # inbound text: _prepare_inbound_message_text buffers native
+                    # image paths under the key it is given, and the recursive
+                    # _run_agent below consumes them under next_session_key.
+                    # The write and consume keys must match or the images drop.
                     try:
                         next_session_key = self._session_key_for_source(next_source)
                     except Exception:
@@ -19090,6 +19085,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                             exc_info=True,
                         )
+                    next_message = await self._prepare_inbound_message_text(
+                        event=pending_event,
+                        source=next_source,
+                        history=updated_history,
+                        session_key=next_session_key,
+                    )
+                    if next_message is None:
+                        return result
+                    next_message_id = self._reply_anchor_for_event(pending_event)
+                    next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background

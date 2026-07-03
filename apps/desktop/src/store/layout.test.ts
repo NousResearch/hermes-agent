@@ -4,7 +4,9 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $pinnedSessionIds,
+  $sidebarPinnedOrderIds,
   migrateLegacyPinnedSessions,
+  setSidebarPinnedOrderIds,
   SIDEBAR_PINNED_STORAGE_KEY
 } from './layout'
 import { setSessions } from './session'
@@ -74,5 +76,17 @@ describe('server-side pinned sessions', () => {
     ).rejects.toThrow('backend unavailable')
 
     expect(window.localStorage.getItem(SIDEBAR_PINNED_STORAGE_KEY)).toBe(JSON.stringify(['legacy']))
+  })
+
+  it('keeps the local pinned drag-order independent of the server pin set', () => {
+    // Pin membership (server-synced) and drag-order (local) are separate stores:
+    // setting the order must not mutate the pinned set, and must dedupe/no-op on
+    // an unchanged write.
+    setSidebarPinnedOrderIds(['b', 'a', 'c'])
+    expect($sidebarPinnedOrderIds.get()).toEqual(['b', 'a', 'c'])
+
+    const ref = $sidebarPinnedOrderIds.get()
+    setSidebarPinnedOrderIds(['b', 'a', 'c'])
+    expect($sidebarPinnedOrderIds.get()).toBe(ref) // no-op keeps the same reference
   })
 })

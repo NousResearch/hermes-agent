@@ -104,6 +104,24 @@ export const $sidebarSessionOrderIds = persistentAtom(
   Codecs.stringArray
 )
 export const $sidebarSessionOrderManual = persistentAtom(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false, Codecs.bool)
+// Manual drag-order of PINNED rows, kept per-device (local) and layered over the
+// server-synced pinned SET ($pinnedSessionIds). Pin membership syncs across
+// machines; the visual order is a local preference — reordering on one device
+// must not reshuffle another. Keyed by durable (lineage-root) pin ids so the
+// order survives a session's compression id-change. Empty = default order.
+const SIDEBAR_PINNED_ORDER_STORAGE_KEY = 'hermes.desktop.pinnedOrder'
+export const $sidebarPinnedOrderIds = persistentAtom(
+  SIDEBAR_PINNED_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
+
+export function setSidebarPinnedOrderIds(ids: string[]) {
+  if (!arraysEqual($sidebarPinnedOrderIds.get(), ids)) {
+    $sidebarPinnedOrderIds.set(ids)
+  }
+}
+
 export const $sidebarWorkspaceOrderIds = persistentAtom(
   SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
   [] as string[],

@@ -820,9 +820,22 @@ def normalize_usage(
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
+    # Responses API shape: output_tokens_details.reasoning_tokens.
+    # Chat Completions shape (OpenAI, OpenRouter, DeepSeek, etc.):
+    # completion_tokens_details.reasoning_tokens. Reading only the former
+    # left reasoning_tokens=0 for every chat_completions reasoning model —
+    # hidden thinking was invisible in session accounting even though it
+    # dominates output spend on models like deepseek-v4-flash (measured:
+    # single calls burning 21K reasoning tokens to emit 500 visible tokens).
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if not reasoning_tokens:
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details:
+            reasoning_tokens = _to_int(
+                getattr(completion_details, "reasoning_tokens", 0)
+            )
 
     return CanonicalUsage(
         input_tokens=input_tokens,

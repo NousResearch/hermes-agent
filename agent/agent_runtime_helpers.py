@@ -1184,11 +1184,38 @@ def restore_primary_runtime(agent) -> bool:
         if pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
+                entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
+                primary_provider = str(rt.get("provider") or "").strip().lower()
+                entry_matches_primary = entry_provider == primary_provider
+                # Custom endpoints all carry the generic ``custom`` provider on
+                # the agent while the pool entry is keyed ``custom:<name>`` (see
+                # CUSTOM_POOL_PREFIX). Resolve the primary's base_url to its
+                # ``custom:<name>`` key via the canonical helper and compare
+                # against the entry's key — this mirrors the sibling guard in
+                # ``recover_with_credential_pool`` (see above) and correctly
+                # disambiguates multiple custom providers that share one gateway
+                # base_url. Fixes #56885.
+                from agent.credential_pool import CUSTOM_POOL_PREFIX
+                if (
+                    primary_provider == "custom"
+                    and entry_provider.startswith(CUSTOM_POOL_PREFIX)
+                ):
+                    entry_matches_primary = False
+                    try:
+                        from agent.credential_pool import get_custom_provider_pool_key
+                        primary_base_url = str(rt.get("base_url") or "").strip()
+                        primary_key = (
+                            get_custom_provider_pool_key(primary_base_url) or ""
+                        ).strip().lower()
+                        entry_matches_primary = bool(primary_key) and primary_key == entry_provider
+                    except Exception:
+                        entry_matches_primary = False
+
                 entry_key = (
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
                 )
-                if entry_key:
+                if entry_key and entry_matches_primary:
                     # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
@@ -1197,6 +1224,14 @@ def restore_primary_runtime(agent) -> bool:
                         "Restore re-selected pool entry %s (%s)",
                         getattr(entry, "id", "?"),
                         getattr(entry, "label", "?"),
+                    )
+                elif entry_key:
+                    logger.info(
+                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                        entry_provider or "?",
+                        primary_provider or "?",
                     )
 
         # ── Reset fallback chain for the new turn ──
@@ -1442,6 +1477,46 @@ def anthropic_prompt_cache_policy(
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
+
+    # MoA virtual provider: the agent's model/provider are the preset name and
+    # "moa" — neither matches any caching branch, so the ACTING AGGREGATOR
+    # (often Claude on OpenRouter) silently lost prompt caching entirely
+    # (measured: 85% cache share solo vs 2% on the identical model via MoA —
+    # tens of millions of re-billed input tokens per benchmark run). Resolve
+    # the policy from the preset's real aggregator slot instead.
+    if eff_provider.strip().lower() == "moa":
+        try:
+            from hermes_cli.config import load_config as _load_moa_cfg
+            from hermes_cli.moa_config import resolve_moa_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            _preset = resolve_moa_preset(
+                _load_moa_cfg().get("moa") or {}, eff_model or None
+            )
+            _agg = _preset.get("aggregator") or {}
+            _agg_provider = str(_agg.get("provider") or "").strip()
+            _agg_model = str(_agg.get("model") or "").strip()
+            if _agg_provider and _agg_model:
+                _agg_base_url = ""
+                _agg_api_mode = ""
+                try:
+                    _rt = resolve_runtime_provider(
+                        requested=_agg_provider, target_model=_agg_model
+                    )
+                    _agg_base_url = _rt.get("base_url") or ""
+                    _agg_api_mode = _rt.get("api_mode") or ""
+                except Exception:
+                    pass
+                return anthropic_prompt_cache_policy(
+                    agent,
+                    provider=_agg_provider,
+                    base_url=_agg_base_url,
+                    api_mode=_agg_api_mode,
+                    model=_agg_model,
+                )
+        except Exception as _moa_exc:  # pragma: no cover - defensive
+            logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
+        return False, False
 
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()

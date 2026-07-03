@@ -285,17 +285,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
         "kimi-k2.7-code",
@@ -418,14 +415,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
         "gemini-3.1-pro",
         "gemini-3-flash",
+        "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
         "minimax-m3-free",
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
+        "kimi-k2.7-code",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
         "deepseek-v4-flash-free",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.6-plus-free",
         "qwen3.5-plus",
@@ -436,17 +437,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "mimo-v2.5-pro",
         "mimo-v2.5",
         "mimo-v2-pro",
         "mimo-v2-omni",
+        "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
     ],
@@ -3376,12 +3383,14 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
-    - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi on Go use ``/v1/chat/completions``
-    - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
+    - MiniMax and Qwen models on Go use ``/v1/messages``
+    - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
+    - Qwen models on Zen use ``/v1/messages``
+    - Other Zen models (Gemini, GLM, Kimi, MiniMax, DeepSeek, etc.) use
       ``/v1/chat/completions``
 
-    This follows the published OpenCode docs for Zen and Go endpoints.
+    This follows the published OpenCode docs for Zen and Go endpoints
+    (https://opencode.ai/docs/zen/ and https://opencode.ai/docs/go/).
     """
     provider = normalize_provider(provider_id)
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
@@ -3391,7 +3400,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     if provider == "opencode-go":
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
-        if normalized.startswith("qwen3.7-max"):
+        if normalized.startswith("qwen"):
+            # All Qwen models on Go (qwen3.7-max, qwen3.7-plus, qwen3.6-plus)
+            # are served via /v1/messages per the published Go endpoint table.
             return "anthropic_messages"
         return "chat_completions"
 
@@ -3400,9 +3411,59 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
             return "anthropic_messages"
         if normalized.startswith("gpt-"):
             return "codex_responses"
+        if normalized.startswith("qwen"):
+            # Qwen models on Zen moved to /v1/messages per the published
+            # Zen endpoint table.
+            return "anthropic_messages"
         return "chat_completions"
 
     return "chat_completions"
+
+
+def normalize_opencode_base_url(
+    provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]
+) -> str:
+    """Normalize an OpenCode Zen / Go base URL for the target API mode.
+
+    OpenCode's OpenAI-compatible endpoints live under ``/v1`` (the OpenAI SDK
+    appends ``/chat/completions`` or ``/responses``), while the Anthropic SDK
+    appends its own ``/v1/messages`` — so anthropic_messages needs the ``/v1``
+    suffix stripped.
+
+    Crucially this must be SYMMETRIC.  The stripped URL gets persisted to
+    config (``model.base_url``) by the TUI/desktop and gateway after switching
+    into an anthropic-routed model (e.g. minimax-m2.7 on Go).  A later switch
+    to a chat_completions model (glm, deepseek, kimi) then inherited the
+    stripped URL and POSTed to ``https://opencode.ai/zen/go/chat/completions``
+    — a 404 (the marketing site).  Re-append ``/v1`` for non-anthropic modes
+    so previously-stripped URLs heal themselves.
+
+    Only opencode.ai-hosted URLs are re-suffixed; custom proxy overrides via
+    ``OPENCODE_*_BASE_URL`` are left alone unless they already carry ``/v1``.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return url
+    provider = normalize_provider(provider_id)
+    if provider not in {"opencode-zen", "opencode-go"}:
+        return url
+
+    import re as _re
+
+    if api_mode == "anthropic_messages":
+        return _re.sub(r"/v1$", "", url)
+
+    # chat_completions / codex_responses: ensure the /v1 suffix is present on
+    # official opencode.ai hosts (heals a persisted anthropic-stripped URL).
+    if url.endswith("/v1"):
+        return url
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except Exception:
+        host = ""
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        return url + "/v1"
+    return url
 
 
 def github_model_reasoning_efforts(
@@ -3454,6 +3515,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3500,6 +3562,12 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if isinstance(request_headers, dict):
+        # Per-provider custom headers can contain auth/proxy secrets. Merge
+        # last so endpoint-specific config wins, and never log the values.
+        from hermes_cli.config import normalize_extra_headers
+
+        headers.update(normalize_extra_headers(request_headers))
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -3532,13 +3600,20 @@ def fetch_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        timeout=timeout,
+        api_mode=api_mode,
+        request_headers=headers,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------

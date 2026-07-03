@@ -80,8 +80,21 @@ def _effective_provider_label() -> str:
     except AuthError:
         effective = requested or "auto"
 
-    if effective == "openrouter" and get_env_value("OPENAI_BASE_URL"):
-        effective = "custom"
+    if effective == "openrouter":
+        # A custom endpoint may be configured either in config.yaml
+        # (model.base_url — the canonical location; the runtime treats
+        # config.yaml as the single source of truth) or via the legacy
+        # OPENAI_BASE_URL env var. Either way, labeling it "OpenRouter"
+        # is misleading (#3296).
+        config_base_url = ""
+        try:
+            model_cfg = load_config().get("model")
+            if isinstance(model_cfg, dict):
+                config_base_url = (model_cfg.get("base_url") or "").strip()
+        except Exception:
+            pass
+        if config_base_url or get_env_value("OPENAI_BASE_URL"):
+            effective = "custom"
 
     return provider_label(effective)
 

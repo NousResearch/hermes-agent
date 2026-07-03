@@ -88,6 +88,7 @@ gateway:
     not_enough:            "압축할 대화가 충분하지 않습니다 (최소 4개의 메시지가 필요합니다)."
     no_provider:           "구성된 제공자가 없습니다 -- 압축할 수 없습니다."
     nothing_to_do:         "아직 압축할 내용이 없습니다 (대화 내용이 모두 보호된 컨텍스트입니다)."
+    aggressive_unsupported: "--aggressive는 지원되지 않습니다. '/compress here [N]'으로 최근 대화만 유지하거나 /undo로 턴을 삭제하세요."
     focus_line:            "초점: \"{topic}\""
     summary_failed:        "⚠️ 요약 생성에 실패했습니다 ({error}). 과거 메시지 {count}개가 제거되어 자리표시자로 대체되었으며, 이전 컨텍스트는 더 이상 복구할 수 없습니다. auxiliary.compression 모델 설정을 확인해 보세요."
     aborted:               "⚠️ 압축이 중단되었습니다 ({error}). 메시지가 삭제되지 않았으며 대화는 그대로 유지됩니다. 다시 시도하려면 /compress를 실행하거나, 새 세션을 시작하려면 /reset을 사용하거나, auxiliary.compression 모델 설정을 확인하세요."
@@ -367,6 +368,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ 도구 진행 상황: **NEW** — 도구가 변경될 때 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
     mode_all:              "⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
     mode_verbose:          "⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다."
+    mode_log:              "⚙️ 도구 진행 상황: **LOG** — 채팅에는 표시되지 않으며 도구 호출이 ~/.hermes/logs/tool_calls.log에 기록됩니다."
     saved_suffix:          "_(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_"
     save_failed:           "_(설정에 저장할 수 없습니다: {error})_"
 

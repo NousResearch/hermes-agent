@@ -4176,6 +4176,37 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(_eff_sid, str) and _eff_sid:
                     result["session_id"] = _eff_sid
                 return result, usage
+            except RuntimeError as exc:
+                # Codex finding #5, MEDIUM: _resolve_runtime_agent_kwargs()
+                # (called inside _create_agent()) raises RuntimeError(
+                # format_runtime_provider_error(...)) on provider auth/
+                # credential failure -- that's the ONLY thing in this
+                # function that raises RuntimeError specifically (other bugs
+                # in _create_agent()'s other logic would surface as
+                # TypeError/AttributeError/etc., not RuntimeError, so this
+                # catch is deliberately narrower than run.py's own `except
+                # Exception` around the equivalent call in
+                # _resolve_session_agent_runtime — precise enough to avoid
+                # mislabeling an unrelated bug as an auth failure, matching
+                # run.py's exact response shape (final_response text, no
+                # HTTP error) for the case it IS a real one. Previously this
+                # propagated unhandled: /v1/chat/completions caught it as a
+                # bare, undifferentiated "Internal server error: {e}" 500,
+                # and /api/sessions/{id}/chat[/stream] didn't catch it at
+                # all -- aiohttp's raw unhandled-exception 500 with no JSON
+                # body. Handling it here, once, covers every _run_agent()
+                # caller identically.
+                logger.warning("Provider authentication failed for session=%s: %s",
+                                session_id or "", exc)
+                return (
+                    {
+                        "final_response": f"⚠️ Provider authentication failed: {exc}",
+                        "messages": [],
+                        "api_calls": 0,
+                        "tools": [],
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
             finally:
                 clear_session_vars(tokens)
 

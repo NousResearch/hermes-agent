@@ -3709,6 +3709,17 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 return None
         return None
 
+    def _fallback_exhausted_reset_at(entry: Dict[str, Any], code: Any) -> Optional[float]:
+        status_at = _parse_reset_at(entry.get("last_status_at"))
+        if status_at is None:
+            return None
+        try:
+            code_int = int(code)
+        except (TypeError, ValueError):
+            code_int = None
+        ttl = 5 * 60 if code_int == 401 else 60 * 60
+        return status_at + ttl
+
     try:
         with _auth_store_lock():
             auth_store = _load_auth_store()
@@ -3738,10 +3749,18 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 or "rate limit" in message
                 or "usage limit" in message
                 or "quota" in message
+                # Older Codex pool entries can be marked exhausted without
+                # provider error metadata. The credential pool still freezes
+                # them for a default cooldown using last_status_at, and
+                # `hermes auth list` reports that cooldown. Keep status
+                # surfaces consistent with the pool in that legacy shape.
+                or (code is None and not reason and not message)
             )
             if not is_rate_limited:
                 continue
             reset_at = _parse_reset_at(entry.get("last_error_reset_at"))
+            if reset_at is None:
+                reset_at = _fallback_exhausted_reset_at(entry, code)
             if reset_at is not None and reset_at <= now:
                 continue
             return {
@@ -5909,6 +5928,49 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
             return base_status
 
     return _snapshot_nous_pool_status()
+
+
+def _format_quota_reset_at(reset_at: Any) -> str:
+    """Format an epoch reset time as local wall-clock, or '' if unknown.
+
+    Accepts seconds or milliseconds since the epoch (mirroring the upstream
+    normalisation in ``_codex_pool_rate_limit_status._parse_reset_at``) so any
+    surface can pass a raw provider timestamp without losing the retry hint.
+    """
+    try:
+        ts = float(reset_at)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    if ts > 1_000_000_000_000:  # milliseconds → seconds
+        ts /= 1000.0
+    try:
+        # rstrip(): some platforms/locales render an empty %Z, leaving a
+        # trailing space that would otherwise show as "... 14:30 )".
+        return datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M %Z").rstrip()
+    except (ValueError, OverflowError, OSError):
+        return ""
+
+
+def format_quota_status(status: Optional[Dict[str, Any]]) -> str:
+    """Human-readable quota-exhaustion suffix for an auth-status dict.
+
+    Returns ``""`` when the provider is usable.  When a provider reports
+    ``rate_limited`` (currently codex via ``get_codex_auth_status``, where every
+    credential is frozen in a quota cooldown), this turns the ``rate_limited`` +
+    ``reset_at`` fields into a short summary like
+    ``"quota exhausted (retry after 2026-06-26 14:30 KST)"`` so that every status
+    surface (``hermes status``, ``hermes auth status``) shows the same exhaustion
+    state that ``hermes auth list`` already does.  Provider-agnostic: any status
+    dict that grows a ``rate_limited`` flag renders consistently.
+    """
+    if not isinstance(status, dict) or not status.get("rate_limited"):
+        return ""
+    when = _format_quota_reset_at(status.get("reset_at"))
+    if when:
+        return f"quota exhausted (retry after {when})"
+    return "quota exhausted"
 
 
 def get_codex_auth_status() -> Dict[str, Any]:

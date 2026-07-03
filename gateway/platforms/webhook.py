@@ -822,7 +822,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Linear, Svix, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -860,6 +860,14 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Linear: Linear-Signature = <hex HMAC-SHA256 of raw body>
+        ln_sig = _header("Linear-Signature")
+        if ln_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(ln_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

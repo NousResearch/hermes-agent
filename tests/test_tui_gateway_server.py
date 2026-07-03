@@ -3862,15 +3862,18 @@ def test_slash_exec_compress_does_not_run_the_throwaway_worker(monkeypatch):
             )
 
     def _fake_compress(session, focus_topic=None, **_kw):
-        # Simulate a real compression on the live history: drop the head. The
-        # return value is ignored by the mirror path; the "4 → 2" output derives
-        # from the before/after history length.
+        # Simulate a real compression on the live history: drop the head. Returns
+        # (removed, usage) like the real _compress_session_history; the "4 → 2"
+        # output derives from the before/after history length.
         with session["history_lock"]:
             session["history"] = session["history"][-2:]
+        return 2, {}
 
     monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_status_update", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
 
     worker = _BogusWorker()
     agent = types.SimpleNamespace()
@@ -3917,11 +3920,14 @@ def test_command_dispatch_compress_runs_live_compression(monkeypatch):
     def _fake_compress(session, focus_topic=None, **_kw):
         with session["history_lock"]:
             session["history"] = session["history"][-2:]
+        return 2, {}
 
     monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {}})
     monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_status_update", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
 
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(),

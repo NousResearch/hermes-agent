@@ -11783,18 +11783,17 @@ def _(rid, params: dict) -> dict:
             )
 
     if name == "compress":
-        # slash.exec is the desktop/web client's primary path for /compress, but
-        # those clients fall back to command.dispatch whenever slash.exec throws
-        # (e.g. a slow compression trips the client's RPC timeout). Without a
-        # compress branch here that fallback dead-ended in a bogus
-        # "not a quick/plugin/skill command: compress". Run the same live-agent
-        # compression slash.exec does and hand it back as exec output.
-        if not session:
-            return _ok(rid, {"type": "exec", "output": "compress: no active session"})
-        result = _mirror_slash_side_effects(
-            params.get("session_id", ""), session, f"compress {arg}".strip()
+        # Desktop/web fall back to command.dispatch when slash.exec throws (e.g. a
+        # slow compression trips the client RPC timeout). Without a compress branch
+        # this dead-ended in "not a quick/plugin/skill command: compress". Route it
+        # through the TUI's session.compress handler for identical behavior.
+        return _ok(
+            rid,
+            {
+                "type": "exec",
+                "output": _compress_via_session_rpc(params.get("session_id", ""), arg),
+            },
         )
-        return _ok(rid, {"type": "exec", "output": result or "(no output)"})
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
@@ -12575,6 +12574,24 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     return ""
 
 
+def _compress_via_session_rpc(sid: str, focus_topic: str = "") -> str:
+    """Run /compress through the TUI's session.compress handler so desktop/web
+    (slash.exec, command.dispatch) behave exactly like the TUI: same compression
+    core + force, busy-guard, and "compressing…" progress status. Renders the
+    handler's structured result as the single output line the slash client shows.
+    """
+    resp = _methods["session.compress"](
+        None, {"session_id": sid, "focus_topic": focus_topic or ""}
+    )
+    if "error" in resp:
+        return resp["error"].get("message", "compress failed")
+    summary = (resp.get("result") or {}).get("summary") or {}
+    lines = [summary.get("headline", ""), summary.get("token_line", "")]
+    if summary.get("note"):
+        lines.append(summary["note"])
+    return "\n".join(x for x in lines if x) or "(no output)"
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -12648,15 +12665,17 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
-    # /compress must skip the throwaway slash worker: that subprocess never enters
-    # run()/_preload_resumed_session(), so its conversation_history is empty and
-    # cli._manual_compress emits a bogus "not enough conversation to compress". The
-    # real compression already runs on the live agent in _mirror_slash_side_effects,
-    # so running both returned a contradictory output+warning pair. Run only the
-    # live-agent path.
+    # /compress runs through the TUI's session.compress handler, NOT the throwaway
+    # slash worker: that subprocess never enters run()/_preload_resumed_session(),
+    # so its history is empty and cli._manual_compress emits a bogus "not enough
+    # conversation to compress". Delegating to session.compress gives desktop/web
+    # the exact TUI behavior — same compression core + force, progress status, and
+    # busy-guard — instead of a bespoke slash.exec-only path.
     if _cmd_base == "compress":
-        result = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
-        return _ok(rid, {"output": result or "(no output)"})
+        return _ok(
+            rid,
+            {"output": _compress_via_session_rpc(params.get("session_id", ""), _cmd_arg)},
+        )
 
     worker = session.get("slash_worker")
     if not worker:

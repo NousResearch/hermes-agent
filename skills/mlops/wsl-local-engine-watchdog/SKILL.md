@@ -1,87 +1,79 @@
 ---
 name: wsl-local-engine-watchdog
-description: "WSL2 local engine watchdog — STRICT EXCLUSIVITY arbiter. mmproj prompt IN Hermes desktop chat via clarfy. ASKED EVERY TIME a local model is loaded. No timeout, no skip memory."
-version: 10.0.0
+description: "WSL2 local engine watchdog — STRICT EXCLUSIVITY arbiter. after-start mmproj prompt: engine loads fast, agent asks in chat, restarts with mmproj if user says yes."
+version: 11.0.0
 author: Hermes Agent
-tags: [wsl, llama.cpp, vllm, watchdog, vram, provider-switch, local-engine, systemd, arbiter, exclusivity, mmproj, vision, multimodal]
+tags: [wsl, watchdog, vram, provider-switch, local-engine, systemd, arbiter, exclusivity, mmproj, vision]
 metadata:
   hermes:
     related_skills: [llama-cpp-wsl-ops]
 ---
 
-# WSL Local Engine Watchdog (Strict Exclusivity + Agent mmproj Prompt)
+# WSL Local Engine Watchdog (Strict Exclusivity)
 
-A Python watchdog for WSL2 that **auto-starts and auto-stops local inference engines** based on which Hermes provider you select. **Enforces strict exclusivity — only one engine service is ever active at a time.**
+A Python watchdog for WSL2 that **auto-starts and auto-stops local inference engines** based on which Hermes provider you select. **Strict exclusivity — only one engine at a time.**
 
-**Dynamic mmproj (vision):** When a local model supports multimodal, the watchdog **waits indefinitely** for a `/tmp/<provider>_mmproj` flag file. The flag is set by the Hermes agent (inside the desktop chat) **every single time** — no skip memory, no exceptions.
-
----
-
-## How the mmproj Prompt Works
-
-### EVERY TIME you switch to a local model with mmproj:
-
-1. **Agent uses `clarify`** immediately in the Hermes desktop chat:
-   > "Load vision mmproj for [provider]? Uses ~1-2GB more VRAM."
-   > [Yes] [No]
-
-2. **Based on your answer:**
-   - **Yes** → Agent runs: `wsl touch /tmp/<provider>_mmproj`
-   - **No** → Agent does nothing (flag stays absent)
-
-3. **Watchdog** is waiting indefinitely. It sees the flag (or not) within 1s:
-   - Flag exists → starts engine WITH mmproj
-   - No flag → starts engine WITHOUT mmproj
-
-**Next time you load the same model: the agent asks again.** Always.
+**After-start mmproj prompt:** Engine starts immediately without mmproj (fast path). The agent then asks in the Hermes desktop chat. If you want vision, the watchdog **restarts** the engine with `--mmproj` flags.
 
 ---
 
-## Architecture
+## How The mmproj Prompt Actually Works
+
+The timing problem: the watchdog detects the provider switch in `agent.log` and starts the engine **before** the agent has loaded (the model is still loading). So the agent can't ask before the engine starts.
+
+The solution is an **after-start prompt**:
 
 ```
-Provider switch in Hermes desktop
-        │
-   ┌────┴────┐
-   │         │
-   ▼         ▼
-watchdog   agent loads skill
-tails      → USES CLARIFY IN CHAT
-agent.log    "Load mmproj? [Yes] [No]"
-every 5s          │       │
-   │              │       │
-   │              ▼       ▼
-   │         agent sets  agent does
-   │         flag touch  nothing
-   │              │       │
-   └──────────┬───┘       │
-              │           │
-              ▼           ▼
-      engine starts  engine starts
-      WITH mmproj    WITHOUT mmproj
-                      (asked again
-                       next time)
+1. You switch provider in Hermes desktop
+              │
+              ▼
+2. Watchdog starts engine IMMEDIATELY
+   (no mmproj, you can use the model)
+              │
+              ▼
+3. Agent loads skill, ASKS IN CHAT:
+   "Load vision mmproj? [Yes] [No]"
+              │
+         ┌────┴────┐
+         ▼         ▼
+       "Yes"     "No"
+         │         │
+         ▼         ▼
+    Agent sets  Agent does
+    WSL flag    nothing
+         │         │
+         └──┬──────┘
+            ▼
+4. Watchdog detects flag on next poll
+   → RESTARTS engine WITH mmproj
+   (takes ~36s but now vision-enabled)
+
+   If "No": engine keeps running
+   without mmproj, no restart needed.
 ```
+
+**Next time you switch to the same model: the agent asks again.** Every single time.
+
+---
 
 ## Behavior
 
-- **Agent asks EVERY TIME** — no skip memory, no exceptions
-- **Prompt appears IN the Hermes desktop chat** via `clarify`
+- **Start fast, restart on demand** — engine loads without mmproj, restarts if you say yes
+- **Agent asks in Hermes desktop chat** every time via `clarify`
 - **Works with ANY model** — `clarify` is a built-in tool
-- **Infinite wait** — watchdog waits forever for the flag (no timeout)
-- **No skip memory** — every switch = fresh question
 - **Strict exclusivity** — only one engine active at a time
 - **Dynamic mmproj** via `EnvironmentFile` + `$MMPROJ_ARGS`
 - **Multi-session safe** — checks state.db before unloading
+- **Idle timeout (15 min)** — safety-net fallback
 
 ## Components
 
-### 1. Engine config: `~/scripts/local_engines.json`
+### Engine config: `~/scripts/local_engines.json`
 
 ```json
 {
   "llama-qwen": {
-    "engine": "llama.cpp",
+    "engine": "local",
     "service": "llama-server.service",
     "mmproj": "/home/vibrationall/ai/llama.cpp/models/gemma-4/mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
     "log": "/home/vibrationall/ai/llama.cpp/server.log"
@@ -89,7 +81,7 @@ every 5s          │       │
 }
 ```
 
-### 2. Systemd service
+### Systemd service
 
 ```ini
 [Service]
@@ -97,27 +89,10 @@ EnvironmentFile=-/home/vibrationall/scripts/mmproj_env.conf
 ExecStart=/path/to/llama-server $MMPROJ_ARGS ...
 ```
 
-### 3. Watchdog key logic
-
-```python
-def wait_for_mmproj_decision(provider, cfg):
-    """Wait indefinitely. ASKED EVERY TIME — no skip memory."""
-    if not cfg.get("mmproj"):
-        return None
-    path = get_mmproj_path(provider, cfg)
-    if path:
-        return path
-    print(f"waiting for /tmp/{provider}_mmproj ...")
-    while True:
-        time.sleep(1)
-        if os.path.exists(f"/tmp/{provider}_mmproj"):
-            return get_mmproj_path(provider, cfg) or cfg["mmproj"]
-```
-
 ## Quick Reference
 
 ```bash
-# Agent asks in chat every time. Manual override:
+# Manual override (set before switching, or after for restart):
 wsl touch /tmp/llama-gemma-4_mmproj
 wsl sh -c 'echo "/path/mmproj.gguf" > /tmp/llama-gemma-4_mmproj'
 
@@ -127,12 +102,7 @@ wsl journalctl --user -u llama-watchdog.service -n 20 --no-pager
 
 ## Pitfalls
 
-- **state.db does NOT track mid-session switches** — use agent.log tailing
-- **SQLite over /mnt/c/ 9p** — copy DB to /tmp before querying
-- **Cold load time** — 17GB GGUF ~36s; set gateway_timeout >180s
-- **LD_LIBRARY_PATH** — must be explicit in each service unit
-- **exit.target must be masked** — `systemctl --user mask exit.target --now`
-- **No `on_provider_change` hook** — workaround: tail agent.log
-- **clarfy works with ANY model** — it's a tool, not a model capability
-- **Flag is ephemeral** — lives in /tmp; clears on WSL restart
-- **Agent asks EVERY TIME** — no skip memory, no exceptions
+- Engine starts **without** mmproj first. Agent asks in chat. If yes → engine restarts WITH mmproj (cold load time applies on restart)
+- `clarify` works with ANY model — it's a tool, not a model capability
+- Flag file is ephemeral — lives in /tmp; clears on WSL restart
+- Agent asks EVERY TIME — no skip memory

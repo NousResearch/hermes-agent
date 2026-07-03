@@ -617,6 +617,19 @@ def compress_context(
         finally:
             _release_lock()
 
+    # Compression succeeded but produced no message reduction — the session
+    # would keep rotating indefinitely.  Exit early, same as the abort path.
+    if len(compressed) == len(messages):
+        logger.info(
+            "Compression yielded no message reduction — "
+            "skipping session rotation to avoid infinite compression loop"
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:

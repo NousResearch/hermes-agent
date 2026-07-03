@@ -173,7 +173,7 @@ export function useSlashCompletions(options: {
 
             return { ...item, text: `${prefix}${argText}` }
           })
-          .filter(item => isArgCompletion || isDesktopSlashSuggestion(item.text))
+          .filter(item => isArgCompletion || isDesktopSlashSuggestion(item.text, query))
           .map(item => ({
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one

@@ -90,6 +90,19 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/reset')).toBe(true)
   })
 
+  it('surfaces aliases on exact match when query is provided', () => {
+    // Without query — aliases stay hidden to avoid popover clutter.
+    expect(isDesktopSlashSuggestion('/reset')).toBe(false)
+    // With exact-match query — user typed /reset, show it.
+    expect(isDesktopSlashSuggestion('/reset', 'reset')).toBe(true)
+    expect(isDesktopSlashSuggestion('/reset', '/reset')).toBe(true)
+    // Partial match — still hidden (user is browsing).
+    expect(isDesktopSlashSuggestion('/reset', 're')).toBe(false)
+    expect(isDesktopSlashSuggestion('/reset', '')).toBe(false)
+    // Other aliases still hidden when query targets a different command.
+    expect(isDesktopSlashSuggestion('/fork', 'reset')).toBe(false)
+  })
+
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {
     const filtered = filterDesktopCommandsCatalog({
       categories: [

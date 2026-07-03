@@ -300,11 +300,16 @@ export function isDesktopSlashCommand(command: string): boolean {
 }
 
 /** Gates discovery in the popover/completions. */
-export function isDesktopSlashSuggestion(command: string): boolean {
+export function isDesktopSlashSuggestion(command: string, query?: string): boolean {
   const normalized = normalizeCommand(command)
 
-  // Aliases stay hidden so the popover isn't cluttered with duplicates.
+  // Aliases stay hidden so the popover isn't cluttered with duplicates,
+  // but surface them when the user typed an exact match (e.g. /reset).
   if (ALIAS_TO_CANONICAL.has(normalized)) {
+    if (query != null) {
+      const normalizedQuery = normalizeCommand(query)
+      return normalized === normalizedQuery
+    }
     return false
   }
 

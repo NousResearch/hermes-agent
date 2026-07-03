@@ -1,4 +1,5 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { codiconIcon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -12,6 +13,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
@@ -19,7 +21,6 @@ import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
-import { McpSettings } from './mcp-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
@@ -30,14 +31,25 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'providers',
   'gateway',
   'keys',
-  'mcp',
   'notifications',
   'sessions',
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
+  const navigate = useNavigate()
+  const { search } = useLocation()
+
+  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
+  // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
+  // coerce the unknown tab to the default view otherwise.
+  useEffect(() => {
+    if (new URLSearchParams(search).get('tab') === 'mcp') {
+      navigate(`${SKILLS_ROUTE}?tab=mcp`, { replace: true })
+    }
+  }, [navigate, search])
+
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
@@ -109,7 +121,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             label={t.settings.nav.notifications}
             onClick={() => setActiveView('notifications')}
           />
-          <div className="my-2 h-px bg-border/30" />
+          <div aria-hidden className="h-2" />
           <OverlayNavItem
             active={activeView === 'providers'}
             icon={Zap}
@@ -165,18 +177,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             </div>
           )}
           <OverlayNavItem
-            active={activeView === 'mcp'}
-            icon={Wrench}
-            label={t.settings.nav.mcp}
-            onClick={() => setActiveView('mcp')}
-          />
-          <OverlayNavItem
             active={activeView === 'sessions'}
             icon={Archive}
             label={t.settings.nav.archivedChats}
             onClick={() => setActiveView('sessions')}
           />
-          <div className="my-2 h-px bg-border/30" />
+          <div aria-hidden className="h-2" />
           <OverlayNavItem
             active={activeView === 'about'}
             icon={Info}
@@ -231,8 +237,6 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
-          ) : activeView === 'mcp' ? (
-            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
           ) : activeView === 'notifications' ? (
             <NotificationsSettings />
           ) : (

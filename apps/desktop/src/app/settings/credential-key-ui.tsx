@@ -159,9 +159,9 @@ export function CredentialKeyCard({
   return (
     <div
       className={cn(
-        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        '@container group/card rounded-[6px] px-2 py-1 transition-colors',
         expandable && 'cursor-pointer',
-        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
       onClick={expandable ? onToggle : undefined}
@@ -178,7 +178,7 @@ export function CredentialKeyCard({
       role={expandable ? 'button' : undefined}
       tabIndex={expandable ? 0 : undefined}
     >
-      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
+      <div className="grid gap-3 py-2 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn('size-2 shrink-0 rounded-full', info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
@@ -199,7 +199,7 @@ export function CredentialKeyCard({
         </div>
 
         <div
-          className="min-w-0 sm:justify-self-end"
+          className="min-w-0 @2xl:justify-self-end"
           onClick={e => e.stopPropagation()}
           onFocus={() => {
             if (expandable && !expanded) {
@@ -236,9 +236,9 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
   return (
     <div
       className={cn(
-        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        '@container group/card rounded-[6px] px-2 py-1 transition-colors',
         expandable && 'cursor-pointer',
-        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
       onClick={expandable ? onToggle : undefined}
@@ -255,7 +255,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
       role={expandable ? 'button' : undefined}
       tabIndex={expandable ? 0 : undefined}
     >
-      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
+      <div className="grid gap-3 py-2 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
@@ -279,7 +279,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
         </div>
 
         <div
-          className="min-w-0 sm:justify-self-end"
+          className="min-w-0 @2xl:justify-self-end"
           onClick={e => e.stopPropagation()}
           onFocus={() => {
             if (expandable && !expanded) {

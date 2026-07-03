@@ -26,6 +26,7 @@ export const en: Translations = {
     done: 'Done',
     error: 'Error',
     failed: 'Failed',
+    formatJson: 'Format JSON',
     free: 'Free',
     loading: 'Loading…',
     notSet: 'Not set',
@@ -165,8 +166,7 @@ export const en: Translations = {
 
   remoteDisplayBanner: {
     message: reason =>
-      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
-    dismiss: 'Dismiss'
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
 
   titlebar: {
@@ -758,11 +758,12 @@ export const en: Translations = {
 
   skills: {
     tabSkills: 'Skills',
-    tabToolsets: 'Toolsets',
+    tabToolsets: 'Tools',
+    tabMcp: 'MCP',
     tabHub: 'Browse Hub',
     all: 'All',
     searchSkills: 'Search skills...',
-    searchToolsets: 'Search toolsets...',
+    searchToolsets: 'Search tools...',
     refresh: 'Refresh skills',
     refreshing: 'Refreshing skills',
     loading: 'Loading capabilities...',
@@ -784,8 +785,15 @@ export const en: Translations = {
     toolsetDisabled: 'Toolset disabled',
     appliesToNewSessions: name => `${name} applies to new sessions.`,
     failedToUpdate: name => `Failed to update ${name}`,
+    sortMostUsed: 'Most used',
+    sortAlpha: 'A–Z',
+    enableAll: 'Enable all',
+    disableAll: 'Disable all',
+    bulkUpdated: count => `Updated ${count} ${count === 1 ? 'item' : 'items'} for new sessions.`,
+    bulkNoChange: 'Nothing to change.',
+    usageCount: count => `used ${count}×`,
     hub: {
-      searchPlaceholder: 'Search the skill hub (official, GitHub, community)...',
+      searchPlaceholder: 'Search the skill hub',
       search: 'Search',
       searching: 'Searching...',
       connectingHubs: 'Connecting to skill hubs...',
@@ -800,6 +808,7 @@ export const en: Translations = {
       install: 'Install',
       installing: 'Installing...',
       uninstall: 'Uninstall',
+      uninstalling: 'Uninstalling...',
       updateAll: 'Update installed',
       updating: 'Updating...',
       preview: 'Preview',
@@ -888,7 +897,6 @@ export const en: Translations = {
     ageHours: hours => `${hours}h ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
-    tokensK: k => `${k}k tok`,
     tokens: value => `${value} tok`
   },
 
@@ -905,7 +913,7 @@ export const en: Translations = {
     appearance: 'Appearance',
     settings: 'Settings',
     changeTheme: 'Change theme',
-    changeColorMode: 'Change color mode...',
+    changeColorMode: 'Change color mode…',
     pets: {
       title: 'Pets',
       placeholder: 'Search pets…',
@@ -952,7 +960,8 @@ export const en: Translations = {
       startOver: 'Start over'
     },
     installTheme: {
-      title: 'Install theme...',
+      title: 'Install theme…',
+      pageTitle: 'Install theme',
       placeholder: 'Search the VS Code Marketplace...',
       loading: 'Searching the Marketplace...',
       error: 'Could not reach the Marketplace.',
@@ -975,7 +984,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Skills & Tools', detail: 'Enable skills, toolsets, and providers' },
+      skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -1218,9 +1227,9 @@ export const en: Translations = {
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
     switchToProfile: name => `Switch to ${name}`,
-    manageProfiles: 'Manage profiles...',
+    manageProfiles: 'Manage profiles…',
     actionsFor: name => `Actions for ${name}`,
-    color: 'Color...',
+    color: 'Color…',
     colorFor: name => `Color for ${name}`,
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
@@ -1233,6 +1242,8 @@ export const en: Translations = {
     env: 'env',
     defaultBadge: 'Default',
     rename: 'Rename',
+    renameMenu: 'Rename…',
+    editSoul: 'Edit SOUL.md…',
     copySetup: 'Copy setup',
     copying: 'Copying...',
     modelLabel: 'Model',
@@ -1433,7 +1444,7 @@ export const en: Translations = {
   sidebar: {
     nav: {
       'new-session': 'New session',
-      skills: 'Skills & Tools',
+      skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts'
     },

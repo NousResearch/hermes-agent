@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -6,18 +7,13 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  getElevenLabsVoices,
-  getHermesConfigDefaults,
-  getHermesConfigRecord,
-  getHermesConfigSchema,
-  saveHermesConfig
-} from '@/hermes'
+import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
@@ -225,31 +221,32 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  // The editable draft is local (debounced autosave watches it), but it's seeded
+  // from — and saved back through — the shared config cache, so edits are visible
+  // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
-  const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
+  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: schemaResponse } = useQuery({
+    queryKey: ['hermes-config-schema'],
+    queryFn: getHermesConfigSchema,
+    staleTime: 5 * 60 * 1000
+  })
+  const schema = schemaResponse?.fields ?? null
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
 
+  // Seed the local draft once, the first time the shared record lands.
+  // Background refetches thereafter must not clobber in-progress edits.
+  const configSeeded = useRef(false)
+
   useEffect(() => {
-    let cancelled = false
-    Promise.all([getHermesConfigRecord(), getHermesConfigDefaults(), getHermesConfigSchema()])
-      .then(([c, d, s]) => {
-        if (cancelled) {
-          return
-        }
-
-        setConfig(c)
-        setDefaults(d)
-        setSchema(s.fields)
-      })
-      .catch(err => notifyError(err, c.failedLoad))
-
-    return () => void (cancelled = true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
-  }, [])
+    if (loadedConfig && !configSeeded.current) {
+      configSeeded.current = true
+      setConfig(loadedConfig)
+    }
+  }, [loadedConfig])
 
   useEffect(() => {
     let cancelled = false
@@ -284,6 +281,9 @@ export function ConfigSettings({
       void (async () => {
         try {
           await saveHermesConfig(config)
+          // Mirror the saved record into the shared cache so MCP/model surfaces
+          // reflect the edit without their own refetch.
+          setHermesConfigCache(config)
 
           if (saveVersionRef.current === v) {
             onConfigSaved?.()

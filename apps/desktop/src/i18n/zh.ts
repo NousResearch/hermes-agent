@@ -26,6 +26,7 @@ export const zh: Translations = {
     done: '完成',
     error: '错误',
     failed: '失败',
+    formatJson: '格式化 JSON',
     free: '免费',
     loading: '加载中…',
     notSet: '未设置',
@@ -160,8 +161,7 @@ export const zh: Translations = {
   },
 
   remoteDisplayBanner: {
-    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`,
-    dismiss: '关闭'
+    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
 
   titlebar: {
@@ -943,6 +943,7 @@ export const zh: Translations = {
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabMcp: 'MCP',
     tabHub: '浏览技能中心',
     all: '全部',
     searchSkills: '搜索技能…',
@@ -968,8 +969,15 @@ export const zh: Translations = {
     toolsetDisabled: '工具集已禁用',
     appliesToNewSessions: name => `${name} 将应用于新会话。`,
     failedToUpdate: name => `更新 ${name} 失败`,
+    sortMostUsed: '最常用',
+    sortAlpha: 'A–Z',
+    enableAll: '全部启用',
+    disableAll: '全部停用',
+    bulkUpdated: count => `已为新会话更新 ${count} 项。`,
+    bulkNoChange: '没有需要更改的内容。',
+    usageCount: count => `已使用 ${count} 次`,
     hub: {
-      searchPlaceholder: '搜索技能中心（官方、GitHub、社区）…',
+      searchPlaceholder: '搜索技能中心',
       search: '搜索',
       searching: '搜索中…',
       connectingHubs: '正在连接技能中心…',
@@ -983,6 +991,7 @@ export const zh: Translations = {
       install: '安装',
       installing: '安装中…',
       uninstall: '卸载',
+      uninstalling: '卸载中…',
       updateAll: '更新已安装',
       updating: '更新中…',
       preview: '预览',
@@ -1070,7 +1079,6 @@ export const zh: Translations = {
     ageHours: hours => `${hours} 小时前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokensK: k => `${k}k 词元`,
     tokens: value => `${value} 词元`
   },
 
@@ -1087,7 +1095,7 @@ export const zh: Translations = {
     appearance: '外观',
     settings: '设置',
     changeTheme: '更改主题',
-    changeColorMode: '更改颜色模式...',
+    changeColorMode: '更改颜色模式…',
     pets: {
       title: '宠物',
       placeholder: '搜索宠物…',
@@ -1133,7 +1141,8 @@ export const zh: Translations = {
       startOver: '重新开始'
     },
     installTheme: {
-      title: '安装主题...',
+      title: '安装主题…',
+      pageTitle: '安装主题',
       placeholder: '搜索 VS Code Marketplace...',
       loading: '正在搜索 Marketplace...',
       error: '无法连接到 Marketplace。',
@@ -1397,9 +1406,9 @@ export const zh: Translations = {
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
-    manageProfiles: '管理配置档案...',
+    manageProfiles: '管理配置档案…',
     actionsFor: name => `${name} 的操作`,
-    color: '颜色...',
+    color: '颜色…',
     colorFor: name => `${name} 的颜色`,
     setColor: color => `设置颜色 ${color}`,
     autoColor: '自动',
@@ -1412,6 +1421,8 @@ export const zh: Translations = {
     env: 'env',
     defaultBadge: '默认',
     rename: '重命名',
+    renameMenu: '重命名…',
+    editSoul: '编辑 SOUL.md…',
     copySetup: '复制安装命令',
     copying: '复制中…',
     modelLabel: '模型',

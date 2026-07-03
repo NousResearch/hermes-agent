@@ -26,6 +26,7 @@ export const ja = defineLocale({
     done: '完了',
     error: 'エラー',
     failed: '失敗',
+    formatJson: 'JSON を整形',
     free: '無料',
     loading: '読み込み中…',
     notSet: '未設定',
@@ -166,8 +167,7 @@ export const ja = defineLocale({
 
   remoteDisplayBanner: {
     message: reason =>
-      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`,
-    dismiss: '閉じる'
+      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
   titlebar: {
@@ -839,6 +839,7 @@ export const ja = defineLocale({
   skills: {
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
+    tabMcp: 'MCP',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
     searchToolsets: 'ツールセットを検索...',
@@ -862,7 +863,14 @@ export const ja = defineLocale({
     toolsetEnabled: 'ツールセットを有効にしました',
     toolsetDisabled: 'ツールセットを無効にしました',
     appliesToNewSessions: name => `${name} は新しいセッションに適用されます。`,
-    failedToUpdate: name => `${name} の更新に失敗しました`
+    failedToUpdate: name => `${name} の更新に失敗しました`,
+    sortMostUsed: '使用頻度順',
+    sortAlpha: 'A–Z',
+    enableAll: 'すべて有効化',
+    disableAll: 'すべて無効化',
+    bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
+    bulkNoChange: '変更するものはありません。',
+    usageCount: count => `${count} 回使用`
   },
 
   starmap: {
@@ -907,7 +915,6 @@ export const ja = defineLocale({
     ageHours: hours => `${hours}時間前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
-    tokensK: k => `${k}k トーク`,
     tokens: value => `${value} トーク`
   },
 
@@ -924,7 +931,7 @@ export const ja = defineLocale({
     appearance: '外観',
     settings: '設定',
     changeTheme: 'テーマを変更',
-    changeColorMode: 'カラーモードを変更...',
+    changeColorMode: 'カラーモードを変更…',
     pets: {
       title: 'ペット',
       placeholder: 'ペットを検索…',
@@ -970,7 +977,8 @@ export const ja = defineLocale({
       startOver: 'やり直す'
     },
     installTheme: {
-      title: 'テーマをインストール...',
+      title: 'テーマをインストール…',
+      pageTitle: 'テーマをインストール',
       placeholder: 'VS Code Marketplace を検索...',
       loading: 'Marketplace を検索中...',
       error: 'Marketplace に接続できませんでした。',
@@ -1195,9 +1203,9 @@ export const ja = defineLocale({
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
-    manageProfiles: 'プロファイルを管理...',
+    manageProfiles: 'プロファイルを管理…',
     actionsFor: name => `${name} のアクション`,
-    color: 'カラー...',
+    color: 'カラー…',
     colorFor: name => `${name} のカラー`,
     setColor: color => `カラー ${color} に設定`,
     autoColor: '自動',
@@ -1210,6 +1218,8 @@ export const ja = defineLocale({
     env: 'env',
     defaultBadge: 'デフォルト',
     rename: '名前を変更',
+    renameMenu: '名前を変更…',
+    editSoul: 'SOUL.md を編集…',
     copySetup: 'セットアップをコピー',
     copying: 'コピー中...',
     modelLabel: 'モデル',

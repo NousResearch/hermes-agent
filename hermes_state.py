@@ -72,6 +72,8 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+_journal_continue_warned_paths: set[str] = set()
+_journal_continue_warned_lock = threading.Lock()
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -157,8 +159,16 @@ def apply_wal_with_fallback(
             # Unrelated OperationalError — don't silently swallow.
             raise
         _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        return "delete"
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            return "delete"
+        except sqlite3.OperationalError as delete_exc:
+            _log_journal_continue_once(db_label, delete_exc)
+            try:
+                row = conn.execute("PRAGMA journal_mode").fetchone()
+                return str(row[0]).lower() if row and row[0] else "unknown"
+            except Exception:
+                return "unknown"
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
@@ -181,6 +191,20 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         db_label,
         exc,
     )
+
+
+def _log_journal_continue_once(db_label: str, exc: Exception) -> None:
+    with _journal_continue_warned_lock:
+        if db_label in _journal_continue_warned_paths:
+            return
+        _journal_continue_warned_paths.add(db_label)
+    logger.warning(
+        "%s: journal_mode fallback to DELETE also failed (%s); continuing "
+        "with the existing journal mode instead of disabling the feature.",
+        db_label,
+        exc,
+    )
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -3270,4 +3294,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

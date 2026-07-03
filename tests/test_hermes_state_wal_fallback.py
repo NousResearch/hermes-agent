@@ -44,6 +44,23 @@ def _make_blocking_factory(reason: str, attempt_counter: list):
     return _WalBlockingConnection
 
 
+def _make_journal_blocking_factory(wal_reason: str, delete_reason: str, attempt_counter: list):
+    """Return a connection subclass that raises on both WAL and DELETE pragmas."""
+
+    class _JournalBlockingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            normalized = sql.lower().replace(" ", "")
+            if "journal_mode=wal" in normalized:
+                attempt_counter[0] += 1
+                raise sqlite3.OperationalError(wal_reason)
+            if "journal_mode=delete" in normalized:
+                attempt_counter[1] += 1
+                raise sqlite3.OperationalError(delete_reason)
+            return super().execute(sql, *args, **kwargs)
+
+    return _JournalBlockingConnection
+
+
 def _open_blocking(path, reason="locking protocol", **kwargs):
     """Open a connection whose WAL pragma raises ``reason``.
 
@@ -52,6 +69,17 @@ def _open_blocking(path, reason="locking protocol", **kwargs):
     """
     attempts = [0]
     factory = _make_blocking_factory(reason, attempts)
+    return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
+
+
+def _open_journal_blocking(
+    path,
+    wal_reason="disk I/O error",
+    delete_reason="disk I/O error",
+    **kwargs,
+):
+    attempts = [0, 0]
+    factory = _make_journal_blocking_factory(wal_reason, delete_reason, attempts)
     return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
 
 
@@ -67,8 +95,10 @@ def _reset_last_init_error():
 def _reset_wal_fallback_warned_paths():
     """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._journal_continue_warned_paths.clear()
     yield
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._journal_continue_warned_paths.clear()
 
 
 class TestApplyWalWithFallback:
@@ -117,6 +147,26 @@ class TestApplyWalWithFallback:
         )
         mode = apply_wal_with_fallback(conn)
         assert mode == "delete"
+        conn.close()
+
+    def test_continues_when_delete_fallback_also_fails(self, tmp_path, caplog):
+        """Transient journal PRAGMA failures should not disable DB-backed features."""
+        db_path = tmp_path / "existing.db"
+        seed = sqlite3.connect(str(db_path), isolation_level=None)
+        seed.execute("CREATE TABLE t (x INTEGER)")
+        seed.execute("INSERT INTO t VALUES (1)")
+        seed.close()
+
+        conn, attempts = _open_journal_blocking(db_path, isolation_level=None)
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="kanban.db")
+
+        assert attempts == [1, 1]
+        assert mode in {"delete", "wal", "memory", "off", "unknown"}
+        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("WAL journal_mode unsupported" in msg for msg in messages)
+        assert any("journal_mode fallback to DELETE also failed" in msg for msg in messages)
         conn.close()
 
     def test_reraises_unrelated_operational_error(self, tmp_path):
@@ -213,14 +263,8 @@ class TestGetLastInitError:
         finally:
             db.close()
 
-    def test_captures_cause_on_failed_init(self, tmp_path):
-        """When SessionDB() raises, the cause is preserved for slash commands.
-
-        Simulates a filesystem where BOTH WAL and DELETE journal modes fail —
-        e.g. a read-only mount where no ``PRAGMA journal_mode=X`` works.  The
-        fallback tries DELETE and also gets rejected; the exception bubbles
-        out of ``SessionDB.__init__`` and the cause is captured.
-        """
+    def test_session_db_continues_when_journal_pragmas_fail(self, tmp_path):
+        """Journal PRAGMA failures should not make SessionDB unavailable."""
         target = tmp_path / "broken.db"
         real_connect = sqlite3.connect
 
@@ -236,13 +280,13 @@ class TestGetLastInitError:
             return real_connect(str(target), factory=_BothPragmasFailConnection, **kwargs)
 
         with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
-            with pytest.raises(sqlite3.OperationalError):
-                SessionDB(db_path=target)
+            db = SessionDB(db_path=target)
+            try:
+                assert db is not None
+            finally:
+                db.close()
 
-        cause = get_last_init_error()
-        assert cause is not None
-        assert "OperationalError" in cause
-        assert "locking protocol" in cause
+        assert get_last_init_error() is None
 
 
 class TestFormatSessionDbUnavailable:

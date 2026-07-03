@@ -271,6 +271,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3-pro-preview",
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
+        "gemma-4-31b-it",
+        "gemma-4-26b-a4b-it",
     ],
     "zai": [
         "glm-5.2",

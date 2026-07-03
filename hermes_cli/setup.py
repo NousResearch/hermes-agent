@@ -92,6 +92,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
+        "gemma-4-31b-it", "gemma-4-26b-a4b-it",
     ],
     "vertex": [
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",

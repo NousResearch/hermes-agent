@@ -534,28 +534,11 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
     re.IGNORECASE,
 )
 
-# Google's live Gemini catalogs currently include a mix of stale slugs and
-# Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
-# Keep capability metadata available for direct/manual use, but hide these from
-# the Gemini model catalogs we surface in setup and model selection.
+# Google's live Gemini catalogs currently include stale/retired slugs that
+# still surface through models.dev-backed Gemini selection but 404 on the
+# current Google endpoints. Hide these from the model catalogs we surface
+# in setup and model selection.
 _GOOGLE_HIDDEN_MODELS = frozenset({
-    # Low-TPM Gemma models that trip Google input-token quota walls under
-    # agent-style traffic despite advertising large context windows.
-    "gemma-4-31b-it",
-    "gemma-4-26b-it",
-    "gemma-4-26b-a4b-it",
-    "gemma-3-1b",
-    "gemma-3-1b-it",
-    "gemma-3-2b",
-    "gemma-3-2b-it",
-    "gemma-3-4b",
-    "gemma-3-4b-it",
-    "gemma-3-12b",
-    "gemma-3-12b-it",
-    "gemma-3-27b",
-    "gemma-3-27b-it",
-    # Stale/retired Google slugs that still surface through models.dev-backed
-    # Gemini selection but 404 on the current Google endpoints.
     "gemini-1.5-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash-8b",

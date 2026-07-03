@@ -6,6 +6,7 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import threading
 
 import uvicorn
 
@@ -182,3 +183,46 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_get_session_stats_offloads_sessiondb_read(monkeypatch):
+    loop_thread = threading.get_ident()
+    db_threads = []
+
+    class _DB:
+        def _record(self):
+            db_threads.append(threading.get_ident())
+
+        def session_count(self, **kwargs):
+            self._record()
+            if kwargs.get("archived_only"):
+                return 1
+            if kwargs.get("include_archived"):
+                return 5
+            return 4
+
+        def message_count(self):
+            self._record()
+            return 12
+
+        def session_counts_by_source(self, **kwargs):
+            self._record()
+            assert kwargs == {"include_archived": True}
+            return {"cli": 3, "telegram": 2}
+
+        def close(self):
+            self._record()
+
+    monkeypatch.setattr(web_server, "_open_session_db_for_profile", lambda _profile=None: _DB())
+
+    result = asyncio.run(web_server.get_session_stats())
+
+    assert result == {
+        "total": 5,
+        "active_store": 4,
+        "archived": 1,
+        "messages": 12,
+        "by_source": {"cli": 3, "telegram": 2},
+    }
+    assert db_threads
+    assert all(thread_id != loop_thread for thread_id in db_threads)

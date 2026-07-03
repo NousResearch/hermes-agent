@@ -1932,6 +1932,12 @@ async def _git_op(fn, *args):
         raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
 
 
+async def _blocking_io(fn, *args):
+    """Run a blocking read on the default executor instead of the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
+
+
 def _git_path(path: str) -> str:
     return str(_fs_path(path))
 
@@ -8001,6 +8007,11 @@ async def get_session_stats(profile: Optional[str] = None):
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
+    return await _blocking_io(_read_session_stats, profile)
+
+
+def _read_session_stats(profile: Optional[str] = None):
+    """Blocking SessionDB stats read; callers must offload from async handlers."""
     db = _open_session_db_for_profile(profile)
     try:
         total = db.session_count(include_archived=True)
@@ -8009,9 +8020,7 @@ async def get_session_stats(profile: Optional[str] = None):
         messages = db.message_count()
         by_source: Dict[str, int] = {}
         try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
-                src = str(s.get("source") or "cli")
-                by_source[src] = by_source.get(src, 0) + 1
+            by_source = db.session_counts_by_source(include_archived=True)
         except Exception:
             pass
         return {

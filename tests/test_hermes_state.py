@@ -1680,6 +1680,34 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_counts_by_source_matches_list_sessions_rich_histogram(self, db):
+        db.create_session(session_id="cli-1", source="cli")
+        db.create_session(session_id="blank-source", source="")
+        db.create_session(session_id="telegram-1", source="telegram")
+        db.create_session(session_id="archived-1", source="slack")
+        db.create_session(
+            session_id="delegate-child",
+            source="tool",
+            parent_session_id="cli-1",
+            model_config={"_delegate_from": "cli-1"},
+        )
+        db.set_session_archived("archived-1", True)
+
+        def legacy_histogram(*, include_archived=False):
+            counts = {}
+            for session in db.list_sessions_rich(
+                limit=10000,
+                include_archived=include_archived,
+            ):
+                source = str(session.get("source") or "cli")
+                counts[source] = counts.get(source, 0) + 1
+            return counts
+
+        assert db.session_counts_by_source() == legacy_histogram()
+        assert db.session_counts_by_source(include_archived=True) == legacy_histogram(
+            include_archived=True
+        )
+
     def test_session_count_by_cwd_prefix(self, db):
         db.create_session("s1", "cli", cwd="/repo")
         db.create_session("s2", "cli", cwd="/repo-wt-feature")

@@ -4704,6 +4704,39 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_counts_by_source(
+        self,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        include_children: bool = False,
+    ) -> Dict[str, int]:
+        """Count sessions by source without hydrating session rows.
+
+        Mirrors the picker/listing surface by hiding non-listable child rows
+        unless ``include_children`` is set. Empty/NULL sources retain the legacy
+        dashboard stats fallback of ``"cli"``.
+        """
+        where_clauses = []
+
+        if not include_children:
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        query = f"""
+            SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count
+            FROM sessions s{where_sql}
+            GROUP BY COALESCE(NULLIF(s.source, ''), 'cli')
+            ORDER BY source
+        """
+        with self._lock:
+            rows = self._conn.execute(query).fetchall()
+        return {str(row["source"] or "cli"): int(row["count"]) for row in rows}
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

@@ -114,7 +114,10 @@ class TestPrepareBlocks:
         assert len(blocks) == 2
         assert "text document: 'a.csv'" in blocks[0]
         assert "content has been included below" in blocks[0]
-        assert str(f) in blocks[0]
+        # The note carries the workspace-RELATIVE path (agent cwd = workspace),
+        # so absolute sandbox paths never flow into user-visible transcripts.
+        assert "saved at: a.csv" in blocks[0]
+        assert str(f) not in blocks[0]
         assert blocks[1] == "[Content of a.csv]:\nk,v\n1,2\n"
         assert noted == {"file_1"}
 
@@ -127,7 +130,8 @@ class TestPrepareBlocks:
 
         assert len(blocks) == 1
         assert "extract the document's text yourself" in blocks[0]
-        assert str(f) in blocks[0]
+        assert "report.pdf" in blocks[0]
+        assert str(f) not in blocks[0]  # relative, not absolute
 
     def test_oversized_text_degrades_to_self_extraction_note(self, workspace, monkeypatch):
         monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_INLINE_BYTES", 4)
@@ -149,7 +153,7 @@ class TestPrepareBlocks:
         blocks, inlined = _prepare_run_attachment_blocks([_manifest_entry(f)], {"file_1"})
 
         assert len(blocks) == 1
-        assert str(f) in blocks[0]
+        assert "a.csv" in blocks[0]
         assert "extract the document's text yourself" in blocks[0]
         assert "content has been included below" not in blocks[0]
         assert inlined == set()  # nothing NEWLY inlined
@@ -187,6 +191,27 @@ class TestPrepareBlocks:
         )
         assert "we_ird_na_me.csv" in blocks[0]
         assert "`" not in blocks[0].split("saved at")[0]
+
+    def test_note_path_is_workspace_relative(self, workspace):
+        # The materialized layout: <root>/inputs/<conversation>/<file_id>/<name>.
+        # The note must carry the RELATIVE path (agent cwd = workspace): the note
+        # text flows into user-visible transcripts and public run events, where
+        # an absolute sandbox path is internal detail (leak-scrubber territory).
+        f = workspace / "inputs" / "cnv_1" / "file_1" / "sales.csv"
+        f.parent.mkdir(parents=True)
+        f.write_text("k,v\n", encoding="utf-8")
+        blocks, _ = _prepare_run_attachment_blocks([_manifest_entry(f, name="sales.csv")], set())
+
+        assert "saved at: inputs/cnv_1/file_1/sales.csv" in blocks[0]
+        assert str(workspace) not in blocks[0]  # absolute sandbox path never appears
+
+    def test_note_path_outside_root_stays_as_sent(self, workspace, tmp_path_factory):
+        outside = tmp_path_factory.mktemp("elsewhere") / "doc.pdf"
+        outside.write_bytes(b"%PDF")
+        blocks, _ = _prepare_run_attachment_blocks(
+            [_manifest_entry(outside, name="doc.pdf", mime="application/pdf")], set()
+        )
+        assert str(outside) in blocks[0]  # non-managed caller: path passed through
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +296,10 @@ class TestRunsWithAttachments:
         first_sent = agent.run_conversation.call_args_list[0].kwargs["user_message"]
         second_sent = agent.run_conversation.call_args_list[1].kwargs["user_message"]
         assert "[Content of a.csv]" in first_sent
-        # Second run: the note (with the path) is still there...
+        # Second run: the note (with the relative path) is still there...
         assert "a.csv" in second_sent
-        assert str(f) in second_sent
+        # ...as a workspace-relative path (never the absolute sandbox path)...
+        assert str(f) not in second_sent
         # ...but the content is not re-inlined, and the user text stays last.
         assert "[Content of a.csv]" not in second_sent
         assert second_sent.endswith("second turn")
@@ -312,7 +338,7 @@ class TestRunsWithAttachments:
         second_sent = agent.run_conversation.call_args_list[1].kwargs["user_message"]
         assert "[Content of b.csv]" in second_sent  # new file: inlined
         assert "[Content of a.csv]" not in second_sent  # old file: content once only
-        assert str(f1) in second_sent  # old file: note still present every run
+        assert "a.csv" in second_sent  # old file: note still present every run
 
     @pytest.mark.asyncio
     async def test_preflight_failure_does_not_swallow_the_inline(self, workspace):

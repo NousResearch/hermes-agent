@@ -165,6 +165,23 @@ def _is_text_attachment(safe_name: str, mime: str) -> bool:
     return ext in _TEXT_INJECT_EXTENSIONS or (mime or "").startswith("text/")
 
 
+def _workspace_relative_path(local_path: str) -> str:
+    """Render a workspace-rooted path relative to the workspace root, for the
+    attachment note. The agent's tools run with the workspace as cwd, so a
+    relative `inputs/...` path resolves for it; the absolute sandbox path is
+    internal detail that would otherwise flow into user-visible transcripts and
+    public run events. Paths outside the root are returned unchanged
+    (non-managed callers)."""
+    try:
+        root = Path(ATTACHMENT_INLINE_ROOT).resolve()
+        resolved = Path(local_path).resolve()
+        if root in resolved.parents:
+            return str(resolved.relative_to(root))
+    except (OSError, ValueError):
+        pass
+    return local_path
+
+
 def _read_inline_attachment_text(local_path: str) -> Optional[str]:
     """Read a text attachment for prompt inlining, or None when it must degrade
     to a path note: outside the workspace inline root, missing, over the 100 KB
@@ -223,6 +240,13 @@ def _prepare_run_attachment_blocks(
         local_path = str(entry.get("local_path", ""))
         display_name = re.sub(r"[^\w.\- ]", "_", safe_name)
         mime = str(entry.get("mime") or "") or "application/octet-stream"
+        # Present workspace paths RELATIVE to the workspace root: the agent's
+        # tools run with the workspace as cwd, so `inputs/...` resolves — and the
+        # note text flows into user-visible transcripts/events, where an absolute
+        # sandbox path is internal detail (the platform-tests leak scrubber
+        # rightly flags '/workspace/...' in public payloads). Paths outside the
+        # root (non-managed callers) stay as sent.
+        note_path = _workspace_relative_path(local_path)
 
         inline_text: Optional[str] = None
         if key not in already_inlined and inline_budget > 0 and _is_text_attachment(safe_name, mime):
@@ -244,7 +268,7 @@ def _prepare_run_attachment_blocks(
             # Force a text/* mtype so the note says "content has been included
             # below" — which is now actually true.
             note_mime = mime if mime.startswith("text/") else "text/plain"
-            blocks.append(_build_document_context_note(display_name, local_path, note_mime))
+            blocks.append(_build_document_context_note(display_name, note_path, note_mime))
             blocks.append(f"[Content of {display_name}]:\n{inline_text}")
         else:
             # Path note only. Force the non-text wording: it instructs the agent
@@ -252,7 +276,7 @@ def _prepare_run_attachment_blocks(
             # binary files, for text files that failed the inline gate, AND for
             # files whose content was inlined in an earlier run (the note must
             # never claim content was included when it wasn't — in THIS message).
-            blocks.append(_build_document_context_note(display_name, local_path, "application/octet-stream"))
+            blocks.append(_build_document_context_note(display_name, note_path, "application/octet-stream"))
     return blocks, newly_inlined
 
 

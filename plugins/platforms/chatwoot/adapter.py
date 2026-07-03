@@ -662,6 +662,27 @@ class ChatwootAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[chatwoot] typing toggle failed (cosmetic)", exc_info=True)
 
+    async def stop_typing(self, chat_id: str) -> None:
+        if self._session is None:
+            return
+        try:
+            account_id, conversation_id = self._parse_chat_id(chat_id)
+        except ValueError:
+            return
+        url = (
+            f"{self._base_url}/api/v1/accounts/{account_id}"
+            f"/conversations/{conversation_id}/toggle_typing_status"
+        )
+        try:
+            async with self._session.post(
+                url,
+                json={"typing_status": "off"},
+                headers=self._headers(use_agent_token=True),
+            ):
+                pass
+        except Exception:
+            logger.debug("[chatwoot] typing-off toggle failed (cosmetic)", exc_info=True)
+
     async def send_image(
         self,
         chat_id: str,

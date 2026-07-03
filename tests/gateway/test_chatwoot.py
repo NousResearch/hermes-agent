@@ -356,6 +356,15 @@ class TestTypingIndicator:
         _, _, kwargs = a._session.calls[0]
         assert kwargs["headers"]["api_access_token"] == "bot-tok"
 
+    @pytest.mark.asyncio
+    async def test_stop_typing_posts_off(self):
+        a = _make_adapter(agent_token="agent-tok")
+        a._session = _FakeSession([_FakeResp(200)])
+        await a.stop_typing("1:42")
+        _, url, kwargs = a._session.calls[0]
+        assert url.endswith("/toggle_typing_status")
+        assert kwargs["json"]["typing_status"] == "off"
+
 
 # ── webhook handler ──────────────────────────────────────────────────────────
 

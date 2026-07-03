@@ -31,6 +31,17 @@ description: A test skill for unit testing.
 Step 1: Do the thing.
 """
 
+SKILL_CONTENT_2 = """\
+---
+name: test-skill
+description: Updated description.
+---
+
+# Test Skill v2
+
+Step 1: Do the new thing.
+"""
+
 
 @contextmanager
 def _isolated_skills(tmp_path):
@@ -365,3 +376,62 @@ def test_edit_misbehaving_hook_falls_through(tmp_path):
     # Falls through despite the raising hook
     assert result["success"] is False
     assert "not found" in result["error"].lower()
+
+
+# ── post_skill_edit ──
+
+
+def test_post_edit_hook_is_registered_as_valid():
+    """The post-edit hook name is part of VALID_HOOKS."""
+    assert "post_skill_edit" in VALID_HOOKS
+
+
+def test_post_edit_fires_on_successful_default_edit(tmp_path):
+    """post_skill_edit fires after a successful default edit (no pre hook)."""
+    events: list[dict] = []
+
+    def _on_post(**kw):
+        events.append(kw)
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("post_skill_edit", []).append(_on_post)
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            # First create a skill, then edit it
+            c = _create_skill("edit-me", SKILL_CONTENT)
+            assert c["success"]
+            e = _edit_skill("edit-me", SKILL_CONTENT_2)
+            assert e["success"]
+    finally:
+        mgr._hooks = saved
+
+    assert len(events) == 1
+    assert events[0]["name"] == "edit-me"
+    assert events[0]["success"] is True
+    assert "edit-me" in str(events[0]["path"])
+
+
+def test_post_edit_does_not_fire_on_handled(tmp_path):
+    """post_skill_edit does NOT fire when pre_skill_edit handled the edit."""
+    events: list[dict] = []
+
+    def _on_post(**kw):
+        events.append(kw)
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    mgr._hooks.setdefault("post_skill_edit", []).append(_on_post)
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+    # No post hook should have been called since the edit was handled by plugin
+    assert len(events) == 0

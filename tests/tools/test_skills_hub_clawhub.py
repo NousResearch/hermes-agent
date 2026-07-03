@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 
+import io
 import unittest
+import zipfile
 from unittest.mock import patch
+
+import httpx
 
 from tools.skills_hub import ClawHubSource, SkillMeta
 
 
 class _MockResponse:
-    def __init__(self, status_code=200, json_data=None, text="", headers=None):
+    def __init__(self, status_code=200, json_data=None, text="", headers=None, content=b""):
         self.status_code = status_code
         self._json_data = json_data
         self.text = text
         self.headers = headers or {}
+        self.content = content
 
     def json(self):
         return self._json_data
@@ -263,6 +268,24 @@ class TestClawHubSource(unittest.TestCase):
         bundle = self.src.fetch("caldav-calendar")
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_download_zip_retries_http_error_before_success(self, mock_get, mock_sleep):
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("SKILL.md", "# Skill")
+
+        mock_get.side_effect = [
+            httpx.ConnectTimeout("temporary timeout"),
+            _MockResponse(status_code=200, content=zip_buffer.getvalue()),
+        ]
+
+        files = self.src._download_zip("caldav-calendar", "1.0.1")
+
+        self.assertEqual(files, {"SKILL.md": "# Skill"})
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(1)
 
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")

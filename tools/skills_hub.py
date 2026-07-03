@@ -2587,6 +2587,17 @@ class ClawHubSource(SkillSource):
                 logger.warning("ClawHub returned invalid ZIP for %s v%s", slug, version)
                 return files
             except httpx.HTTPError as exc:
+                if attempt < max_retries - 1:
+                    logger.debug(
+                        "ClawHub ZIP download failed for %s v%s, retrying (attempt %d/%d): %s",
+                        slug,
+                        version,
+                        attempt + 1,
+                        max_retries,
+                        exc,
+                    )
+                    time.sleep(1)
+                    continue
                 logger.debug("ClawHub ZIP download failed for %s v%s: %s", slug, version, exc)
                 return files
 

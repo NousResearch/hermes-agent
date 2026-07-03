@@ -1194,15 +1194,41 @@ _FS_READDIR_HIDDEN = {
 # Filenames that must never be listed, read, or downloaded through the
 # managed-files API.  These typically contain credentials (API keys, tokens)
 # and exposing them through the dashboard file browser is a security leak —
-# see issue #57505.
-def _is_sensitive_filename(name: str) -> bool:
-    """Return True for ``.env`` and any ``.env.<suffix>`` variant.
+# see issue #57505. The set mirrors the two canonical credential guards
+# elsewhere in the codebase (agent.file_safety.get_read_block_error and
+# gateway.platforms.base._ROOT_CREDENTIAL_FILES) so the dashboard Files tab
+# doesn't lag behind them — an operator can point the managed root at
+# HERMES_HOME itself, at which point every one of these basenames is a live
+# secret store sitting in the browsable tree.
+_SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
+    "auth.json",
+    "auth.lock",
+    "credentials",
+    "config.yaml",
+    ".anthropic_oauth.json",
+    "google_token.json",
+    "google_oauth_pending.json",
+    "google_oauth.json",
+    "webhook_subscriptions.json",
+    "bws_cache.json",
+})
 
-    Case-insensitive so ``.ENV`` / ``.Env.local`` on case-insensitive
-    filesystems (macOS/Windows mounts) can't slip past the guard.
+
+def _is_sensitive_filename(name: str) -> bool:
+    """Return True for a filename the managed-files API must never expose.
+
+    Covers ``.env`` / ``.env.<suffix>`` / ``.envrc`` variants plus the
+    canonical Hermes credential-store basenames (see
+    ``_SENSITIVE_MANAGED_FILE_BASENAMES`` above).
+
+    Case-insensitive so ``.ENV`` / ``.Env.local`` / ``Auth.JSON`` on
+    case-insensitive filesystems (macOS/Windows mounts) can't slip past
+    the guard.
     """
     lowered = name.lower()
-    return lowered == ".env" or lowered.startswith(".env.")
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024

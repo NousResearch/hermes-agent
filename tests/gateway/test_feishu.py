@@ -4950,12 +4950,12 @@ class TestFeishuOutboundPayload(unittest.TestCase):
     """Tests for _build_outbound_payload with interactive card support."""
 
     def _import_builders(self):
-        from plugins.platforms.feishu.adapter import (
+        from gateway.platforms.feishu import (
             _STRUCTURED_MD_RE,
             _build_interactive_card_payload,
             _extract_card_header,
         )
-        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from gateway.platforms.feishu import FeishuAdapter
         from gateway.config import PlatformConfig
 
         # _build_outbound_payload is an instance method; create a throwaway adapter.

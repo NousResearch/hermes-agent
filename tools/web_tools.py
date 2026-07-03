@@ -1076,13 +1076,12 @@ def check_web_api_key() -> bool:
     for provider in _list_registered_web_providers():
         if provider.name in _LEGACY_WEB_BACKENDS:
             continue
-        try:
-            if provider.is_available():
-                return True
-        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
-            logger.debug(
-                "web provider %r.is_available() raised: %s", provider.name, exc
-            )
+        # Route through the shared helper so broken-provider handling (the
+        # is_available() try/except + debug log) stays identical to backend
+        # selection. It re-fetches by name, but registry lookups are cheap and
+        # the single source of truth is worth more than saving one dict access.
+        if _registered_web_provider_available(provider.name):
+            return True
     return False
 
 

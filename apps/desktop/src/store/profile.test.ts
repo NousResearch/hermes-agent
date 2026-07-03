@@ -13,12 +13,21 @@ const resetStarmapGraph = vi.fn()
 vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile }))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
-  setApiRequestProfile: vi.fn()
+  setApiRequestProfile: vi.fn(),
+  STARTUP_REQUEST_TIMEOUT_MS: 60_000
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $activeProfile,
+  $profiles,
+  ensureGatewayProfile,
+  refreshActiveProfile,
+  refreshProfiles
+} = await import('./profile')
+
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
@@ -40,21 +49,42 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: '', mode: 'local', profile: 'default', ...over }) as HermesConnection
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
+const api = vi.fn()
+const getDesktopProfile = vi.fn()
+const setDesktopProfile = vi.fn()
 
 beforeEach(() => {
+  api.mockReset()
+  getDesktopProfile.mockReset()
+  setDesktopProfile.mockReset()
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  api.mockResolvedValue({ current: 'default' })
+  getDesktopProfile.mockResolvedValue({ profile: 'default' })
+  setDesktopProfile.mockResolvedValue({ profile: 'default' })
   $gateway.set({ id: 'live-socket' })
+  $activeProfile.set('default')
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {
+      api,
+      getConnection,
+      profile: {
+        get: getDesktopProfile,
+        set: setDesktopProfile
+      }
+    }
+  })
   vi.mocked(queryClient.invalidateQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  Reflect.deleteProperty(window, 'hermesDesktop')
   $connection.set(null)
 })
 
@@ -112,6 +142,34 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('refreshActiveProfile persistence (#57283)', () => {
+  it('persists the backend active profile when the desktop preference is unset', async () => {
+    api
+      .mockResolvedValueOnce({ current: 'keo' })
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('keo')] })
+    getDesktopProfile.mockResolvedValueOnce({ profile: null })
+    setDesktopProfile.mockResolvedValueOnce({ profile: 'keo' })
+
+    await refreshActiveProfile()
+
+    expect($activeProfile.get()).toBe('keo')
+    expect(getDesktopProfile).toHaveBeenCalled()
+    expect(setDesktopProfile).toHaveBeenCalledWith('keo')
+  })
+
+  it('does not rewrite an existing desktop profile preference', async () => {
+    api
+      .mockResolvedValueOnce({ current: 'keo' })
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('keo')] })
+    getDesktopProfile.mockResolvedValueOnce({ profile: 'keo' })
+
+    await refreshActiveProfile()
+
+    expect($activeProfile.get()).toBe('keo')
+    expect(setDesktopProfile).not.toHaveBeenCalled()
   })
 })
 

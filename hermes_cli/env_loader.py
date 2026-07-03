@@ -316,6 +316,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except ImportError:
         return
 
+    quiet = bool(bw_cfg.get("quiet", False))
+
     result = apply_bitwarden_secrets(
         enabled=True,
         access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
@@ -338,12 +340,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # came from BSM rather than .env.
         for name in result.applied:
             _SECRET_SOURCES[name] = "bitwarden"
-        print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
-        )
+        if quiet:
+            print(
+                f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+                f"secret{'s' if len(result.applied) != 1 else ''}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+                f"secret{'s' if len(result.applied) != 1 else ''} "
+                f"({', '.join(sorted(result.applied))})",
+                file=sys.stderr,
+            )
     if result.error:
         print(
             f"  Bitwarden Secrets Manager: {result.error}",

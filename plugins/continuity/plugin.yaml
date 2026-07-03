@@ -1,0 +1,8 @@
+name: continuity
+version: 1.0.0
+description: "Continuum — DAG-based Daily Journal continuity plugin. Preserves agent temporal identity through session-shard capture, daily journal synthesis, and session-start identity packet injection."
+requires_env: []
+hooks:
+  - on_session_end
+  - on_session_start
+  - pre_llm_call

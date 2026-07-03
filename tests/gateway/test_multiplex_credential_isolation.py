@@ -156,3 +156,38 @@ class TestProfilePathResolutionUnderMultiplexScope:
             t.join()
 
         assert seen["home"] == str(prof_b)
+
+
+class TestMultiplexEnvOverrides:
+    """_apply_env_overrides resolves platform tokens from secret scope for secondary profiles."""
+
+    def test_secondary_profile_env_overrides_resolves_from_scope(self, monkeypatch, tmp_path):
+        import os
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+        from gateway.run import _profile_runtime_scope
+        from agent import secret_scope as ss
+
+        # Set process-global env var (primary token)
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "primary-discord-token")
+        
+        # Prepare profile folders representing secondary profile
+        profile_home = tmp_path / "profiles" / "secondary_profile"
+        profile_home.mkdir(parents=True, exist_ok=True)
+        
+        # Write .env file for the secondary profile with a different token
+        dotenv_content = "DISCORD_BOT_TOKEN=secondary-discord-token\n"
+        (profile_home / ".env").write_text(dotenv_content, encoding="utf-8")
+
+        # Initialize GatewayConfig with Discord platform
+        config = GatewayConfig()
+        config.platforms[Platform.DISCORD] = PlatformConfig()
+
+        ss.set_multiplex_active(True)
+        try:
+            with _profile_runtime_scope(profile_home):
+                _apply_env_overrides(config)
+        finally:
+            ss.set_multiplex_active(False)
+
+        assert config.platforms[Platform.DISCORD].token == "secondary-discord-token"
+

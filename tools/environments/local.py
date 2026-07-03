@@ -453,6 +453,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     ``os.environ`` into the returned dict.
     """
     env = os.environ.copy()
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+        if scope:
+            env.update(scope)
+    except Exception:
+        pass
 
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
@@ -762,7 +769,16 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
-    merged = dict(os.environ | env)
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+    except Exception:
+        scope = None
+
+    if scope:
+        merged = dict(os.environ | scope | env)
+    else:
+        merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):

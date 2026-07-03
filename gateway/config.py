@@ -1261,6 +1261,40 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     import hermes_constants as _hermes_constants_local
+    from agent.secret_scope import get_secret as _get_secret
+
+    _orig_getenv = os.getenv
+
+    def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
+        # Temporarily restore original getenv to prevent infinite recursion
+        os.getenv = _orig_getenv
+        try:
+            val = _get_secret(name)
+            if val is not None:
+                return val
+
+            active_home = _hermes_constants_local.get_hermes_home().resolve()
+            primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
+            is_secondary = active_home != primary_home
+
+            from agent.secret_scope import _is_global_env
+            if is_secondary and not _is_global_env(name):
+                return default
+
+            return _orig_getenv(name, default)
+        finally:
+            os.getenv = _getenv
+
+    os.getenv = _getenv
+    try:
+        _apply_env_overrides_impl(config)
+    finally:
+        os.getenv = _orig_getenv
+
+
+def _apply_env_overrides_impl(config: GatewayConfig) -> None:
+    """Apply environment variable overrides to config."""
+    import hermes_constants as _hermes_constants_local
 
     # Determine default/primary home dynamically
     primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
@@ -1268,8 +1302,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     # A profile is secondary if its active home is different from the primary home
     is_secondary = active_home != primary_home
-    if is_secondary:
-        return
 
     def _enable_from_env(platform: Platform) -> PlatformConfig:
         if platform not in config.platforms:

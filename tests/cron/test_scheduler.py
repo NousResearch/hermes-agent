@@ -541,6 +541,7 @@ class TestRoutingIntents:
 
     def test_all_token_case_insensitive(self, monkeypatch):
         """'ALL' / 'All' / 'all' are all recognized."""
+        monkeypatch.delenv("EMAIL_HOME_ADDRESS", raising=False)
         from cron.scheduler import _resolve_delivery_targets
 
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")

@@ -2198,15 +2198,16 @@ def _load_gateway_config() -> dict:
     gateway honors administrator-pinned values — neither read_raw_config nor a
     direct yaml.safe_load carries the managed merge on its own. Fail-open.
     """
-    config_path = _hermes_home / 'config.yaml'
+    _active_hermes_home = get_hermes_home()
+    config_path = _active_hermes_home / 'config.yaml'
     raw: dict = {}
     used_canonical = False
     try:
         from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path: if _hermes_home agrees with the canonical config
+        # Fast path: if active hermes home agrees with the canonical config
         # location, reuse the shared cache. Otherwise fall through to a
-        # direct read (keeps test fixtures with a monkeypatched
-        # _hermes_home working).
+        # direct read (keeps secondary profiles in multiplex mode working,
+        # as well as test fixtures with a monkeypatched _hermes_home).
         if config_path == get_config_path():
             raw = read_raw_config()
             used_canonical = True
@@ -3500,12 +3501,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not bindings:
             return None
         user_id = str(source.user_id)
+        profile = source.profile
+        if not profile or profile == "default":
+            profile = "main"
+        ns = f"agent:{profile}:"
         for b in bindings:  # newest-first
             if str(b.get("user_id") or "") == user_id:
-                recovered = str(b.get("thread_id") or "")
-                if recovered and recovered != inbound:
-                    return recovered
-                return None
+                binding_key = b.get("session_key") or ""
+                if binding_key.startswith(ns):
+                    recovered = str(b.get("thread_id") or "")
+                    if recovered and recovered != inbound:
+                        return recovered
+                    return None
         return None
 
     def _normalize_source_for_session_key(

@@ -229,32 +229,33 @@ class TestDefaultConfig:
 
 
 class TestWebSearchUsesSearchBackend:
-    """web_search_tool dispatches through _get_search_backend not _get_backend."""
+    """web_search_tool dispatches through the web search registry."""
 
-    def test_search_tool_calls_search_backend(self, monkeypatch):
+    def test_search_tool_uses_configured_registry_provider(self, monkeypatch):
         from tools import web_tools
 
-        called_with = []
-        original_get_search = web_tools._get_search_backend
+        called = {"active": False}
 
-        def tracking_get_search():
-            result = original_get_search()
-            called_with.append(("search", result))
-            return result
+        def _track_active():
+            called["active"] = True
+            return None
 
-        monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            _track_active,
+        )
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
 
-        # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
         try:
             web_tools.web_search_tool("test", 1)
         except Exception:
             pass
 
-        assert len(called_with) > 0
-        assert called_with[0][0] == "search"
+        # Explicit web.backend resolves directly via registry lookup; the
+        # availability-walk fallback is only used when no configured name
+        # maps to a registered provider.
+        assert called["active"] is False
 
 
 class TestUnconfiguredErrorEnvelopeParity:

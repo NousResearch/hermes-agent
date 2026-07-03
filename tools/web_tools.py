@@ -209,8 +209,30 @@ def _get_capability_backend(capability: str) -> str:
     return _get_backend()
 
 
+def _configured_web_backend(capability: str) -> str:
+    """Return the explicit backend name for *capability* from config."""
+    cfg = _load_web_config()
+    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    if specific:
+        return specific
+    return (cfg.get("backend") or "").lower().strip()
+
+
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if not backend:
+        return False
+    try:
+        from agent.web_search_registry import get_provider
+
+        provider = get_provider(backend)
+        if provider is not None:
+            try:
+                return bool(provider.is_available())
+            except Exception:
+                return False
+    except Exception:
+        pass
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -568,12 +590,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             get_provider as _wsp_get_provider,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+        configured = _configured_web_backend("search")
+        provider = None
+        if configured:
+            named = _wsp_get_provider(configured)
+            if named is not None and not named.supports_search():
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"{named.display_name} does not support web search. "
+                        "Set web.search_backend to a search-capable provider."
+                    ),
+                }
+                debug_call_data["error"] = response_data["error"]
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
+            if named is not None:
+                provider = named
+
+        if provider is None:
             provider = get_active_search_provider()
 
         if provider is None:
@@ -706,35 +744,26 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # All web providers (built-in and plugin-registered) live in the
+            # registry. Resolve via get_active_extract_provider() so explicit
+            # web.extract_backend names are honored even when they are not in
+            # the legacy hardcoded allow-list (#57581).
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
             )
 
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
+            configured = _configured_web_backend("extract")
+            provider = None
+            if configured:
+                named = _wsp_get_provider(configured)
+                if named is not None and not named.supports_extract():
                     return json.dumps(
                         {
                             "success": False,
                             "error": (
-                                f"{provider.display_name} is a search-only "
+                                f"{named.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
                                 "tavily, exa, or parallel."
@@ -742,19 +771,23 @@ async def web_extract_tool(
                         },
                         ensure_ascii=False,
                     )
+                if named is not None:
+                    provider = named
+
+            if provider is None:
                 provider = get_active_extract_provider()
-                if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+            if provider is None:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "No web extract provider configured. "
+                            "Set web.extract_backend to firecrawl, "
+                            "tavily, exa, or parallel."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
 
             logger.info(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)

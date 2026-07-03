@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for harvest.py — fixture-driven, no container, no network.
-
-Fixtures are copies of real resilient-planner artifacts (demo-exhaustion, test-guard-halt,
-demo-backtrack); the guard-halt journal is split across journal.tick0.jsonl + journal.jsonl
-to pin drive.py's archive-merge order. Run:
+"""Unit tests for harvest.py — pure dict-driven folds, no container, no network. Run:
     python3 tests/test_harvest.py
 """
 
@@ -16,122 +12,132 @@ sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 
 import harvest  # noqa: E402
 
-FIX = os.path.join(_HERE, "fixtures")
+
+def tk(tid, method, crit="observably done"):
+    return {"id": tid, "method": method, "description": f"do {method}",
+            "success_criterion": crit, "depends_on": [], "status": "pending"}
 
 
-def read(name):
-    with open(os.path.join(FIX, name), encoding="utf-8") as fh:
-        return fh.read()
+def pl(*tasks):
+    return {"schema": 1, "slug": "s", "cycle": 0, "disposition": "tasks",
+            "rationale": "r", "question": None, "tasks": list(tasks)}
 
 
-class PlanTreeParsing(unittest.TestCase):
-    def test_state_detection(self):
-        self.assertEqual(harvest.parse_plan_tree(read("exhaustion/plan-tree.md"))["state"],
-                         "EXHAUSTION-STOP")
-        self.assertEqual(harvest.parse_plan_tree(read("guard-halt/plan-tree.md"))["state"],
-                         "GUARD-HALT")
-        self.assertEqual(harvest.parse_plan_tree(read("success/plan-tree.md"))["state"],
-                         "SUCCESS")
-        self.assertEqual(harvest.parse_state("# Plan-Tree: x   STATE: active"), "active")
-        self.assertIsNone(harvest.parse_state("no header here"))
-
-    def test_dead_nodes_carry_method_without_id(self):
-        p = harvest.parse_plan_tree(read("guard-halt/plan-tree.md"))
-        self.assertEqual(len(p["dead"]), 3)
-        self.assertEqual(p["dead"][0]["id"], "S1")
-        self.assertEqual(p["dead"][0]["method"], "source A (authoritative, freshest)")
-        self.assertIn("HTTP 503", p["dead"][0]["reason"])
-        self.assertNotIn("S1", p["dead"][0]["method"])
-
-    def test_done_nodes_parsed(self):
-        p = harvest.parse_plan_tree(read("success/plan-tree.md"))
-        self.assertEqual([d["id"] for d in p["dead"]], ["S1", "S1b"])
-        self.assertEqual([d["id"] for d in p["done"]], ["S2", "S3"])
-        self.assertIn("verified valid JSON", p["done"][1]["receipt"])
-
-    def test_frontier_list_and_empty(self):
-        gh = harvest.parse_plan_tree(read("guard-halt/plan-tree.md"))
-        self.assertEqual(gh["frontier"], ["S1d", "S1e", "S1f", "S1g", "S1h"])
-        ex = harvest.parse_plan_tree(read("exhaustion/plan-tree.md"))
-        self.assertEqual(ex["frontier"], [])
-
-    def test_guard_text_extracted_only_for_guard_halt(self):
-        gh = harvest.parse_plan_tree(read("guard-halt/plan-tree.md"))
-        self.assertIn("budget", gh["guard_text"])
-        self.assertIn("Smallest budget bump", gh["guard_text"])
-        self.assertNotIn("INTENT", gh["guard_text"])
-        self.assertIsNone(harvest.parse_plan_tree(read("success/plan-tree.md"))["guard_text"])
+def res(tid, method, verdict, evidence="e", learnings=None):
+    r = {"id": tid, "method": method, "verdict": verdict, "evidence": evidence}
+    if learnings is not None:
+        r["learnings"] = learnings
+    return r
 
 
-class ForkExtraction(unittest.TestCase):
-    def test_fork_only_for_guard_halt(self):
-        self.assertIsNone(harvest.extract_fork(read("exhaustion/plan-tree.md")))
-        self.assertIsNone(harvest.extract_fork(read("success/plan-tree.md")))
-        fork = harvest.extract_fork(read("guard-halt/plan-tree.md"))
-        self.assertIn("S1d", fork)
-        self.assertIn("budget", fork)
-        self.assertTrue(fork.rstrip().endswith("?"))
+class HarvestTasks(unittest.TestCase):
+    def test_needs_split_becomes_a_split_hint_fact(self):
+        plan = pl(tk("t1", "alfa"))
+        r = {**res("t1", "alfa", "needs_split", "two systems in one task"),
+             "split": ["db half", "api half"]}
+        out = harvest.harvest_tasks(plan, [r], cycle=1)
+        self.assertEqual(len(out), 1)
+        rec = out[0]
+        self.assertEqual(rec["kind"], "fact")  # the method is NOT dead
+        self.assertEqual(rec["fp"], harvest.fp("split alfa"))
+        self.assertIn("SPLIT HINT", rec["text"])
+        self.assertIn("db half; api half", rec["text"])
 
+    def test_needs_split_without_split_falls_back_to_evidence(self):
+        out = harvest.harvest_tasks(pl(tk("t1", "alfa")),
+                                    [res("t1", "alfa", "needs_split", "too coarse")],
+                                    cycle=0)
+        self.assertIn("too coarse", out[0]["text"])
 
-class JournalLoading(unittest.TestCase):
-    def test_tolerant_parse_skips_garbage(self):
-        recs = harvest.parse_journal(['{"node":"S1","verdict":"fail"}', "not json {",
-                                      "", '["a","list"]'])
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0]["node"], "S1")
+    def test_failed_becomes_dead_end(self):
+        plan = pl(tk("t1", "source A (authoritative)", crit="rows match"))
+        out = harvest.harvest_tasks(plan, [res("t1", "source A (authoritative)",
+                                               "failed", "HTTP 503")], cycle=2)
+        self.assertEqual(len(out), 1)
+        rec = out[0]
+        self.assertEqual(rec["kind"], "dead-end")
+        self.assertEqual(rec["text"], "Tried source A (authoritative): failed — HTTP 503")
+        self.assertEqual(rec["cycle"], 2)
+        self.assertEqual(rec["source"], "harvest")
+        self.assertEqual(rec["fp"], harvest.fp("source A (authoritative)"))
+        self.assertEqual(rec["meta"], {"task": "t1", "criterion": "rows match"})
 
-    def test_load_run_merges_ticks_before_live_journal(self):
-        tree, recs = harvest.load_run(FIX, "guard-halt")
-        self.assertIn("GUARD-HALT", tree)
-        self.assertEqual([r["node"] for r in recs], ["S1", "S1b", "S1c"])  # tick0 then live
+    def test_worked_becomes_fact(self):
+        plan = pl(tk("t1", "alfa"))
+        out = harvest.harvest_tasks(plan, [res("t1", "alfa", "worked", "saw it")], 0)
+        self.assertEqual(out[0]["kind"], "fact")
+        self.assertEqual(out[0]["text"], "Done alfa: saw it")
+        self.assertEqual(out[0]["fp"], harvest.fp("ok alfa"))
 
-    def test_load_run_missing_dir(self):
-        tree, recs = harvest.load_run(FIX, "no-such-slug")
-        self.assertIsNone(tree)
-        self.assertEqual(recs, [])
+    def test_skipped_emits_nothing(self):
+        plan = pl(tk("t1", "alfa"), tk("t2", "beta"))
+        out = harvest.harvest_tasks(plan, [res("t1", "alfa", "failed"),
+                                           res("t2", "beta", "skipped",
+                                               "dependency failed")], 0)
+        self.assertEqual([r["kind"] for r in out], ["dead-end"])
 
-
-class Harvesting(unittest.TestCase):
-    def test_dead_ends_with_journal_evidence_merged(self):
-        tree, recs = harvest.load_run(FIX, "guard-halt")
-        out = harvest.harvest(tree, recs, cycle=0)
-        dead = [r for r in out if r["kind"] == "dead-end"]
-        self.assertEqual(len(dead), 3)
-        self.assertTrue(dead[0]["text"].startswith("Tried source A"))
-        self.assertIn("failed —", dead[0]["text"])
-        self.assertEqual(dead[0]["cycle"], 0)
-        self.assertEqual(dead[0]["source"], "harvest")
-        self.assertIn("connection timeout", dead[1]["meta"]["journal_evidence"][0])
-
-    def test_guard_halt_adds_one_fact(self):
-        tree, recs = harvest.load_run(FIX, "guard-halt")
-        facts = [r for r in harvest.harvest(tree, recs, 0) if r["kind"] == "fact"]
-        self.assertEqual(len(facts), 1)
-        self.assertIn("budget guard", facts[0]["text"])
-        self.assertIn("S1d", facts[0]["text"])
-
-    def test_exhaustion_adds_one_fact(self):
-        tree, recs = harvest.load_run(FIX, "exhaustion")
-        out = harvest.harvest(tree, recs, 1)
-        facts = [r for r in out if r["kind"] == "fact"]
-        self.assertEqual(len(facts), 1)
-        self.assertIn("exhausted every method", facts[0]["text"])
-        self.assertEqual(len([r for r in out if r["kind"] == "dead-end"]), 1)
-
-    def test_success_yields_dead_ends_only(self):
-        tree, recs = harvest.load_run(FIX, "success")
-        out = harvest.harvest(tree, recs, 0)
-        self.assertEqual([r["kind"] for r in out], ["dead-end", "dead-end"])
+    def test_fail_then_work_records_both_transitions(self):
+        # distinct fp namespaces: a method that failed in c0 and worked in c2 keeps BOTH
+        plan = pl(tk("t1", "alfa"))
+        dead = harvest.harvest_tasks(plan, [res("t1", "alfa", "failed")], 0)[0]
+        done = harvest.harvest_tasks(plan, [res("t1", "alfa", "worked")], 2)[0]
+        self.assertNotEqual(dead["fp"], done["fp"])
 
     def test_fp_keys_on_method_not_reason(self):
         self.assertEqual(harvest.fp("Source A (authoritative)"),
                          harvest.fp("source a — authoritative!"))
         self.assertNotEqual(harvest.fp("source a"), harvest.fp("source b"))
-        tree, recs = harvest.load_run(FIX, "guard-halt")
-        out1 = harvest.harvest(tree, recs, 0)
-        retried = tree.replace("HTTP 503; scenario r-source-a", "HTTP 502; second attempt")
-        out2 = harvest.harvest(retried, recs, 1)
-        self.assertEqual(out1[0]["fp"], out2[0]["fp"])  # same method, reworded reason → same fp
+        plan = pl(tk("t1", "source a"))
+        out1 = harvest.harvest_tasks(plan, [res("t1", "source a", "failed",
+                                                "HTTP 503; first try")], 0)
+        out2 = harvest.harvest_tasks(plan, [res("t1", "source a", "failed",
+                                                "HTTP 502; second attempt")], 1)
+        self.assertEqual(out1[0]["fp"], out2[0]["fp"])  # reworded reason → same fp
+
+    def test_criterion_defaults_empty_for_unknown_task(self):
+        # a dependency-skip synthesis may reference a task id; unknown ids stay safe
+        out = harvest.harvest_tasks(pl(), [res("tx", "ghost", "failed")], 0)
+        self.assertEqual(out[0]["meta"]["criterion"], "")
+
+    def test_learnings_fold_as_separate_facts_alongside_the_verdict_record(self):
+        plan = pl(tk("t1", "alfa"))
+        learnings = ["billing API is async via webhook, not synchronous",
+                    "target has a spare read replica useful for verify"]
+        out = harvest.harvest_tasks(plan, [res("t1", "alfa", "worked", "saw it",
+                                               learnings=learnings)], 0)
+        self.assertEqual(len(out), 3)  # 1 "Done" fact + 2 learning facts
+        self.assertEqual(out[0]["kind"], "fact")
+        self.assertEqual(out[0]["text"], "Done alfa: saw it")
+        for rec, text in zip(out[1:], learnings):
+            self.assertEqual(rec["kind"], "fact")
+            self.assertEqual(rec["text"], text)
+            self.assertEqual(rec["fp"], harvest.fp(text))
+            self.assertEqual(rec["meta"]["learning_from"], "t1")
+
+    def test_learnings_fold_even_on_a_failed_task(self):
+        plan = pl(tk("t1", "alfa"))
+        out = harvest.harvest_tasks(
+            plan, [res("t1", "alfa", "failed", "HTTP 503",
+                      learnings=["source system requires an API key rotated hourly"])],
+            0)
+        kinds = [r["kind"] for r in out]
+        self.assertEqual(kinds, ["dead-end", "fact"])  # failure AND its learning, both
+        self.assertIn("API key rotated hourly", out[1]["text"])
+
+    def test_no_learnings_key_is_a_no_op(self):
+        plan = pl(tk("t1", "alfa"))
+        out = harvest.harvest_tasks(plan, [res("t1", "alfa", "worked")], 0)  # no learnings=
+        self.assertEqual(len(out), 1)
+
+    def test_duplicate_learning_text_across_cycles_dedups_by_fp(self):
+        plan = pl(tk("t1", "alfa"))
+        same_learning = "the target enforces OAuth2, not basic auth"
+        out1 = harvest.harvest_tasks(
+            plan, [res("t1", "alfa", "worked", learnings=[same_learning])], 0)
+        out2 = harvest.harvest_tasks(
+            plan, [res("t1", "alfa", "worked", learnings=[same_learning])], 1)
+        self.assertEqual(out1[1]["fp"], out2[1]["fp"])  # same text -> same fp -> dedupes
+                                                        # once folded through fold_records
 
 
 if __name__ == "__main__":

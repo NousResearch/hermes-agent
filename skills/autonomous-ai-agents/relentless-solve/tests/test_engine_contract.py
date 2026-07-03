@@ -62,10 +62,8 @@ class EngineContract(tl.LoopBase):
     def _wire_two_cycle(self):
         self.wire([tl.clar([tl.ts("q1", "a1")]),
                    tl.clar([], stop="converged (no question above floor)")],
-                  [{"status": "EXHAUSTION", "detail": "dead"},
-                   {"status": "SUCCESS", "detail": "done"}],
-                  [{"records": [tl.dr("alfa", "503")], "state": "EXHAUSTION-STOP",
-                    "fork": None}])
+                  [tl.pl(tl.tk("t1", "alfa")), tl.pl(tl.tk("t1", "bravo"))],
+                  [{"t1": "failed"}, {}])
 
     def test_completed_result_matches_fakectx(self):
         self._wire_two_cycle()
@@ -99,11 +97,10 @@ class EngineContract(tl.LoopBase):
         self.assertEqual(p1["result"], p2["result"])
 
     def test_gate_suspends_then_resumes(self):
-        gh = [{"records": [tl.dr("source A", "503")], "state": "GUARD-HALT",
-               "fork": "Which branch should be preferred?"}]
+        fork = [tl.pl(disposition="needs_decision",
+                      question="Which branch should be preferred?")]
         self.wire([tl.clar([]), tl.clar([], stop="converged (no question above floor)")],
-                  [{"status": "GUARD_HALT", "detail": "guard"},
-                   {"status": "SUCCESS", "detail": "done"}], gh)
+                  fork + [tl.pl(tl.tk("t1"))])
         inp = tl.inp(gate=True)
         rc, payload = _run_engine(self.flow_obj, self.engine,
                                   ["run", "--input", json.dumps(inp),
@@ -117,7 +114,7 @@ class EngineContract(tl.LoopBase):
         # live tail (cycle 1) — so script the tail, not the full sequence. (FakeCtx's
         # pre-answered run executes everything live from index 0 instead.)
         self.wire([tl.clar([], stop="converged (no question above floor)")],
-                  [{"status": "SUCCESS", "detail": "done"}], [])
+                  [tl.pl(tl.tk("t1"))])
         rc2, p2 = _run_engine(self.flow_obj, self.engine,
                               ["resume", "--answer", "prefer source D",
                                "--state-dir", self.state_dir])

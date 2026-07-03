@@ -49,6 +49,12 @@ const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
+const {
+  GATEWAY_TEMP_SWEEP_INTERVAL_MS,
+  ensureGatewayTempDir,
+  stageGatewayDataUrlToTemp,
+  sweepGatewayTempFiles
+} = require('./gateway-temp-files.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
@@ -989,7 +995,75 @@ function rememberLog(chunk) {
   scheduleDesktopLogFlush()
 }
 
-function openExternalUrl(rawUrl) {
+const REMOTE_GATEWAY_FILE_PROTOCOL = 'hermes-gateway-file:'
+let gatewayTempSweepTimer = null
+
+function gatewayTempDir() {
+  return path.join(app.getPath('temp'), 'hermes-desktop-gateway-files')
+}
+
+async function fetchGatewayFileDataUrl(filePath, profile) {
+  const result = await requestJsonForProfile(
+    profile || undefined,
+    `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
+    'GET'
+  )
+  const dataUrl = typeof result === 'string' ? result : result?.dataUrl || result?.data_url
+
+  if (!dataUrl) {
+    throw new Error('Gateway did not return file bytes')
+  }
+
+  return dataUrl
+}
+
+async function openGatewayFileUrl(parsed) {
+  const filePath = parsed.searchParams.get('path') || ''
+  const profile = parsed.searchParams.get('profile') || undefined
+
+  if (!filePath) {
+    return false
+  }
+
+  rememberLog(`[file] remote fallback: staging gateway file via bytes→temp (${filePath})`)
+  const dataUrl = await fetchGatewayFileDataUrl(filePath, profile)
+  const localPath = await stageGatewayDataUrlToTemp({
+    dataUrl,
+    sourcePath: filePath,
+    tempDir: gatewayTempDir()
+  })
+
+  rememberLog(`[file] remote fallback: staged ${filePath} -> ${localPath}; handoff keeps temp until TTL sweep`)
+  const error = await shell.openPath(localPath)
+  if (!error) {
+    return true
+  }
+
+  rememberLog(`[file] staged gateway openPath failed: ${error}; revealing in folder instead`)
+  try {
+    shell.showItemInFolder(localPath)
+  } catch (revealError) {
+    rememberLog(`[file] staged gateway showItemInFolder failed: ${revealError.message}`)
+  }
+
+  return true
+}
+
+function startGatewayTempSweeper() {
+  if (gatewayTempSweepTimer) return
+
+  const tempDir = gatewayTempDir()
+  rememberLog(`[file] gateway temp sweep scheduled: ${tempDir}`)
+  void ensureGatewayTempDir(tempDir)
+    .then(() => sweepGatewayTempFiles({ tempDir, logger: rememberLog }))
+    .catch(error => rememberLog(`[file] gateway temp sweep setup failed: ${error.message}`))
+  gatewayTempSweepTimer = setInterval(() => {
+    void sweepGatewayTempFiles({ tempDir, logger: rememberLog })
+  }, GATEWAY_TEMP_SWEEP_INTERVAL_MS)
+  gatewayTempSweepTimer.unref?.()
+}
+
+async function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
   if (!raw) return false
 
@@ -998,6 +1072,15 @@ function openExternalUrl(rawUrl) {
     parsed = new URL(raw)
   } catch {
     return false
+  }
+
+  if (parsed.protocol === REMOTE_GATEWAY_FILE_PROTOCOL && parsed.hostname === 'open') {
+    try {
+      return await openGatewayFileUrl(parsed)
+    } catch (error) {
+      rememberLog(`[file] remote fallback failed: ${error.message}`)
+      throw error
+    }
   }
 
   // `file://` URLs come from the artifacts panel (the renderer can't open
@@ -6728,8 +6811,8 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
-ipcMain.handle('hermes:openExternal', (_event, url) => {
-  if (!openExternalUrl(url)) {
+ipcMain.handle('hermes:openExternal', async (_event, url) => {
+  if (!(await openExternalUrl(url))) {
     throw new Error('Invalid external URL')
   }
 })
@@ -7589,6 +7672,7 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
+  startGatewayTempSweeper()
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
@@ -7652,6 +7736,10 @@ app.on('before-quit', () => {
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)
     desktopLogFlushTimer = null
+  }
+  if (gatewayTempSweepTimer) {
+    clearInterval(gatewayTempSweepTimer)
+    gatewayTempSweepTimer = null
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()

@@ -2,6 +2,8 @@ import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
 
+const REMOTE_GATEWAY_FILE_SCHEME = 'hermes-gateway-file:'
+
 interface MediaInfo {
   kind: MediaKind
   mime: string
@@ -56,9 +58,10 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
-// Resolve a media path to a URL the shell can open. Remote mode rewrites
-// gateway-local paths to an authenticated /api/files/download URL (the file
-// lives on the gateway, not this disk); local mode keeps the file:// form.
+// Resolve a media path to a URL the shell can open. Remote mode cannot hand a
+// gateway-local path to this machine's OS as file://, and Ace's OAuth config has
+// no scoped query token. Route through Electron's authenticated bytes-to-temp
+// opener instead; local mode keeps the file:// form.
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
@@ -66,15 +69,34 @@ export function mediaExternalUrl(path: string): string {
 
   if (isRemoteGateway()) {
     const conn = $connection.get()
+    const file = filePathFromMediaPath(path)
+    const query = [`path=${encodeURIComponent(file)}`]
 
-    if (conn?.baseUrl && conn.token) {
-      const file = encodeURIComponent(filePathFromMediaPath(path))
-
-      return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
+    if (conn?.profile) {
+      query.push(`profile=${encodeURIComponent(conn.profile)}`)
     }
+
+    return `hermes-gateway-file://open?${query.join('&')}`
   }
 
   return /^file:/i.test(path) ? path : `file://${path}`
+}
+
+export function pathFromRemoteGatewayFileUrl(url: string): { path: string; profile?: string } | null {
+  try {
+    const parsed = new URL(url)
+
+    if (parsed.protocol !== REMOTE_GATEWAY_FILE_SCHEME || parsed.hostname !== 'open') {
+      return null
+    }
+
+    const path = parsed.searchParams.get('path') || ''
+    const profile = parsed.searchParams.get('profile') || undefined
+
+    return path ? { path, ...(profile ? { profile } : {}) } : null
+  } catch {
+    return null
+  }
 }
 
 // Custom Electron scheme (registered in electron/main.cjs) that streams a local
@@ -120,9 +142,11 @@ export function isRemoteGateway(): boolean {
 // expose GET /api/media (hermes_cli/web_server.py).
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
   const file = filePathFromMediaPath(path)
+  const profile = $connection.get()?.profile || undefined
 
   const result = await window.hermesDesktop!.api<{ data_url: string }>({
-    path: `/api/media?path=${encodeURIComponent(file)}`
+    path: `/api/media?path=${encodeURIComponent(file)}`,
+    ...(profile ? { profile } : {})
   })
 
   return result.data_url

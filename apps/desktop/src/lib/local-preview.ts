@@ -1,4 +1,5 @@
 import { isDesktopFsRemoteMode, readDesktopFileText } from '@/lib/desktop-fs'
+import { mediaExternalUrl } from '@/lib/media'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -109,15 +110,21 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 }
 
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
-  if (!isDesktopFsRemoteMode() || !target || target.kind !== 'file' || target.previewKind === 'image') {
+  if (!isDesktopFsRemoteMode() || !target || target.kind !== 'file') {
     return target
+  }
+
+  const remoteTarget = { ...target, url: mediaExternalUrl(target.path || target.source) }
+
+  if (target.previewKind === 'image') {
+    return remoteTarget
   }
 
   try {
     const result = await readDesktopFileText(target.path || target.source)
 
     return {
-      ...target,
+      ...remoteTarget,
       binary: result.binary,
       byteSize: result.byteSize,
       language: result.language || target.language,
@@ -125,7 +132,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
       mimeType: result.mimeType
     }
   } catch {
-    return target
+    return remoteTarget
   }
 }
 

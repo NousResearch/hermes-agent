@@ -1861,14 +1861,27 @@ def _should_use_copilot_responses_api(model_id: str) -> bool:
 def copilot_model_api_mode(
     model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None) -> str:
-    """API mode for a Copilot model from the id pattern (opencode's approach). Copilot's Claude models
-    go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
-    advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
+    """Use the GPT model-id rule first, then prefer native Messages when the catalog advertises it.
+    Models without either signal fall back to Chat Completions."""
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
         catalog = fetch_github_model_catalog(api_key=api_key)
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
+    if catalog:
+        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
+        if isinstance(catalog_entry, dict):
+            supported_endpoints = {
+                str(endpoint).strip()
+                for endpoint in (catalog_entry.get("supported_endpoints") or [])
+                if str(endpoint).strip()
+            }
+            # For non-GPT-5 models, check if they support messages API
+            if "/v1/messages" in supported_endpoints:
+                return "anthropic_messages"
+
     return "chat_completions"
 
 

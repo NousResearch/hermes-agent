@@ -489,6 +489,64 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "copilot"
         assert result["api_mode"] == "codex_responses"
 
+    def test_runtime_copilot_target_model_overrides_config_default(self, monkeypatch):
+        """target_model should override config default for api_mode resolution.
+
+        Regression test: _copilot_runtime_api_mode read model_cfg['default']
+        and ignored the target_model parameter, causing gateway model switches
+        to use the wrong transport. Same pattern as 284d06cab (Bedrock fix).
+        """
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "claude-opus-4.6"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {
+                    "id": "gpt-5.5",
+                    "supported_endpoints": ["/responses"],
+                    "capabilities": {"type": "chat"},
+                }
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot", target_model="gpt-5.5")
+
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "codex_responses", (
+            "target_model='gpt-5.5' should resolve codex_responses, "
+            "not inherit chat_completions from config default 'claude-opus-4.6'"
+        )
+
+    def test_runtime_copilot_claude_target_model_uses_messages(self, monkeypatch):
+        """Claude target_model with /v1/messages in catalog should use anthropic_messages."""
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "gpt-5.5"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {
+                    "id": "claude-sonnet-4.6",
+                    "supported_endpoints": ["/chat/completions", "/v1/messages"],
+                }
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot", target_model="claude-sonnet-4.6")
+
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "anthropic_messages", (
+            "target_model='claude-sonnet-4.6' with /v1/messages in catalog "
+            "should resolve anthropic_messages, not chat_completions"
+        )
+    
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")

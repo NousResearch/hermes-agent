@@ -131,6 +131,9 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
+        # GitHub Copilot's /v1/messages endpoint authenticates with
+        # Authorization: Bearer, not x-api-key.
+        or base_url_host_matches(normalized, "githubcopilot.com")
     )
 
 

@@ -370,8 +370,75 @@ class TestSecondarySuppressedAdapters:
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # nothing connected, but no MultiplexConfigError
 
+    @pytest.mark.asyncio
+    async def test_secondary_adapter_auth_callback_is_profile_bound(self, monkeypatch, tmp_path):
+        """Secondary adapter auth callbacks must be bound to their served profile."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _Adapter:
+            platform = Platform.TELEGRAM
+            token = "t"
+
+            def set_message_handler(self, handler):
+                self.message_handler = handler
+
+            def set_fatal_error_handler(self, handler):
+                self.fatal_error_handler = handler
+
+            def set_session_store(self, store):
+                self.session_store = store
+
+            def set_busy_session_handler(self, handler):
+                self.busy_session_handler = handler
+
+            def set_topic_recovery_fn(self, handler):
+                self.topic_recovery_fn = handler
+
+            def set_authorization_check(self, callback):
+                self.authorization_check = callback
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = object()
+        runner._busy_text_mode = "final"
+        runner._handle_adapter_fatal_error = AsyncMock()
+        runner._handle_active_session_busy_message = AsyncMock()
+        runner._recover_telegram_topic_thread_id = lambda _source: None
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+
+        adapter = _Adapter()
+        monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True))
+
+        captured = {}
+
+        def _auth_factory(platform, profile=None):
+            captured["platform"] = platform
+            captured["profile"] = profile
+            return lambda _user_id, _chat_type=None, _chat_id=None: True
+
+        monkeypatch.setattr(runner, "_make_adapter_auth_check", _auth_factory)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer",
+            tmp_path / "profiles" / "reviewer",
+            {},
+        )
+
+        assert connected == 1
+        assert captured == {"platform": Platform.TELEGRAM, "profile": "reviewer"}
+        assert adapter.authorization_check("same-user", "dm", "same-chat") is True
+        assert runner._profile_adapters["reviewer"][Platform.TELEGRAM] is adapter
+
     def test_suppressed_set_covers_known_listeners(self):
         from gateway.run import _SECONDARY_SUPPRESSED_PLATFORM_VALUES
+
         # Every adapter that binds a TCP port must be in the guard set.
         for p in ("webhook", "api_server", "msgraph_webhook", "feishu",
                   "wecom_callback", "bluebubbles", "sms"):

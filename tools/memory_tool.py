@@ -692,6 +692,13 @@ class MemoryStore:
             raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
             return []
+        except UnicodeDecodeError as e:
+            logger.error(
+                "Memory file %s has invalid UTF-8 (%s) -- treating as empty. "
+                "Fix or remove the file to restore memory.",
+                path, e,
+            )
+            return []
 
         if not raw.strip():
             return []

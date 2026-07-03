@@ -127,6 +127,22 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
     }
 
 
+def _raise_if_blocked_local_input(ref: str) -> None:
+    """Refuse to read a local media path that Hermes' read deny-list blocks.
+
+    Thin wrapper over the shared ``agent.file_safety.raise_if_read_blocked``
+    chokepoint so xAI video inputs enforce the same credential-store guard as
+    the image providers. Fails open if the guard machinery is unavailable
+    (defense-in-depth, per the denylist's own framing).
+    """
+    try:
+        from agent.file_safety import raise_if_read_blocked
+    except Exception as exc:  # noqa: BLE001 - guard must never break loading
+        logger.debug("xAI media input read guard unavailable: %s", exc)
+        return
+    raise_if_read_blocked(ref)
+
+
 def _image_ref_to_xai_url(value: str) -> str:
     """Return a URL/data URI accepted by xAI for image inputs."""
     ref = (value or "").strip()
@@ -139,6 +155,8 @@ def _image_ref_to_xai_url(value: str) -> str:
     path = Path(ref).expanduser()
     if not path.is_file():
         return ref
+
+    _raise_if_blocked_local_input(ref)
 
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     if not mime.startswith("image/"):
@@ -194,6 +212,8 @@ def _video_ref_to_xai_url(value: str) -> str:
     path = Path(ref).expanduser()
     if not path.is_file():
         return ref
+
+    _raise_if_blocked_local_input(ref)
 
     mime = mimetypes.guess_type(path.name)[0] or "video/mp4"
     if not mime.startswith("video/"):

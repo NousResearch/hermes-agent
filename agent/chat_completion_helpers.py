@@ -2838,8 +2838,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Same poll-interval reduction as the non-streaming and Bedrock
+    # interruptible_*_api_call paths in this file. The 50ms window keeps
+    # the worst-case event-loop stall under the 5s-stall watchdog
+    # threshold. The streaming path is the one most often exercised by
+    # long-running LLM calls (large context prefill, reasoning models),
+    # so this is the most impactful of the three siblings. See
+    # issue #57903.
+    _POLL_INTERVAL = _env_float("HERMES_INTERRUPTIBLE_API_POLL_SECONDS", 0.05)
+    if _POLL_INTERVAL <= 0:
+        _POLL_INTERVAL = 0.05
     while t.is_alive():
-        t.join(timeout=0.3)
+        t.join(timeout=_POLL_INTERVAL)
+        time.sleep(0)  # explicit GIL yield
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting

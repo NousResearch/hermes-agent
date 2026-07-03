@@ -888,6 +888,33 @@ class SessionDB:
     # merge cost is amortised far below the checkpoint cadence.
     _OPTIMIZE_EVERY_N_WRITES = 1000
 
+    @staticmethod
+    def _register_sql_functions(conn: sqlite3.Connection) -> None:
+        """Register custom scalar functions used by SQL queries on ``conn``.
+
+        ``compact_punct`` lowercases its argument and strips every non-word
+        character plus underscore — the exact ``re.sub(r"[\\W_]+", "", …)``
+        alphabet the ``list_sessions_rich`` search needle is normalized with.
+        Registering it on the connection (rather than open-coding a partial
+        REPLACE chain in SQL) keeps the column side and the needle side in the
+        identical alphabet, so the punctuation-insensitive match promised by
+        ``/sessions search`` works for apostrophes/ampersands/slashes/commas —
+        not just ``- _ . space``. Applied to both the read-write and read-only
+        connections so cross-profile (read-only) search behaves identically.
+        """
+        def _compact_punct(value):
+            return re.sub(r"[\W_]+", "", (value or "").lower())
+
+        try:
+            conn.create_function(
+                "compact_punct", 1, _compact_punct, deterministic=True
+            )
+        except TypeError:
+            # ``deterministic`` requires Python 3.8+ compiled against
+            # SQLite 3.8.3+. If unavailable, register without it — the
+            # function still works in WHERE/LIKE, just isn't query-optimized.
+            conn.create_function("compact_punct", 1, _compact_punct)
+
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
@@ -916,6 +943,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._register_sql_functions(self._conn)
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -934,6 +962,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._register_sql_functions(self._conn)
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
@@ -2839,11 +2868,12 @@ class SessionDB:
                 # Same chain-membership trick as id_query, but matching either
                 # the title or the id of any session in the chain. The compact
                 # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                # ``compact_punct`` strips the SAME character class as the
+                # needle below (all non-word chars + underscore), so titles
+                # with apostrophes/ampersands/slashes (e.g. ``Bob's Chat``,
+                # ``R&D Notes``) are reachable via the compact path — not just
+                # ``- _ . space`` separators.
                 compact_needle = re.sub(r"[\W_]+", "", search_needle)
-                compact_sql = (
-                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
-                    " '-', ''), '_', ''), '.', ''), ' ', '')"
-                )
                 search_clause = (
                     "EXISTS (SELECT 1 FROM chain cq"
                     " JOIN sessions cs ON cs.id = cq.cur_id"
@@ -2854,7 +2884,7 @@ class SessionDB:
                 id_params.extend([_like_pattern(search_needle)] * 2)
                 if compact_needle:
                     search_clause += (
-                        f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                        " OR compact_punct(cs.title) LIKE ? ESCAPE '\\'"
                     )
                     id_params.append(_like_pattern(compact_needle))
                 filter_clauses.append(search_clause + "))")

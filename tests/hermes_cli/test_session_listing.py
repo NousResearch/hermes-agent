@@ -64,6 +64,36 @@ class TestQuerySessionListingSearch:
         # "an94" should match the title "AN-94 ..." via compact matching.
         assert self._ids(db, source="telegram", search_query="an94") == ["sess_an94"]
 
+    def test_punctuation_normalized_match_apostrophe(self, tmp_path):
+        # The compact needle strips all punctuation (re.sub(r"[\W_]+", ...)),
+        # so the title side must strip the same alphabet — "bobs" has to match
+        # "Bob's Chat" even though the apostrophe is not a - _ . separator.
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "bob.db")
+        # Id is deliberately chosen NOT to contain "bobs" so the match is
+        # forced through the compact-title path, not the id-substring fallback.
+        db.create_session("sess_x1", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_x1", "Bob's Chat")
+        try:
+            assert self._ids(db, source="telegram", search_query="bobs") == ["sess_x1"]
+            # The literal (non-compacted) fallback still matches the apostrophe.
+            assert self._ids(db, source="telegram", search_query="bob's") == ["sess_x1"]
+        finally:
+            db.close()
+
+    def test_punctuation_normalized_match_ampersand(self, tmp_path):
+        # "rd" must match "R&D Notes" via the compact path (ampersand stripped).
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "rd.db")
+        # Id avoids the "rd" substring so the id-fallback can't mask a broken
+        # compact-title path.
+        db.create_session("sess_x2", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_x2", "R&D Notes")
+        try:
+            assert self._ids(db, source="telegram", search_query="rd") == ["sess_x2"]
+        finally:
+            db.close()
+
     def test_id_substring_match_includes_unnamed(self, db):
         assert self._ids(db, source="telegram", search_query="untitled") == ["sess_untitled"]
 

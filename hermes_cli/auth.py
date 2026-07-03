@@ -5257,11 +5257,33 @@ def refresh_nous_oauth_pure(
     Callers that own persistent state can use it to save the newly rotated
     refresh token before later validation can fail.
     """
+    # HERMES_PORTAL_BASE_URL / NOUS_PORTAL_BASE_URL is the trusted
+    # operator/deployment override and must win outright, bypassing the host
+    # allowlist entirely — mirrors resolve_nous_access_token /
+    # resolve_nous_runtime_credentials. Only fall through to the caller-
+    # supplied (state-derived) value + allowlist gate when no override is
+    # set: that value can originate from the cross-profile shared store
+    # (_try_import_shared_nous_state), which this function has no way to
+    # know is untampered, so it must be re-validated here rather than
+    # trusted as-is.
+    env_portal_override = _nous_portal_env_override()
+    if env_portal_override:
+        validated_portal_base_url = env_portal_override.rstrip("/")
+    else:
+        validated_portal_base_url = (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        parsed_portal_url = urlparse(validated_portal_base_url)
+        if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
+            logger.warning(
+                "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
+                validated_portal_base_url, parsed_portal_url.hostname,
+            )
+            validated_portal_base_url = DEFAULT_NOUS_PORTAL_URL
+
     state: Dict[str, Any] = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "client_id": client_id or DEFAULT_NOUS_CLIENT_ID,
-        "portal_base_url": (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/"),
+        "portal_base_url": validated_portal_base_url,
         "inference_base_url": (inference_base_url or DEFAULT_NOUS_INFERENCE_URL).rstrip("/"),
         "token_type": token_type or "Bearer",
         "scope": scope or DEFAULT_NOUS_SCOPE,

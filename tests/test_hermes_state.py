@@ -4881,3 +4881,117 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+# =========================================================================
+# Trigram FTS opt-out (HERMES_FTS_TRIGRAM=0)
+# =========================================================================
+
+
+class TestTrigramOptOut:
+    """HERMES_FTS_TRIGRAM=0 opts out of the trigram FTS index.
+
+    The trigram index exists for CJK/substring search and can dominate
+    state.db size. Opting out must: skip creation on fresh DBs, drop
+    existing trigram artifacts on init, leave base FTS fully intact, and
+    not trip the trigger-repair heuristic into rebuilding every boot.
+    """
+
+    @staticmethod
+    def _names(db, kind):
+        rows = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = ?", (kind,)
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def test_default_keeps_trigram(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert "messages_fts_trigram" in self._names(db, "table")
+            assert db._trigram_available is True
+        finally:
+            db.close()
+
+    def test_optout_fresh_db_skips_trigram(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_FTS_TRIGRAM", "0")
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert "messages_fts_trigram" not in self._names(db, "table")
+            triggers = self._names(db, "trigger")
+            assert not any("trigram" in t for t in triggers)
+            # Base FTS keeps working end to end.
+            assert {
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+            } <= triggers
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(session_id="s1", role="user", content="hello trigram optout")
+            results = db.search_messages("hello")
+            assert results
+            assert db._trigram_available is False
+        finally:
+            db.close()
+
+    def test_optout_drops_existing_trigram_artifacts(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="indexed before optout")
+        assert "messages_fts_trigram" in self._names(db, "table")
+        db.close()
+
+        monkeypatch.setenv("HERMES_FTS_TRIGRAM", "0")
+        db = SessionDB(db_path=db_path)
+        try:
+            assert "messages_fts_trigram" not in self._names(db, "table")
+            assert not any("trigram" in t for t in self._names(db, "trigger"))
+            # Base index survived the drop and still serves search.
+            assert db.search_messages("indexed")
+        finally:
+            db.close()
+
+    def test_optout_does_not_trip_repair_rebuild(self, tmp_path, monkeypatch):
+        """Missing trigram triggers must not look like trigger degradation.
+
+        Otherwise every startup would run a full FTS rebuild (DELETE +
+        re-INSERT of the whole messages table).
+        """
+        monkeypatch.setenv("HERMES_FTS_TRIGRAM", "0")
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="steady state")
+        db.close()
+
+        calls = []
+        orig = SessionDB._rebuild_fts_indexes
+        monkeypatch.setattr(
+            SessionDB,
+            "_rebuild_fts_indexes",
+            staticmethod(lambda *a, **kw: calls.append(1) or orig(*a, **kw)),
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            assert calls == []
+        finally:
+            db.close()
+
+    def test_reenable_recreates_and_backfills(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        monkeypatch.setenv("HERMES_FTS_TRIGRAM", "0")
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="written while opted out")
+        db.close()
+
+        monkeypatch.delenv("HERMES_FTS_TRIGRAM")
+        db = SessionDB(db_path=db_path)
+        try:
+            assert "messages_fts_trigram" in self._names(db, "table")
+            count = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram"
+            ).fetchone()[0]
+            assert count >= 1  # backfilled via the repair rebuild
+        finally:
+            db.close()

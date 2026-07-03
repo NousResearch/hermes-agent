@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import difflib
+import functools
 import importlib
 import io
 import json
@@ -291,6 +292,13 @@ def _noop_console_command(_args: argparse.Namespace) -> None:
     return None
 
 
+# The CLI surface these helpers reflect is process-static: they import a
+# subcommand module and build a throwaway argparse tree purely to extract help
+# summaries. Nothing about the result changes across engine instances, but the
+# dashboard opens a fresh HermesConsoleEngine per /api/console connection, so
+# without memoization every reconnect re-imports + re-parses the whole surface.
+# Cache by args (all hashable strings); callers only read the returned map.
+@functools.lru_cache(maxsize=None)
 def _extracted_summaries(
     module_name: str,
     builder_name: str,
@@ -306,6 +314,7 @@ def _extracted_summaries(
         return {}
 
 
+@functools.lru_cache(maxsize=None)
 def _registered_summaries(
     root: str,
     module_name: str,
@@ -322,6 +331,7 @@ def _registered_summaries(
         return {}
 
 
+@functools.lru_cache(maxsize=None)
 def _builder_summaries(
     module_name: str,
     builder_name: str,
@@ -335,6 +345,7 @@ def _builder_summaries(
         return {}
 
 
+@functools.lru_cache(maxsize=None)
 def _adder_summaries(module_name: str, add_name: str) -> dict[tuple[str, ...], str]:
     try:
         parser, subparsers = _parser_root()

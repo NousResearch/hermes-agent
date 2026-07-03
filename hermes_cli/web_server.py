@@ -12,8 +12,11 @@ Usage:
 from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
+import atexit
 import base64
 import binascii
+import concurrent.futures
+import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -12640,6 +12643,36 @@ _CONSOLE_PROMPT = "hermes> "
 _CONSOLE_COMMAND_TIMEOUT_SECONDS = 60.0
 _CONSOLE_OUTPUT_LIMIT = 50000
 
+# Console commands run in a worker thread. On a timeout, asyncio.wait_for cancels
+# the *awaitable*, but Python threads aren't preemptible, so a genuinely stuck
+# worker keeps running to completion. To keep that from exhausting the shared
+# default thread pool (asyncio.to_thread), we run console commands on a small
+# dedicated, bounded pool: a leaked worker is capped, and concurrent console
+# execution is bounded to a fixed number of threads regardless of reconnects.
+_CONSOLE_EXECUTOR_MAX_WORKERS = 4
+_console_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_console_executor_lock = threading.Lock()
+
+
+def _get_console_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Lazily create the bounded console worker pool (once per process)."""
+    global _console_executor
+    if _console_executor is None:
+        with _console_executor_lock:
+            if _console_executor is None:
+                _console_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_CONSOLE_EXECUTOR_MAX_WORKERS,
+                    thread_name_prefix="hermes-console",
+                )
+                # Ensure the pool is torn down on interpreter exit. Don't wait on
+                # in-flight workers: a stuck 60s console command must not block
+                # shutdown (cancel_futures drops anything not yet started).
+                atexit.register(
+                    lambda: _console_executor
+                    and _console_executor.shutdown(wait=False, cancel_futures=True)
+                )
+    return _console_executor
+
 
 def _dashboard_console_context() -> str:
     """Choose local vs hosted command policy for the dashboard console."""
@@ -12916,13 +12949,17 @@ async def console_ws(ws: WebSocket) -> None:
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
         nonlocal active_task, pending_confirmation, command_generation
         try:
+            loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _execute_console_line,
-                    engine,
-                    line,
-                    confirmed=confirmed,
-                    profile=profile,
+                loop.run_in_executor(
+                    _get_console_executor(),
+                    functools.partial(
+                        _execute_console_line,
+                        engine,
+                        line,
+                        confirmed=confirmed,
+                        profile=profile,
+                    ),
                 ),
                 timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
             )

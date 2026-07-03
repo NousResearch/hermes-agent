@@ -872,19 +872,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
-            if not blocked and agent.tool_progress_callback:
-                try:
-                    agent.tool_progress_callback(
-                        "tool.completed", function_name, None, None,
-                        duration=tool_duration, is_error=is_error,
-                        result=function_result,
-                    )
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
-
             if agent.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=name,
+            tool_use_id=tc.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        ) if not _is_multimodal_tool_result(function_result) else function_result
+
+        if r is not None and not blocked and agent.tool_progress_callback:
+            try:
+                agent.tool_progress_callback(
+                    "tool.completed", function_name, None, None,
+                    duration=tool_duration, is_error=is_error,
+                    result=function_result,
+                )
+            except Exception as cb_err:
+                logging.debug(f"Tool progress callback error: {cb_err}")
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -908,14 +916,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 agent.tool_complete_callback(tc.id, name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
-
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -1540,6 +1540,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=function_name,
+            tool_use_id=tool_call.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        ) if not _is_multimodal_tool_result(function_result) else function_result
+
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 agent.tool_progress_callback(
@@ -1564,14 +1572,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent.tool_complete_callback(tool_call.id, function_name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
-
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

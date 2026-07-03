@@ -3887,7 +3887,70 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
+    # Keep the Codex CLI's token chain alive (BUILD-52): our refresh just
+    # consumed the shared single-use refresh_token; if the CLI still stores it,
+    # hand the CLI the rotated pair so `codex` keeps working without re-login.
+    _writeback_codex_cli_tokens(
+        str(tokens.get("refresh_token", "") or ""),
+        refreshed["access_token"],
+        refreshed["refresh_token"],
+    )
     return updated_tokens
+
+
+def _writeback_codex_cli_tokens(
+    consumed_refresh_token: str,
+    new_access_token: str,
+    new_refresh_token: str,
+) -> bool:
+    """Best-effort write-back of rotated Codex OAuth tokens to ~/.codex/auth.json.
+
+    OAuth refresh_tokens are single-use. When Hermes refreshes the shared token,
+    the Codex CLI's stored refresh_token becomes dead ("refresh token already
+    used") and — unlike Hermes, which self-heals by importing from the CLI — the
+    CLI has no reverse path and stays broken until a manual `codex login`
+    (Ahlnos BUILD-52). This closes the loop: after a successful Hermes refresh,
+    if the CLI file still holds exactly the refresh_token we just consumed,
+    replace it with the new pair so the CLI's chain stays alive.
+
+    Guard: only writes when the CLI's stored refresh_token == the consumed one.
+    If they differ, the CLI is on a different (likely fresher, re-login) chain
+    and must not be clobbered. Never raises — failures only log.
+    """
+    try:
+        if not consumed_refresh_token or not new_access_token or not new_refresh_token:
+            return False
+        codex_home = os.getenv("CODEX_HOME", "").strip()
+        if not codex_home:
+            codex_home = str(Path.home() / ".codex")
+        auth_path = Path(codex_home).expanduser() / "auth.json"
+        if not auth_path.is_file():
+            return False
+        payload = json.loads(auth_path.read_text())
+        cli_tokens = payload.get("tokens")
+        if not isinstance(cli_tokens, dict):
+            return False
+        if str(cli_tokens.get("refresh_token", "") or "").strip() != consumed_refresh_token.strip():
+            logger.debug(
+                "Codex CLI auth.json holds a different refresh_token chain — skipping write-back."
+            )
+            return False
+        cli_tokens["access_token"] = new_access_token.strip()
+        cli_tokens["refresh_token"] = new_refresh_token.strip()
+        payload["last_refresh"] = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        tmp_path = auth_path.with_name(auth_path.name + ".hermes-writeback.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, auth_path)
+        logger.info(
+            "Codex CLI auth.json updated with rotated tokens (write-back after Hermes refresh)."
+        )
+        return True
+    except Exception as exc:  # never let write-back break the refresh path
+        logger.debug("Codex CLI token write-back skipped: %s", exc)
+        return False
 
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:

@@ -117,6 +117,45 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_event_carries_profile(monkeypatch):
+    # A profile-backed background delegation must report which profile ran in
+    # the re-injected completion event, mirroring the synchronous result. (#41889)
+    def runner():
+        return {"status": "completed", "summary": "ran as reader",
+                "profile": "reader", "api_calls": 1, "duration_seconds": 1.0,
+                "model": "prof-model"}
+
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="prof-model",
+        session_key="", runner=runner, max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["profile"] == "reader"
+
+
+def test_completion_event_carries_profile_memory_and_dropped(monkeypatch):
+    # Full parity with the synchronous result: the completion event also carries
+    # the read/write mode and any parent-bounded toolset drops. (#41889)
+    def runner():
+        return {"status": "completed", "summary": "ran as reader",
+                "profile": "reader", "profile_memory": "write",
+                "profile_toolsets_dropped": ["web"],
+                "api_calls": 1, "duration_seconds": 1.0, "model": "prof-model"}
+
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="prof-model",
+        session_key="", runner=runner, max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["profile"] == "reader"
+    assert evt["profile_memory"] == "write"
+    assert evt["profile_toolsets_dropped"] == ["web"]
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",

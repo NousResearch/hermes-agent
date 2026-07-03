@@ -248,6 +248,14 @@ class HonchoMemoryProvider(MemoryProvider):
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
 
+        # Read-only profile delegation (issue #41889): when False, recall keeps
+        # working but every write surface (turn sync, conclusion mirror, the
+        # peer-card / conclusion tools, and the session-end flush) is skipped.
+        # Set from agent_context="subagent" in initialize(); mirrors the
+        # supermemory provider's _write_enabled so a bounded profile-backed
+        # subagent can't pollute the target profile's Honcho memory.
+        self._write_enabled = True
+
     @property
     def name(self) -> str:
         return "honcho"
@@ -306,6 +314,11 @@ class HonchoMemoryProvider(MemoryProvider):
                              agent_context, platform)
                 self._cron_skipped = True
                 return
+
+            # Profile-backed subagent (issue #41889): stay active so the run can
+            # READ the target profile's Honcho memory, but disable every write
+            # surface below so a bounded delegation can't write it back.
+            self._write_enabled = agent_context != "subagent"
 
             from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
             from plugins.memory.honcho.session import HonchoSessionManager
@@ -1217,7 +1230,7 @@ class HonchoMemoryProvider(MemoryProvider):
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
         """
-        if self._cron_skipped:
+        if self._cron_skipped or not self._write_enabled:
             return
         if self._recall_mode == "tools" and not self._session_ready():
             return
@@ -1263,7 +1276,7 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if action != "add" or target != "user" or not content:
             return
-        if self._cron_skipped:
+        if self._cron_skipped or not self._write_enabled:
             return
         if self._recall_mode == "tools" and not self._session_ready():
             return
@@ -1282,7 +1295,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
-        if self._cron_skipped:
+        if self._cron_skipped or not self._write_enabled:
             return
         if not self._manager:
             return
@@ -1327,6 +1340,12 @@ class HonchoMemoryProvider(MemoryProvider):
                 peer = args.get("peer", "user")
                 card_update = args.get("card")
                 if card_update:
+                    if not self._write_enabled:
+                        return tool_error(
+                            "This Honcho memory is read-only for the current "
+                            "(profile-backed subagent) run: peer cards can be "
+                            "read but not updated."
+                        )
                     result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
                     if result is None:
                         return tool_error("Failed to update peer card.")
@@ -1386,6 +1405,12 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
+                if not self._write_enabled:
+                    return tool_error(
+                        "This Honcho memory is read-only for the current "
+                        "(profile-backed subagent) run: conclusions can be read "
+                        "but not created or deleted."
+                    )
                 delete_id = (args.get("delete_id") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")

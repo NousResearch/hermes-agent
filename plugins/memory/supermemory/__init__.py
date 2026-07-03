@@ -903,6 +903,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return with_kebab_aliases(schemas)
 
     def _tool_store(self, args: dict) -> str:
+        if not self._write_enabled:
+            return tool_error(
+                "Supermemory is read-only for the current (profile-backed "
+                "subagent) run: you can search it but not store new memories."
+            )
         content = str(args.get("content") or "").strip()
         if not content:
             return tool_error("content is required")
@@ -956,6 +961,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return tool_error(f"Search failed: {exc}")
 
     def _tool_forget(self, args: dict) -> str:
+        if not self._write_enabled:
+            return tool_error(
+                "Supermemory is read-only for the current (profile-backed "
+                "subagent) run: you can search it but not forget memories."
+            )
         memory_id = str(args.get("id") or "").strip()
         query = str(args.get("query") or "").strip()
         if not memory_id and not query:

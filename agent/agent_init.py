@@ -49,7 +49,11 @@ from agent.tool_guardrails import (
 )
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    set_hermes_home_override,
+    reset_hermes_home_override,
+)
 from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -336,6 +340,8 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    profile_home: str = None,
+    profile_memory_readonly: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1374,91 +1380,136 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    if not skip_memory:
-        try:
-            mem_config = _agent_cfg.get("memory", {})
-            agent._memory_enabled = mem_config.get("memory_enabled", False)
-            agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
-            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
-            if agent._memory_enabled or agent._user_profile_enabled:
-                from tools.memory_tool import MemoryStore
-                agent._memory_store = MemoryStore(
-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                    user_char_limit=mem_config.get("user_char_limit", 1375),
-                )
-                agent._memory_store.load_from_disk()
-        except Exception:
-            pass  # Memory is optional -- don't break agent init
-    
-
-
-    # Memory provider plugin (external — one at a time, alongside built-in)
-    # Reads memory.provider from config to select which plugin to activate.
+    # When this child impersonates a target profile (profile_home set), load
+    # THAT profile's memory: scope the home override so the memory config, the
+    # built-in MEMORY.md/USER.md store, and the external provider all resolve
+    # to the profile's dir and identity (get_active_profile_name() derives from
+    # HERMES_HOME) — a full, profile-equivalent memory surface. Reset in finally.
+    _mem_home_token = (
+        set_hermes_home_override(profile_home) if profile_home else None
+    )
+    # A profile-backed child reads the target profile's memory but (phase 1)
+    # must not write it back: bound store is read-only, nudges are off (no point
+    # prompting a write that will be refused), and the provider is initialized
+    # with agent_context="subagent" so it skips writes (sync_turn / on_memory_
+    # write / write tools) while retrieval still works. Only meaningful when a
+    # profile is actually impersonated.
+    _profile_readonly = bool(profile_home) and profile_memory_readonly
     agent._memory_manager = None
-    if not skip_memory:
-        try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+    # Bind before the blocks: the profile-config load below can raise and be
+    # swallowed, and the provider block then reads mem_config — without this it
+    # would raise NameError (caught, but provider init silently skipped).
+    mem_config: dict = {}
+    try:
+        if not skip_memory:
+            try:
+                if profile_home:
+                    from hermes_cli.config import load_config as _load_prof_cfg
+                    mem_config = (_load_prof_cfg() or {}).get("memory", {})
+                else:
+                    mem_config = _agent_cfg.get("memory", {})
+                agent._memory_enabled = mem_config.get("memory_enabled", False)
+                agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+                if _profile_readonly:
+                    # Don't nudge the model to save into a read-only profile.
+                    agent._memory_nudge_interval = 0
+                if agent._memory_enabled or agent._user_profile_enabled:
+                    from tools.memory_tool import MemoryStore
+                    # Bind the store to the profile's memories dir so the child's
+                    # RUNTIME reads/writes (memory tool, nudges, post-compression
+                    # reloads) stay on the profile — the construction-time scope
+                    # alone doesn't survive into the run (worker thread, override
+                    # already reset). None for the main agent → live resolution.
+                    _mem_base_dir = (
+                        os.path.join(profile_home, "memories") if profile_home else None
+                    )
+                    agent._memory_store = MemoryStore(
+                        memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                        user_char_limit=mem_config.get("user_char_limit", 1375),
+                        base_dir=_mem_base_dir,
+                        read_only=_profile_readonly,
+                    )
+                    agent._memory_store.load_from_disk()
+            except Exception:
+                pass  # Memory is optional -- don't break agent init
 
-            if _mem_provider_name and _mem_provider_name.strip():
-                from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
-                if agent._memory_manager.providers:
-                    _init_kwargs = {
-                        "session_id": agent.session_id,
-                        "platform": platform or "cli",
-                        "hermes_home": str(get_hermes_home()),
-                        "agent_context": "primary",
-                    }
-                    if _init_kwargs["platform"] == "cli":
-                        _init_kwargs["warning_callback"] = agent._emit_warning
-                        _init_kwargs["status_callback"] = agent._emit_status
-                    # Thread session title for memory provider scoping
-                    # (e.g. honcho uses this to derive chat-scoped session keys)
-                    if agent._session_db:
+        # Memory provider plugin (external — one at a time, alongside built-in)
+        # Reads memory.provider from config to select which plugin to activate.
+        if not skip_memory:
+            try:
+                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+
+                if _mem_provider_name and _mem_provider_name.strip():
+                    from agent.memory_manager import MemoryManager as _MemoryManager
+                    from plugins.memory import load_memory_provider as _load_mem
+                    agent._memory_manager = _MemoryManager()
+                    _mp = _load_mem(_mem_provider_name)
+                    if _mp and _mp.is_available():
+                        agent._memory_manager.add_provider(_mp)
+                    if agent._memory_manager.providers:
+                        _init_kwargs = {
+                            "session_id": agent.session_id,
+                            "platform": platform or "cli",
+                            "hermes_home": str(get_hermes_home()),
+                            # "subagent" tells the provider this is a read-only
+                            # profile run: it skips writes (per the documented
+                            # agent_context contract) while retrieval still
+                            # works. "primary" otherwise (normal agent, or a
+                            # future write-back-enabled profile run).
+                            "agent_context": "subagent" if _profile_readonly else "primary",
+                        }
+                        if _init_kwargs["platform"] == "cli":
+                            _init_kwargs["warning_callback"] = agent._emit_warning
+                            _init_kwargs["status_callback"] = agent._emit_status
+                        # Thread session title for memory provider scoping
+                        # (e.g. honcho uses this to derive chat-scoped session keys)
+                        if agent._session_db:
+                            try:
+                                _st = agent._session_db.get_session_title(agent.session_id)
+                                if _st:
+                                    _init_kwargs["session_title"] = _st
+                            except Exception:
+                                pass
+                        # Thread gateway user identity for per-user memory scoping
+                        if agent._user_id:
+                            _init_kwargs["user_id"] = agent._user_id
+                        if agent._user_id_alt:
+                            _init_kwargs["user_id_alt"] = agent._user_id_alt
+                        if agent._user_name:
+                            _init_kwargs["user_name"] = agent._user_name
+                        if agent._chat_id:
+                            _init_kwargs["chat_id"] = agent._chat_id
+                        if agent._chat_name:
+                            _init_kwargs["chat_name"] = agent._chat_name
+                        if agent._chat_type:
+                            _init_kwargs["chat_type"] = agent._chat_type
+                        if agent._thread_id:
+                            _init_kwargs["thread_id"] = agent._thread_id
+                        # Thread gateway session key for stable per-chat Honcho session isolation
+                        if agent._gateway_session_key:
+                            _init_kwargs["gateway_session_key"] = agent._gateway_session_key
+                        # Profile identity for per-profile provider scoping.
+                        # Under profile_home this resolves to the TARGET profile,
+                        # so the provider reads/writes that profile's memory.
                         try:
-                            _st = agent._session_db.get_session_title(agent.session_id)
-                            if _st:
-                                _init_kwargs["session_title"] = _st
+                            from hermes_cli.profiles import get_active_profile_name
+                            _profile = get_active_profile_name()
+                            _init_kwargs["agent_identity"] = _profile
+                            _init_kwargs["agent_workspace"] = "hermes"
                         except Exception:
                             pass
-                    # Thread gateway user identity for per-user memory scoping
-                    if agent._user_id:
-                        _init_kwargs["user_id"] = agent._user_id
-                    if agent._user_id_alt:
-                        _init_kwargs["user_id_alt"] = agent._user_id_alt
-                    if agent._user_name:
-                        _init_kwargs["user_name"] = agent._user_name
-                    if agent._chat_id:
-                        _init_kwargs["chat_id"] = agent._chat_id
-                    if agent._chat_name:
-                        _init_kwargs["chat_name"] = agent._chat_name
-                    if agent._chat_type:
-                        _init_kwargs["chat_type"] = agent._chat_type
-                    if agent._thread_id:
-                        _init_kwargs["thread_id"] = agent._thread_id
-                    # Thread gateway session key for stable per-chat Honcho session isolation
-                    if agent._gateway_session_key:
-                        _init_kwargs["gateway_session_key"] = agent._gateway_session_key
-                    # Profile identity for per-profile provider scoping
-                    try:
-                        from hermes_cli.profiles import get_active_profile_name
-                        _profile = get_active_profile_name()
-                        _init_kwargs["agent_identity"] = _profile
-                        _init_kwargs["agent_workspace"] = "hermes"
-                    except Exception:
-                        pass
-                    agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
-                else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                    agent._memory_manager = None
-        except Exception as _mpe:
-            _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
-            agent._memory_manager = None
+                        agent._memory_manager.initialize_all(**_init_kwargs)
+                        _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    else:
+                        _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                        agent._memory_manager = None
+            except Exception as _mpe:
+                _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+                agent._memory_manager = None
+    finally:
+        if _mem_home_token is not None:
+            reset_hermes_home_override(_mem_home_token)
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)

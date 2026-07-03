@@ -127,11 +127,30 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        base_dir: Optional[Path] = None,
+        read_only: bool = False,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # When bound (e.g. a profile-backed subagent), all reads/writes target
+        # THIS directory for the store's lifetime — independent of the ambient
+        # HERMES_HOME at call time and of the running thread. When None, the
+        # directory is resolved live via get_memory_dir() so a main agent still
+        # follows profile switches (see get_memory_dir's note above).
+        self._base_dir: Optional[Path] = Path(base_dir) if base_dir is not None else None
+        # Read-only stores load + serve memory for the system prompt and recall
+        # but refuse every mutation. Used by profile-backed subagents so a
+        # bounded delegation reads a specialist profile's accumulated memory
+        # without polluting it (issue #41889). The refusal is the agent-side
+        # half of the same intent the provider expresses via agent_context=
+        # "subagent"; together they make a profile run fully read-only.
+        self._read_only: bool = read_only
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -165,6 +184,32 @@ class MemoryStore:
             ),
         }
 
+    def _memory_dir(self) -> Path:
+        """Resolve the store's memory directory: bound dir if set, else live."""
+        return self._base_dir if self._base_dir is not None else get_memory_dir()
+
+    def _readonly_refusal(self, target: str) -> Dict[str, Any]:
+        """Uniform refusal for a mutation attempted on a read-only store.
+
+        Returned (not raised) so the model gets a clear, recoverable signal
+        instead of an exception. ``done`` short-circuits any retry loop.
+        """
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        return {
+            "success": False,
+            "done": True,
+            "read_only": True,
+            "target": target,
+            "error": (
+                "This memory is read-only for the current (profile-backed "
+                "subagent) run: you can read it but not modify it. No entry "
+                "was changed."
+            ),
+            "usage": f"{current:,}/{limit:,} chars",
+            "entry_count": len(self._entries_for(target)),
+        }
+
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
 
@@ -182,7 +227,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = self._memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -277,9 +322,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = self._memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -308,7 +352,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -335,6 +379,8 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        if self._read_only:
+            return self._readonly_refusal(target)
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -387,6 +433,8 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        if self._read_only:
+            return self._readonly_refusal(target)
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -456,6 +504,8 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        if self._read_only:
+            return self._readonly_refusal(target)
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -507,6 +557,8 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
+        if self._read_only:
+            return self._readonly_refusal(target)
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 

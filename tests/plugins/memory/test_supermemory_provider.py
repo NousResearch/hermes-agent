@@ -297,6 +297,39 @@ def test_forget_tool_by_query(provider):
     assert result["id"] == "m7"
 
 
+def test_subagent_context_disables_writes(monkeypatch, tmp_path):
+    # A profile-backed subagent run (agent_context="subagent") must leave the
+    # provider in read-only mode: _write_enabled is False (issue #41889).
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s", hermes_home=str(tmp_path), platform="cli", agent_context="subagent")
+    assert p._write_enabled is False
+
+
+def test_store_and_forget_tools_refuse_when_read_only(provider):
+    # The explicit store/forget TOOLS must honor read-only too — previously they
+    # wrote unconditionally, ignoring _write_enabled (issue #41889 follow-up).
+    provider._write_enabled = False
+
+    store = json.loads(provider.handle_tool_call("supermemory_store", {"content": "should not persist"}))
+    assert store.get("error")
+    assert "read-only" in store["error"]
+    assert provider._client.add_calls == []  # nothing written
+
+    forget = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
+    assert forget.get("error")
+    assert "read-only" in forget["error"]
+    assert provider._client.forgotten_ids == []  # nothing forgotten
+
+    # …but retrieval still works in read-only mode.
+    provider._client.search_results = [
+        {"id": "m1", "memory": "still searchable", "similarity": 0.9}
+    ]
+    search = json.loads(provider.handle_tool_call("supermemory_search", {"query": "x"}))
+    assert search["count"] == 1
+
+
 def test_profile_tool_formats_sections(provider):
     provider._client.profile_response = {
         "static": ["Jordan prefers concise docs"],
@@ -623,3 +656,103 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+# -- Provider-level memory READ scoping (parent vs child) ---------------------
+#
+# Reviewers on PR #48644 asked us to prove not just that profile-delegation
+# write guards hold, but that the READ/recall path is scoped to the *target*
+# profile too — a profile-backed subagent must read its own profile's memory,
+# never the parent's. In the supermemory provider the read scope is the
+# container_tag, which each provider resolves from its agent_identity at init
+# (the delegation path sets agent_identity to the impersonated profile). This
+# test stands up two coexisting providers — a "parent" identity and a "child"
+# (target-profile) identity — and asserts their searches hit disjoint
+# containers with no cross-read.
+
+
+class _RecordingContainerClient:
+    """Fake low-level client whose memories are partitioned by container_tag.
+    Records every container queried so we can assert read isolation."""
+
+    # Class-level so both provider instances share one ledger of reads.
+    searched_tags = []
+
+    # Seed data per container: a parent-only and a child-only memory.
+    _STORE = {
+        "hermes_alpha": [{"id": "a1", "memory": "PARENT-ONLY secret alpha", "similarity": 0.9}],
+        "hermes_beta": [{"id": "b1", "memory": "CHILD-ONLY secret beta", "similarity": 0.9}],
+    }
+
+    def __init__(self, api_key, timeout, container_tag, search_mode="hybrid"):
+        self.api_key = api_key
+        self.container_tag = container_tag
+        self.search_mode = search_mode
+
+    def search_memories(self, query, *, limit=5, container_tag=None, search_mode=None):
+        tag = container_tag or self.container_tag
+        type(self).searched_tags.append(tag)
+        return list(self._STORE.get(tag, []))
+
+    # Unused read/write surface (present so the provider initialises cleanly).
+    def add_memory(self, *a, **k):
+        return {"id": "x"}
+
+    def get_profile(self, query=None, *, container_tag=None):
+        return {"static": [], "dynamic": [], "search_results": []}
+
+    def forget_memory(self, *a, **k):
+        pass
+
+    def forget_by_query(self, *a, **k):
+        return {"success": True}
+
+    def ingest_conversation(self, *a, **k):
+        pass
+
+
+def _profile_provider(monkeypatch, tmp_path, identity):
+    """A supermemory provider bound to a given profile identity, mirroring a
+    profile-backed delegation where agent_identity == the target profile."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "plugins.memory.supermemory._SupermemoryClient", _RecordingContainerClient
+    )
+    _save_supermemory_config({"container_tag": "hermes-{identity}"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s", hermes_home=str(tmp_path), platform="cli", agent_identity=identity)
+    return p
+
+
+def test_profile_read_scoped_to_target_not_parent(monkeypatch, tmp_path):
+    """A child provider impersonating profile 'beta' reads beta's container
+    only; the parent ('alpha') reads alpha's only. No cross-read either way."""
+    _RecordingContainerClient.searched_tags = []
+
+    # Parent and child run with separate HERMES_HOMEs but the same template,
+    # so each resolves a distinct, identity-scoped container.
+    parent = _profile_provider(monkeypatch, tmp_path / "parent", "alpha")
+    child = _profile_provider(monkeypatch, tmp_path / "child", "beta")
+
+    assert parent._container_tag == "hermes_alpha"
+    assert child._container_tag == "hermes_beta"
+    # Each provider's read client is bound to its own profile's container, so a
+    # recall can't reach across even without an explicit per-call tag.
+    assert parent._client.container_tag == "hermes_alpha"
+    assert child._client.container_tag == "hermes_beta"
+
+    child_res = json.loads(child.handle_tool_call("supermemory_search", {"query": "secret"}))
+    parent_res = json.loads(parent.handle_tool_call("supermemory_search", {"query": "secret"}))
+
+    # The child saw only the child profile's memory — never the parent's.
+    child_contents = [r["content"] for r in child_res["results"]]
+    assert child_contents == ["CHILD-ONLY secret beta"]
+    assert all("PARENT-ONLY" not in c for c in child_contents)
+
+    # And vice-versa: the parent never read the child's container.
+    parent_contents = [r["content"] for r in parent_res["results"]]
+    assert parent_contents == ["PARENT-ONLY secret alpha"]
+
+    # At the wire level, the only containers queried were the two scoped tags —
+    # nothing fell back to a shared/default container that would leak across.
+    assert set(_RecordingContainerClient.searched_tags) == {"hermes_alpha", "hermes_beta"}

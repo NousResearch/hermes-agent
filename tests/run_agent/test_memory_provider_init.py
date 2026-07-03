@@ -94,6 +94,134 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
+def test_profile_home_scopes_and_binds_child_memory(tmp_path):
+    """Profile-backed delegation wiring (issue #41889), at the init_agent seam.
+
+    When a child is built with ``profile_home`` set, two things must hold so it
+    runs on the TARGET profile's memory rather than the parent's:
+
+      * the external memory provider initializes under the profile's scoped
+        HERMES_HOME (so it activates under that profile's identity) — i.e. it
+        receives ``hermes_home == profile_home`` (commit 93a78fe0a); and
+      * the built-in MEMORY.md/USER.md store is *bound* to
+        ``<profile_home>/memories`` so its RUNTIME reads/writes stay on the
+        profile even after the construction-time scope is reset and even on the
+        worker thread a batch child runs on (commit 438b11b43).
+
+    The base_dir binding is the load-bearing part: contextvars don't cross into
+    the worker threads batch children run on, so relying on ambient scope alone
+    would silently re-resolve memory ops to the parent's dir.
+    """
+    from pathlib import Path
+
+    provider = RecordingMemoryProvider()
+    profile_home = str(tmp_path / "profiles" / "reader")
+    cfg = {"memory": {"provider": "recording", "memory_enabled": True}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            profile_home=profile_home,
+        )
+
+    # Provider activated under the profile's scoped home (not the parent's).
+    assert agent._memory_manager is not None
+    assert provider.init_kwargs["hermes_home"] == profile_home
+
+    # Built-in store is bound to the profile's memories dir for its lifetime,
+    # so every later read/write targets the profile regardless of ambient scope.
+    expected = Path(profile_home) / "memories"
+    assert agent._memory_store is not None
+    assert agent._memory_store._base_dir == expected
+    assert agent._memory_store._path_for("memory") == expected / "MEMORY.md"
+    assert agent._memory_store._path_for("user") == expected / "USER.md"
+
+
+def test_profile_home_readonly_blocks_writes_at_every_surface(tmp_path):
+    """Phase-1 read-only profile delegation (issue #41889): a profile-backed
+    child reads the profile's memory but writes nothing back, across all three
+    write surfaces — built-in store, nudges, and the external provider.
+    """
+    provider = RecordingMemoryProvider()
+    profile_home = str(tmp_path / "profiles" / "reader")
+    cfg = {"memory": {"provider": "recording", "memory_enabled": True}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            profile_home=profile_home,
+            profile_memory_readonly=True,
+        )
+
+    # Built-in store loaded but refuses mutations.
+    assert agent._memory_store is not None
+    assert agent._memory_store._read_only is True
+    # Nudges off — don't prompt a write the store will refuse.
+    assert agent._memory_nudge_interval == 0
+    # Provider initialized as a write-skipping subagent context (not "primary").
+    assert provider.init_kwargs["agent_context"] == "subagent"
+
+
+def test_profile_home_without_readonly_stays_writable(tmp_path):
+    """The same wiring with profile_memory_readonly=False (the future write-back
+    path) leaves the store writable and the provider in primary context — so the
+    read-only behavior is driven solely by the flag, not by profile_home.
+    """
+    provider = RecordingMemoryProvider()
+    profile_home = str(tmp_path / "profiles" / "writer")
+    cfg = {"memory": {"provider": "recording", "memory_enabled": True}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            profile_home=profile_home,
+            profile_memory_readonly=False,
+        )
+
+    assert agent._memory_store is not None
+    assert agent._memory_store._read_only is False
+    assert provider.init_kwargs["agent_context"] == "primary"
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

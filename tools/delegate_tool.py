@@ -520,6 +520,54 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
+def _get_profile_memory_writeback() -> bool:
+    """Operator default for profile-backed memory write-back (phase 2).
+
+    A profile-backed subagent reads the target profile's memory always; whether
+    it may also WRITE back to that profile's long-term memory is opt-in. The
+    per-call `profile_memory` argument wins when set; this config value
+    (delegation.profile_memory_writeback, env DELEGATION_PROFILE_MEMORY_WRITEBACK)
+    is the default when the caller leaves it unset, and itself defaults to
+    False — read-only — so a bounded delegation can't silently pollute a
+    specialist profile's accumulated knowledge with one-off task residue.
+    """
+    cfg = _load_config()
+    if "profile_memory_writeback" in cfg:
+        return is_truthy_value(cfg.get("profile_memory_writeback"), default=False)
+    env_val = os.getenv("DELEGATION_PROFILE_MEMORY_WRITEBACK")
+    if env_val is not None:
+        return is_truthy_value(env_val, default=False)
+    return False
+
+
+def _coerce_profile_memory(value: Any) -> Optional[bool]:
+    """Normalise a caller's `profile_memory` choice to a write-back boolean.
+
+    Returns ``True`` (write-back), ``False`` (read-only), or ``None`` when the
+    caller left it unset OR passed an unrecognised value — in which case the
+    resolution falls through to ``_get_profile_memory_writeback()`` so behaviour
+    stays predictable (same silent-degrade contract as ``_normalize_role``).
+    Accepts the schema enum ("read"/"write") plus common synonyms and bools so
+    a model that emits ``true``/``"readwrite"`` still does the obvious thing.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in {"write", "writeback", "write-back", "rw", "readwrite", "read-write", "true", "1", "yes", "on"}:
+        return True
+    if s in {"read", "readonly", "read-only", "ro", "false", "0", "no", "off"}:
+        return False
+    logger.warning(
+        "Unknown delegate_task profile_memory=%r, ignoring (defaulting to "
+        "delegation.profile_memory_writeback)", value,
+    )
+    return None
+
+
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
@@ -666,6 +714,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_soul: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -675,11 +724,19 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts: List[str] = []
+    if profile_soul and profile_soul.strip():
+        # Lead with the target profile's persona so the subagent adopts its
+        # identity, then the standard delegated-task framing.
+        parts.append(profile_soul.strip())
+        parts.append("")
+    parts.extend(
+        [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -763,13 +820,28 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+# Toolsets stripped from EVERY subagent regardless of profile (re-added only by
+# capability: 'delegation' for orchestrators, 'memory' for write-back profiles).
+# Hoisted to module scope so the profile-toolset-drop accounting can exclude
+# them — a profile enabling e.g. code_execution shouldn't be reported as a
+# parent-privilege drop when it's really this blanket subagent strip.
+_BLOCKED_SUBAGENT_TOOLSETS = {
+    "delegation",
+    "clarify",
+    "memory",
+    "code_execution",
+}
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools.
 
     The strip set is derived from DELEGATE_BLOCKED_TOOLS plus the explicit
     composite/scenario toolsets (delegation, code_execution) that have no
-    one-to-one tool. This keeps the blocklist and the strip set in lockstep
-    so new blocked tools can't silently leak through as toolset names.
+    one-to-one tool, then unioned with _BLOCKED_SUBAGENT_TOOLSETS so the four
+    toolsets the profile-drop accounting excludes are always stripped in
+    lockstep. This keeps the blocklist and the strip set consistent so new
+    blocked tools can't silently leak through as toolset names.
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
@@ -779,7 +851,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         for name, defn in TOOLSETS.items()
         if name in _COMPOSITE_BLOCKED_TOOLSETS
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-    }
+    } | _BLOCKED_SUBAGENT_TOOLSETS
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
@@ -1064,6 +1136,22 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Profile-backed delegation: when set, the child adopts a named profile's
+    # SOUL.md persona (prepended to its system prompt) and is tagged with the
+    # profile name for result metadata. The profile's model / credentials /
+    # toolsets arrive via the existing model + override_* + toolsets params.
+    profile_soul: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    # Profile dir → child's HERMES_HOME for memory init, so a profile-backed
+    # child loads THAT profile's memory (built-in store + provider) under its
+    # identity. None for ordinary subagents (which stay memory-less).
+    profile_home: Optional[str] = None,
+    # Phase 2: opt-in write-back for profile memory. When False (default) a
+    # profile-backed child READS the profile's memory but never writes it back;
+    # when True it may update the profile's own long-term memory (built-in store
+    # + provider), and the otherwise-stripped `memory` tool is granted so the
+    # writable store is actually reachable. No effect without profile_home.
+    profile_memory_writeback: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1143,6 +1231,56 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # Write-back profile child: re-add the `memory` toolset that
+    # _strip_blocked_tools removed for every subagent. The blanket strip exists
+    # so an ordinary subagent can't write the PARENT's shared MEMORY.md; here
+    # the child's store is bound to the TARGET profile's own memories dir (see
+    # agent_init), so granting the memory tool lets it update that profile's
+    # long-term memory — and nothing else.
+    profile_memory_writeback = bool(profile_home) and profile_memory_writeback
+    # Privilege boundary (NorethSea, PR #48644 review): a parent may only
+    # DELEGATE a long-term-memory write if it holds that capability itself.
+    # Otherwise delegation becomes a privilege-amplification path — a parent with
+    # no `memory` toolset could mint a child that writes a profile's memory,
+    # which it could never do directly. So gate the re-add on the parent's own
+    # memory capability (expanded to see `memory` inside composite toolsets like
+    # hermes-cli); if the parent lacks it, downgrade to read-only rather than
+    # fail, so the delegation still runs — it just can't write back.
+    if profile_memory_writeback and "memory" not in _expand_parent_toolsets(parent_toolsets):
+        logger.info(
+            "Profile '%s' requested profile_memory='write' but the parent agent "
+            "lacks the 'memory' toolset; downgrading to read-only (no "
+            "privilege amplification via delegation).",
+            profile_name,
+        )
+        profile_memory_writeback = False
+    if profile_memory_writeback and "memory" not in child_toolsets:
+        child_toolsets.append("memory")
+
+    # A profile's toolsets are bounded by the parent's (least privilege: a
+    # subagent must never gain a tool the parent lacks, or delegation becomes a
+    # sandbox-escape). Record what that bounding dropped so the narrowing is
+    # surfaced to the caller rather than the child silently running degraded.
+    profile_dropped_toolsets: List[str] = []
+    if profile_name and toolsets:
+        # Only count GENUINE parent-privilege drops: a requested toolset the
+        # parent couldn't grant. Exclude the toolsets stripped from every
+        # subagent (code_execution/clarify/memory/delegation) — those aren't
+        # "the parent lacks it", so reporting them would wrongly imply the
+        # profile ran tool-degraded relative to the parent.
+        profile_dropped_toolsets = [
+            t for t in toolsets
+            if t not in child_toolsets and t not in _BLOCKED_SUBAGENT_TOOLSETS
+        ]
+        if profile_dropped_toolsets:
+            logger.info(
+                "Profile '%s' delegation: toolset(s) %s dropped — not available "
+                "to the parent agent (subagents are bounded by the parent's "
+                "tool surface).",
+                profile_name,
+                ", ".join(profile_dropped_toolsets),
+            )
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1151,6 +1289,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_soul=profile_soul,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1202,6 +1341,24 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    # Fail-closed for profile-backed children (NorethSea, PR #48644 review): a
+    # profile-backed subagent must authenticate as ITS OWN identity. If the
+    # target profile resolved no runtime secret of its own (override_api_key is
+    # the bundle's key, empty when the profile's .env carries none), refuse to
+    # silently fall back to the parent's key — that would bill/audit the run to
+    # the parent and make the profile identity misleading. Better an explicit
+    # error than a child masquerading as the parent. (Key-optional providers
+    # that legitimately need no key must still carry an explicit key in the
+    # profile's .env under this contract.)
+    if profile_home is not None and not override_api_key:
+        raise ValueError(
+            f"Profile '{profile_name}' resolved no runtime secret of its own "
+            f"(its .env carries no usable provider key), so a profile-backed "
+            f"subagent cannot authenticate as that profile. Refusing to inherit "
+            f"the parent agent's key — that would misattribute billing and audit "
+            f"to the parent identity. Add the provider key to the profile's "
+            f".env, or verify it with `hermes -p {profile_name} doctor`."
+        )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1278,6 +1435,16 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # ...but NOT for a profile-backed child (NorethSea, PR #48644 review).
+    # Inheriting the parent's fallback chain would let a profile run silently
+    # fall back to the PARENT's provider/model/credentials when the profile's
+    # own runtime fails — defeating the profile's identity, billing attribution,
+    # and audit semantics (the same misattribution the per-profile credential
+    # scoping exists to prevent). A profile-backed child gets no fallback by
+    # default; if the profile's runtime fails it fails explicitly as that
+    # profile rather than masquerading as the parent.
+    if profile_home is not None:
+        parent_fallback = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1336,7 +1503,16 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform="subagent",
         skip_context_files=True,
-        skip_memory=True,
+        # Profile-backed children load the target profile's memory (scoped to
+        # profile_home); ordinary subagents stay memory-less as before.
+        skip_memory=(profile_home is None),
+        profile_home=profile_home,
+        # A profile-backed child READS the profile's memory by default and only
+        # WRITES back when write-back was explicitly opted in (per-call
+        # profile_memory='write' or delegation.profile_memory_writeback). The
+        # default stays read-only so a bounded delegation can't pollute a
+        # specialist profile's long-term memory with one-off task residue.
+        profile_memory_readonly=(profile_home is not None and not profile_memory_writeback),
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
@@ -1366,6 +1542,16 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Tag the child with the profile it impersonates (None for ordinary
+    # subagents) so _run_single_child can surface it in the result metadata.
+    child._delegate_profile = profile_name
+    # Whether this profile run may write back to the profile's memory (phase 2).
+    # Surfaced in the result so the caller can see read-only vs write-back at a
+    # glance. Always False for ordinary (non-profile) subagents.
+    child._delegate_profile_writeback = profile_memory_writeback
+    # Profile toolsets the parent couldn't grant (see note above); surfaced in
+    # the result so a profile run is never silently tool-degraded.
+    child._delegate_profile_dropped_toolsets = profile_dropped_toolsets
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1741,6 +1927,210 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
             cap,
             spill_path or "none",
         )
+
+
+# ---------------------------------------------------------------------------
+# Profile-backed delegation (in-process)
+# ---------------------------------------------------------------------------
+# A task may name a ``profile``: the subagent then runs with that profile's
+# identity — its SOUL.md persona, model/provider + credentials, and toolsets —
+# while remaining an ordinary in-process child AIAgent built by
+# ``_build_child_agent``. We reuse the existing override hooks
+# (override_provider/base_url/api_key/api_mode + model) and feed the profile's
+# SOUL.md into the child's ephemeral system prompt, so every existing
+# capability (synchronous, batch, background, interrupt, heartbeat, cost
+# rollup) keeps working unchanged — only the child's identity differs.
+# (Issue #41889.)
+#
+# Resolving another profile's runtime is fully contextvar-scoped — nothing
+# process-wide is mutated:
+#   * config.yaml / SOUL.md / auth.json live under the profile dir, reached via
+#     a scoped HERMES_HOME override (hermes_constants.set_hermes_home_override).
+#   * Per-profile API keys live in the profile's own .env, loaded into an
+#     ISOLATED mapping and installed as the active secret scope
+#     (agent.secret_scope.set_secret_scope). resolve_runtime_provider reads
+#     every credential through get_secret, which honors that scope.
+# Both overrides are ContextVars, so concurrent resolutions on different
+# threads see only their own scope and an unrelated thread can never observe
+# another profile's credentials. This is the same scoped-secret mechanism the
+# gateway multiplexer relies on, so no os.environ mutation and no lock are
+# needed here.
+
+
+def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
+    """Resolve a named profile's identity + runtime for in-process delegation.
+
+    Returns ``{name, soul, model, provider, base_url, api_key, api_mode,
+    toolsets}``. Raises ``ValueError`` (surfaced to the caller as a tool error)
+    when the profile name is invalid, does not exist, or cannot be resolved.
+    """
+    from hermes_cli.profiles import (
+        normalize_profile_name,
+        validate_profile_name,
+        profile_exists,
+        get_profile_dir,
+    )
+
+    try:
+        canon = normalize_profile_name(str(profile_name))
+        validate_profile_name(canon)
+    except Exception as exc:
+        raise ValueError(f"Invalid profile {profile_name!r}: {exc}") from exc
+    if not profile_exists(canon):
+        raise ValueError(
+            f"Profile '{canon}' does not exist. Create it with "
+            f"`hermes profile create {canon}`, or list profiles with "
+            f"`hermes profile list`."
+        )
+
+    profile_dir = get_profile_dir(canon)
+
+    # SOUL.md is a plain file — read it directly (no env scoping needed).
+    # utf-8-sig strips a leading BOM (CONTRIBUTING.md rule #4): a Notepad-saved
+    # SOUL.md would otherwise inject '﻿' as the literal first character of the
+    # subagent's persona system prompt.
+    soul = ""
+    soul_path = profile_dir / "SOUL.md"
+    try:
+        if soul_path.is_file():
+            try:
+                soul = soul_path.read_text(encoding="utf-8-sig").strip()
+            except UnicodeDecodeError:
+                # cp1252 SOUL.md touched by a Windows editor (CONTRIBUTING.md
+                # cross-platform rule #4) — fall back to latin-1, mirroring the
+                # .env read below, so the persona isn't silently dropped.
+                soul = soul_path.read_text(encoding="latin-1").strip()
+    except Exception as exc:
+        logger.debug("Could not read SOUL.md for profile %s: %s", canon, exc)
+
+    from hermes_constants import (
+        set_hermes_home_override,
+        reset_hermes_home_override,
+    )
+    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    model = provider = base_url = api_key = api_mode = None
+    toolsets: Optional[List[str]] = None
+
+    # Load the profile's .env into an isolated mapping (never os.environ); the
+    # set_secret_scope below makes it visible to credential resolution. See the
+    # module comment above for why this is contextvar-scoped, not process-wide.
+    prof_env: Dict[str, str] = {}
+    try:
+        from dotenv import dotenv_values
+
+        env_path = str(profile_dir / ".env")
+        # Mirror hermes_cli.env_loader's encoding handling (CONTRIBUTING.md
+        # cross-platform rule #4) so a profile .env touched by a Windows editor
+        # doesn't silently yield no credentials:
+        #   * utf-8-sig strips a leading BOM (Notepad-saved files) — plain
+        #     utf-8 would decode the BOM to '﻿' and corrupt the FIRST
+        #     key name without raising, silently dropping that credential.
+        #   * latin-1 fallback covers cp1252 bytes that aren't valid UTF-8.
+        try:
+            raw_env = dotenv_values(env_path, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            raw_env = dotenv_values(env_path, encoding="latin-1")
+        prof_env = {k: v for k, v in raw_env.items() if v is not None}
+    except Exception as exc:
+        logger.debug("Could not read .env for profile %s: %s", canon, exc)
+
+    # NOTE on credential resolution: the secret scope below is the profile's
+    # OWN .env only — get_secret() treats an installed scope as authoritative
+    # and does NOT fall through to os.environ (see agent/secret_scope.py). So a
+    # profile must carry the credentials it needs in <profile_dir>/.env. A
+    # profile that relied on the ambient process environment (a shell-exported
+    # key, the machine-global managed-scope .env, or a Bitwarden-injected
+    # secret) the way a direct `hermes -p <name>` run does will NOT see those
+    # here. On providers that demand a key it surfaces as the ValueError below;
+    # on key-optional providers the bundle's api_key comes back empty and the
+    # child inherits the PARENT's key (effective_api_key = override_api_key or
+    # parent_api_key in _build_child_agent). Composing the ambient/managed scope
+    # underneath the profile's own .env is the cleaner long-term fix (tracked
+    # separately); for now, profile delegation expects per-profile credentials.
+    home_token = set_hermes_home_override(str(profile_dir))
+    scope_token = set_secret_scope(prof_env)
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str):
+            model = model_cfg
+        elif isinstance(model_cfg, dict):
+            model = model_cfg.get("default") or model_cfg.get("model")
+            provider = model_cfg.get("provider")
+        try:
+            runtime = resolve_runtime_provider(
+                requested=provider, target_model=model
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Could not resolve runtime for profile '{canon}': {exc}. "
+                f"Profile delegation reads credentials from the profile's own "
+                f"{profile_dir / '.env'} (not the ambient environment or the "
+                f"root .env), so add the provider key there, or verify the "
+                f"profile with `hermes -p {canon} doctor`."
+            ) from exc
+        base_url = runtime.get("base_url")
+        api_key = runtime.get("api_key")
+        api_mode = runtime.get("api_mode")
+        # Mirror _resolve_delegation_credentials: keep the configured
+        # provider label when the runtime collapses a named custom provider
+        # to "custom"; otherwise take the runtime's resolved provider.
+        if not (runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM and provider):
+            provider = runtime.get("provider") or provider
+        if not model:
+            model = runtime.get("model")
+        try:
+            from hermes_cli.tools_config import _get_platform_tools
+
+            toolsets = sorted(_get_platform_tools(cfg, "cli")) or None
+        except Exception as exc:
+            logger.debug("Could not resolve toolsets for %s: %s", canon, exc)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+
+    return {
+        "name": canon,
+        "soul": soul,
+        "model": model,
+        "provider": provider,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_mode": api_mode,
+        "toolsets": toolsets,
+        # Absolute profile dir → child's HERMES_HOME for profile memory load.
+        "profile_home": str(profile_dir),
+    }
+
+
+def _profile_fields_from_child(child: Any) -> Dict[str, Any]:
+    """Profile metadata (profile, profile_memory, dropped toolsets) for a result
+    entry, read off a child agent with the same mock-safe guards the normal
+    finalize path uses.
+
+    Interrupted / errored batch children are *fabricated* entries — the future
+    never returned a result dict — so without this they silently lose the
+    profile fields completed children carry, making it impossible to tell WHICH
+    profile was interrupted (NorethSea, PR #48644 review). Returns keys matching
+    the normal entry exactly; ``profile_toolsets_dropped`` is only present for a
+    profile run that actually had toolsets dropped.
+    """
+    _profile = getattr(child, "_delegate_profile", None)
+    _profile = _profile if isinstance(_profile, str) else None
+    _writeback = getattr(child, "_delegate_profile_writeback", False)
+    _writeback = _writeback if isinstance(_writeback, bool) else False
+    _dropped = getattr(child, "_delegate_profile_dropped_toolsets", None)
+    _dropped = _dropped if isinstance(_dropped, list) else []
+    fields: Dict[str, Any] = {
+        "profile": _profile,
+        "profile_memory": (("write" if _writeback else "read") if _profile else None),
+    }
+    if _profile and _dropped:
+        fields["profile_toolsets_dropped"] = _dropped
+    return fields
 
 
 def _run_single_child(
@@ -2131,9 +2521,29 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        # str-guard mirrors the _model handling below: a real child carries a
+        # string profile name (or None); the guard keeps mock children (tests)
+        # from leaking an auto-created MagicMock attribute into the JSON entry.
+        _profile = getattr(child, "_delegate_profile", None)
+        # Toolsets dropped by parent-bounding; list-guard keeps mock children
+        # from leaking a MagicMock into the JSON entry.
+        _dropped = getattr(child, "_delegate_profile_dropped_toolsets", None)
+        _dropped = _dropped if isinstance(_dropped, list) else []
+        # Whether the profile run wrote back to the profile's memory (phase 2).
+        # bool-guard keeps mock children from leaking a MagicMock into the JSON.
+        _writeback = getattr(child, "_delegate_profile_writeback", False)
+        _writeback = bool(_writeback) if isinstance(_writeback, bool) else False
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
+            "profile": _profile if isinstance(_profile, str) else None,
+            # Only meaningful for a profile run; "write" when write-back was
+            # opted in, else "read". None for ordinary (non-profile) subagents.
+            "profile_memory": (
+                ("write" if _writeback else "read")
+                if isinstance(_profile, str)
+                else None
+            ),
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -2167,6 +2577,8 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if isinstance(_profile, str) and _dropped:
+            entry["profile_toolsets_dropped"] = _dropped
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2373,6 +2785,8 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    profile: Optional[str] = None,
+    profile_memory: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2473,7 +2887,15 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "profile": profile,
+                "profile_memory": profile_memory,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2512,30 +2934,96 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Defaults: delegation-config credentials/model (creds) for an
+            # ordinary subagent. When the task names a profile, resolve THAT
+            # profile's SOUL.md + model/provider/credentials + toolsets and use
+            # them instead — the child still builds via the normal in-process
+            # path, so background/batch/interrupt/cost all keep working.
+            task_model = creds["model"]
+            task_provider = creds["provider"]
+            task_base_url = creds["base_url"]
+            task_api_key = creds["api_key"]
+            task_api_mode = creds["api_mode"]
+            task_acp_command = creds.get("command")
+            task_acp_args = creds.get("args")
+            # Ordinary subagents inherit the parent's toolsets (the model has
+            # no toolsets argument); a named profile supplies its own bounded
+            # toolset below.
+            task_toolsets = None
+            profile_soul = None
+            profile_name = None
+            profile_home = None
+            profile_memory_writeback = False
+            # Per-task 'profile' wins; otherwise inherit the top-level one, so
+            # delegate_task(profile=..., tasks=[...]) applies it to every task.
+            task_profile = t.get("profile") or profile
+            if task_profile:
+                try:
+                    pb = _resolve_profile_bundle(task_profile)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+                profile_name = pb["name"]
+                profile_soul = pb["soul"]
+                profile_home = pb.get("profile_home")
+                task_model = pb["model"] or task_model
+                task_provider = pb["provider"]
+                task_base_url = pb["base_url"]
+                task_api_key = pb["api_key"]
+                task_api_mode = pb["api_mode"]
+                # A profile carries its own bounded toolset. (_build_child_agent
+                # still intersects with the parent's tools — a subagent never
+                # gains tools the parent lacks.)
+                task_toolsets = pb["toolsets"]
+                # Resolve write-back: per-task 'profile_memory' wins, else the
+                # top-level one, else the operator default. Read-only unless
+                # explicitly opted in (see _get_profile_memory_writeback).
+                _pm_choice = _coerce_profile_memory(t.get("profile_memory"))
+                if _pm_choice is None:
+                    _pm_choice = _coerce_profile_memory(profile_memory)
+                profile_memory_writeback = (
+                    _pm_choice if _pm_choice is not None
+                    else _get_profile_memory_writeback()
+                )
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
+                # Ordinary subagents pass toolsets=None (inherit the parent's);
+                # a profile-backed child passes the profile's bounded toolset.
+                toolsets=task_toolsets,
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_provider,
+                override_base_url=task_base_url,
+                override_api_key=task_api_key,
+                override_api_mode=task_api_mode,
+                # request_overrides / max_tokens aren't part of the profile
+                # bundle, so a profile child inherits the delegation-config
+                # values here exactly like an ordinary subagent.
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_acp_command=task_acp_command,
+                override_acp_args=task_acp_args,
                 role=effective_role,
+                profile_soul=profile_soul,
+                profile_name=profile_name,
+                profile_home=profile_home,
+                profile_memory_writeback=profile_memory_writeback,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
+    except ValueError as exc:
+        # A build-time validation error — e.g. the fail-closed profile guard in
+        # _build_child_agent rejecting a profile-backed child that resolved no
+        # runtime secret of its own — surfaces as a clean tool error instead of
+        # crashing the parent's turn. Mirrors the bundle-resolution handler
+        # above. The finally below still restores the global tool-name registry.
+        return tool_error(str(exc))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2607,6 +3095,7 @@ def delegate_task(
                                         "_child_role": getattr(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
+                                        **_profile_fields_from_child(_child_by_index.get(idx)),
                                     }
                             else:
                                 entry = {
@@ -2619,6 +3108,7 @@ def delegate_task(
                                     "_child_role": getattr(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
+                                    **_profile_fields_from_child(_child_by_index.get(idx)),
                                 }
                             results.append(entry)
                             completed_count += 1
@@ -2644,6 +3134,7 @@ def delegate_task(
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
+                                **_profile_fields_from_child(_child_by_index.get(idx)),
                             }
                         results.append(entry)
                         completed_count += 1
@@ -3295,6 +3786,22 @@ def _build_top_level_description() -> str:
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        "- Pass 'profile' (top-level, or per-task in 'tasks') to run a subagent "
+        "under a named Hermes profile's identity — its SOUL.md persona, "
+        "model/provider, and credentials. The subagent also adopts the "
+        "profile's toolset preferences, bounded by your own available tool "
+        "surface (it never gains a tool you lack), and reads the profile's own "
+        "memory (built-in store + memory provider) under that profile's "
+        "identity, so it runs with that profile's accumulated knowledge. By "
+        "default it does NOT modify that memory (read-only); pass "
+        "profile_memory='write' to let it write back to the profile's own "
+        "long-term memory when the task is meant to teach the profile "
+        "something durable. Use "
+        "it to call a specialist profile for a bounded answer "
+        "without Kanban. A top-level 'profile' applies to every batch task "
+        "unless that task sets its own 'profile'. Works with background=true "
+        "and with batch fan-out (each task may name a different profile). The "
+        "profile must already exist.\n"
         "- Results are always returned as an array, one entry per task."
     )
 
@@ -3407,6 +3914,56 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Run the subagent under a named Hermes profile's identity: "
+                    "its SOUL.md persona and model/provider config + "
+                    "credentials are loaded and the subagent runs as that "
+                    "specialist, returning its answer to you. The subagent "
+                    "also adopts the profile's toolset preferences, bounded by "
+                    "your own available tools (it never gains a tool you "
+                    "lack), and reads that profile's own memory (built-in "
+                    "store + memory provider) under the profile's identity "
+                    "(read-only by default — set profile_memory='write' to "
+                    "allow write-back to the profile's memory). Use it "
+                    "to call a specialist profile (e.g. "
+                    "profile='reader' or 'security-reviewer') without going "
+                    "through Kanban. The profile must already exist (`hermes "
+                    "profile list`). Works with background=true and with the "
+                    "'tasks' batch: a top-level 'profile' applies to every "
+                    "task unless that task sets its own 'profile'. When "
+                    "omitted, the subagent runs under your own profile as "
+                    "usual."
+                ),
+            },
+            "profile_memory": {
+                "type": "string",
+                "enum": ["read", "write"],
+                "description": (
+                    "Whether a profile-backed subagent may WRITE BACK to the "
+                    "profile's long-term memory. 'read' (default) = the "
+                    "subagent reads the profile's accumulated knowledge but "
+                    "leaves it untouched, so a one-off delegation can't pollute "
+                    "a specialist's memory. 'write' = the subagent may update "
+                    "the profile's own memory (built-in MEMORY.md/USER.md store "
+                    "+ memory provider, scoped to that profile) — use this only "
+                    "when the task is explicitly about teaching the profile "
+                    "something durable. Only meaningful together with "
+                    "'profile'; ignored otherwise. Applies to every batch task "
+                    "unless the task sets its own 'profile_memory'. The "
+                    "operator default lives in "
+                    "delegation.profile_memory_writeback (read-only). "
+                    "Read-mode contract: 'read' enforces read-only by OMITTING "
+                    "the memory write tool from the subagent entirely (rather "
+                    "than offering it and refusing at call time) and by "
+                    "initialising the memory provider in subagent context so its "
+                    "write paths are skipped; recall/retrieval stays fully "
+                    "available. So a read-mode subagent has no way to mutate the "
+                    "profile's memory, and 'write' is the only mode that surfaces "
+                    "the write tool."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3421,6 +3978,25 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task profile override. Run this task's "
+                                "subagent under the named profile (loads its "
+                                "SOUL.md, model, credentials, toolsets). See "
+                                "the top-level 'profile' parameter."
+                            ),
+                        },
+                        "profile_memory": {
+                            "type": "string",
+                            "enum": ["read", "write"],
+                            "description": (
+                                "Per-task profile-memory mode override. 'read' "
+                                "(default) or 'write' to let this task's "
+                                "subagent write back to its profile's memory. "
+                                "See the top-level 'profile_memory' parameter."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -3506,6 +4082,8 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        profile=args.get("profile"),
+        profile_memory=args.get("profile_memory"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

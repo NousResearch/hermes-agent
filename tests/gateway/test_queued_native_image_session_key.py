@@ -86,7 +86,7 @@ def _make_runner(adapter):
     )
     runner._model = "openai/gpt-4.1-mini"
     runner._base_url = None
-    runner._decide_image_input_mode = lambda: "native"
+    runner._decide_image_input_mode = lambda **_kw: "native"
     return runner
 
 

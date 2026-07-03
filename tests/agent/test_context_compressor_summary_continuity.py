@@ -294,6 +294,47 @@ def test_fossil_beyond_restart_probe_window_is_still_folded():
     assert all(old_summary not in str(msg.get("content", "")) for msg in result)
 
 
+def test_tail_turns_before_late_handoff_are_not_lost():
+    """Live tail turns before a late handoff should be summarized or kept."""
+    compressor = _compressor(protect_first_n=3)
+    old_summary = "LATE-TAIL-OLD-SUMMARY"
+    msgs = [{"role": "system", "content": "system prompt"}]
+    msgs += [
+        {
+            "role": "user" if idx % 2 else "assistant",
+            "content": f"body {idx}",
+        }
+        for idx in range(1, 9)
+    ]
+    msgs += [
+        {"role": "assistant", "content": "TAIL-BEFORE-SUMMARY-A"},
+        {"role": "user", "content": "TAIL-BEFORE-SUMMARY-B"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": "final active request"},
+    ]
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+        result = compressor.compress(msgs)
+
+    preserved = mock_call.call_args.kwargs["messages"][0]["content"] + "\n" + "\n".join(
+        str(msg.get("content", "")) for msg in result
+    )
+    assert "TAIL-BEFORE-SUMMARY-A" in preserved
+    assert "TAIL-BEFORE-SUMMARY-B" in preserved
+
+
+def test_forced_leading_merged_summary_strips_live_tail_from_summary_body():
+    """Rehydrating a forced-leading merged summary should ignore live tail."""
+    merged = (
+        f"{SUMMARY_PREFIX}\nSUMMARY_BODY\n\n"
+        f"{_SUMMARY_END_MARKER}\n\n"
+        "LIVE_TAIL_REQUEST"
+    )
+
+    assert ContextCompressor._is_context_summary_content(merged) is True
+    assert ContextCompressor._strip_summary_prefix(merged) == "SUMMARY_BODY"
+
+
 def test_restart_probe_boundary_summary_just_inside_window_decays():
     """A summary at the last restart-probe index should still decay."""
     compressor = _compressor(protect_first_n=3)

@@ -2437,11 +2437,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
-        # Strip the trailing end marker too — a rehydrated handoff body that
-        # keeps it would leak the boundary directive into the iterative-update
+        # Strip the end marker too — a rehydrated handoff body that keeps it
+        # would leak the boundary directive into the iterative-update
         # summarizer prompt (and the marker is re-appended on insertion anyway).
-        if text.endswith(_SUMMARY_END_MARKER):
-            text = text[: -len(_SUMMARY_END_MARKER)].rstrip()
+        # Forced user-leading merged summaries keep the live tail request after
+        # this marker, so truncate at the marker even when it is not the final
+        # content.
+        marker_idx = text.find(_SUMMARY_END_MARKER)
+        if marker_idx >= 0:
+            text = text[:marker_idx].rstrip()
         return text
 
     @classmethod

@@ -121,6 +121,64 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    @staticmethod
+    def _patch_make_agent_env(monkeypatch, config):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("acp_adapter.session.load_config", lambda: config, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "openai_chat",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+    def test_make_agent_passes_configured_fallback_chain(self, monkeypatch):
+        # Regression for #18452: the CLI and gateway hand the configured
+        # fallback chain to AIAgent, but the ACP path dropped it — so a
+        # rate-limited primary provider stalled in the retry loop instead
+        # of failing over.
+        self._patch_make_agent_env(
+            monkeypatch,
+            {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {},
+                "fallback_providers": [
+                    {"model": "backup-model", "provider": "backup-provider"},
+                ],
+            },
+        )
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        chain = state.agent.kwargs.get("fallback_model")
+        assert chain, "ACP agent must receive the configured fallback chain"
+        assert chain[0]["model"] == "backup-model"
+        assert chain[0]["provider"] == "backup-provider"
+
+    def test_make_agent_omits_fallback_when_none_configured(self, monkeypatch):
+        self._patch_make_agent_env(
+            monkeypatch,
+            {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {},
+            },
+        )
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert "fallback_model" not in state.agent.kwargs
+
 
 
 

@@ -637,6 +637,19 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        # The CLI and gateway pass the configured fallback chain to AIAgent;
+        # without it the ACP path gets an empty chain, so a rate-limited or
+        # unreachable primary provider stalls the turn in the retry loop
+        # instead of failing over (#18452).
+        try:
+            from hermes_cli.fallback_config import get_fallback_chain
+
+            fallback_chain = get_fallback_chain(config)
+            if fallback_chain:
+                kwargs["fallback_model"] = fallback_chain
+        except Exception:
+            logger.debug("ACP session: failed to load fallback chain", exc_info=True)
+
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(

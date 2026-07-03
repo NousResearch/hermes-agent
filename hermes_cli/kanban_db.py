@@ -5942,9 +5942,36 @@ def _terminate_reclaimed_worker(
     if kill is None:
         return info
 
+    # Workers are spawned with ``start_new_session=True`` (see the spawn path),
+    # so each worker is its own process-group / session leader (pgid == pid).
+    # Signalling only the leader pid leaves its child subprocesses — backtest
+    # runners, and ``scp``/``ssh`` during deploy — orphaned and still running.
+    # Because the leader then dies, the reclaim path releases the claim and the
+    # dispatcher spawns a fresh worker beside those survivors: subprocess-level
+    # duplicate execution (on a deploy task, a double registration risk).
+    # Deliver to the whole group so the worker and its descendants die together.
+    # Only on the real ``os.kill`` path — an injected ``signal_fn`` (tests) is a
+    # single-pid hook and must be preserved as-is.
+    _use_group = (
+        signal_fn is None
+        and hasattr(os, "killpg")
+        and hasattr(os, "getpgid")
+    )
+
+    def _deliver(sig) -> None:
+        if _use_group:
+            try:
+                os.killpg(os.getpgid(int(pid)), sig)
+                return
+            except (ProcessLookupError, OSError):
+                # Group already gone, or getpgid raced the exit — fall back to
+                # the leader pid so the outer handlers see the right outcome.
+                pass
+        kill(int(pid), sig)
+
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        _deliver(signal.SIGTERM)
     except ProcessLookupError:
         # Process is already gone — that's a successful termination, not a
         # survival. Leaving terminated=False here would make the reclaim guard
@@ -5965,7 +5992,7 @@ def _terminate_reclaimed_worker(
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            _deliver(_sigkill)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info

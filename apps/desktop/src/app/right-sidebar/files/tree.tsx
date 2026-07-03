@@ -4,6 +4,7 @@ import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
@@ -271,85 +272,86 @@ function ProjectTreeRow({
   const editing = !isPlaceholder && renamingPath === node.data.id
 
   const row = (
-    <div
-      aria-expanded={isFolder ? node.isOpen : undefined}
-      aria-selected={node.isSelected}
-      className={cn(
-        'group/row flex h-full cursor-pointer select-none items-center gap-1 border border-transparent px-3 text-xs font-normal leading-(--file-tree-row-height) text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none',
-        node.isSelected && 'bg-(--ui-row-active-background) text-foreground',
-        isPlaceholder && 'pointer-events-none italic text-muted-foreground/70'
-      )}
-      draggable={!isPlaceholder && !editing}
-      onClick={event => {
-        event.stopPropagation()
-
-        // Read the rename atom LIVE (not the render closure): the fall-through
-        // click from a context-menu close can fire before the editing re-render
-        // commits, so a stale closure would still select/activate and yank focus.
-        if (isPlaceholder || $renamingPath.get() === node.data.id) {
-          return
-        }
-
-        if (event.shiftKey) {
-          ;(isFolder ? onAttachFolder : onAttachFile)(node.data.id)
-
-          return
-        }
-
-        if (isFolder) {
-          node.toggle()
-        } else {
-          node.select()
-        }
-      }}
-      onDoubleClick={event => {
-        event.stopPropagation()
-
-        if (!isFolder && !isPlaceholder && $renamingPath.get() !== node.data.id) {
-          onPreviewFile?.(node.data.id)
-        }
-      }}
-      onDragStart={event => {
-        if (isPlaceholder || $renamingPath.get() === node.data.id) {
-          event.preventDefault()
-
-          return
-        }
-
-        const payload = JSON.stringify([{ isDirectory: isFolder, path: node.data.id }])
-
-        event.dataTransfer.effectAllowed = 'copy'
-        event.dataTransfer.setData('application/x-hermes-paths', payload)
-        event.dataTransfer.setData('text/plain', node.data.id)
-      }}
-      ref={dragHandle}
-      style={{
-        ...style,
-        paddingLeft: withTreeInset(style.paddingLeft)
-      }}
-      title={node.data.id}
-    >
-      {/* No chevron column — the folder icon (open/closed) already carries the
-          expand state, so the extra glyph was pure noise. */}
-      <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
-        {isPlaceholder && !isErrorPlaceholder ? (
-          <Codicon name="loading" size="0.75rem" spinning />
-        ) : isErrorPlaceholder ? (
-          <Codicon name="warning" size="0.75rem" />
-        ) : isFolder ? (
-          <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
-        ) : (
-          <Codicon name="file" size="0.875rem" />
+    <Tip label={node.data.id} side="left">
+      <div
+        aria-expanded={isFolder ? node.isOpen : undefined}
+        aria-selected={node.isSelected}
+        className={cn(
+          'group/row flex h-full cursor-pointer select-none items-center gap-1 border border-transparent px-3 text-xs font-normal leading-(--file-tree-row-height) text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none',
+          node.isSelected && 'bg-(--ui-row-active-background) text-foreground',
+          isPlaceholder && 'pointer-events-none italic text-muted-foreground/70'
         )}
-      </span>
-      {editing ? (
-        <InlineRenameInput name={node.data.name} path={node.data.id} />
-      ) : (
-        // Git decoration (VS Code-style): tint changed files; the explicit color
-        // wins over the row's hover/selected text color, so it persists.
-        <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
-      )}
-    </div>
+        draggable={!isPlaceholder && !editing}
+        onClick={event => {
+          event.stopPropagation()
+
+          // Read the rename atom LIVE (not the render closure): the fall-through
+          // click from a context-menu close can fire before the editing re-render
+          // commits, so a stale closure would still select/activate and yank focus.
+          if (isPlaceholder || $renamingPath.get() === node.data.id) {
+            return
+          }
+
+          if (event.shiftKey) {
+            ;(isFolder ? onAttachFolder : onAttachFile)(node.data.id)
+
+            return
+          }
+
+          if (isFolder) {
+            node.toggle()
+          } else {
+            node.select()
+          }
+        }}
+        onDoubleClick={event => {
+          event.stopPropagation()
+
+          if (!isFolder && !isPlaceholder && $renamingPath.get() !== node.data.id) {
+            onPreviewFile?.(node.data.id)
+          }
+        }}
+        onDragStart={event => {
+          if (isPlaceholder || $renamingPath.get() === node.data.id) {
+            event.preventDefault()
+
+            return
+          }
+
+          const payload = JSON.stringify([{ isDirectory: isFolder, path: node.data.id }])
+
+          event.dataTransfer.effectAllowed = 'copy'
+          event.dataTransfer.setData('application/x-hermes-paths', payload)
+          event.dataTransfer.setData('text/plain', node.data.id)
+        }}
+        ref={dragHandle}
+        style={{
+          ...style,
+          paddingLeft: withTreeInset(style.paddingLeft)
+        }}
+      >
+        {/* No chevron column — the folder icon (open/closed) already carries the
+            expand state, so the extra glyph was pure noise. */}
+        <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
+          {isPlaceholder && !isErrorPlaceholder ? (
+            <Codicon name="loading" size="0.75rem" spinning />
+          ) : isErrorPlaceholder ? (
+            <Codicon name="warning" size="0.75rem" />
+          ) : isFolder ? (
+            <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
+          ) : (
+            <Codicon name="file" size="0.875rem" />
+          )}
+        </span>
+        {editing ? (
+          <InlineRenameInput name={node.data.name} path={node.data.id} />
+        ) : (
+          // Git decoration (VS Code-style): tint changed files; the explicit color
+          // wins over the row's hover/selected text color, so it persists.
+          <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
+        )}
+      </div>
+    </Tip>
   )
 
   if (isPlaceholder) {

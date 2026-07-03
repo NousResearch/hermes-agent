@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -2385,6 +2386,88 @@ class TestDelegateEventEnum(unittest.TestCase):
         parent.tool_progress_callback.assert_called_once()
         # No '⚡' tool-start emoji should appear — that's the pre-fix bug.
         self.assertFalse(any("⚡" in str(c) for c in calls))
+
+
+class TestDelegateLoadConfig(unittest.TestCase):
+    def test_persistent_config_overrides_stale_cli_snapshot(self):
+        """A running gateway should see delegation config written to disk."""
+        from tools.delegate_tool import _load_config
+
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {
+            "delegation": {
+                "child_timeout_seconds": 600,
+                "max_concurrent_children": 4,
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": mock_cli}), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"delegation": {"child_timeout_seconds": 900}},
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"delegation": {"child_timeout_seconds": 900}},
+        ):
+            result = _load_config()
+
+        self.assertEqual(result["child_timeout_seconds"], 900)
+        self.assertEqual(result["max_concurrent_children"], 4)
+
+    def test_cli_snapshot_used_when_key_missing_from_persistent_config(self):
+        """Runtime-only delegation values still work when absent from config.yaml."""
+        from tools.delegate_tool import _load_config
+
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 7}}
+
+        with patch.dict("sys.modules", {"cli": mock_cli}), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"delegation": {}},
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"delegation": {"max_concurrent_children": 3}},
+        ):
+            result = _load_config()
+
+        self.assertEqual(result["max_concurrent_children"], 7)
+
+    def test_disk_config_keeps_expansion_empty_override_and_cli_fallback(self):
+        """Fresh disk config keeps load_config semantics without stale CLI keys."""
+        from pathlib import Path
+
+        from hermes_cli import config as config_mod
+        from tools.delegate_tool import _load_config
+
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {
+            "delegation": {
+                "base_url": "https://stale.example/v1",
+                "provider": "openrouter",
+                "max_concurrent_children": 7,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.yaml").write_text(
+                "delegation:\n"
+                "  base_url: ${DELEGATION_BASE_URL}\n"
+                "  provider: ''\n",
+                encoding="utf-8",
+            )
+            config_mod._LOAD_CONFIG_CACHE.clear()
+            config_mod._RAW_CONFIG_CACHE.clear()
+            with patch.dict(
+                os.environ,
+                {
+                    "HERMES_HOME": tmp,
+                    "DELEGATION_BASE_URL": "https://fresh.example/v1",
+                },
+            ), patch.dict("sys.modules", {"cli": mock_cli}):
+                result = _load_config()
+
+        self.assertEqual(result["base_url"], "https://fresh.example/v1")
+        self.assertEqual(result["provider"], "")
+        self.assertEqual(result["max_concurrent_children"], 7)
 
 
 class TestConcurrencyDefaults(unittest.TestCase):

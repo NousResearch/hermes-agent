@@ -3098,28 +3098,46 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config or CLI_CONFIG.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    User-authored persistent config is authoritative so ``hermes config set
+    delegation.*`` changes take effect in long-lived processes. ``CLI_CONFIG``
+    is still used as a fallback for default-only keys and entry points with
+    runtime-only overrides.
     """
+    delegation_config = {}
+    persistent_keys = set()
+    try:
+        from hermes_cli.config import load_config_readonly, read_raw_config
+
+        raw_delegation = read_raw_config().get("delegation") or {}
+        if isinstance(raw_delegation, dict):
+            persistent_keys.update(raw_delegation)
+        loaded_delegation = load_config_readonly().get("delegation") or {}
+        if isinstance(loaded_delegation, dict):
+            delegation_config.update(loaded_delegation)
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.managed_scope import managed_config_keys
+
+        for dotted_key in managed_config_keys():
+            if dotted_key.startswith("delegation."):
+                persistent_keys.add(dotted_key.split(".", 1)[1])
+    except Exception:
+        pass
+
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
+        for key, value in cfg.items():
+            if key not in persistent_keys:
+                delegation_config[key] = value
     except Exception:
         pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
-    except Exception:
-        return {}
+    return delegation_config
 
 
 # ---------------------------------------------------------------------------

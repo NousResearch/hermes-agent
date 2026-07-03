@@ -48,7 +48,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
+    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita", "kenari",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -457,6 +457,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
     "api.novita.ai": "novita",
+    "kenari.id": "kenari",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
@@ -750,6 +751,12 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         if not any(any(alias in normalized for alias in aliases) for aliases in alias_map.values()):
+            continue
+        # Skip pricing blocks quoted in a non-USD currency (e.g. Kenari
+        # returns IDR amounts with an explicit "currency" field); the
+        # downstream cost formatter assumes USD per token.
+        currency = str(normalized.get("currency", "") or "").lower()
+        if currency and currency not in ("usd", "$"):
             continue
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
@@ -2066,6 +2073,13 @@ def get_model_context_length(
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)
+        if ctx is not None:
+            if base_url:
+                save_context_length(model, base_url, ctx)
+            return ctx
+
+    if provider == "kenari" or (base_url and base_url_host_matches(base_url, "kenari.id")):
+        ctx = _resolve_endpoint_context_length(model, base_url or "https://kenari.id/v1", api_key=api_key)
         if ctx is not None:
             if base_url:
                 save_context_length(model, base_url, ctx)

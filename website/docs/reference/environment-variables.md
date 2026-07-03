@@ -78,6 +78,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `NOVITA_API_KEY` | NovitaAI API key — AI-native cloud for Model API, Agent Sandbox, and GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |
 | `NOVITA_BASE_URL` | Override NovitaAI base URL (default: `https://api.novita.ai/openai/v1`) |
+| `KENARI_API_KEY` | Kenari API key, Indonesian AI gateway billed in Rupiah ([kenari.id](https://kenari.id/login?next=/keys)) |
+| `KENARI_BASE_URL` | Override Kenari base URL (default: `https://kenari.id/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |

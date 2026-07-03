@@ -1234,6 +1234,86 @@ class TestNovitaProvider:
 
 
 # =============================================================================
+# Kenari provider tests (added by feat/kenari-provider)
+# =============================================================================
+
+class TestKenariProvider:
+    """Tests for Kenari, an Indonesian OpenAI-compatible AI gateway (IDR billing)."""
+
+    def test_kenari_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kenari")
+        assert profile is not None
+        assert profile.name == "kenari"
+        assert profile.display_name == "Kenari"
+        assert profile.base_url == "https://kenari.id/v1"
+        assert "KENARI_API_KEY" in profile.env_vars
+
+    def test_kenari_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Kenari."""
+        assert "kenari" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["kenari"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "kenari"
+        assert pconfig.inference_base_url == "https://kenari.id/v1"
+        assert pconfig.api_key_env_vars == ("KENARI_API_KEY",)
+        assert pconfig.base_url_env_var == "KENARI_BASE_URL"
+
+    def test_main_provider_models_has_kenari(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "kenari" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["kenari"]) >= 1
+
+    def test_models_py_has_kenari(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "kenari" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["kenari"]) >= 1
+
+    def test_kenari_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["kenari"] == models_models["kenari"]
+
+    def test_kenari_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "kenari" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["kenari"] == "Kenari"
+
+    def test_kenari_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "kenari" in _PROVIDER_PREFIXES
+
+    def test_kenari_url_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("kenari.id") == "kenari"
+
+    def test_kenari_non_usd_pricing_skipped(self):
+        """Kenari /v1/models quotes prices in IDR; the generic extractor must
+        not misread them as USD per token."""
+        from agent.model_metadata import _extract_pricing
+        # Sample shape from the real Kenari /v1/models response.
+        payload = {
+            "id": "glm-5-2",
+            "pricing": {
+                "currency": "IDR",
+                "input": 1700000000,
+                "output": 3400000000,
+                "unit": "micro_idr_per_1m_tokens",
+            },
+        }
+        assert _extract_pricing(payload) == {}
+
+    def test_usd_pricing_still_extracted(self):
+        """The currency guard must not break USD (or currency-less) payloads."""
+        from agent.model_metadata import _extract_pricing
+        payload = {"id": "x", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+        result = _extract_pricing(payload)
+        assert result.get("prompt") == "0.000001"
+        assert result.get("completion") == "0.000002"
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 

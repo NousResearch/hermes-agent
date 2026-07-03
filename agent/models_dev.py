@@ -142,6 +142,7 @@ class ProviderInfo:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "novita": "novita-ai",
+    "kenari": "kenari",
     "anthropic": "anthropic",
     "openai": "openai",
     "openai-codex": "openai",

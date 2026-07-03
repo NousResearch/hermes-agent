@@ -533,6 +533,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "kenari": [
+        "glm-5-2",
+        "claude-sonnet-5",
+        "gpt-5-5",
+        "deepseek-v4-pro",
+        "kimi-k2-7-code",
+        "minimax-m3",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1040,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
+    ProviderEntry("kenari",         "Kenari",                   "Kenari (Indonesian AI gateway, one kn- key for Claude, GPT, DeepSeek, GLM, Kimi; billed in Rupiah)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),

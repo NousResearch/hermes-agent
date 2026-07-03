@@ -1,0 +1,5 @@
+name: kenari-provider
+kind: model-provider
+version: 1.0.0
+description: Kenari Indonesian AI gateway (IDR billing)
+author: Nous Research

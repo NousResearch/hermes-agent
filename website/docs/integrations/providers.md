@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Kenari** | `KENARI_API_KEY` in `~/.hermes/.env` (provider: `kenari`, Indonesian AI gateway billed in Rupiah) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -316,6 +317,26 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Kenari
+
+[Kenari](https://kenari.id) is an Indonesian OpenAI-compatible AI gateway billed in Rupiah (IDR). One kn- API key covers Claude, GPT, DeepSeek, GLM, Kimi and more.
+
+```bash
+# Use any available model
+hermes chat --provider kenari --model glm-5-2
+# Requires: KENARI_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "kenari"
+  default: "glm-5-2"
+  base_url: "https://kenari.id/v1"
+```
+
+Get your API key at [kenari.id](https://kenari.id/login?next=/keys); docs at [kenari.id/docs](https://kenari.id/docs). The base URL can be overridden with `KENARI_BASE_URL`.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

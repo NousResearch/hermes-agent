@@ -149,8 +149,10 @@
     {
       "id": "OASDK-HARDEN-009",
       "title": "OpenAI/GitHub/Hermes streamlined routing policy",
-      "status": "in_progress",
-      "linked_commit_refs": [],
+      "status": "done",
+      "linked_commit_refs": [
+        "98f7c3bb8"
+      ],
       "linked_receipt_groups": [
         "OASDK-RCPT-GATE"
       ],
@@ -308,7 +310,7 @@
     {
       "id": "OASDK-NEXT-008",
       "title": "Encode streamlined OpenAI/GitHub/Hermes routing policy",
-      "status": "in_progress",
+      "status": "done",
       "linked_roadmap_items": [
         "OASDK-HARDEN-009"
       ],
@@ -358,7 +360,8 @@
       "0efd2c44a",
       "HEAD",
       "00ad3ffa3",
-      "94978ff40"
+      "94978ff40",
+      "98f7c3bb8"
     ],
     "integration_targets": {
       "github_issues": "blocked_waiting_for_explicit_external_tracking_scope",

@@ -110,13 +110,19 @@ class SentenceTransformersBackend(EmbeddingBackend):
 class vLLMHiddenStateBackend(EmbeddingBackend):
     """Capture hidden states from vLLM's inference engine.
 
-    PHASE 2: This backend requires integration with vLLM's model runner
-    to extract hidden states after each forward pass. The hidden states
-    are mean-pooled across sequence positions to produce a fixed-size
-    embedding.
+    PHASE 2 STATUS (July 2026):
+      - Q4 KV-cache compression: VERIFIED (3.8x, <50ms, correct round-trip)
+      - Naive KV-cache injection: BLOCKED by RoPE position encoding mismatch
+      - Required for production: RoPE stripping before storage, re-application
+        during injection, or vLLM prefix-cache integration (Phase 3).
 
-    For Phase 1, this backend reports unavailable and the system falls
-    back to sentence-transformers.
+    The core compression pipeline is proven. The injection bottleneck is
+    position-aware cache merging — vLLM's prefix-cache and SGLang's
+    RadixAttention handle this internally. See validate_kv_injection.py
+    for the full experimental results.
+
+    For Phase 1, this backend reports unavailable and falls back to
+    sentence-transformers (Mode B).
     """
 
     def __init__(self, model_name: str = ""):

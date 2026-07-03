@@ -144,3 +144,4 @@ apps/desktop/demo/
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 results_phase0.json
+results_phase2.json

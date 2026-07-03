@@ -6,7 +6,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Search, X } from "lucide-react";
+import { Check, Search, X, ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
@@ -38,7 +38,12 @@ interface ModelOptionProvider {
   models?: string[];
   total_models?: number;
   is_current?: boolean;
+  is_user_defined?: boolean;
+  source?: string;
   warning?: string;
+  authenticated?: boolean;
+  auth_type?: string;
+  key_env?: string;
 }
 
 interface ModelOptionsResponse {
@@ -114,6 +119,18 @@ export function ModelPickerDialog(props: Props) {
   const [pendingConfirm, setPendingConfirm] =
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
+
+  // Detect whether any provider is actually authenticated
+  const hasAuthenticated = useMemo(
+    () => providers.some((p) => p.authenticated !== false),
+    [providers],
+  );
+
+  // The slug of the first unconfigured provider (for the setup banner link)
+  const firstUnconfigured = useMemo(
+    () => providers.find((p) => p.authenticated === false) ?? null,
+    [providers],
+  );
 
   // Load providers + models on open.
   useEffect(() => {
@@ -318,6 +335,33 @@ export function ModelPickerDialog(props: Props) {
           </p>
         </header>
 
+        {/* Setup banner — shown when no providers are authenticated */}
+        {!loading && !error && !hasAuthenticated && providers.length > 0 && (
+          <div className="px-5 pt-3 pb-0">
+            <div className="flex items-start gap-2 border border-warning/40 bg-warning/5 px-3 py-2 text-xs">
+              <div className="wrap-break-word min-w-0 flex-1 text-text-secondary">
+                <span className="font-medium text-warning">
+                  No model providers configured.
+                </span>{" "}
+                {firstUnconfigured?.key_env ? (
+                  <>
+                    Set the <span className="font-mono">{firstUnconfigured.key_env}</span> environment variable to
+                    activate <strong>{firstUnconfigured.name}</strong> and other providers.
+                  </>
+                ) : (
+                  "Add an API key in Environment settings to activate providers."
+                )}
+              </div>
+              <a
+                href="/env"
+                className="shrink-0 inline-flex items-center gap-1 font-medium underline hover:text-foreground text-warning"
+              >
+                Add key <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          </div>
+        )}
+
         <div className="px-5 pt-3 pb-2 border-b border-border">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -463,6 +507,7 @@ function ProviderColumn({
 
       {providers.map((p) => {
         const active = p.slug === selectedSlug;
+        const unconfigured = p.authenticated === false;
         return (
           <ListItem
             key={p.slug}
@@ -474,11 +519,23 @@ function ProviderColumn({
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-medium truncate">{p.name}</span>
+                <span className={`font-medium truncate ${unconfigured ? "italic text-text-tertiary" : ""}`}>
+                  {p.name}
+                </span>
                 {p.is_current && <CurrentTag />}
+                {unconfigured && (
+                  <span className="inline-flex items-center text-display text-[10px] tracking-wider text-text-tertiary uppercase">
+                    not configured
+                  </span>
+                )}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {unconfigured && p.key_env && (
+                  <span className="text-text-tertiary ml-1">
+                    · set {p.key_env}
+                  </span>
+                )}
               </div>
             </div>
           </ListItem>
@@ -521,15 +578,39 @@ function ModelColumn({
     );
   }
 
+  const isUnconfigured = provider.authenticated === false;
+
   return (
     <div className="overflow-y-auto">
-      {provider.warning && (
+      {provider.warning && !isUnconfigured && (
         <div className="p-3 text-xs text-destructive border-b border-border">
           {provider.warning}
         </div>
       )}
 
-      {models.length === 0 ? (
+      {isUnconfigured ? (
+        <div className="p-5 text-center">
+          <div className="rounded border border-dashed border-border/60 bg-muted/10 px-4 py-5">
+            <p className="text-xs font-medium text-text-secondary mb-2">
+              {provider.name} is not configured
+            </p>
+            <p className="text-xs text-text-tertiary leading-relaxed mb-3">
+              {provider.warning || (
+                <>
+                  No API key found for {provider.name}.
+                  Add the required environment variable, then refresh this page.
+                </>
+              )}
+            </p>
+            <a
+              href="/env"
+              className="inline-flex items-center gap-1 text-xs font-medium underline hover:text-foreground text-primary"
+            >
+              Go to Environment settings <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        </div>
+      ) : models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
             ? "no models match your filter"

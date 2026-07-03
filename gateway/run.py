@@ -13194,6 +13194,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         future.add_done_callback(_log_rename_failure)
 
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if not title or source.platform != Platform.DISCORD or not source.thread_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        rename_topic = getattr(adapter, "rename_dm_topic", None)
+        if rename_topic is None:
+            return
+        future = safe_schedule_threadsafe(
+            rename_topic(
+                chat_id=str(copied_source.chat_id),
+                thread_id=str(copied_source.thread_id),
+                name=title,
+            ),
+            loop,
+            logger=logger,
+            log_message="Discord thread title rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
 
     def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
@@ -18360,6 +18405,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,
+                            title,
+                        )
+                    # Discord thread: rename on auto-title (same pattern as Telegram)
+                    if source.platform == Platform.DISCORD and source.thread_id:
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
+                            source,
                             title,
                         )
                     maybe_auto_title(

@@ -15,6 +15,64 @@ def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tm
     assert sentinel not in output
 
 
+def _platform_line(out: str, label: str) -> str:
+    for line in out.splitlines():
+        if line.strip().startswith(f"{label} "):
+            return line
+    raise AssertionError(f"no {label!r} platform line in status output:\n{out}")
+
+
+def test_show_status_flags_shell_only_platform_token(monkeypatch, capsys, tmp_path):
+    """A platform token exported in the shell but absent from ~/.hermes/.env
+    is invisible to the launchd/systemd/desktop-spawned managed backend —
+    status must flag the mismatch instead of printing a bare "configured"
+    (same trap `hermes debug share` / dump.py already flags for API keys)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-or-xxxx\n")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shell-only-token")
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    line = _platform_line(capsys.readouterr().out, "Telegram")
+    assert "configured" in line
+    assert "shell only" in line
+    assert ".env" in line
+
+
+def test_show_status_does_not_flag_platform_token_present_in_dotenv(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=in-dotenv-token\n")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "in-dotenv-token")
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    line = _platform_line(capsys.readouterr().out, "Telegram")
+    assert "configured" in line
+    assert "shell only" not in line
+
+
+def test_show_status_deep_flags_shell_only_openrouter_key(monkeypatch, capsys, tmp_path):
+    """The OpenRouter deep-connectivity check reads the shell's env var too —
+    it must flag the same shell-vs-.env mismatch even though the live
+    reachability probe itself succeeds."""
+    import httpx
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("OTHER_KEY=1\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-shell-only")
+
+    class _FakeResponse:
+        status_code = 200
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse())
+
+    show_status(SimpleNamespace(all=True, deep=True))
+
+    line = _platform_line(capsys.readouterr().out, "OpenRouter:")
+    assert "reachable" in line
+    assert "shell only" in line
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

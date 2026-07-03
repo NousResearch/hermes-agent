@@ -60,6 +60,40 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _dotenv_key_names() -> set[str]:
+    """Return the set of env-var names assigned a non-empty value in ~/.hermes/.env.
+
+    The managed backends (launchd / systemd / the desktop-spawned ``serve``
+    process) load credentials from this file — NOT from an interactive shell's
+    exports. ``hermes status`` runs in a terminal, so ``os.getenv`` reflects the
+    shell's environment, which can include exported keys the managed backend
+    never sees. Comparing against this set lets status flag that mismatch —
+    same trap ``hermes debug share`` (dump.py) flags for its own key list.
+    """
+    try:
+        env_path = get_env_path()
+        text = env_path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, UnicodeError):
+        return set()
+
+    names: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.lower().startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, _, value = line.partition("=")
+        name = name.strip()
+        # A bare `KEY=` (empty value) is effectively unset for the backend.
+        if name and value.strip().strip("'\""):
+            names.add(name)
+    return names
+
+
+_SHELL_ONLY_SUFFIX = " (shell only — not in .env; managed/desktop backend may not see it)"
+
+
 def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
@@ -453,21 +487,29 @@ def show_status(args):
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
 
+    dotenv_keys = _dotenv_key_names()
+
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
-        
+
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
         # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
         if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
-        
+
         status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
+        # Set in this (shell) process but absent from ~/.hermes/.env: a managed
+        # backend (launchd/systemd/desktop `serve`) loads .env, not the login
+        # shell, so it likely can't see this token even though status reads
+        # "configured" here.
+        if has_token and token_var not in dotenv_keys:
+            status += _SHELL_ONLY_SUFFIX
+
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
 
     # Plugin-registered platforms
@@ -573,7 +615,12 @@ def show_status(args):
                     timeout=10
                 )
                 ok = response.status_code == 200
-                print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
+                suffix = (
+                    _SHELL_ONLY_SUFFIX
+                    if "OPENROUTER_API_KEY" not in _dotenv_key_names()
+                    else ""
+                )
+                print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}{suffix}")
             except Exception as e:
                 print(f"  OpenRouter:   {check_mark(False)} error: {e}")
         

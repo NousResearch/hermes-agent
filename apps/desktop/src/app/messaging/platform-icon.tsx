@@ -4,6 +4,7 @@ import {
   SiDiscord,
   SiGmail,
   SiHomeassistant,
+  SiLinear,
   SiMatrix,
   SiMattermost,
   SiQq,
@@ -51,7 +52,8 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   api_server: { Icon: Globe, color: '#64748B', kind: 'generic' },
   weixin: { Icon: SiWechat, color: '#07C160', kind: 'brand' },
   qqbot: { Icon: SiQq, color: '#EB1923', kind: 'brand' },
-  yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' }
+  yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' },
+  linear_agent: { Icon: SiLinear, color: '#222326', kind: 'brand' }
 }
 
 interface PlatformAvatarProps {

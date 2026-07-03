@@ -9,6 +9,7 @@ const SOURCE_LABELS: Record<string, string> = {
   discord: 'Discord',
   email: 'Email',
   gateway: 'Gateway',
+  linear_agent: 'Linear',
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
@@ -65,7 +66,8 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'qqbot',
   'yuanbao',
   'dingtalk',
-  'feishu'
+  'feishu',
+  'linear_agent'
 ]
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
 

@@ -2779,6 +2779,160 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         print("No change.")
 
+
+# Claude Agent SDK inference method — the terminal-CLI counterpart of the
+# desktop "Inference method" selector (apps/desktop/.../providers-settings.tsx).
+# Stored under model.claude_agent_sdk exactly like the /api/model/claude-agent-sdk
+# endpoint writes it: mode "off" (key removed) == native OAuth / direct API;
+# "inference" / "delegate" / "hybrid" drive turns through the `claude` CLI.
+_CLAUDE_AGENT_SDK_MODES = ("off", "inference", "delegate", "hybrid")
+
+# (value, label, hint) — labels mirror ANTHROPIC_METHODS in the desktop UI so a
+# user who has seen one recognizes the other.
+_CLAUDE_AGENT_SDK_CHOICES = [
+    (
+        "off",
+        "Native OAuth — direct Anthropic API",
+        "Calls the Anthropic API directly (draws extra-usage credits).",
+    ),
+    (
+        "inference",
+        "Claude Agent SDK · Inference — Hermes drives the loop",
+        "Single SDK model call per turn; Hermes keeps its own loop, tools and safety.",
+    ),
+    (
+        "delegate",
+        "Claude Agent SDK · Delegate — SDK's own tools",
+        "The SDK runs the whole task with its own tools under Hermes guardrails.",
+    ),
+    (
+        "hybrid",
+        "Claude Agent SDK · Hybrid — SDK loop + Hermes tools",
+        "The SDK drives the loop but calls Hermes' tools via an in-process MCP server.",
+    ),
+]
+
+_CLAUDE_AGENT_SDK_HINT = (
+    "The SDK modes run via the official Agent SDK (the `claude` CLI) — they use "
+    "your subscription's Agent SDK credit and require the CLI installed and "
+    "logged in. For multi-tenant / production, prefer an Anthropic API key."
+)
+
+
+def _read_claude_agent_sdk_mode(config) -> str:
+    """Return the current ``model.claude_agent_sdk`` mode (``"off"`` if unset)."""
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    raw = model_cfg.get("claude_agent_sdk") if isinstance(model_cfg, dict) else None
+    if isinstance(raw, str):
+        mode = raw.strip().lower()
+    elif isinstance(raw, dict):
+        mode = str(raw.get("mode") or "off").strip().lower()
+        if raw.get("enabled") is False:
+            mode = "off"
+    else:
+        mode = "off"
+    return mode if mode in _CLAUDE_AGENT_SDK_MODES else "off"
+
+
+def _apply_claude_agent_sdk_mode(model: dict, mode: str) -> None:
+    """Set/remove ``model.claude_agent_sdk`` in-place, preserving extra keys.
+
+    Mirrors ``_apply_claude_agent_sdk`` in web_server.py: ``"off"`` removes the
+    key (native OAuth); any SDK mode writes ``{"mode": ...}`` while keeping any
+    previously configured ``permission_mode`` / ``max_turns`` / ``max_budget_usd``.
+    """
+    if mode == "off":
+        model.pop("claude_agent_sdk", None)
+        return
+    prev = model.get("claude_agent_sdk")
+    entry: dict = {"mode": mode}
+    if isinstance(prev, dict):
+        for key in ("permission_mode", "max_turns", "max_budget_usd"):
+            if prev.get(key) is not None:
+                entry[key] = prev[key]
+    model["claude_agent_sdk"] = entry
+
+
+def _prompt_claude_agent_sdk_method(config) -> None:
+    """Offer the Anthropic inference-method choice and persist it.
+
+    Called after an Anthropic model is selected. Writes ``model.claude_agent_sdk``
+    (and clears ``model.anthropic_disable_oauth`` — reaching here means the user
+    is enabling this connection for inference).
+    """
+    from hermes_cli.config import load_config, save_config
+
+    current = _read_claude_agent_sdk_mode(config)
+    labels = [f"{label}" for _, label, _ in _CLAUDE_AGENT_SDK_CHOICES]
+    default_idx = next(
+        (i for i, (value, _, _) in enumerate(_CLAUDE_AGENT_SDK_CHOICES) if value == current),
+        0,
+    )
+
+    print()
+    print(f"  Inference method  ({_CLAUDE_AGENT_SDK_HINT})")
+    print()
+
+    chosen_idx = -1
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        chosen_idx = _curses_prompt_choice("Inference method:", labels, default_idx)
+        if chosen_idx >= 0:
+            print()
+    except Exception:
+        chosen_idx = -1
+
+    if chosen_idx < 0:
+        # Fallback numbered prompt (piped stdin / no curses).
+        for i, (_, label, hint) in enumerate(_CLAUDE_AGENT_SDK_CHOICES, 1):
+            marker = "→" if (i - 1) == default_idx else " "
+            print(f"  {marker} {i}. {label}")
+            print(f"       {hint}")
+        print()
+        try:
+            raw = input(f"  Choice [1-{len(_CLAUDE_AGENT_SDK_CHOICES)}] (default {default_idx + 1}): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not raw:
+            chosen_idx = default_idx
+        elif raw.isdigit() and 1 <= int(raw) <= len(_CLAUDE_AGENT_SDK_CHOICES):
+            chosen_idx = int(raw) - 1
+        else:
+            print("  Unrecognized choice — leaving inference method unchanged.")
+            return
+
+    mode = _CLAUDE_AGENT_SDK_CHOICES[chosen_idx][0]
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    _apply_claude_agent_sdk_mode(model, mode)
+    # Selecting any method here means this connection IS used for inference.
+    model.pop("anthropic_disable_oauth", None)
+    save_config(cfg)
+
+    if mode == "off":
+        print("  ✓ Inference method: Native OAuth (direct Anthropic API).")
+    else:
+        print(f"  ✓ Inference method: Claude Agent SDK · {mode}.")
+        _warn_if_claude_cli_missing()
+
+
+def _warn_if_claude_cli_missing() -> None:
+    """Best-effort heads-up when the `claude` CLI isn't on PATH for SDK modes."""
+    import shutil
+
+    if shutil.which("claude") is None:
+        print(
+            "  ⚠ The `claude` CLI wasn't found on PATH. Install it and run "
+            "`claude login` so the Agent SDK can authenticate."
+        )
+
+
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.main import _run_anthropic_oauth_flow
@@ -2927,5 +3081,10 @@ def _model_flow_anthropic(config, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via Anthropic)")
+
+        # Offer the inference method (native OAuth vs a Claude Agent SDK mode),
+        # matching the desktop "Inference method" selector. Reload so we read
+        # the config we just wrote (and any existing claude_agent_sdk entry).
+        _prompt_claude_agent_sdk_method(load_config())
     else:
         print("No change.")

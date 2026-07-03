@@ -44,8 +44,9 @@ class _FakeToolUseBlock:
 
 
 class _FakeAssistantMessage:
-    def __init__(self, content):
+    def __init__(self, content, parent_tool_use_id=None):
         self.content = content
+        self.parent_tool_use_id = parent_tool_use_id
 
 
 class _FakeHookMatcher:
@@ -89,6 +90,37 @@ class _FakeStreamEvent:
         self.parent_tool_use_id = parent_tool_use_id
 
 
+# Background-task / dynamic-workflow progress messages (Task* system messages).
+# Named to match the real SDK classes: the adapter dispatches on
+# type(message).__name__, mirroring how it matches the real SDK's Task* types.
+class TaskStartedMessage:
+    def __init__(self, task_id, description, task_type=None):
+        self.task_id = task_id
+        self.description = description
+        self.task_type = task_type
+
+
+class TaskProgressMessage:
+    def __init__(self, task_id, description="", last_tool_name=None):
+        self.task_id = task_id
+        self.description = description
+        self.last_tool_name = last_tool_name
+
+
+class TaskUpdatedMessage:
+    def __init__(self, task_id, status):
+        self.task_id = task_id
+        self.status = status
+
+
+class TaskNotificationMessage:
+    def __init__(self, task_id, status, summary="", output_file=""):
+        self.task_id = task_id
+        self.status = status
+        self.summary = summary
+        self.output_file = output_file
+
+
 def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_events=None):
     """Build a fake claude_agent_sdk module."""
     async def _query(*, prompt, options):
@@ -111,6 +143,10 @@ def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_even
         StreamEvent=_FakeStreamEvent,
         UserMessage=_FakeUserMessage,
         ToolResultBlock=_FakeToolResultBlock,
+        TaskStartedMessage=TaskStartedMessage,
+        TaskProgressMessage=TaskProgressMessage,
+        TaskUpdatedMessage=TaskUpdatedMessage,
+        TaskNotificationMessage=TaskNotificationMessage,
         query=_query,
         tool=lambda name, desc, schema: (lambda fn: {"name": name, "schema": schema, "fn": fn}),
         create_sdk_mcp_server=lambda *, name, version, tools: {"name": name, "tools": tools},
@@ -524,11 +560,16 @@ def test_stream_bridge_fires_live_callbacks(monkeypatch):
     # the gen spinner at block start, and tool.started at block stop carrying
     # the ACTUAL command in preview + args (not just the tool name).
     assert seen["gen"] == ["terminal"]
-    assert len(seen["tools"]) == 1
-    ev, name, preview, args = seen["tools"][0]
-    assert (ev, name) == ("tool.started", "terminal")
+    # tool.started carries the ACTUAL command; tool.completed closes the bubble
+    # (parity with the native executor, so CLI/messaging surfaces resolve).
+    started = [row for row in seen["tools"] if row[0] == "tool.started"]
+    completed = [row for row in seen["tools"] if row[0] == "tool.completed"]
+    assert len(started) == 1 and len(completed) == 1
+    ev, name, preview, args = started[0]
+    assert name == "terminal"
     assert args == {"command": "gh pr list"}
     assert "gh pr list" in (preview or "")
+    assert completed[0][1] == "terminal"
     # The desktop/TUI gateway channel got the authoritative start (id + args)
     # and the completion resolving the chip.
     assert seen["start_cb"] == [("tu-99", "terminal", {"command": "gh pr list"})]
@@ -689,3 +730,264 @@ def test_hybrid_pins_mcp_surface(monkeypatch):
     adp.create_claude_agent_message(agent, _api_kwargs())
     # No user/project MCP config may add tools behind Hermes' back.
     assert capture["options"].strict_mcp_config is True
+
+
+# ---------------------------------------------------------------------------
+# _classify_sdk_error — friendly guidance for CLI-not-found / start failures.
+# Class names mirror claude_agent_sdk's real exception hierarchy so the
+# name-based matching in the adapter is exercised the same way at runtime.
+# ---------------------------------------------------------------------------
+class _CLIConnectionError(Exception):
+    pass
+
+
+class _CLINotFoundError(_CLIConnectionError):
+    def __init__(self, message="Claude Code not found", cli_path=None):
+        super().__init__(message if not cli_path else f"{message}: {cli_path}")
+
+
+class _ProcessError(Exception):
+    def __init__(self, message, exit_code=None, stderr=None):
+        self.exit_code = exit_code
+        self.stderr = stderr
+        suffix = f" (exit code: {exit_code})" if exit_code is not None else ""
+        super().__init__(f"{message}{suffix}")
+
+
+class _CLIJSONDecodeError(Exception):
+    pass
+
+
+def test_classify_cli_not_found():
+    msg = adp._classify_sdk_error(_CLINotFoundError(cli_path="/usr/bin/claude"))
+    assert msg is not None
+    assert "could not find the `claude` CLI" in msg
+    assert "PATH" in msg
+
+
+def test_classify_process_error_surfaces_exit_code_and_stderr():
+    exc = _ProcessError("Command failed", exit_code=1, stderr="boom: bad flag --nope")
+    msg = adp._classify_sdk_error(exc)
+    assert msg is not None
+    assert "could not start the `claude` CLI" in msg
+    assert "Exit code: 1" in msg
+    assert "bad flag --nope" in msg
+
+
+def test_classify_process_error_detects_auth_failure():
+    exc = _ProcessError("Command failed", exit_code=1,
+                        stderr="Invalid API key · Please run /login")
+    msg = adp._classify_sdk_error(exc)
+    assert msg is not None
+    assert "authentication problem" in msg
+    assert "/login" in msg
+
+
+def test_classify_process_error_truncates_long_stderr():
+    exc = _ProcessError("Command failed", exit_code=2, stderr="x" * 900)
+    msg = adp._classify_sdk_error(exc)
+    assert "…" in msg
+    assert "x" * 900 not in msg
+
+
+def test_classify_transport_errors():
+    assert "transport error" in (adp._classify_sdk_error(_CLIJSONDecodeError("bad json")) or "")
+    assert "transport error" in (adp._classify_sdk_error(_CLIConnectionError("no socket")) or "")
+
+
+def test_classify_unknown_error_returns_none():
+    assert adp._classify_sdk_error(ValueError("something else")) is None
+
+
+# ---------------------------------------------------------------------------
+# Subagent visibility — a nested SDK subagent (Task tool) surfaces its TOOL
+# activity (marked with the subagent glyph) but never leaks its text/thinking
+# into the top-level response.
+# ---------------------------------------------------------------------------
+def _subagent_stream_events():
+    return [
+        # Top-level agent invokes the Task tool (spawns a subagent).
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use", "name": "Task", "id": "task-1"}}),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta",
+                                    "partial_json": '{"description": "look it up"}'}}),
+        _FakeStreamEvent({"type": "content_block_stop"}),
+        # --- Subagent activity (parent_tool_use_id set on every event) ---
+        # Subagent's own chatter — must NOT reach the main text stream.
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "text_delta", "text": "subagent thinking out loud"}},
+                         parent_tool_use_id="task-1"),
+        # Subagent runs a tool — SHOULD surface, marked as subagent work.
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use",
+                                            "name": "mcp__hermes__read_file", "id": "sub-tu-1"}},
+                         parent_tool_use_id="task-1"),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": '{"path": "a.py"}'}},
+                         parent_tool_use_id="task-1"),
+        _FakeStreamEvent({"type": "content_block_stop"}, parent_tool_use_id="task-1"),
+        # Subagent's final assistant message — its text must stay out of result.
+        _FakeAssistantMessage([_FakeTextBlock("subagent conclusion")],
+                              parent_tool_use_id="task-1"),
+    ]
+
+
+def test_subagent_tool_activity_surfaced_and_marked(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("top-level answer")],
+                          result_kwargs={"result": "top-level answer"},
+                          capture=capture, stream_events=_subagent_stream_events())
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    # Progress callback that accepts the subagent kwarg (realistic consumer).
+    got = {"progress": [], "starts": [], "text": []}
+    agent = _agent(
+        _has_stream_consumers=lambda: True,
+        _fire_stream_delta=lambda t: got["text"].append(t),
+        _fire_reasoning_delta=lambda t: got["text"].append(t),
+        _fire_tool_gen_started=lambda name: None,
+        stream_delta_callback=lambda t: None,
+        reasoning_callback=lambda t: None,
+        tool_progress_callback=lambda ev, name=None, preview=None, args=None, **kw:
+            got["progress"].append((ev, name, kw.get("subagent"))),
+        tool_start_callback=lambda tc_id, name, args: got["starts"].append((tc_id, name)),
+    )
+
+    msg = adp.create_claude_agent_message(agent, _api_kwargs())
+
+    # Subagent's text/thinking never reached the main response stream…
+    assert "subagent thinking out loud" not in "".join(got["text"])
+    # …and never leaked into the collected top-level message.
+    assert msg.content[-1].text == "top-level answer"
+    assert "subagent conclusion" not in msg.content[-1].text
+
+    # The Task invocation (top-level) surfaced unmarked; the subagent's tool
+    # surfaced WITH the marker, through both channels.
+    start_names = [n for _, n in got["starts"]]
+    assert "Task" in start_names
+    assert adp._SUBAGENT_TOOL_MARKER + "read_file" in start_names
+
+    # The subagent flag rode along on the progress channel for the nested tool.
+    sub_rows = [(name, flag) for ev, name, flag in got["progress"] if flag]
+    assert (adp._SUBAGENT_TOOL_MARKER + "read_file", True) in sub_rows
+
+
+def _interleaved_subagent_stream_events():
+    """Two BACKGROUND subagents stream tools concurrently; their content-block
+    events interleave under different parent_tool_use_ids (the default since
+    Claude Code v2.1.198 runs subagents in the background)."""
+    return [
+        # Top-level agent invokes the Agent tool (spawns background subagents).
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use", "name": "Agent", "id": "wf-1"}}),
+        _FakeStreamEvent({"type": "content_block_stop"}),
+        # Subagent A and B start tools INTERLEAVED.
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use",
+                                            "name": "mcp__hermes__read_file", "id": "a-tu"}},
+                         parent_tool_use_id="wf-a"),
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use",
+                                            "name": "mcp__hermes__terminal", "id": "b-tu"}},
+                         parent_tool_use_id="wf-b"),
+        # Their input JSON arrives interleaved — must not cross-contaminate.
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": '{"path":'}},
+                         parent_tool_use_id="wf-a"),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": '{"command":'}},
+                         parent_tool_use_id="wf-b"),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": ' "x.py"}'}},
+                         parent_tool_use_id="wf-a"),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": ' "ls"}'}},
+                         parent_tool_use_id="wf-b"),
+        _FakeStreamEvent({"type": "content_block_stop"}, parent_tool_use_id="wf-b"),
+        _FakeStreamEvent({"type": "content_block_stop"}, parent_tool_use_id="wf-a"),
+    ]
+
+
+def test_concurrent_subagent_tool_streams_do_not_clobber(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("done")],
+                          result_kwargs={"result": "done"},
+                          capture=capture,
+                          stream_events=_interleaved_subagent_stream_events())
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    starts = []
+    agent = _agent(
+        _has_stream_consumers=lambda: True,
+        _fire_stream_delta=lambda t: None,
+        _fire_tool_gen_started=lambda name: None,
+        stream_delta_callback=lambda t: None,
+        tool_start_callback=lambda tc_id, name, args: starts.append((tc_id, name, args)),
+    )
+    adp.create_claude_agent_message(agent, _api_kwargs())
+
+    by_id = {tc_id: (name, args) for tc_id, name, args in starts}
+    # Each nested agent's tool resolved with ITS OWN args despite interleaving.
+    assert by_id["a-tu"] == (adp._SUBAGENT_TOOL_MARKER + "read_file", {"path": "x.py"})
+    assert by_id["b-tu"] == (adp._SUBAGENT_TOOL_MARKER + "terminal", {"command": "ls"})
+    # The top-level Agent invocation surfaced unmarked.
+    assert ("wf-1", "Agent", {}) in starts
+
+
+# ---------------------------------------------------------------------------
+# Dynamic workflows / background tasks — surfaced via Task* system messages
+# (out-of-band from the assistant stream), rendered as a chip lifecycle.
+# ---------------------------------------------------------------------------
+def test_workflow_task_messages_surface_chip_lifecycle(monkeypatch):
+    events = [
+        TaskStartedMessage("t-1", "Audit routes for auth", task_type="workflow"),
+        TaskProgressMessage("t-1", "Audit routes for auth", last_tool_name="Grep"),
+        TaskNotificationMessage("t-1", "completed", summary="12 handlers, 2 missing auth"),
+    ]
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("done")],
+                          result_kwargs={"result": "done"}, stream_events=events)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    starts, completes, progress = [], [], []
+    agent = _agent(
+        _has_stream_consumers=lambda: True,
+        _fire_stream_delta=lambda t: None,
+        _fire_tool_gen_started=lambda name: None,
+        stream_delta_callback=lambda t: None,
+        tool_start_callback=lambda tc_id, name, args: starts.append((tc_id, name)),
+        tool_progress_callback=lambda ev, name=None, preview=None, args=None, **kw:
+            progress.append((ev, name, kw.get("subagent"))),
+        tool_complete_callback=lambda tc_id, name, args, result: completes.append((tc_id, name, result)),
+    )
+    msg = adp.create_claude_agent_message(agent, _api_kwargs())
+
+    label = adp._TASK_MARKER + "Audit routes for auth"
+    # Task started → chip opened on both channels (id == task_id).
+    assert ("t-1", label) in starts
+    assert ("tool.started", label, True) in progress
+    # Task notification → chip resolved with the workflow's summary.
+    assert ("t-1", label, "12 handlers, 2 missing auth") in completes
+    # The workflow's internal chatter never entered the top-level result.
+    assert msg.content[-1].text == "done"
+
+
+def test_workflow_task_failure_marks_result(monkeypatch):
+    events = [
+        TaskStartedMessage("t-9", "Migrate components"),
+        TaskUpdatedMessage("t-9", "failed"),
+    ]
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, stream_events=events)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    completes = []
+    agent = _agent(
+        _has_stream_consumers=lambda: True,
+        _fire_tool_gen_started=lambda name: None,
+        tool_start_callback=lambda tc_id, name, args: None,
+        tool_complete_callback=lambda tc_id, name, args, result: completes.append(result),
+    )
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    # A terminal TaskUpdated(failed) resolves the chip and marks the failure.
+    assert completes and completes[0].startswith("[failed]")

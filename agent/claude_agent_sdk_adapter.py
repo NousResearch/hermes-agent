@@ -76,6 +76,23 @@ _VALID_MODES = ("inference", "delegate", "hybrid")
 # In-process MCP server name used to expose Hermes tools in hybrid mode.
 _HYBRID_SERVER = "hermes"
 
+# Prefix on the display label of a tool run by a nested SDK subagent (spawned
+# via the `Agent`/`Task` tool). Keeps subagent activity visible on UI/CLI
+# consumers that only render the tool name; richer consumers also get a
+# `subagent=True` kwarg.
+_SUBAGENT_TOOL_MARKER = "↳ "
+
+# Prefix on the display label of a background task / dynamic-workflow agent. The
+# SDK reports these out-of-band from the message stream as Task* system messages
+# (TaskStarted/Progress/Updated/Notification) rather than parent_tool_use_id
+# stream events, so they get their own lifecycle surface (see _StreamBridge).
+_TASK_MARKER = "⚙ "
+
+# Task statuses that mean the task is finished (mirrors the SDK's
+# TERMINAL_TASK_STATUSES; hard-coded so we don't depend on the constant existing
+# on older SDKs).
+_TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "killed", "stopped"})
+
 
 # ---------------------------------------------------------------------------
 # Lazy SDK import (mirrors agent/anthropic_adapter.py:_get_anthropic_sdk)
@@ -520,22 +537,37 @@ class _StreamBridge:
             or getattr(agent, "tool_gen_callback", None) is not None
         )
         self._wants_reasoning = getattr(agent, "reasoning_callback", None) is not None
-        # Current tool_use block being streamed: (id, display_name, [json chunks]).
-        # The start callbacks fire at content_block_stop, once the input JSON is
-        # complete, so the progress bubble can show WHAT the tool ran (command,
-        # path, query…) — not just the tool name.
-        self._pending_tool: Optional[tuple] = None  # (tool_use_id, display_name)
-        self._pending_json: List[str] = []
-        # tool_use_id → (display_name, display_args) for completing the chip
+        # Tool_use blocks currently streaming, keyed by stream key — the
+        # ``parent_tool_use_id`` (or "" for the top-level agent). Keying by
+        # parent is essential now that subagents run in the BACKGROUND by
+        # default (Claude Code v2.1.198) and the `Workflow` tool fans out many
+        # agents at once: their StreamEvents interleave, so a single shared slot
+        # would let one agent's tool input clobber another's. The start
+        # callbacks fire at content_block_stop, once the input JSON is complete,
+        # so the chip can show WHAT the tool ran (command, path, query…).
+        self._pending: Dict[str, tuple] = {}          # key → (tool_use_id, display, is_sub)
+        self._pending_json: Dict[str, List[str]] = {}  # key → [partial json chunks]
+        # tool_use_id → (display_label, display_args) for completing the chip
         # when the SDK later reports the tool result.
         self._started_tools: Dict[str, tuple] = {}
+        # task_id → display_label for background tasks / workflow agents, so a
+        # terminal Task message can resolve the chip started by TaskStarted.
+        self._started_tasks: Dict[str, str] = {}
 
     @property
     def active(self) -> bool:
         return self._wants_text or self._wants_tools or self._wants_reasoning
 
-    def handle(self, event: Dict[str, Any]) -> None:
-        """Dispatch one raw Anthropic stream event to the agent callbacks."""
+    def handle(self, event: Dict[str, Any], parent_tool_use_id: Optional[str] = None) -> None:
+        """Dispatch one raw Anthropic stream event to the agent callbacks.
+
+        ``parent_tool_use_id`` is set on events from a nested SDK subagent or a
+        ``Workflow``-spawned agent (the id of the ``Agent``/``Task``/``Workflow``
+        tool that spawned it). Such nested tool activity is surfaced (tagged as
+        subagent work), but nested text/thinking deltas are dropped so they
+        don't interleave with the top-level response bubble. Events are keyed by
+        this id so concurrently-streaming agents don't clobber each other.
+        """
         agent = self._agent
         # Keep the stale-call detector fed during long SDK turns — the
         # non-streaming path Hermes uses for SDK mode otherwise sees zero
@@ -546,36 +578,56 @@ class _StreamBridge:
                 touch("receiving claude-agent-sdk stream")
             except Exception:
                 pass
+        key = parent_tool_use_id or ""
+        is_sub = bool(parent_tool_use_id)
         etype = event.get("type")
         if etype == "content_block_start":
             block = event.get("content_block") or {}
             if block.get("type") == "tool_use":
-                self._on_tool_start(str(block.get("name") or ""), str(block.get("id") or ""))
+                self._on_tool_start(
+                    str(block.get("name") or ""),
+                    str(block.get("id") or ""),
+                    key,
+                    subagent=is_sub,
+                )
         elif etype == "content_block_delta":
             delta = event.get("delta") or {}
             dtype = delta.get("type")
             if dtype == "text_delta":
+                # A subagent/workflow agent's response text is its own internal
+                # output, not the top-level answer — never stream it into the
+                # main bubble.
+                if is_sub:
+                    return
                 text = delta.get("text") or ""
                 fire = getattr(agent, "_fire_stream_delta", None)
                 if text and self._wants_text and callable(fire):
                     fire(text)
             elif dtype == "thinking_delta":
+                if is_sub:
+                    return
                 thinking = delta.get("thinking") or ""
                 fire = getattr(agent, "_fire_reasoning_delta", None)
                 if thinking and self._wants_reasoning and callable(fire):
                     fire(thinking)
-            elif dtype == "input_json_delta" and self._pending_tool is not None:
-                self._pending_json.append(delta.get("partial_json") or "")
+            elif dtype == "input_json_delta" and key in self._pending:
+                self._pending_json.setdefault(key, []).append(delta.get("partial_json") or "")
         elif etype == "content_block_stop":
-            self._on_tool_stop()
+            self._on_tool_stop(key)
 
-    def _on_tool_start(self, tool_name: str, tool_use_id: str = "") -> None:
+    def _on_tool_start(self, tool_name: str, tool_use_id: str, key: str, subagent: bool = False) -> None:
         agent = self._agent
         # Hybrid tools arrive as "mcp__hermes__<name>" — show the bare name.
         display = tool_name.rsplit("__", 1)[-1] if tool_name else "tool"
-        self._pending_tool = (tool_use_id or f"sdk-{uuid.uuid4().hex[:12]}", display)
-        self._pending_json = []
-        if self._wants_text:
+        self._pending[key] = (
+            tool_use_id or f"sdk-{uuid.uuid4().hex[:12]}",
+            display,
+            subagent,
+        )
+        self._pending_json[key] = []
+        # Only a TOP-LEVEL tool interrupts the main text bubble; a nested
+        # subagent/workflow tool runs off to the side and must not break it.
+        if not subagent and self._wants_text:
             # Close the open streaming display segment so tool chrome doesn't
             # wrap into the text bubble. Same contract as the pre-tool flush in
             # conversation_loop: display callback gets None; the TTS callback
@@ -590,16 +642,15 @@ class _StreamBridge:
         # Spinner/status while the model generates the tool's arguments.
         gen = getattr(agent, "_fire_tool_gen_started", None)
         if callable(gen):
-            gen(display)
+            gen(f"{_SUBAGENT_TOOL_MARKER}{display}" if subagent else display)
 
-    def _on_tool_stop(self) -> None:
+    def _on_tool_stop(self, key: str) -> None:
         """Fire the start callbacks with the tool's real args once its input is complete."""
-        pending, self._pending_tool = self._pending_tool, None
-        raw = "".join(self._pending_json)
-        self._pending_json = []
+        pending = self._pending.pop(key, None)
+        raw = "".join(self._pending_json.pop(key, []))
         if pending is None:
             return
-        tool_use_id, name = pending
+        tool_use_id, name, subagent = pending
         try:
             args = json.loads(raw) if raw.strip() else {}
         except ValueError:
@@ -609,24 +660,35 @@ class _StreamBridge:
         try:
             from agent.display import build_tool_preview, redact_tool_args_for_display
 
+            # Build the preview/redaction against the REAL tool name so
+            # tool-specific formatting (terminal→command, etc.) still applies;
+            # only the user-visible label carries the subagent marker.
             display_args = redact_tool_args_for_display(name, args) or args
             preview = build_tool_preview(name, display_args)
         except Exception:
             display_args, preview = args, None
-        self._started_tools[tool_use_id] = (name, display_args)
+        label = f"{_SUBAGENT_TOOL_MARKER}{name}" if subagent else name
+        self._started_tools[tool_use_id] = (label, display_args)
         # Desktop/TUI gateways render tool chips from tool_start_callback (id +
         # args → "Running command: <cmd>"); messaging gateways render bubbles
         # from tool_progress_callback. Fire both, like the native executor.
+        # ``subagent=True`` rides along as a kwarg so consumers that want to nest
+        # or badge subagent chips can, while the marker keeps it visible on
+        # consumers that only render the name.
         start_cb = getattr(self._agent, "tool_start_callback", None)
         if start_cb is not None:
             try:
-                start_cb(tool_use_id, name, display_args)
+                start_cb(tool_use_id, label, display_args)
             except Exception:
                 logger.debug("claude_agent_sdk: tool-start callback raised", exc_info=True)
         progress = getattr(self._agent, "tool_progress_callback", None)
         if progress is not None:
             try:
-                progress("tool.started", name, preview, display_args)
+                progress("tool.started", label, preview, display_args, subagent=subagent)
+            except TypeError:
+                # Older consumer without the subagent kwarg — the marker in the
+                # label already conveys it.
+                progress("tool.started", label, preview, display_args)
             except Exception:
                 logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
 
@@ -635,9 +697,6 @@ class _StreamBridge:
         name, display_args = self._started_tools.pop(tool_use_id, (None, None))
         if name is None:
             return
-        complete_cb = getattr(self._agent, "tool_complete_callback", None)
-        if complete_cb is None:
-            return
         if isinstance(content, str):
             result_text = content
         else:
@@ -645,10 +704,114 @@ class _StreamBridge:
                 result_text = json.dumps(content, ensure_ascii=False, default=str)
             except Exception:
                 result_text = str(content)
+        # Chip channel (desktop/TUI inline diffs) resolves via tool_complete.
+        complete_cb = getattr(self._agent, "tool_complete_callback", None)
+        if complete_cb is not None:
+            try:
+                complete_cb(tool_use_id, name, display_args or {}, result_text)
+            except Exception:
+                logger.debug("claude_agent_sdk: tool-complete callback raised", exc_info=True)
+        # Progress channel (CLI spinner/scrollback, messaging bubbles) closes via
+        # a "tool.completed" event — same contract the native executor emits.
+        self._fire_tool_completed(name, result_text, bool(is_error))
+
+    def _fire_tool_completed(self, label: str, result_text: str, is_error: bool) -> None:
+        progress = getattr(self._agent, "tool_progress_callback", None)
+        if progress is None:
+            return
         try:
-            complete_cb(tool_use_id, name, display_args or {}, result_text)
+            progress("tool.completed", label, None, None, is_error=is_error, result=result_text)
+        except TypeError:
+            try:
+                progress("tool.completed", label, None, None)
+            except Exception:
+                logger.debug("claude_agent_sdk: tool.completed callback raised", exc_info=True)
         except Exception:
-            logger.debug("claude_agent_sdk: tool-complete callback raised", exc_info=True)
+            logger.debug("claude_agent_sdk: tool.completed callback raised", exc_info=True)
+
+    # -- Background tasks / dynamic workflows -------------------------------
+    # The SDK reports background tasks (including dynamic-workflow agents) via
+    # Task* system messages that flow through the query() loop OUT-OF-BAND from
+    # the normal assistant stream — a workflow runs in its own runtime, so its
+    # agents never appear as parent_tool_use_id stream events. We surface each
+    # task as its own chip (started → resolved) through the same callbacks the
+    # `/workflows` view is built on, so desktop and messaging gateways both see
+    # workflow/background-task progress live.
+    def handle_task(self, message: Any) -> None:
+        """Dispatch a Task* system message (Started/Progress/Updated/Notification)."""
+        agent = self._agent
+        touch = getattr(agent, "_touch_activity", None)
+        if callable(touch):
+            try:
+                touch("claude-agent-sdk task update")
+            except Exception:
+                pass
+        name = type(message).__name__
+        task_id = str(getattr(message, "task_id", "") or "")
+        if not task_id:
+            return
+        if name == "TaskStartedMessage":
+            desc = (getattr(message, "description", "") or "").strip()
+            self._on_task_start(task_id, desc, getattr(message, "task_type", None))
+        elif name == "TaskProgressMessage":
+            # Keep the spinner/stale-detector fed; don't spawn a new chip per
+            # progress tick (touch above already refreshed activity).
+            last_tool = getattr(message, "last_tool_name", None)
+            if last_tool:
+                gen = getattr(agent, "_fire_tool_gen_started", None)
+                if callable(gen):
+                    label = self._started_tasks.get(task_id, f"{_TASK_MARKER}task")
+                    try:
+                        gen(f"{label} · {last_tool}")
+                    except Exception:
+                        pass
+        elif name == "TaskUpdatedMessage":
+            status = getattr(message, "status", None)
+            if status in _TERMINAL_TASK_STATUSES:
+                self._on_task_done(task_id, status, "")
+        elif name == "TaskNotificationMessage":
+            self._on_task_done(
+                task_id,
+                getattr(message, "status", None),
+                (getattr(message, "summary", "") or "").strip(),
+            )
+
+    def _on_task_start(self, task_id: str, desc: str, task_type: Optional[str]) -> None:
+        label = f"{_TASK_MARKER}{desc or task_type or 'task'}"
+        self._started_tasks[task_id] = label
+        args = {"task_type": task_type} if task_type else {}
+        start_cb = getattr(self._agent, "tool_start_callback", None)
+        if start_cb is not None:
+            try:
+                start_cb(task_id, label, args)
+            except Exception:
+                logger.debug("claude_agent_sdk: task-start callback raised", exc_info=True)
+        progress = getattr(self._agent, "tool_progress_callback", None)
+        if progress is not None:
+            try:
+                progress("tool.started", label, desc or None, args, subagent=True)
+            except TypeError:
+                progress("tool.started", label, desc or None, args)
+            except Exception:
+                logger.debug("claude_agent_sdk: task-progress callback raised", exc_info=True)
+
+    def _on_task_done(self, task_id: str, status: Optional[str], summary: str) -> None:
+        label = self._started_tasks.pop(task_id, None)
+        if label is None:
+            return
+        result = summary or (f"task {status}" if status else "task finished")
+        is_error = status in ("failed", "killed", "stopped")
+        if is_error:
+            result = f"[{status}] {result}"
+        # Chip channel (desktop/TUI inline diffs).
+        complete_cb = getattr(self._agent, "tool_complete_callback", None)
+        if complete_cb is not None:
+            try:
+                complete_cb(task_id, label, {}, result)
+            except Exception:
+                logger.debug("claude_agent_sdk: task-complete callback raised", exc_info=True)
+        # Progress channel (CLI spinner/scrollback, messaging bubbles).
+        self._fire_tool_completed(label, result, is_error)
 
 
 async def _collect_query(
@@ -672,6 +835,15 @@ async def _collect_query(
     StreamEvent = getattr(sdk, "StreamEvent", None)
     UserMessage = getattr(sdk, "UserMessage", None)
     ToolResultBlock = getattr(sdk, "ToolResultBlock", None)
+    # Background-task / dynamic-workflow progress messages (absent on old SDKs).
+    _task_types = tuple(
+        t for t in (
+            getattr(sdk, "TaskStartedMessage", None),
+            getattr(sdk, "TaskProgressMessage", None),
+            getattr(sdk, "TaskUpdatedMessage", None),
+            getattr(sdk, "TaskNotificationMessage", None),
+        ) if t is not None
+    )
 
     assistant_text: List[str] = []
     thinking_text: List[str] = []
@@ -688,14 +860,28 @@ async def _collect_query(
         if interrupt_check is not None and interrupt_check():
             raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
         if StreamEvent is not None and isinstance(message, StreamEvent):
-            # Live progress only — never part of the collected result. Skip
-            # subagent streams (parent_tool_use_id set) so their text doesn't
-            # interleave with the top-level response.
-            if bridge is not None and not getattr(message, "parent_tool_use_id", None):
+            # Live progress only — never part of the collected result. Subagent
+            # streams (parent_tool_use_id set) are still surfaced, but the bridge
+            # shows only their TOOL activity (marked as subagent work); their
+            # text/thinking is suppressed so it doesn't interleave with the
+            # top-level response.
+            if bridge is not None:
                 try:
-                    bridge.handle(getattr(message, "event", None) or {})
+                    bridge.handle(
+                        getattr(message, "event", None) or {},
+                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
+                    )
                 except Exception:
                     logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
+            continue
+        if _task_types and isinstance(message, _task_types):
+            # Background task / workflow-agent progress — surface as its own chip
+            # lifecycle, never part of the collected top-level result.
+            if bridge is not None:
+                try:
+                    bridge.handle_task(message)
+                except Exception:
+                    logger.debug("claude_agent_sdk: task bridge error", exc_info=True)
             continue
         if UserMessage is not None and isinstance(message, UserMessage):
             # Tool results echoing back into the SDK loop — resolve the
@@ -714,6 +900,12 @@ async def _collect_query(
                             logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
             continue
         if isinstance(message, AssistantMessage):
+            # A subagent's own assistant turns (parent_tool_use_id set) are its
+            # internal reasoning — not the top-level response. Its tool activity
+            # is surfaced live via the stream bridge; keep its text/thinking out
+            # of the collected result so it can't leak into the final message.
+            if getattr(message, "parent_tool_use_id", None):
+                continue
             for block in getattr(message, "content", []) or []:
                 if TextBlock is not None and isinstance(block, TextBlock):
                     assistant_text.append(block.text or "")
@@ -982,15 +1174,66 @@ def _build_options(sdk, opt_kwargs: Dict[str, Any]):
 
 
 def _classify_sdk_error(exc: Exception) -> Optional[str]:
-    """Return a friendly message for common SDK setup failures, else None."""
+    """Return a friendly message for common SDK setup/startup failures, else None.
+
+    Matches on the exception *class name* rather than isinstance so we never have
+    to import the SDK's error classes (which live behind the lazy import) and
+    stay resilient to version drift. Covers the documented ``claude_agent_sdk``
+    errors (https://code.claude.com/docs/en/agent-sdk/python):
+
+      - ``CLINotFoundError``  — the ``claude`` CLI isn't installed / not on PATH
+      - ``ProcessError``      — the CLI was found but exited non-zero (usually an
+                                unauthenticated CLI, a version mismatch, or bad
+                                flags); carries ``exit_code`` + ``stderr``
+      - ``CLIConnectionError`` / ``CLIJSONDecodeError`` — transport failures
+    """
     name = type(exc).__name__
     text = str(exc)
-    if "CLINotFound" in name or "claude" in text.lower() and "not found" in text.lower():
+    lowered = text.lower()
+
+    # Can't FIND the CLI (CLINotFoundError subclasses CLIConnectionError, so it
+    # must be checked first).
+    if "CLINotFound" in name or ("claude" in lowered and "not found" in lowered):
         return (
             "The Claude Agent SDK could not find the `claude` CLI. Install it "
-            "(npm i -g @anthropic-ai/claude-code, or the native installer) and "
-            "ensure it is on PATH."
+            "(npm i -g @anthropic-ai/claude-code, or the native installer), make "
+            "sure it is on PATH, then run `claude` once to log in. You can also "
+            "pin the binary path with model.claude_agent_sdk.cli_path."
         )
+
+    # Found the CLI but it FAILED TO START / exited non-zero.
+    if "ProcessError" in name:
+        exit_code = getattr(exc, "exit_code", None)
+        stderr = (getattr(exc, "stderr", None) or "").strip()
+        stderr_l = stderr.lower()
+        # The most common startup failure for subscription/OAuth WebUI users is
+        # an unauthenticated CLI — point them straight at the fix.
+        auth_markers = (
+            "login", "log in", "unauthorized", "authentication", "authenticate",
+            "api key", "oauth", "credit balance", "invalid x-api-key",
+        )
+        if any(marker in stderr_l for marker in auth_markers):
+            hint = (
+                "This looks like an authentication problem: run `claude` (or "
+                "`claude /login`) in this environment to sign in with your Claude "
+                "subscription, or provide a valid ANTHROPIC_API_KEY / "
+                "CLAUDE_CODE_OAUTH_TOKEN."
+            )
+        else:
+            hint = (
+                "The `claude` CLI was found but exited with an error. Confirm it "
+                "is logged in and current (`claude` then /login; `claude update`)."
+            )
+        parts = ["The Claude Agent SDK could not start the `claude` CLI."]
+        if exit_code is not None:
+            parts.append(f"Exit code: {exit_code}.")
+        if stderr:
+            snippet = stderr if len(stderr) <= 500 else stderr[:500] + "…"
+            parts.append(f"CLI output: {snippet}")
+        parts.append(hint)
+        return " ".join(parts)
+
     if "CLIConnection" in name or "CLIJSONDecode" in name:
         return f"Claude Agent SDK transport error ({name}): {text}"
+
     return None

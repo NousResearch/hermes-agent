@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { showSourceControl } from '@/store/git'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
@@ -346,6 +347,14 @@ export function CommandPalette() {
             keywords: ['terminal', 'shell', 'console'],
             label: t.keybinds.actions['view.showTerminal'],
             run: () => setTerminalTakeover(true)
+          },
+          {
+            action: 'view.showSourceControl',
+            icon: GitBranch,
+            id: 'nav-source-control',
+            keywords: ['git', 'source control', 'scm', 'commit', 'stage', 'changes'],
+            label: t.keybinds.actions['view.showSourceControl'],
+            run: () => showSourceControl()
           },
           {
             action: 'nav.settings',

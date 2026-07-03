@@ -1400,6 +1400,7 @@ export interface Translations {
       revertConfirm: string
       revertAllConfirm: string
       staged: string
+      untracked: string
       noChanges: string
       notRepo: string
       noDiff: string
@@ -1697,7 +1698,12 @@ export interface Translations {
     remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
+    explorer: string
+    sourceControl: string
+    repository: string
+    graph: string
     refreshTree: string
+    refreshSourceControl: string
     collapseAll: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string

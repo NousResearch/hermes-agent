@@ -29,6 +29,7 @@ import {
 } from '@/store/profile'
 import { requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
+import { showSourceControl } from '@/store/git'
 import { setModelPickerOpen } from '@/store/session'
 import {
   $switcherOpen,
@@ -163,6 +164,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'view.toggleReview': toggleReview,
+    'view.showSourceControl': showSourceControl,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     // Create first so the pane's open-effect ensure sees a non-empty set and

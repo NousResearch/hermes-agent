@@ -96,6 +96,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
+  // ⌘⇧G — VS Code's SCM panel shortcut.
+  { id: 'view.showSourceControl', category: 'view', defaults: ['mod+shift+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
   // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
   // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on

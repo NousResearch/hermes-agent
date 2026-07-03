@@ -68,7 +68,6 @@ const {
 const { gitRootForIpc } = require('./git-root.cjs')
 const { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } = require('./git-worktree-ops.cjs')
 const {
-  fileDiffVsHead,
   repoStatus,
   reviewCommit,
   reviewCommitContext,
@@ -82,6 +81,7 @@ const {
   reviewStage,
   reviewUnstage
 } = require('./git-review-ops.cjs')
+const { status: scmStatus, changedFiles: scmChangedFiles, log: scmLog, show: scmShow, fileDiff: scmFileDiff } = require('./git-scm.cjs')
 const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
@@ -7084,6 +7084,17 @@ ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches
 // hides cleanly rather than erroring.
 ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => repoStatus(repoPath, resolveGitBinary()))
 
+// Source control panel IPC handlers — backed by git-scm.cjs (execFile + arg
+// arrays, GIT_TERMINAL_PROMPT=0, porcelain v2). Passes resolveGitBinary() so
+// the spawned git matches the user's installed git (PortableGit on Windows).
+ipcMain.handle('hermes:git:log', async (_event, repoPath, count) => scmLog(resolveGitBinary(), repoPath, count))
+
+ipcMain.handle('hermes:git:show', async (_event, repoPath, hash) => scmShow(resolveGitBinary(), repoPath, hash))
+
+ipcMain.handle('hermes:git:changedFiles', async (_event, repoPath) => scmChangedFiles(resolveGitBinary(), repoPath))
+
+ipcMain.handle('hermes:git:repoStatusGraph', async (_event, repoPath) => scmStatus(resolveGitBinary(), repoPath))
+
 // Codex-style review pane: list changed files for a scope, fetch one file's
 // unified diff, and stage / unstage / revert. Reads return empty on failure;
 // mutations reject so the renderer can toast.
@@ -7095,7 +7106,7 @@ ipcMain.handle('hermes:git:review:diff', async (_event, repoPath, filePath, scop
 )
 // Working-tree-vs-HEAD diff for one file (the preview's "show the diff" view).
 ipcMain.handle('hermes:git:fileDiff', async (_event, repoPath, filePath) =>
-  fileDiffVsHead(repoPath, filePath, resolveGitBinary())
+  scmFileDiff(resolveGitBinary(), repoPath, filePath)
 )
 ipcMain.handle('hermes:git:review:stage', async (_event, repoPath, filePath) =>
   reviewStage(repoPath, filePath ?? null, resolveGitBinary())

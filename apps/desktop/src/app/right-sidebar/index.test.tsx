@@ -54,4 +54,57 @@ describe('RightSidebarPane', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
   })
+
+  it('switches the workspace pane from explorer to source control', async () => {
+    setCurrentCwd('/repo')
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      git: {
+        repoStatus: vi.fn().mockResolvedValue({
+          added: 1,
+          ahead: 0,
+          behind: 0,
+          branch: 'feature/test',
+          changed: 1,
+          conflicted: 0,
+          defaultBranch: 'main',
+          detached: false,
+          files: [],
+          removed: 0,
+          staged: 0,
+          untracked: 0,
+          unstaged: 1
+        }),
+        repoStatusGraph: vi.fn().mockResolvedValue({
+          added: 1,
+          ahead: 0,
+          behind: 0,
+          branch: 'feature/test',
+          changed: 1,
+          conflicted: 0,
+          defaultBranch: 'main',
+          detached: false,
+          files: [],
+          removed: 0,
+          staged: 0,
+          untracked: 0,
+          unstaged: 1
+        }),
+        changedFiles: vi.fn().mockResolvedValue({
+          base: null,
+          files: [{ added: 1, path: 'README.md', removed: 0, staged: false, status: 'M' }]
+        }),
+        log: vi.fn().mockResolvedValue([]),
+        show: vi.fn().mockResolvedValue([])
+      },
+      readDir
+    }
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Source Control' }))
+
+    expect(await screen.findByText('feature/test')).toBeTruthy()
+    expect(await screen.findByText('README.md')).toBeTruthy()
+  })
 })

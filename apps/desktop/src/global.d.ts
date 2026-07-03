@@ -119,6 +119,16 @@ declare global {
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
         repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
+        // Commit history for the source control graph view.
+        log: (repoPath: string, count?: number) => Promise<HermesGitLogEntry[]>
+        // Files changed in a specific commit (by hash).
+        show: (repoPath: string, hash: string) => Promise<HermesGitShowEntry[]>
+        // Changed files in the working tree (staged + unstaged + untracked).
+        changedFiles: (repoPath: string) => Promise<HermesReviewList>
+        // Repo status for the source control panel — uses git-scm.cjs with
+        // execFile + arg arrays (not simple-git), so resolveGitBinary() works
+        // even on Windows where the path contains spaces.
+        repoStatusGraph: (repoPath: string) => Promise<HermesRepoStatus | null>
         // Working-tree-vs-HEAD unified diff for one file (the preview's diff
         // view). Empty string when the file is unchanged or not in a repo.
         fileDiff: (repoPath: string, filePath: string) => Promise<string>
@@ -637,6 +647,21 @@ export interface HermesReviewList {
   // The resolved base ref the scope diffed against (branch merge-base / turn
   // baseline), or null for the uncommitted scope.
   base: null | string
+}
+
+// One commit entry in the source control graph view.
+export interface HermesGitLogEntry {
+  hash: string
+  message: string
+  author: string
+  date: string
+  parents: string[]
+}
+
+// One file changed in a specific commit.
+export interface HermesGitShowEntry {
+  path: string
+  status: string
 }
 
 // The branch's PR (if any) as reported by `gh pr view`.

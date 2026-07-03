@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useEffect, useRef, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -13,11 +13,15 @@ import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
+import { $scmVisible } from '@/store/git'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
+import { SourceControlTab } from './source-control/'
+
+type ExplorerMode = 'explorer' | 'sourceControl'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
@@ -138,6 +142,14 @@ function FilesystemTab({
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const scmVisible = useStore($scmVisible)
+  const [mode, setMode] = useState<ExplorerMode>('explorer')
+  const scRef = useRef<{ refresh: () => void; collapseAll: () => void } | null>(null)
+
+  // Hotkey (Ctrl+Shift+G) sets $scmVisible → switch to source control mode.
+  useEffect(() => {
+    if (scmVisible) setMode('sourceControl')
+  }, [scmVisible])
 
   // No working directory (a bare/detached chat) → no tree, just a terse hint.
   // Switching workspace is a project/worktree action, never a raw folder picker.
@@ -151,22 +163,58 @@ function FilesystemTab({
         <div className="flex min-w-0 flex-1">
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </div>
-        <Button
-          aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
-          disabled={loading}
-          onClick={onRefresh}
-          size="icon-xs"
-          title={r.refreshTree}
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
-        </Button>
+        <div className="mr-1 flex items-center rounded-md border border-(--ui-stroke-secondary) bg-(--ui-surface-background-subtle) p-0.5">
+          <Button
+            aria-label={r.explorer}
+            className={cn('size-5', mode === 'explorer' && 'bg-(--ui-row-active-background) text-foreground')}
+            onClick={() => setMode('explorer')}
+            size="icon-xs"
+            title={r.explorer}
+            variant="ghost"
+          >
+            <Codicon name="files" size="0.75rem" />
+          </Button>
+          <Button
+            aria-label={r.sourceControl}
+            className={cn('size-5', mode === 'sourceControl' && 'bg-(--ui-row-active-background) text-foreground')}
+            onClick={() => setMode('sourceControl')}
+            size="icon-xs"
+            title={r.sourceControl}
+            variant="ghost"
+          >
+            <Codicon name="source-control" size="0.75rem" />
+          </Button>
+        </div>
+        {mode === 'explorer' && (
+          <Button
+            aria-label={r.refreshTree}
+            className={HEADER_ACTION_LABEL_REVEAL}
+            disabled={loading}
+            onClick={onRefresh}
+            size="icon-xs"
+            title={r.refreshTree}
+            variant="ghost"
+          >
+            <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+          </Button>
+        )}
+        {mode === 'sourceControl' && (
+          <Button
+            aria-label={r.refreshSourceControl}
+            className={HEADER_ACTION_LABEL_REVEAL}
+            onClick={() => scRef.current?.refresh()}
+            size="icon-xs"
+            title={r.refreshSourceControl}
+            variant="ghost"
+          >
+            <Codicon name="refresh" size="0.8125rem" />
+          </Button>
+        )}
         <Button
           aria-label={r.collapseAll}
-          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
-          disabled={!canCollapse}
-          onClick={onCollapseAll}
+          className={cn(HEADER_ACTION_CLASS, mode === 'explorer' && !canCollapse && 'pointer-events-none opacity-0')}
+          disabled={mode === 'explorer' && !canCollapse}
+          onClick={() => mode === 'explorer' ? onCollapseAll() : scRef.current?.collapseAll()}
           size="icon-xs"
           title={r.collapseAll}
           variant="ghost"
@@ -174,20 +222,24 @@ function FilesystemTab({
           <Codicon name="collapse-all" size="0.8125rem" />
         </Button>
       </RightSidebarSectionHeader>
-      <FileTreeBody
-        collapseNonce={collapseNonce}
-        cwd={cwd}
-        data={data}
-        error={error}
-        loading={loading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onLoadChildren={onLoadChildren}
-        onNodeOpenChange={onNodeOpenChange}
-        onPreviewFile={onPreviewFile}
-        onRetry={onRefresh}
-        openState={openState}
-      />
+      {mode === 'explorer' ? (
+        <FileTreeBody
+          collapseNonce={collapseNonce}
+          cwd={cwd}
+          data={data}
+          error={error}
+          loading={loading}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+          onLoadChildren={onLoadChildren}
+          onNodeOpenChange={onNodeOpenChange}
+          onPreviewFile={onPreviewFile}
+          onRetry={onRefresh}
+          openState={openState}
+        />
+      ) : (
+        <SourceControlTab ref={scRef} cwd={cwd} onOpenFile={onPreviewFile ?? (() => {})} />
+      )}
     </div>
   )
 }

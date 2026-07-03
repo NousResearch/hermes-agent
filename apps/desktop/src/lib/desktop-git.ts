@@ -1,5 +1,7 @@
 import type {
   HermesGitBranch,
+  HermesGitLogEntry,
+  HermesGitShowEntry,
   HermesGitWorktree,
   HermesRepoStatus,
   HermesReviewList,
@@ -59,6 +61,17 @@ const remoteGit: GitBridge = {
     (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
 
   repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
+
+  log: async (repoPath, count) =>
+    (await gitGet<{ entries: HermesGitLogEntry[] }>('log', { count: count?.toString(), path: repoPath })).entries,
+
+  show: async (repoPath, hash) =>
+    (await gitGet<{ entries: HermesGitShowEntry[] }>('show', { hash, path: repoPath })).entries,
+
+  changedFiles: async repoPath =>
+    (await gitGet<HermesReviewList>('changed-files', { path: repoPath })),
+
+  repoStatusGraph: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
 
   fileDiff: async (repoPath, filePath) =>
     (await gitGet<{ diff: string }>('file-diff', { file: filePath, path: repoPath })).diff,

@@ -3777,8 +3777,9 @@ class BasePlatformAdapter(ABC):
         document extensions route through ``send_document``.  The dispatch
         partition lives in ``gateway/run.py``.
 
-        Paths inside fenced code blocks (``` ... ```) and inline code
-        (`...`) are ignored so that code samples are never mutilated.
+        Paths inside fenced code blocks (``` ... ```), inline code
+        (`...`), and Markdown link targets are ignored so that references and
+        code samples are never converted into native uploads.
 
         Returns:
             Tuple of (list of expanded file paths, cleaned text with the
@@ -3796,19 +3797,24 @@ class BasePlatformAdapter(ABC):
             re.IGNORECASE,
         )
 
-        # Build spans covered by fenced code blocks and inline code
-        code_spans: list = []
+        # Build spans covered by fenced code blocks, inline code, and Markdown
+        # link targets. A clickable file reference like
+        # ``[views.md](/home/me/views.md:1)`` should remain text, not become an
+        # implicit attachment.
+        protected_spans: list = []
         for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
-            code_spans.append((m.start(), m.end()))
+            protected_spans.append((m.start(), m.end()))
         for m in re.finditer(r'`[^`\n]+`', content):
-            code_spans.append((m.start(), m.end()))
+            protected_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'!?\[[^\]\n]*\]\(([^)\n]+)\)', content):
+            protected_spans.append((m.start(1), m.end(1)))
 
-        def _in_code(pos: int) -> bool:
-            return any(s <= pos < e for s, e in code_spans)
+        def _is_protected(pos: int) -> bool:
+            return any(s <= pos < e for s, e in protected_spans)
 
         found: list = []  # (raw_match_text, expanded_path)
         for match in path_re.finditer(content):
-            if _in_code(match.start()):
+            if _is_protected(match.start()):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)

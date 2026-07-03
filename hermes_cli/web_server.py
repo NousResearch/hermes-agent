@@ -1194,6 +1194,20 @@ _FS_READDIR_HIDDEN = {
 # managed-files API.  These typically contain credentials (API keys, tokens)
 # and exposing them through the dashboard file browser is a security leak —
 # see issue #57505.
+_SENSITIVE_MANAGED_DIRNAMES = frozenset({
+    "mcp-tokens",
+    "pairing",
+})
+
+
+def _is_sensitive_managed_path(path: str | Path) -> bool:
+    """Return True for dashboard-managed paths that contain credentials."""
+    candidate = Path(path)
+    if _is_sensitive_filename(candidate.name):
+        return True
+    return any(part.lower() in _SENSITIVE_MANAGED_DIRNAMES for part in candidate.parts)
+
+
 def _is_sensitive_filename(name: str) -> bool:
     """Return True for ``.env`` and any ``.env.<suffix>`` variant.
 
@@ -1635,7 +1649,7 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         entries = [
             _managed_file_entry(policy, child)
             for child in target.iterdir()
-            if not _is_sensitive_filename(child.name)
+            if not _is_sensitive_managed_path(child)
         ]
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
@@ -1662,7 +1676,7 @@ async def read_managed_file(request: Request, path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_filename(target.name):
+    if _is_sensitive_managed_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:
@@ -1706,7 +1720,7 @@ async def download_managed_file(request: Request, path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_filename(target.name):
+    if _is_sensitive_managed_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:

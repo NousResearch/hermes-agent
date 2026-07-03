@@ -96,6 +96,27 @@ def _get_feed_channel_id() -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Discord rejects any message whose ``content`` exceeds 2000 characters with a
+#: 400 (BASE_TYPE_MAX_LENGTH). Feed payloads can carry raw pane text that blows
+#: past this, so every POST/PATCH clamps to a safe ceiling below the hard cap.
+_DISCORD_CONTENT_LIMIT: int = 2000
+_DISCORD_CONTENT_ELLIPSIS: str = "\n… (truncated)"
+
+
+def _clamp_discord_content(content: str) -> str:
+    """Clamp ``content`` to Discord's 2000-char hard limit with an ellipsis.
+
+    Truncation keeps the HEAD (the question/summary/leading context) since feed
+    overflow is almost always a long pane-text tail. A no-op when already short.
+    """
+    if content is None:
+        return ""
+    if len(content) <= _DISCORD_CONTENT_LIMIT:
+        return content
+    keep = _DISCORD_CONTENT_LIMIT - len(_DISCORD_CONTENT_ELLIPSIS)
+    return content[:keep] + _DISCORD_CONTENT_ELLIPSIS
+
+
 def _post_discord_message(
     channel_id: str,
     content: str,
@@ -105,10 +126,14 @@ def _post_discord_message(
     """POST a message to a Discord channel/thread.  Returns the message id or None.
 
     Uses the same REST helpers as ``tools/discord_tool``.  Best-effort:
-    logs on failure and returns None rather than raising.
+    logs on failure and returns None rather than raising.  ``content`` is
+    clamped to Discord's 2000-char limit so an oversize payload degrades to a
+    truncated post instead of a dropped one.
     """
     if not channel_id:
         return None
+
+    content = _clamp_discord_content(content)
 
     try:
         from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
@@ -141,9 +166,16 @@ def _edit_discord_message(
     *,
     token: Optional[str] = None,
 ) -> str:
-    """PATCH a Discord message and distinguish missing-message recovery."""
+    """PATCH a Discord message and distinguish missing-message recovery.
+
+    ``content`` is clamped to Discord's 2000-char limit (see
+    ``_clamp_discord_content``) so an oversize edit degrades to a truncated
+    update instead of a 400.
+    """
     if not channel_id or not message_id:
         return _EDIT_FAILED
+
+    content = _clamp_discord_content(content)
 
     try:
         from tools.discord_tool import (  # type: ignore[import]

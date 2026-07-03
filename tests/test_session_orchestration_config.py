@@ -56,6 +56,7 @@ def test_defaults_from_empty_dict() -> None:
     assert cfg.auto_checkpoint_resume is True
     assert cfg.busy_loop_stale_seconds == 900
     assert cfg.busy_loop_auto_escape is True
+    assert cfg.omp_auto_approve is False
 
 
 def test_auto_checkpoint_resume_knob_parses() -> None:
@@ -74,6 +75,12 @@ def test_busy_loop_knobs_parse() -> None:
     )
     assert cfg.busy_loop_stale_seconds == 1200
     assert cfg.busy_loop_auto_escape is False
+
+
+def test_omp_auto_approve_knob_parses() -> None:
+    """omp_auto_approve round-trips from the dict (default False)."""
+    assert SessionOrchestrationConfig.from_dict({"omp_auto_approve": True}).omp_auto_approve is True
+    assert SessionOrchestrationConfig.from_dict({}).omp_auto_approve is False
 
 
 def test_defaults_from_missing_section() -> None:

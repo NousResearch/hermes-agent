@@ -813,3 +813,23 @@ class TestAttentionDigestReconciler:
         assert registry.upserts == []
         assert registry.projection == original_projection
         assert registry.attention_items == original_attention_items
+
+
+class TestClampDiscordContent:
+    """_clamp_discord_content keeps posts within Discord's 2000-char hard cap."""
+
+    def test_short_content_unchanged(self):
+        assert feed_mod._clamp_discord_content("hello") == "hello"
+
+    def test_none_becomes_empty(self):
+        assert feed_mod._clamp_discord_content(None) == ""
+
+    def test_oversize_content_clamped_to_limit(self):
+        clamped = feed_mod._clamp_discord_content("x" * 5000)
+        assert len(clamped) <= 2000
+        assert clamped.endswith("… (truncated)")
+        assert clamped.startswith("x")
+
+    def test_exactly_at_limit_unchanged(self):
+        exact = "y" * 2000
+        assert feed_mod._clamp_discord_content(exact) == exact

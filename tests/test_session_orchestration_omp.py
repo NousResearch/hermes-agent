@@ -260,6 +260,15 @@ class TestBuildInteractiveArgv:
         argv = build_interactive_argv()
         assert "--auto-approve" in argv
 
+    def test_omits_auto_approve_when_disabled(self):
+        argv = build_interactive_argv(auto_approve=False)
+        assert "--auto-approve" not in argv
+
+    def test_omit_auto_approve_still_carries_other_flags(self):
+        argv = build_interactive_argv(workdir="/repo", auto_approve=False)
+        assert "--auto-approve" not in argv
+        assert "--cwd" in argv and "/repo" in argv
+
     def test_prompt_appended_when_given(self):
         argv = build_interactive_argv(prompt="start task")
         assert "start task" in argv

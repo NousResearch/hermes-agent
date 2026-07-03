@@ -383,6 +383,7 @@ def build_interactive_argv(
     hook: str | None = None,
     resume_id: str | None = None,
     continue_last: bool = False,
+    auto_approve: bool = True,
 ) -> list[str]:
     """Build the argument list for launching an interactive omp TUI session.
 
@@ -402,13 +403,19 @@ def build_interactive_argv(
         If set, pass ``--resume <id>`` to re-attach a specific session.
     continue_last:
         If True, pass ``-c`` (``--continue``) to continue the most recent session.
+    auto_approve:
+        If True (default), pass ``--auto-approve`` so omp skips tool-approval
+        dialogs. Managed interactive sessions launch with this OFF so a nudge
+        cannot silently escalate into an unattended multi-step build — omp
+        instead pauses at approval prompts, which the watcher surfaces as
+        WAITING_USER for the user to answer via the feed.
 
     Returns
     -------
     list[str]
         Argument list to pass to the omp binary (binary not included).
     """
-    args: list[str] = ["--auto-approve"]
+    args: list[str] = ["--auto-approve"] if auto_approve else []
     if model:
         args += ["--model", model]
     if workdir:
@@ -735,7 +742,16 @@ class OmpAdapter(AgentAdapter):
         #    Passing the prompt here too would (a) deliver it twice and (b) make
         #    omp immediately busy, so the post-launch ``drive()`` wait-for-idle
         #    would time out. ``prompt`` is intentionally unused.
-        argv = build_interactive_argv(workdir=workdir)
+        # Managed interactive sessions default to NO --auto-approve so a nudge
+        # can't silently escalate into an unattended build; omp pauses at
+        # approval prompts, which the watcher surfaces as WAITING_USER.
+        try:
+            from session_orchestration.config import load_session_orchestration_config
+
+            auto_approve = load_session_orchestration_config().omp_auto_approve
+        except Exception:
+            auto_approve = False
+        argv = build_interactive_argv(workdir=workdir, auto_approve=auto_approve)
         cmd = shlex.join([self._binary] + argv)
         self._tmux.run(["send-keys", "-t", pane, cmd, "Enter"])
 

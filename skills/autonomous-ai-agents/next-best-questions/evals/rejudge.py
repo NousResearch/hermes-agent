@@ -79,7 +79,7 @@ def compare(pairs):
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("path", help="validate_evsi output made with --keep-responses")
-    p.add_argument("--judge-model", default="fast")
+    p.add_argument("--judge-model", default="deepseek")
     p.add_argument("--max-rows", type=int, default=0, help="cap pairs (0 = all), evenly sampled.")
     p.add_argument("--timeout", type=int, default=120)
     p.add_argument("--out")

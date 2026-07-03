@@ -532,6 +532,54 @@ rows / 216 shared pairs / 72 questions, 21 min wall. Raw: `~/.hermes/evsi_soluti
 Solution stays built + off (`--value-judge-mode solution` for re-testing). Do not iterate on K or
 judge leniency without a new hypothesis for the mass-at-zero problem.
 
+## Deepseek re-adjudication (2026-07-03) — instrument-robustness of #26/#27 + assertion audit
+
+Motivation: the #26/#27 powered runs were all-`fast` (cloud outage), and a deepseek-v4-pro
+adversarial audit of the program's assertions (`~/.hermes/assertion_critique_ds.md`) named the
+same-class-instrument confound as the central threat: "you tested whether a weak model can detect
+improvements made by a weak model; the ρ≈0.35 ceiling is exactly a judge noise floor." Cloud
+returned; jim directed a full re-adjudication under deepseek (now the default judge everywhere —
+the fast pins were the outage workaround, `rejudge.py`'s default flipped to match). Runs:
+`~/.hermes/evsi_probs_ab_ds.json` (#26: gen fast, elicit+judge deepseek),
+`~/.hermes/evsi_solution_ab_ds.json` (#27: ALL-deepseek incl. solution sampling — the critique's
+exact rescue scenario), plus an 80-row same-response rejudge (`rejudge_probs_ds.json`).
+
+- **#26 HOLDS — keep `stated`.** Sampled Δρ +0.058 (se 0.11), wins 5/12 losses 4 — a slightly
+  friendlier null than fast's +0.010, still nowhere near the broad-win gate. The calibration
+  critique doesn't transfer even with a deep judge.
+- **#27 HOLDS, STRENGTHENED — keep `absolute`.** Δρ **−0.369**, solution wins 1/10 (fast run:
+  −0.343, 3/10). Decisive detail: deepseek sampling DID partially fix the granularity —
+  mass-at-exactly-0 fell 69%→53% and the delta support fills all five K=4 values — and the method
+  got *worse anyway*. The collapse critique ("fast can't sample diverse solutions") was tested on
+  its own terms and falsified: the failure is inherent to the K-solutions framing, and the verdict
+  is now model-robust.
+- **The ρ ceiling is NOT judge noise (A9 falsified).** The audit's own test: strong judge + weak
+  generator → ρ jumping above 0.5 would prove the ceiling was instrument noise. Result: within-task
+  ρ under deepseek is +0.244–0.352 (regret), right in the fast band. Same-response instrument
+  agreement fast↔deepseek ρ **0.814**; q_value's link to realized change moves only 0.353→0.398.
+  The within-task ceiling lives in the task/data, not the judge.
+- **Formula: best-or-tied on every dataset, never beaten.** #26-ds regret ablation: √(U·EVSI) best
+  (+0.244, mean-Δ +0.242 statistically tied). #27-ds: three-way tie at the top (stakes-only +0.362,
+  mean-Δ +0.357, √(U·EVSI) +0.352 — spread ≪ se). Honest cross-dataset claim after six powered
+  datasets: **√(U·EVSI) is best or within noise of best everywhere and is never decisively beaten**;
+  its edge over close ablations (mean-Δ) is inside noise, its edge over the bad ones (max-Δ,
+  EVSI-only, U-only) is large. The freeze stands.
+- **CI 4/4 under the deepseek judge** — including historically-flaky usaw-calendar, and
+  reverse-string at 1.0 on every criterion with the correct empty bucket (the 1.2.1 fixes hold
+  under the strong instrument).
+- **Audit hits absorbed:** (A8) "U is inert for ranking" is stale — measured ρ(U-only vs full
+  ordering) is 0.353 (fast data) / 0.496 (deepseek data): U materially reshapes the ranking, and
+  since the full formula out-ranks U-only, it's earning its place, not overparameterized. (M3)
+  per-category ρ is unstable across instruments (email +0.45 fast → −0.26 deepseek at n≈2
+  prompts/cat) — no category conclusion is possible either way at this n; noted as a caveat.
+- **Open assumptions the audit fairly flags (documented, not built):** utility-weighted lookahead
+  was never tested head-to-head by us (A1); no human ground truth behind realized-regret (A2/A10);
+  the gate vs a trivial always-inject-premortem baseline (A5); the empty-bucket bypass could mask a
+  wrongly-empty bucket on an underspecified prompt — mitigated by `calibration` + the structural
+  bucket-size expectation, unproven beyond the CI cases (A6); the preflight catches unusable
+  judges, not subtly-random ones — a discrimination preflight is the natural extension (A7);
+  additivity of question value (M2). Candidate falsifying tests are in the critique file.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

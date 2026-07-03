@@ -176,6 +176,9 @@ projection call's stated `P(a)` with an **empirical forced-choice frequency**, g
   negative result. **Bonus replication:** the same run's p1c ablation ranks `√(U·EVSI)` best on ALL
   three realized targets (regret +0.356 ≈ the prior +0.360; stakes +0.266; change +0.325) — a
   second independent within-task validation of the frozen formula.
+- **Re-confirmed under deepseek (2026-07-03):** same gate with deepseek elicitation + judging —
+  Δρ +0.058, wins 5/12 → still keep `stated`. The null is instrument-robust (findings §Deepseek
+  re-adjudication).
 
 ## Solution-space Δplan (#27) — built, off by default, A/B-gated
 
@@ -212,6 +215,11 @@ change, 0-1?" judgment. #27 grounds `delta_plan` in a concrete self-consistency 
   absolute 0-1 judge, for all its known fragility, carries strictly more within-task signal.
   Solution stays built + off as a documented negative result; do NOT iterate on K or judge leniency
   without a new hypothesis for the mass-at-zero problem.
+- **Re-confirmed under ALL-deepseek (2026-07-03) — the "fast was too weak" rescue is falsified:**
+  with deepseek doing solution sampling, viability judging AND realized judging, granularity
+  partially recovers (mass-at-0 69%→53%, support fills {0,¼,½,¾,1}) and the method is WORSE:
+  Δρ −0.369, wins 1/10. The collapse is inherent to the K-solutions framing, model-robustly
+  (findings §Deepseek re-adjudication).
 
 ## Pre-mortem lens (#25) — a fourth question family, auto-on by design
 

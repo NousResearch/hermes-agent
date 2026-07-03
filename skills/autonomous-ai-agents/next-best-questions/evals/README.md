@@ -42,12 +42,19 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
   critique doesn't transfer: forced-choice frequencies moved P on 79% of pairs and q_value on 76%,
   yet within-task ranking didn't improve (regret Δρ +0.010, wins 4/12). Bonus: the run's ablation
   re-validates `√(U·EVSI)` as best on all three realized targets (regret +0.356 ≈ prior +0.360).
+  **Re-confirmed under deepseek elicit+judge (Δρ +0.058, 5/12 — still a null).**
   See `evsi-validation-findings.md` §Sampled P(a) (#26).
 - **Solution-space Δplan (#27) is decisively worse — keep `absolute`.** ATD-style "which of K
   sampled solutions does the answer invalidate" collapses to near-binary (69% of deltas exactly 0)
   and within-task ρ goes negative (regret −0.047 vs absolute +0.360, Δρ −0.343, loses 7/10). The
-  absolute judge carries strictly more within-task signal here. See `evsi-validation-findings.md`
-  §Solution-space Δplan (#27).
+  absolute judge carries strictly more within-task signal here. **Re-confirmed ALL-deepseek:
+  granularity partially recovers (mass-at-0 53%) and the method is worse (Δρ −0.369, 1/10) — the
+  collapse is inherent to the framing, not a fast-model floor.** See `evsi-validation-findings.md`
+  §Solution-space Δplan (#27) and §Deepseek re-adjudication.
+- **The within-task ρ ceiling is the task, not the judge.** Same-response fast↔deepseek judge
+  agreement ρ 0.814; q_value's realized-change link 0.353 (fast) → 0.398 (deepseek); within-task ρ
+  under deepseek stays in the fast band (+0.24–0.35, never jumping past 0.5). Judge/elicit models
+  default to `deepseek` now that cloud is reachable; pin `fast` only for cloud-outage-immune repro.
 - **Wrapper end-to-end is task-dependent** (de-confounded 1-1 at k=1): helps where a clarification
   shapes the work, redundant where a capable agent self-investigates. Distinctive value = user-only
   constraints. The grounded answerer's **cwd** must be the user's project.

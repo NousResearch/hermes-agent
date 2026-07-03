@@ -62,6 +62,17 @@ skill's stated-P, absolute-judge, frozen-formula configuration is not just defen
 out-tested the frontier's specific alternatives on its own domain. Details in
 `evsi-validation-findings.md` §§Sampled P(a) (#26) / Solution-space Δplan (#27).
 
+**Instrument-robustness addendum (2026-07-03):** a deepseek-v4-pro adversarial audit of this
+review's assertions named the same-class-instrument confound (weak model judging weak-model
+improvements) as the central threat, so both verdicts were re-adjudicated under deepseek — #26
+with deepseek elicit+judge (still a null, Δρ +0.058), #27 ALL-deepseek including solution sampling
+(still decisively worse, Δρ −0.369, even though granularity partially recovered — the audit's
+"model floor" rescue falsified on its own terms). Judge agreement on identical responses ρ 0.814;
+the within-task ρ ceiling did not move under the deep judge (A9 falsified). One audit hit stands:
+"U is inert for ranking" was stale — measured ρ(U-only vs full ordering) ≈ 0.35–0.50, so U does
+ranking work. Full audit: `~/.hermes/assertion_critique_ds.md`; verdicts: findings §Deepseek
+re-adjudication.
+
 ## Considered and not built (with reasons)
 
 - **UoT/MCTS lookahead** — evidence says marginal-at-best for this domain; expensive; projected

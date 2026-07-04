@@ -452,6 +452,24 @@ class TestLoadGatewayConfig:
         assert Platform.RELAY in config.platforms
         assert config.platforms[Platform.RELAY].enabled is True
 
+    def test_sms_explicit_disable_not_reenabled_by_twilio_env(self, tmp_path, monkeypatch):
+        """Twilio credentials may be present for telephony without enabling SMS chat."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("sms:\n  enabled: false\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC123")
+        monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+
+        config = load_gateway_config()
+
+        assert Platform.SMS in config.platforms
+        assert config.platforms[Platform.SMS].enabled is False
+        assert config.platforms[Platform.SMS].api_key == "token"
+        assert Platform.SMS not in config.get_connected_platforms()
+
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

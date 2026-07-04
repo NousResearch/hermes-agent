@@ -1619,7 +1619,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
+        sms_config = config.platforms[Platform.SMS]
+        enabled_was_explicit = bool(sms_config.extra.get("_enabled_explicit", False))
+        if sms_config.enabled or not enabled_was_explicit:
+            sms_config.enabled = True
         config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = os.getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:

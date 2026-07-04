@@ -43,6 +43,7 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
+    "cost_router",
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",

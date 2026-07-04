@@ -3426,6 +3426,19 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return stripped_tasks if changed else tasks
 
 
+def _handle_cost_router(args: dict[str, Any], parent_agent: Any = None) -> str:
+    """Route cost_router through the same runtime-aware delegation path."""
+    return delegate_task(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        max_iterations=args.get("max_iterations"),
+        role=args.get("role"),
+        background=_model_background_value(args, parent_agent),
+        parent_agent=parent_agent,
+    )
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",

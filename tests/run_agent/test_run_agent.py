@@ -2537,6 +2537,18 @@ class TestConcurrentToolExecution:
                 mock_con.assert_called_once()
                 mock_seq.assert_not_called()
 
+    def test_cost_router_batch_uses_concurrent_path(self, agent):
+        """Cost-router batches should keep the concurrent dispatch path."""
+        tc1 = _mock_tool_call(name="cost_router", arguments='{"goal":"summarize"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"x"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_con.assert_called_once()
+                mock_seq.assert_not_called()
+
     def test_terminal_batch_forces_sequential(self, agent):
         """Stateful tools should not share the concurrent execution path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -2779,6 +2791,27 @@ class TestConcurrentToolExecution:
         assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
         assert "fast-result" in flushed[0][-1]["content"]
         assert "timed out after" in flushed[1][-1]["content"]
+
+    def test_concurrent_cost_router_receives_parent_agent_and_preserves_order(self, agent):
+        """The concurrent path must dispatch cost_router with controller context."""
+        tc1 = _mock_tool_call(name="cost_router", arguments='{"goal":"summarize"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"x"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        def fake_cost_router(args, parent_agent=None):
+            assert args == {"goal": "summarize"}
+            assert parent_agent is agent
+            return {"status": "dispatched", "route": "worker-dsflash"}
+
+        with patch("tools.delegate_tool._handle_cost_router", side_effect=fake_cost_router) as router:
+            with patch("run_agent.handle_function_call", side_effect=lambda name, args, task_id, **k: "ordinary-result"):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        router.assert_called_once()
+        assert [m["tool_call_id"] for m in messages] == ["c1", "c2"]
+        assert "worker-dsflash" in messages[0]["content"]
+        assert "ordinary-result" in messages[1]["content"]
 
     def test_concurrent_timeout_prefers_late_real_result_over_timeout_message(self, agent, monkeypatch):
         """A worker that finishes in the window between the deadline snapshot

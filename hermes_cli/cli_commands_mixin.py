@@ -1616,7 +1616,11 @@ class CLICommandsMixin:
     def _save_write_approval(self, subsystem: str, enabled: bool):
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
         from cli import save_config_value
-        save_config_value(f"{subsystem}.write_approval", bool(enabled))
+        if subsystem == "skills":
+            # skills.write_approval is now a dict (config v33+); set the nested key.
+            save_config_value("skills.write_approval.enabled", bool(enabled))
+        else:
+            save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

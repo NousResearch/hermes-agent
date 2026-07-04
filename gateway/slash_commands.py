@@ -3071,7 +3071,7 @@ class GatewaySlashCommandsMixin:
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+            user_config.setdefault("skills", {}).setdefault("write_approval", {})["enabled"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)

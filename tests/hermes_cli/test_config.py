@@ -1725,6 +1725,10 @@ class TestWriteApprovalMigration:
     Only an explicit ``approve`` carried gating intent and maps to ``True``;
     ``on``/``off``/unset map to ``False`` (gate off). The old ``write_mode`` key
     is removed. Only a persisted key is rewritten — never invented.
+
+    Note: Since config v33, skills.write_approval is a dict
+    ``{enabled, only, exclude}`` rather than a bare bool, so after the v28→v29
+    rename the v32→v33 migration expands it. Memory stays as a bare bool.
     """
 
     def _write(self, tmp_path, body: str):
@@ -1737,10 +1741,16 @@ class TestWriteApprovalMigration:
                         "skills:\n  write_mode: approve\n")
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            # Memory stayed as a bare bool (no v32→v33 migration for memory).
             assert raw["memory"]["write_approval"] is True
-            assert raw["skills"]["write_approval"] is True
+            # Skills was expanded to a dict by the v32→v33 migration.
+            assert raw["skills"]["write_approval"] == {"enabled": True, "only": [], "exclude": []}
             assert "write_mode" not in raw["memory"]
             assert "write_mode" not in raw["skills"]
+            # Resolved value: enabled=True means gate is on.
+            loaded = load_config()
+            from tools.write_approval import write_approval_enabled
+            assert write_approval_enabled("skills") is True
 
     def test_on_and_off_map_to_false(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1752,14 +1762,18 @@ class TestWriteApprovalMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             loaded = load_config()
-            # write_approval=False equals the schema default, so it is NOT
-            # materialised to disk (lean-config invariant) — the legacy
-            # write_mode key is gone and the effective value resolves to False
-            # via load_config()'s deep-merge.
+            # write_approval=False for memory equals the schema default (False),
+            # so it is NOT materialised to disk (lean-config invariant).
+            # For skills the v32→v33 migration converts the bool to a dict,
+            # which equals the new default and is also stripped.
             assert "write_mode" not in raw.get("memory", {})
             assert "write_mode" not in raw.get("skills", {})
+            # Resolved effective values via deep-merge.
             assert loaded["memory"]["write_approval"] is False
-            assert loaded["skills"]["write_approval"] is False
+            assert loaded["skills"]["write_approval"] == {"enabled": False, "only": [], "exclude": []}
+            from tools.write_approval import write_approval_enabled
+            assert write_approval_enabled("memory") is False
+            assert write_approval_enabled("skills") is False
 
     def test_unset_key_defaults_to_false(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

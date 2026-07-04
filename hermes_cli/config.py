@@ -2482,7 +2482,12 @@ DEFAULT_CONFIG = {
         #                     /skills diff <id> (full diff — CLI/dashboard/file,
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
+        # New in config v33: expanded from a bare bool to a dict with sub-keys
+        #   enabled: true/false   — gate toggle (same semantic as the old bool)
+        #   only: [skill names]   — if non-empty, gate ONLY these skill names
+        #   exclude: [skill names] — if non-empty, gate ALL skills EXCEPT these
+        #   only and exclude are mutually exclusive in effect: only takes precedence.
+        "write_approval": {"enabled": False, "only": [], "exclude": []},
     },
 
     # Curator — background skill maintenance.
@@ -3498,7 +3503,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -6408,6 +6413,32 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
                 )
+
+    # ── Version 33 → 34 (continued): expand skills.write_approval bool → dict ──
+    # The bare boolean `skills.write_approval: true/false` was replaced by a
+    # dict `{enabled: bool, only: [str], exclude: [str]}` so users can gate
+    # only specific skills. This migration converts persisted bools to the
+    # dict shape; the runtime reader in write_approval._normalize_enabled()
+    # handles both shapes for backward compat.
+    if current_ver < 34:
+        config = read_raw_config()
+        raw_skills = config.get("skills")
+        if isinstance(raw_skills, dict) and "write_approval" in raw_skills:
+            old_val = raw_skills["write_approval"]
+            if isinstance(old_val, bool):
+                raw_skills["write_approval"] = {
+                    "enabled": old_val, "only": [], "exclude": [],
+                }
+                config["skills"] = raw_skills
+                _persist_migration(config)
+                results["config_added"].append(
+                    f"skills.write_approval.enabled={'true' if old_val else 'false'}"
+                )
+                if not quiet:
+                    print(
+                        f"  ✓ Expanded skills.write_approval to dict format "
+                        f"(enabled={'true' if old_val else 'false'})"
+                    )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

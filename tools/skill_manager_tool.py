@@ -1294,6 +1294,9 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:
         return None
+    # Gate is on → check if THIS specific skill should be gated (only/exclude).
+    if not wa.should_gate_skill(name):
+        return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
 

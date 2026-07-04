@@ -2212,9 +2212,72 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _preflight_runtime_paths() -> list[str]:
+    """Check that key runtime paths under HERMES_HOME are writable.
+
+    Returns a list of human-readable warnings for paths that fail the
+    writability check.  An empty list means everything is fine.
+
+    This is a lightweight best-effort diagnostic — it creates and deletes
+    tiny probe files to verify actual write permission.  It never raises.
+    """
+    warnings: list[str] = []
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+    except Exception:
+        return warnings  # can't even resolve home — skip silently
+
+    # Each entry: (label, path, is_dir)
+    paths: list[tuple[str, Path, bool]] = [
+        ("history file", home / ".hermes_history", False),
+        ("log directory", home / "logs", True),
+        ("pastes directory", home / "pastes", True),
+    ]
+
+    for label, path, is_dir in paths:
+        try:
+            if is_dir:
+                path.mkdir(parents=True, exist_ok=True)
+                probe = path / ".hermes_write_probe"
+                probe.write_text("ok")
+                probe.unlink(missing_ok=True)
+            else:
+                # For files, probe the parent directory
+                parent = path.parent
+                parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    # File exists — try appending
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write("")
+                else:
+                    # File doesn't exist — try creating and removing
+                    path.write_text("")
+                    path.unlink()
+        except PermissionError:
+            warnings.append(
+                f"  ⚠ {label}: {path} is not writable (PermissionError).\n"
+                f"    Fix: sudo chown -R $(whoami) {path.parent}"
+            )
+        except Exception:
+            pass  # Other errors are non-fatal for this check
+
+    return warnings
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
+
+    # Preflight: verify runtime paths are writable before entering the
+    # interactive event loop (where PermissionError causes "input stuck").
+    _preflight_warnings = _preflight_runtime_paths()
+    if _preflight_warnings:
+        print("\033[33m⚠ Writable-path preflight detected problems:\033[0m")
+        for _w in _preflight_warnings:
+            print(_w)
+        print("\033[2m  Interactive features (history, logging, paste) may fail.\033[0m")
+        print()
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)

@@ -656,6 +656,101 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 4096
 
+    # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4"),
+            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+        ],
+    )
+    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url):
+        """MoA reference/aggregator tasks must honor max_tokens regardless of provider.
+
+        The ``reference_max_tokens`` config option (PR #56756) caps advisor output
+        to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
+        dropped the value for OpenAI-compatible providers (PR #34845), so the cap
+        never reached the API.  With the ``task`` parameter threaded through,
+        any task starting with ``moa_`` must include ``max_tokens`` in kwargs.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url=base_url,
+            task="moa_reference",
+        )
+        assert kwargs["max_tokens"] == 800
+
+    def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
+        """MoA tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="minimax",
+            model="minimax-m2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url="https://api.minimax.io/v1",
+            task="moa_aggregator",
+        )
+        assert kwargs["max_tokens"] == 600
+
+    def test_non_moa_tasks_still_omit_max_tokens(self):
+        """Regression guard: compression/titles/vision keep PR #34845 behavior."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for task in ("compression", "vision", "title_generation", None, ""):
+            kwargs = _build_call_kwargs(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash:nitro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=800,
+                base_url="https://openrouter.ai/api/v1",
+                task=task,
+            )
+            assert "max_tokens" not in kwargs, f"max_tokens should be dropped for task={task!r}"
+
+    def test_moa_prefix_matching(self):
+        """Only tasks prefixed with 'moa_' trigger the cap — not arbitrary task names."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        # 'moa_reference' → honored
+        kw = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_reference",
+        )
+        assert kw["max_tokens"] == 500
+
+        # 'moa_xyz' → honored (prefix match)
+        kw2 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_custom_future",
+        )
+        assert kw2["max_tokens"] == 500
+
+        # 'mopha_reference' (similar but not moa_) → dropped
+        kw3 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="mopha_reference",
+        )
+        assert "max_tokens" not in kw3
+
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):

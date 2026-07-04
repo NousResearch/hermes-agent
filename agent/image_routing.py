@@ -633,6 +633,8 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     proceeds.
     """
     try:
+        from tools.cloud_file_materializer import materialize_for_read
+        path = materialize_for_read(path)
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)

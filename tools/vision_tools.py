@@ -43,6 +43,7 @@ import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
+from tools.cloud_file_materializer import materialize_for_read
 from tools.website_policy import check_website_access
 import sys
 
@@ -1006,7 +1007,7 @@ async def vision_analyze_tool(
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
-            temp_image_path = local_path
+            temp_image_path = materialize_for_read(local_path)
             should_cleanup = False  # Don't delete cached/local files
         elif await _validate_image_url_async(image_url):
             # Remote URL -- download to a temporary location

@@ -214,6 +214,88 @@ def check_sandbox_requirements() -> bool:
     return True
 
 
+def _cloud_file_sitecustomize_source() -> str:
+    """Return a narrow read-only cloud-file hook for execute_code children."""
+    return r'''
+import builtins
+import io
+import os
+from pathlib import Path
+
+_ORIGINAL_OPEN = builtins.open
+_ORIGINAL_IO_OPEN = io.open
+_ORIGINAL_PATH_OPEN = Path.open
+_ORIGINAL_PATH_READ_BYTES = Path.read_bytes
+_ORIGINAL_PATH_READ_TEXT = Path.read_text
+_CLOUD_MARKERS = ("/Library/Mobile Documents/", "/Library/CloudStorage/")
+
+
+def _is_cloud_path(path):
+    try:
+        raw = os.fspath(path)
+    except TypeError:
+        return False
+    expanded = os.path.expanduser(raw)
+    return any(marker in expanded for marker in _CLOUD_MARKERS)
+
+
+def _is_read_mode(mode):
+    mode = mode or "r"
+    return not any(flag in mode for flag in ("w", "a", "x", "+"))
+
+
+def _materialize(path):
+    if not _is_cloud_path(path):
+        return path
+    try:
+        from tools.cloud_file_materializer import materialize_for_read
+        return os.fspath(materialize_for_read(path))
+    except Exception:
+        return path
+
+
+def open(file, mode="r", buffering=-1, encoding=None, errors=None,
+         newline=None, closefd=True, opener=None):
+    if _is_read_mode(mode):
+        file = _materialize(file)
+    return _ORIGINAL_OPEN(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+
+def io_open(file, mode="r", buffering=-1, encoding=None, errors=None,
+            newline=None, closefd=True, opener=None):
+    if _is_read_mode(mode):
+        file = _materialize(file)
+    return _ORIGINAL_IO_OPEN(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+
+def path_open(self, mode="r", buffering=-1, encoding=None, errors=None,
+              newline=None):
+    if _is_read_mode(mode):
+        return _ORIGINAL_OPEN(_materialize(self), mode, buffering, encoding, errors, newline)
+    return _ORIGINAL_PATH_OPEN(self, mode, buffering, encoding, errors, newline)
+
+
+def path_read_bytes(self):
+    if _is_cloud_path(self):
+        return _ORIGINAL_OPEN(_materialize(self), "rb").read()
+    return _ORIGINAL_PATH_READ_BYTES(self)
+
+
+def path_read_text(self, encoding=None, errors=None):
+    if _is_cloud_path(self):
+        with _ORIGINAL_OPEN(_materialize(self), "r", encoding=encoding, errors=errors) as f:
+            return f.read()
+    return _ORIGINAL_PATH_READ_TEXT(self, encoding=encoding, errors=errors)
+
+
+builtins.open = open
+io.open = io_open
+Path.open = path_open
+Path.read_bytes = path_read_bytes
+Path.read_text = path_read_text
+'''
+
+
 # ---------------------------------------------------------------------------
 # hermes_tools.py code generator
 # ---------------------------------------------------------------------------
@@ -1227,6 +1309,9 @@ def execute_code(
         tools_src = generate_hermes_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w", encoding="utf-8") as f:
             f.write(tools_src)
+
+        with open(os.path.join(tmpdir, "sitecustomize.py"), "w") as f:
+            f.write(_cloud_file_sitecustomize_source())
 
         # Write the user's script
         with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8") as f:

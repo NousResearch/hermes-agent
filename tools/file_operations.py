@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.cloud_file_materializer import materialize_for_read
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -1055,6 +1056,7 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        path = str(self._materialize_cloud_path(path))
         
         offset, limit = normalize_read_pagination(offset, limit)
         
@@ -1197,6 +1199,7 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
+        path = str(self._materialize_cloud_path(path))
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
@@ -1228,6 +1231,12 @@ class ShellFileOperations(FileOperations):
             content=raw_content,
             file_size=file_size,
         )
+
+    def _materialize_cloud_path(self, path: str) -> Path:
+        """Return a readable local cache copy for macOS cloud files on local backends."""
+        if self.env.__class__.__name__ != "LocalEnvironment":
+            return Path(path)
+        return materialize_for_read(path)
 
     def delete_file(self, path: str) -> WriteResult:
         """Delete a single file.

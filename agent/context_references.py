@@ -476,6 +476,11 @@ def _is_binary_file(path: Path) -> bool:
         path.name.endswith(ext) for ext in (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
     ):
         return True
+    try:
+        from tools.cloud_file_materializer import materialize_for_read
+        path = materialize_for_read(path)
+    except Exception:
+        pass
     chunk = path.read_bytes()[:4096]
     return b"\x00" in chunk
 

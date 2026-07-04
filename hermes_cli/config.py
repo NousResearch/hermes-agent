@@ -6066,10 +6066,9 @@ def _expand_env_vars(obj):
     ``os.environ``) are kept verbatim so callers can detect them.
     """
     if isinstance(obj, str):
-        from agent.secret_scope import get_secret
         return re.sub(
             r"\${([^}]+)}",
-            lambda m: get_secret(m.group(1), m.group(0)),
+            lambda m: os.environ.get(m.group(1), m.group(0)),
             obj,
         )
     if isinstance(obj, dict):

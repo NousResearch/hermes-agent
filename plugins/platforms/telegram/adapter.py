@@ -3398,7 +3398,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Try the same thread_id once to recover from transient flakes.
+                                if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
+                                    return SendResult(
+                                        success=False,
+                                        error=str(send_err),
+                                        retryable=False,
+                                    )
+                                # Telegram has been observed to return a
+                                # one-off "thread not found" that recovers on
+                                # an immediate retry (transient flake — see
+                                # test_send_retries_transient_thread_not_found_before_fallback).
+                                # Try the same thread_id once without sleeping
+                                # before falling back to a plain send.
                                 if not retried_thread_not_found:
                                     retried_thread_not_found = True
                                     logger.warning(
@@ -3406,19 +3417,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                         self.name, effective_thread_id,
                                     )
                                     continue
-
                                 # Second failure: the thread is genuinely gone.
-                                if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
-                                    self._prune_stale_dm_topic_binding(
-                                        chat_id, effective_thread_id,
-                                    )
-                                    return SendResult(
-                                        success=False,
-                                        error=str(send_err),
-                                        retryable=False,
-                                    )
-
-                                # Fallback retry without thread ID (for non-private-DM topic sends)
+                                # Retry without ``message_thread_id`` so the
+                                # message still reaches the chat, and prune
+                                # the stale binding so future inbound
+                                # messages aren't redirected back to it
+                                # (#31501).
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,

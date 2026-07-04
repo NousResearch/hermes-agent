@@ -43,7 +43,6 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
-from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -296,8 +295,6 @@ def _is_cron_silence_response(text: str) -> bool:
 # ---------------------------------------------------------------------------
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
-_parallel_pools: dict[str, tuple[concurrent.futures.ThreadPoolExecutor, Optional[int]]] = {}
-_parallel_pools_lock = threading.Lock()
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
@@ -364,30 +361,18 @@ class _ReadWriteLock:
 _terminal_cwd_lock = _ReadWriteLock()
 
 
-def _get_parallel_pool_for_profile(profile_name: str, max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) a profile-isolated persistent parallel pool."""
-    global _parallel_pools
-    with _parallel_pools_lock:
-        pool, current_max = _parallel_pools.get(profile_name, (None, None))
-        if pool is None or current_max != max_workers:
-            if pool is not None:
-                pool.shutdown(wait=False, cancel_futures=False)
-            pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix=f"cron-parallel-{profile_name}",
-            )
-            _parallel_pools[profile_name] = (pool, max_workers)
-        return pool
-
-
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent parallel pool."""
     global _parallel_pool, _parallel_pool_max_workers
-    profile_name = Path(get_hermes_home()).name
-    pool = _get_parallel_pool_for_profile(profile_name, max_workers)
-    _parallel_pool = pool
-    _parallel_pool_max_workers = max_workers
-    return pool
+    if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
+        if _parallel_pool is not None:
+            _parallel_pool.shutdown(wait=False, cancel_futures=False)
+        _parallel_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="cron-parallel",
+        )
+        _parallel_pool_max_workers = max_workers
+    return _parallel_pool
 
 
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
@@ -409,15 +394,11 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers, _parallel_pools, _sequential_pool
+    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
     if _parallel_pool is not None:
+        _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
         _parallel_pool_max_workers = None
-    with _parallel_pools_lock:
-        for profile_name, (pool, _) in list(_parallel_pools.items()):
-            if pool is not None:
-                pool.shutdown(wait=True, cancel_futures=False)
-        _parallel_pools.clear()
     if _sequential_pool is not None:
         _sequential_pool.shutdown(wait=True, cancel_futures=False)
         _sequential_pool = None
@@ -428,29 +409,6 @@ atexit.register(_shutdown_parallel_pool)
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
-
-import contextlib
-
-@contextlib.contextmanager
-def _profile_runtime_scope(profile_home):
-    """Context manager to establish a profile runtime scope.
-
-    Sets both the hermes home override and the secret scope for the given
-    profile. Uses a locally captured Path so concurrent threads cannot
-    corrupt each other's scope via the global _hermes_home.
-    """
-    from agent.secret_scope import set_secret_scope, build_profile_secret_scope, reset_secret_scope
-    global _hermes_home
-    captured_home = Path(profile_home)  # capture before any global mutation
-    old_home = _hermes_home
-    _hermes_home = captured_home
-    secrets = build_profile_secret_scope(captured_home)  # use captured, not global
-    token = set_secret_scope(secrets)
-    try:
-        yield
-    finally:
-        reset_secret_scope(token)
-        _hermes_home = old_home
 
 
 def _get_hermes_home() -> Path:
@@ -909,14 +867,15 @@ def _resolve_home_env_var(platform_name: str) -> str:
 
 
 def _get_home_target_chat_id(platform_name: str) -> str:
+    """Return the configured home target chat/room ID for a delivery platform."""
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
-    value = get_secret(env_var, "")
+    value = os.getenv(env_var, "")
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
-            value = get_secret(legacy, "")
+            value = os.getenv(legacy, "")
     return value
 
 
@@ -935,14 +894,14 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     if not env_var:
         return None
     if platform_name.lower() == "telegram":
-        cron_thread = get_secret("TELEGRAM_CRON_THREAD_ID", "").strip()
+        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
         if cron_thread:
             return cron_thread
-    value = get_secret(f"{env_var}_THREAD_ID", "").strip()
+    value = os.getenv(f"{env_var}_THREAD_ID", "").strip()
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
-            value = get_secret(f"{legacy}_THREAD_ID", "").strip()
+            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
     return value or None
 
 
@@ -3140,68 +3099,86 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
-    with _profile_runtime_scope(get_hermes_home()):
+    try:
+        # Pre-run dispatch claim (issue #38758): atomically commit a finite
+        # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
+        # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
+        # re-fire the job forever on restart. No-op for recurring jobs (they
+        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
+        # the shared body so BOTH the built-in ticker and the external provider
+        # (Chronos fire_due) get at-most-times semantics.
+        if not claim_dispatch(job["id"]):
+            logger.info(
+                "Job '%s': one-shot dispatch limit reached — skipping",
+                job.get("name", job["id"]),
+            )
+            return True  # not an error — already handled/removed
+
+        # Run the job under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is in play (multiple
+        # gateway profiles / room→profile multiplexing), and cron fires from
+        # the ticker thread where no per-turn scope is installed — so
+        # resolve_runtime_provider() raised UnscopedSecretError before model
+        # selection, breaking every cron job. Mirrors the per-turn pattern in
+        # gateway/run.py (_profile_runtime_scope).
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home())
+        )
         try:
-            # Pre-run dispatch claim (issue #38758): atomically commit a finite
-            # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
-            # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
-            # re-fire the job forever on restart. No-op for recurring jobs (they
-            # use advance_next_run) and infinite/no-repeat jobs. This lives here in
-            # the shared body so BOTH the built-in ticker and the external provider
-            # (Chronos fire_due) get at-most-times semantics.
-            if not claim_dispatch(job["id"]):
-                logger.info(
-                    "Job '%s': one-shot dispatch limit reached — skipping",
-                    job.get("name", job["id"]),
-                )
-                return True  # not an error — already handled/removed
-
             success, output, final_response, error = run_job(job)
+        finally:
+            reset_secret_scope(_scope_token)
 
-            output_file = save_job_output(job["id"], output)
-            if verbose:
-                logger.info("Output saved to: %s", output_file)
+        output_file = save_job_output(job["id"], output)
+        if verbose:
+            logger.info("Output saved to: %s", output_file)
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-            # Treat whitespace-only final responses the same as empty
-            # responses: do not deliver a blank message, and let the
-            # empty-response guard below mark the run as a soft failure.
-            should_deliver = bool(deliver_content.strip())
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
+        # Deliver the final response to the origin/target chat.
+        # If the agent responded with [SILENT], skip delivery (but
+        # output is already saved above).  Failed jobs always deliver.
+        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+        # Treat whitespace-only final responses the same as empty
+        # responses: do not deliver a blank message, and let the
+        # empty-response guard below mark the run as a soft failure.
+        should_deliver = bool(deliver_content.strip())
+        # Cron silence suppression — see _is_cron_silence_response.  Replaces the
+        # old `SILENT_MARKER in ...upper()` substring check, which both leaked
+        # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
+        # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
+        # #46917).  Keeps the intentional bracketed-prefix / trailing-line
+        # tolerance the cron contract relies on.
+        if should_deliver and success and _is_cron_silence_response(deliver_content):
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
 
-            delivery_error = None
-            if should_deliver:
-                try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                except Exception as de:
-                    delivery_error = str(de)
-                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+        delivery_error = None
+        if should_deliver:
+            try:
+                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-            # Treat empty final_response as a soft failure so last_status
-            # is not "ok" — the agent ran but produced nothing useful.
-            # (issue #8585)
-            if success and not final_response.strip():
-                success = False
-                error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+        # Treat empty final_response as a soft failure so last_status
+        # is not "ok" — the agent ran but produced nothing useful.
+        # (issue #8585)
+        if success and not final_response.strip():
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-            return True
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        return True
 
-        except Exception as e:
-            logger.error("Error processing job %s: %s", job['id'], e)
-            mark_job_run(job["id"], False, str(e))
-            return False
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job['id'], e)
+        mark_job_run(job["id"], False, str(e))
+        return False
 
 
 def _notify_provider_jobs_changed() -> None:
@@ -3222,9 +3199,9 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
-def _tick_one_profile(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
-    Check and run all due jobs for a single profile.
+    Check and run all due jobs.
     
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
@@ -3325,14 +3302,12 @@ def _tick_one_profile(verbose: bool = True, adapters=None, loop=None, sync: bool
             tick's run of the same job is still in flight.  The running-set
             membership is released in the worker's finally block.
             """
-            from agent.secret_scope import is_multiplex_active
-            profile_name = Path(get_hermes_home()).name
-            job_key = (profile_name, job["id"]) if is_multiplex_active() else job["id"]
+            job_id = job["id"]
             with _running_lock:
-                if job_key in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job["id"]))
+                if job_id in _running_job_ids:
+                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
-                _running_job_ids.add(job_key)
+                _running_job_ids.add(job_id)
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=job, ctx=_ctx):
@@ -3340,7 +3315,7 @@ def _tick_one_profile(verbose: bool = True, adapters=None, loop=None, sync: bool
                     return ctx.run(_process_job, j)
                 finally:
                     with _running_lock:
-                        _running_job_ids.discard(job_key)
+                        _running_job_ids.discard(j["id"])
 
             return pool.submit(_run_and_release)
 
@@ -3366,8 +3341,7 @@ def _tick_one_profile(verbose: bool = True, adapters=None, loop=None, sync: bool
         # after completion finds the job due again naturally.  No catch-up
         # queue needed.
         if parallel_jobs:
-            profile_name = Path(get_hermes_home()).name
-            pool = _get_parallel_pool_for_profile(profile_name, _max_workers)
+            pool = _get_parallel_pool(_max_workers)
             for job in parallel_jobs:
                 fut = _submit_with_guard(job, pool)
                 if fut is None:
@@ -3436,45 +3410,6 @@ def _tick_one_profile(verbose: bool = True, adapters=None, loop=None, sync: bool
             except (OSError, IOError):
                 pass
         lock_fd.close()
-
-
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
-    """
-    Check and run all due jobs.
-
-    Uses a file lock so only one tick runs at a time, even if the gateway's
-    in-process ticker and a standalone daemon or manual tick overlap.
-    """
-    from agent.secret_scope import is_multiplex_active
-    from cron.jobs import record_ticker_heartbeat
-
-    if is_multiplex_active():
-        from hermes_cli.profiles import profiles_to_serve
-        total_executed = 0
-        for profile_name, profile_home in profiles_to_serve(multiplex=True):
-            with _profile_runtime_scope(profile_home):
-                profile_success = False
-                try:
-                    executed = _tick_one_profile(verbose=verbose, adapters=adapters, loop=loop, sync=sync)
-                    total_executed += executed
-                    profile_success = True
-                except Exception as e:
-                    logger.error("Error ticking profile %s: %s", profile_name, e)
-                try:
-                    record_ticker_heartbeat(success=profile_success)
-                except Exception:
-                    pass
-        return total_executed
-    else:
-        with _profile_runtime_scope(get_hermes_home()):
-            try:
-                total_executed = _tick_one_profile(verbose=verbose, adapters=adapters, loop=loop, sync=sync)
-                record_ticker_heartbeat(success=True)
-                return total_executed
-            except Exception as e:
-                logger.error("Error ticking default profile: %s", e)
-                record_ticker_heartbeat(success=False)
-                raise
 
 
 if __name__ == "__main__":

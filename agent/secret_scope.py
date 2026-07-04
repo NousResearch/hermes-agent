@@ -100,8 +100,6 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_MAX_TOKENS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
-    # Bitwarden
-    "BWS_ACCESS_TOKEN", "BWS_PROJECT_ID", "BWS_ORGANIZATION_ID", "BWS_DEFAULT_PROJECT_ID",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
@@ -203,58 +201,5 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
     """
-    secrets = load_env_file(Path(hermes_home) / ".env")
-    config_path = Path(hermes_home) / "config.yaml"
-    if config_path.is_file():
-        try:
-            import yaml
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_data = yaml.safe_load(f) or {}
-        except Exception:
-            config_data = {}
-
-        bw_cfg = config_data.get("secrets", {}).get("bitwarden", {})
-        if bw_cfg and bw_cfg.get("enabled"):
-            access_token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
-            access_token = secrets.get(access_token_env) or os.environ.get(access_token_env)
-            if not access_token:
-                access_token = secrets.get("BWS_ACCESS_TOKEN") or os.environ.get("BWS_ACCESS_TOKEN")
-
-            project_id = bw_cfg.get("project_id") or secrets.get("BWS_PROJECT_ID") or os.environ.get("BWS_PROJECT_ID")
-
-            if access_token and project_id:
-                try:
-                    from agent.secret_sources.bitwarden import fetch_bitwarden_secrets, find_bws
-                    binary = find_bws(install_if_missing=bw_cfg.get("auto_install", True))
-                    server_url = bw_cfg.get("server_url") or secrets.get("BWS_SERVER_URL") or os.environ.get("BWS_SERVER_URL") or ""
-                    cache_ttl = bw_cfg.get("cache_ttl_seconds", 300)
-                    try:
-                        cache_ttl_seconds = float(cache_ttl)
-                    except (ValueError, TypeError):
-                        cache_ttl_seconds = 300.0
-
-                    bw_secrets, _ = fetch_bitwarden_secrets(
-                        access_token=access_token,
-                        project_id=project_id,
-                        binary=binary,
-                        cache_ttl_seconds=cache_ttl_seconds,
-                        server_url=server_url,
-                        home_path=Path(hermes_home),
-                    )
-                    if bw_secrets:
-                        clean_secrets = {}
-                        for key, value in bw_secrets.items():
-                            if key == access_token_env:
-                                continue
-                            clean_secrets[key] = value
-                        secrets.update(clean_secrets)
-                except Exception as _bws_exc:  # noqa: BLE001
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
-                        "BWS secret fetch failed for %s, continuing without BWS secrets: %s",
-                        hermes_home,
-                        _bws_exc,
-                    )
-
-    return secrets
+    return load_env_file(Path(hermes_home) / ".env")
 

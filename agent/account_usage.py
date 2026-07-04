@@ -518,7 +518,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        used = float(util)
         windows.append(
             AccountUsageWindow(
                 label=label,

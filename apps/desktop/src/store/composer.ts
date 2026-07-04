@@ -60,6 +60,8 @@ function loadPersistedDraftTexts(): [string, SessionDraft][] {
 }
 
 const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
+let activeDraftScope: string | null | undefined
+let readActiveDraftText: (() => string) | null = null
 
 function persistDraftTexts() {
   try {
@@ -98,6 +100,26 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 }
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
+
+export function bindActiveComposerDraft(scope: string | null | undefined, readText: () => string) {
+  activeDraftScope = scope
+  readActiveDraftText = readText
+
+  return () => {
+    if (readActiveDraftText === readText) {
+      activeDraftScope = undefined
+      readActiveDraftText = null
+    }
+  }
+}
+
+function stashActiveComposerAttachments(attachments: ComposerAttachment[]) {
+  if (!readActiveDraftText) {
+    return
+  }
+
+  stashSessionDraft(activeDraftScope, readActiveDraftText(), attachments)
+}
 
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
@@ -146,7 +168,12 @@ export function addComposerAttachment(attachment: ComposerAttachment) {
 export function removeComposerAttachment(id: string): ComposerAttachment | null {
   const current = $composerAttachments.get()
   const removed = current.find(attachment => attachment.id === id) || null
-  $composerAttachments.set(current.filter(attachment => attachment.id !== id))
+  const next = current.filter(attachment => attachment.id !== id)
+  $composerAttachments.set(next)
+
+  if (removed) {
+    stashActiveComposerAttachments(next)
+  }
 
   return removed
 }
@@ -172,6 +199,7 @@ export function updateComposerAttachment(attachment: ComposerAttachment): boolea
 
 export function clearComposerAttachments() {
   $composerAttachments.set([])
+  stashActiveComposerAttachments([])
 }
 
 /** Update only the upload state of an existing attachment (no-op if it's gone,

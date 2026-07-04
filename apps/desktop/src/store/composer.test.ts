@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   $composerAttachments,
   addComposerAttachment,
+  bindActiveComposerDraft,
+  clearComposerAttachments,
   clearSessionDraft,
   type ComposerAttachment,
   removeComposerAttachment,
@@ -15,6 +17,24 @@ import {
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
 }
+
+function createLocalStorage() {
+  const values = new Map<string, string>()
+
+  return {
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    removeItem: (key: string) => values.delete(key),
+    setItem: (key: string, value: string) => values.set(key, value)
+  }
+}
+
+beforeEach(() => {
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: createLocalStorage()
+  })
+})
 
 describe('updateComposerAttachment', () => {
   afterEach(() => {
@@ -105,5 +125,34 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+
+  it('persists removed attachments into the active session draft immediately', () => {
+    stashSessionDraft('session-a', 'draft text', [attachment({ id: 'file:a' }), attachment({ id: 'file:b' })])
+    $composerAttachments.set(takeSessionDraft('session-a').attachments)
+    const unbind = bindActiveComposerDraft('session-a', () => 'draft text')
+
+    try {
+      removeComposerAttachment('file:a')
+    } finally {
+      unbind()
+    }
+
+    expect(takeSessionDraft('session-a').attachments.map(item => item.id)).toEqual(['file:b'])
+    expect(takeSessionDraft('session-a').text).toBe('draft text')
+  })
+
+  it('persists cleared attachments into the active session draft immediately', () => {
+    stashSessionDraft('session-a', 'keep text', [attachment({ id: 'file:a' })])
+    $composerAttachments.set(takeSessionDraft('session-a').attachments)
+    const unbind = bindActiveComposerDraft('session-a', () => 'keep text')
+
+    try {
+      clearComposerAttachments()
+    } finally {
+      unbind()
+    }
+
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: 'keep text' })
   })
 })

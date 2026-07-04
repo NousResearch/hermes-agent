@@ -2,7 +2,13 @@ import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  bindActiveComposerDraft,
+  type ComposerAttachment,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import { cloneAttachments, DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
@@ -163,6 +169,8 @@ export function useComposerDraft({
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
     stashSessionDraft(scope, text, attachments)
+
+  useEffect(() => bindActiveComposerDraft(activeQueueSessionKey, () => draftRef.current), [activeQueueSessionKey])
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     $composerAttachments.set(cloneAttachments(attachments))

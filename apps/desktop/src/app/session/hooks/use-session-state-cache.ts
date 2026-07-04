@@ -21,6 +21,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import type { PaneId } from '@/store/split'
 
 import type { ClientSessionState } from '../../types'
 
@@ -55,14 +56,51 @@ interface SessionStateCacheOptions {
   setMessages: (messages: ChatMessage[]) => void
 }
 
-function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
-  setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
-  setYoloActive(state.yolo ?? false)
-  setCurrentPersonality(state.personality ?? '')
+/**
+ * The projection surface one registered pane exposes to the cache: its view
+ * atoms' setters, the messages atom it publishes into, and the refs its
+ * staging gate reads. `PaneSessionView` (app/chat/pane-view.ts) satisfies this
+ * structurally; the MAIN pane's entry is assembled from the hook options so
+ * the constructor contract (setMessages/setBusy/setAwaitingResponse/busyRef)
+ * is unchanged.
+ */
+export interface RegisteredSessionView {
+  paneId: PaneId
+  $messages: { get: () => ChatMessage[] }
+  activeSessionIdRef: MutableRefObject<string | null>
+  busyRef: MutableRefObject<boolean>
+  /** Runtime id whose transcript currently occupies the view's `$messages` —
+   *  lets the flush tell a same-session refresh from a thread switch. */
+  viewSessionIdRef: MutableRefObject<string | null>
+  setMessages: (messages: ChatMessage[]) => void
+  setBusy: (busy: boolean) => void
+  setAwaitingResponse: (awaiting: boolean) => void
+  setTurnStartedAt: (turnStartedAt: number | null) => void
+  setCurrentModel: (model: string) => void
+  setCurrentProvider: (provider: string) => void
+  setCurrentReasoningEffort: (effort: string) => void
+  setCurrentServiceTier: (tier: string) => void
+  setCurrentFastMode: (fast: boolean) => void
+  setYoloActive: (yolo: boolean) => void
+  setCurrentPersonality: (personality: string) => void
+}
+
+// One registered pane = one staging slot + one RAF handle. Per-pane batching
+// keeps a busy background pane's flush cadence independent of the active one.
+interface RegisteredPaneView {
+  view: RegisteredSessionView
+  pending: { sessionId: string; state: ClientSessionState } | null
+  raf: number | null
+}
+
+function syncRuntimeMetadataToView(view: RegisteredSessionView, state: ClientSessionState) {
+  view.setCurrentModel(state.model ?? '')
+  view.setCurrentProvider(state.provider ?? '')
+  view.setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  view.setCurrentServiceTier(state.serviceTier ?? '')
+  view.setCurrentFastMode(state.fast ?? false)
+  view.setYoloActive(state.yolo ?? false)
+  view.setCurrentPersonality(state.personality ?? '')
 }
 
 export function useSessionStateCache({
@@ -78,11 +116,50 @@ export function useSessionStateCache({
   const selectedStoredSessionIdRef = useRef<string | null>(null)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
-  const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
-  const viewSyncRafRef = useRef<number | null>(null)
-  // Runtime id whose transcript currently occupies `$messages` — lets the
-  // flush below tell a same-session refresh from a thread switch.
+  // Runtime id whose transcript currently occupies the MAIN `$messages` view.
   const viewSessionIdRef = useRef<string | null>(null)
+
+  // Latest options snapshot, refreshed every render, so the (stable) main
+  // pane-view entry below always flushes through the caller's current setters —
+  // exactly like the old useCallback deps did.
+  const mainOptionsRef = useRef({ busyRef, setAwaitingResponse, setBusy, setMessages })
+  mainOptionsRef.current = { busyRef, setAwaitingResponse, setBusy, setMessages }
+
+  // The MAIN pane registered from the hook options: reads the global $messages,
+  // publishes through the option setters, and writes the global metadata
+  // singletons — line-for-line the old single-view projection.
+  const mainPaneViewRef = useRef<RegisteredSessionView | null>(null)
+
+  if (mainPaneViewRef.current === null) {
+    mainPaneViewRef.current = {
+      paneId: 'main',
+      $messages,
+      activeSessionIdRef,
+      get busyRef() {
+        return mainOptionsRef.current.busyRef
+      },
+      viewSessionIdRef,
+      setMessages: messages => mainOptionsRef.current.setMessages(messages),
+      setBusy: value => mainOptionsRef.current.setBusy(value),
+      setAwaitingResponse: value => mainOptionsRef.current.setAwaitingResponse(value),
+      setTurnStartedAt,
+      setCurrentModel,
+      setCurrentProvider,
+      setCurrentReasoningEffort,
+      setCurrentServiceTier,
+      setCurrentFastMode,
+      setYoloActive,
+      setCurrentPersonality
+    }
+  }
+
+  const paneViewsRef = useRef<Map<PaneId, RegisteredPaneView> | null>(null)
+
+  if (paneViewsRef.current === null) {
+    paneViewsRef.current = new Map([['main', { pending: null, raf: null, view: mainPaneViewRef.current }]])
+  }
+
+  const paneViews = paneViewsRef as MutableRefObject<Map<PaneId, RegisteredPaneView>>
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
@@ -130,11 +207,11 @@ export function useSessionStateCache({
     return created
   }, [])
 
-  const flushPendingViewState = useCallback(() => {
-    const pending = pendingViewStateRef.current
-    pendingViewStateRef.current = null
+  const flushPendingPaneState = useCallback((entry: RegisteredPaneView) => {
+    const pending = entry.pending
+    entry.pending = null
 
-    if (!pending || pending.sessionId !== activeSessionIdRef.current) {
+    if (!pending || pending.sessionId !== entry.view.activeSessionIdRef.current) {
       return
     }
 
@@ -145,58 +222,58 @@ export function useSessionStateCache({
     // assistant-ui runtime → the virtualizer, which re-measures and visibly
     // jerks the scroll position while the user is reading. Skip the publish when
     // the merged result is content-identical to what's already on screen.
-    const currentMessages = $messages.get()
+    const currentMessages = entry.view.$messages.get()
 
-    // On a thread switch `$messages` still holds the *previous* thread, so
+    // On a thread switch the view still holds the *previous* thread, so
     // preserving its local errors would graft that thread's failed turn (e.g.
     // an out-of-funds error) onto this one — then cascade it everywhere as the
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
     const nextMessages =
-      viewSessionIdRef.current === pending.sessionId
+      entry.view.viewSessionIdRef.current === pending.sessionId
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
     if (!sameMessageList(nextMessages, currentMessages)) {
-      setMessages(nextMessages)
+      entry.view.setMessages(nextMessages)
     }
 
-    viewSessionIdRef.current = pending.sessionId
+    entry.view.viewSessionIdRef.current = pending.sessionId
 
-    syncRuntimeMetadataToView(pending.state)
-    setBusy(pending.state.busy)
-    setMutableRef(busyRef, pending.state.busy)
-    setAwaitingResponse(pending.state.awaitingResponse)
-    // Mirror the focused session's per-session turn clock into the global
-    // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
-    // time intact on focus instead of zeroing it (the "timer restarts" bug).
-    setTurnStartedAt(pending.state.turnStartedAt)
-  }, [busyRef, setAwaitingResponse, setBusy, setMessages])
+    syncRuntimeMetadataToView(entry.view, pending.state)
+    entry.view.setBusy(pending.state.busy)
+    setMutableRef(entry.view.busyRef, pending.state.busy)
+    entry.view.setAwaitingResponse(pending.state.awaitingResponse)
+    // Mirror the focused session's per-session turn clock into the atom the
+    // statusbar timer reads. Keeps a backgrounded turn's elapsed time intact
+    // on focus instead of zeroing it (the "timer restarts" bug).
+    entry.view.setTurnStartedAt(pending.state.turnStartedAt)
+  }, [])
 
-  const syncSessionStateToView = useCallback(
-    (sessionId: string, state: ClientSessionState) => {
-      // Only the currently-viewed session may stage into the shared `$messages`
-      // view. A background session (e.g. one still busy and emitting stream /
-      // error updates after the user toggled away) must update its own cache
-      // entry but never the view — otherwise its messages clobber the
-      // foreground transcript and appear to "bleed" into every other session.
-      // The flush below also re-checks the active id, but staging here is what
+  const syncPaneStateToView = useCallback(
+    (entry: RegisteredPaneView, sessionId: string, state: ClientSessionState) => {
+      // Only the pane's currently-viewed session may stage into its view. A
+      // background session (e.g. one still busy and emitting stream / error
+      // updates after the user toggled away) must update its own cache entry
+      // but never a view — otherwise its messages clobber the foreground
+      // transcript and appear to "bleed" into every other session. The flush
+      // above also re-checks the pane's active id, but staging here is what
       // prevents a background write from overwriting an already-pending
       // foreground write within the same animation frame (only one RAF is
-      // scheduled, so the last `pendingViewStateRef` writer would otherwise win).
-      if (sessionId !== activeSessionIdRef.current) {
+      // scheduled per pane, so the last `pending` writer would otherwise win).
+      if (sessionId !== entry.view.activeSessionIdRef.current) {
         return
       }
 
-      syncRuntimeMetadataToView(state)
-      pendingViewStateRef.current = { sessionId, state }
+      syncRuntimeMetadataToView(entry.view, state)
+      entry.pending = { sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
       // now waiting on the user) MUST reach the view immediately. Electron
       // throttles `requestAnimationFrame` to ~0 while the window is
       // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
-      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
-      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
+      // stranded in `pending` indefinitely — that's the "new chat stuck on
+      // Thinking until I refocus / F5" bug. Flush these synchronously
       // (cancelling any in-flight RAF, since we're about to publish the latest
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
@@ -204,42 +281,103 @@ export function useSessionStateCache({
       const isCriticalTransition = !state.busy || state.needsInput
 
       if (isCriticalTransition) {
-        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-          window.cancelAnimationFrame(viewSyncRafRef.current)
-          viewSyncRafRef.current = null
+        if (entry.raf !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(entry.raf)
+          entry.raf = null
         }
 
-        flushPendingViewState()
+        flushPendingPaneState(entry)
 
         return
       }
 
-      if (viewSyncRafRef.current !== null) {
+      if (entry.raf !== null) {
         return
       }
 
       if (typeof window === 'undefined') {
-        flushPendingViewState()
+        flushPendingPaneState(entry)
 
         return
       }
 
-      viewSyncRafRef.current = window.requestAnimationFrame(() => {
-        viewSyncRafRef.current = null
-        flushPendingViewState()
+      entry.raf = window.requestAnimationFrame(() => {
+        entry.raf = null
+        flushPendingPaneState(entry)
       })
     },
-    [flushPendingViewState]
+    [flushPendingPaneState]
+  )
+
+  // Fan a session's fresh truth out to every registered pane view. With only
+  // the main pane registered (single-pane mode) this is exactly the old
+  // single-view staging + flush.
+  const syncSessionStateToView = useCallback(
+    (sessionId: string, state: ClientSessionState) => {
+      for (const entry of paneViews.current.values()) {
+        syncPaneStateToView(entry, sessionId, state)
+      }
+    },
+    [paneViews, syncPaneStateToView]
+  )
+
+  /** Mount a pane's view for fan-out. Returns the unregister disposer —
+   *  SplitChatPane registers on mount and unregisters on close, after which
+   *  its session keeps streaming in the truth layer like any background one. */
+  const registerPaneView = useCallback(
+    (view: RegisteredSessionView) => {
+      const entry: RegisteredPaneView = { pending: null, raf: null, view }
+      paneViews.current.set(view.paneId, entry)
+
+      return () => {
+        if (entry.raf !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(entry.raf)
+          entry.raf = null
+        }
+
+        if (paneViews.current.get(view.paneId) === entry) {
+          paneViews.current.delete(view.paneId)
+        }
+      }
+    },
+    [paneViews]
+  )
+
+  /** Re-project a pane's cached session truth into its view synchronously —
+   *  the warm repaint used on pane activation and split-open (mirrors the
+   *  warm-cache repaint in resumeSession). No-op when the pane isn't
+   *  registered or holds no cached session. */
+  const publishPaneState = useCallback(
+    (paneId: PaneId) => {
+      const entry = paneViews.current.get(paneId)
+      const runtimeId = entry?.view.activeSessionIdRef.current
+      const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+
+      if (!entry || !runtimeId || !state) {
+        return
+      }
+
+      if (entry.raf !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(entry.raf)
+        entry.raf = null
+      }
+
+      entry.pending = { sessionId: runtimeId, state }
+      flushPendingPaneState(entry)
+    },
+    [flushPendingPaneState, paneViews]
   )
 
   useEffect(
     () => () => {
-      if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(viewSyncRafRef.current)
-        viewSyncRafRef.current = null
+      for (const entry of paneViews.current.values()) {
+        if (entry.raf !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(entry.raf)
+          entry.raf = null
+        }
       }
     },
-    []
+    [paneViews]
   )
 
   const updateSessionState = useCallback(
@@ -306,6 +444,8 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    publishPaneState,
+    registerPaneView,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,

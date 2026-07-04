@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
 import {
@@ -31,6 +31,8 @@ import {
 
 import { sameCronSignature } from '../../desktop-controller-utils'
 
+import { createTrailingCoalescer, type TrailingCoalescer } from './refresh-coalescer'
+
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
@@ -40,6 +42,19 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+
+// Trailing window for coalescing event-driven refreshes (message.complete,
+// cross-window sessions-changed). With a swarm of concurrent sessions each
+// completed turn fired its own full refresh; one refresh per window of
+// completions is plenty for a sidebar.
+const SESSIONS_REFRESH_DEBOUNCE_MS = 1_500
+
+// The ancillary sections (cron runs/jobs + messaging slices) change far more
+// slowly than local recents, and cron jobs additionally ride their own poll
+// (CRON_POLL_INTERVAL_MS). Re-fetching all three on every refreshSessions
+// turned each completed turn into a 4-request fan-out — bound them to at most
+// once per interval instead.
+const ANCILLARY_REFRESH_MIN_INTERVAL_MS = 30_000
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, the
@@ -76,6 +91,7 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const lastAncillaryRefreshAtRef = useRef(0)
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
   // page so the two never compete for slots. Cheap + bounded. Kept (even though
@@ -188,10 +204,41 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }
     }
 
-    void refreshCronSessions()
-    void refreshCronJobs()
-    void refreshMessagingSessions()
+    const now = Date.now()
+
+    if (now - lastAncillaryRefreshAtRef.current >= ANCILLARY_REFRESH_MIN_INTERVAL_MS) {
+      lastAncillaryRefreshAtRef.current = now
+      void refreshCronSessions()
+      void refreshCronJobs()
+      void refreshMessagingSessions()
+    }
   }, [profileScope, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
+
+  // Event-driven refreshes (every message.complete, every cross-window
+  // sessions-changed broadcast) go through this coalesced entry point instead
+  // of calling refreshSessions directly: one trailing run per burst, single
+  // flight so concurrent responses can't race. Deliberate user actions (boot,
+  // paging, profile switch) keep the immediate awaited refreshSessions().
+  const refreshSessionsLatestRef = useRef<() => Promise<void>>(refreshSessions)
+  refreshSessionsLatestRef.current = refreshSessions
+
+  const coalescerRef = useRef<TrailingCoalescer | null>(null)
+
+  useEffect(
+    () => () => {
+      coalescerRef.current?.cancel()
+      coalescerRef.current = null
+    },
+    []
+  )
+
+  const scheduleSessionsRefresh = useCallback(() => {
+    coalescerRef.current ??= createTrailingCoalescer(
+      () => refreshSessionsLatestRef.current(),
+      SESSIONS_REFRESH_DEBOUNCE_MS
+    )
+    coalescerRef.current.schedule()
+  }, [])
 
   const loadMoreSessions = useCallback(async () => {
     bumpSessionsLimit()
@@ -226,6 +273,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     loadMoreSessionsForProfile,
     refreshCronJobs,
     refreshMessagingSessions,
-    refreshSessions
+    refreshSessions,
+    scheduleSessionsRefresh
   }
 }

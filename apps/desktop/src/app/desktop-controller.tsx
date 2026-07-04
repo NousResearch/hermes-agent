@@ -7,7 +7,7 @@ import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
-import { Pane, PaneMain } from '@/components/pane-shell'
+import { Pane, PaneMain, PaneShell } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
@@ -46,7 +46,19 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileRestoreRequest,
+  $profileScope,
+  activeProfileQueryKey,
+  forgetProfileSession,
+  forgetSessionMemo,
+  isSessionListed,
+  refreshActiveProfile,
+  rememberedProfileSession,
+  rememberProfileSession
+} from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -73,6 +85,18 @@ import {
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
+import {
+  $activePaneId,
+  $splitOpen,
+  $splitPaneSession,
+  closeSplitPane,
+  openSplitPaneForSession,
+  registerMainPaneRuntimeSessionIdGetter,
+  registerPaneOpenDispatcher,
+  setActivePane,
+  SPLIT_PANE_ID,
+  splitPaneModelSelect
+} from '../store/split'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -80,6 +104,8 @@ import { isSecondaryWindow } from '../store/windows'
 import { ChatView } from './chat'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
+import { createMainPaneRequest } from './chat/pane-request'
+import { bindMainPaneView } from './chat/pane-view'
 import {
   ChatPreviewRail,
   PREVIEW_RAIL_MAX_WIDTH,
@@ -87,9 +113,12 @@ import {
   PREVIEW_RAIL_PANE_WIDTH
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
+import { SplitChatPane } from './chat/split-pane'
 import { CommandPalette } from './command-palette'
+import { profileRestoreSuperseded, resolveOpenSessionDispatch } from './desktop-controller-utils'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useReconnectReconciliation } from './gateway/hooks/use-reconnect-reconciliation'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -115,6 +144,7 @@ import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
+import { resolveStoredSession } from './session/hooks/use-session-actions/utils'
 import { useSessionListActions } from './session/hooks/use-session-list-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
@@ -131,6 +161,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const KanbanView = lazy(async () => ({ default: (await import('./kanban')).KanbanView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
@@ -221,6 +252,7 @@ export function DesktopController() {
     commandCenterOpen,
     cronOpen,
     currentView,
+    kanbanOpen,
     openAgents,
     openCommandCenterSection,
     openStarmap,
@@ -240,6 +272,8 @@ export function DesktopController() {
   const {
     activeSessionIdRef,
     ensureSessionState,
+    publishPaneState,
+    registerPaneView,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,
@@ -256,6 +290,140 @@ export function DesktopController() {
 
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
+  // ── Split pane (design §3.5/§3.6/§5) ──────────────────────────────────────
+  // Secondary windows (pop-outs, watch windows) never host the split.
+  const splitOpenStore = useStore($splitOpen)
+  const splitOpen = splitOpenStore && !isSecondaryWindow()
+  const activePaneId = useStore($activePaneId)
+
+  // While the split is open the MAIN pane's send path gains the same
+  // swap-settling guard as the split's paneRequest (design §4); with the split
+  // closed it is a pure pass-through — single-pane behavior byte-identical.
+  const mainPaneRequest = useMemo(() => createMainPaneRequest({ requestGateway }), [requestGateway])
+
+  // Late-bind MAIN_PANE_VIEW's router surface + pane refs (design §3.2): the
+  // main bundle's atoms/setters are module-level aliases, but the routing and
+  // the cache refs only exist once this controller mounts.
+  const locationPathnameRef = useRef(location.pathname)
+  locationPathnameRef.current = location.pathname
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
+  useEffect(() => {
+    bindMainPaneView({
+      activeSessionIdRef,
+      busyRef,
+      creatingSessionRef,
+      getTargetSessionId: () => routeSessionId(locationPathnameRef.current),
+      navigateToNewChat: replace => void navigateRef.current(NEW_CHAT_ROUTE, { replace: replace ?? false }),
+      navigateToSession: (storedSessionId, replace) =>
+        void navigateRef.current(sessionRoute(storedSessionId), { replace: replace ?? false }),
+      selectedStoredSessionIdRef
+    })
+  }, [activeSessionIdRef, busyRef, creatingSessionRef, selectedStoredSessionIdRef])
+
+  // Open-in-active-pane dispatcher: every session-open entry point funnels
+  // here. The same-session invariant reads the UNMIRRORED main selection (the
+  // cache ref) — while the split is focused the id singletons mirror ITS
+  // session, so they can't be the guard. Split closed → exactly the old
+  // navigate(sessionRoute()) path. A force-collapsed split (narrow viewport)
+  // dispatches as CLOSED: focusing or filling an invisible pane would strand
+  // typing in a hidden editor, so the session opens in the visible main pane
+  // instead (route-resume then closes the hidden split if it held it).
+  const openSessionInActivePane = useCallback(
+    (storedSessionId: string) => {
+      const action = resolveOpenSessionDispatch({
+        activePaneId: $activePaneId.get(),
+        mainSelectedStoredSessionId: selectedStoredSessionIdRef.current,
+        // Secondary windows share localStorage with the main window, so their
+        // pane-state snapshot can claim an open split they never render.
+        splitOpen: $splitOpen.get() && !isSecondaryWindow() && !narrowViewport,
+        splitStoredSessionId: $splitPaneSession.get()?.storedId ?? null,
+        storedSessionId
+      })
+
+      switch (action.kind) {
+        case 'focus-split':
+          setActivePane('split')
+
+          return
+
+        case 'focus-main':
+          setActivePane('main')
+
+          return
+
+        case 'open-in-split':
+          openSplitPaneForSession(storedSessionId)
+
+          return
+
+        default:
+          navigate(sessionRoute(storedSessionId))
+      }
+    },
+    [narrowViewport, navigate, selectedStoredSessionIdRef]
+  )
+
+  // "Open in split" (session menus): enforce the same-session invariant with
+  // unmirrored truth, then raw-open. Opening the split's own session just
+  // focuses it; opening the main pane's focuses the main pane. Narrow
+  // viewport (split force-collapsed) → the visible main pane instead.
+  const openSessionInSplit = useCallback(
+    (storedSessionId: string, profile?: null | string) => {
+      if (narrowViewport) {
+        openSessionInActivePane(storedSessionId)
+
+        return
+      }
+
+      if ($splitPaneSession.get()?.storedId === storedSessionId) {
+        setActivePane('split')
+
+        return
+      }
+
+      if (storedSessionId === selectedStoredSessionIdRef.current) {
+        setActivePane('main')
+
+        return
+      }
+
+      openSplitPaneForSession(storedSessionId, profile)
+    },
+    [narrowViewport, openSessionInActivePane, selectedStoredSessionIdRef]
+  )
+
+  useEffect(() => {
+    registerPaneOpenDispatcher({ openInActivePane: openSessionInActivePane, openInSplit: openSessionInSplit })
+
+    return () => registerPaneOpenDispatcher(null)
+  }, [openSessionInActivePane, openSessionInSplit])
+
+  // Expose the main pane's UNMIRRORED viewed runtime id for non-React
+  // consumers (native notifications): while the split is focused the
+  // $activeSessionId singleton mirrors the SPLIT's session, but the main
+  // pane's transcript is still on-screen and must count as foreground.
+  useEffect(() => {
+    registerMainPaneRuntimeSessionIdGetter(() => activeSessionIdRef.current)
+
+    return () => registerMainPaneRuntimeSessionIdGetter(null)
+  }, [activeSessionIdRef])
+
+  const activateMainPane = useCallback(() => setActivePane('main'), [])
+
+  // Below the collapse breakpoint the split force-collapses (keeping its
+  // session for when the window widens) — an invisible pane must not stay
+  // (or BECOME) the focused one. Watching activePaneId too makes this a
+  // standing guard: any path that flips focus to the hidden split while
+  // narrow (keybind toggle, palette "Split right", a stray focus event) is
+  // reverted immediately, not just on the next viewport change.
+  useEffect(() => {
+    if (narrowViewport && activePaneId === 'split') {
+      setActivePane('main')
+    }
+  }, [activePaneId, narrowViewport])
+
   useEffect(() => {
     window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
   }, [chatOpen, filePreviewTarget, previewTarget])
@@ -270,10 +438,13 @@ export function DesktopController() {
     }
   }, [])
 
-  // Remember the open chat so a relaunch reopens it instead of an empty new-chat.
+  // Remember the open chat so a relaunch reopens it instead of an empty
+  // new-chat — globally (relaunch) AND per owning profile, so switching back
+  // to a profile restores the conversation you left it on.
   useEffect(() => {
     if (routedSessionId) {
       setRememberedSessionId(routedSessionId)
+      rememberProfileSession(routedSessionId)
     }
   }, [routedSessionId])
 
@@ -295,9 +466,17 @@ export function DesktopController() {
   }, [location.pathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
+    if (!resumeExhaustedSessionId) {
+      return
+    }
+
+    if (getRememberedSessionId() === resumeExhaustedSessionId) {
       setRememberedSessionId(null)
     }
+
+    // A terminally-unresumable session must not be re-attempted by the next
+    // profile switch either.
+    forgetSessionMemo(resumeExhaustedSessionId)
   }, [resumeExhaustedSessionId])
 
   // Notification click: the main process already focused the window; jump to its
@@ -308,12 +487,12 @@ export function DesktopController() {
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
+        openSessionInActivePane(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current))
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate, runtimeIdByStoredSessionIdRef])
+  }, [openSessionInActivePane, runtimeIdByStoredSessionIdRef])
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {
@@ -397,19 +576,21 @@ export function DesktopController() {
     loadMoreSessionsForProfile,
     refreshCronJobs,
     refreshMessagingSessions,
-    refreshSessions
+    refreshSessions,
+    scheduleSessionsRefresh
   } = useSessionListActions({ profileScope })
 
   // Another window mutated the shared session list (e.g. a chat started in the
   // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
-  // only real windows bother.
+  // only real windows bother. Coalesced: a burst of completions in another
+  // window collapses to one refresh here.
   useEffect(() => {
     if (isSecondaryWindow()) {
       return
     }
 
-    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
-  }, [refreshSessions])
+    return onSessionsChanged(() => scheduleSessionsRefresh())
+  }, [scheduleSessionsRefresh])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -480,6 +661,24 @@ export function DesktopController() {
         />
       ) : null,
     [gatewayRef, gatewayState, requestGateway, selectModel]
+  )
+
+  // The global ModelPickerOverlay serves the ACTIVE pane: while the split is
+  // focused its pick routes to the split's pane-scoped selectModel (registered
+  // by SplitChatPane) so it writes the split's chip — not the main pane's chip
+  // and sticky localStorage keys. Split closed / main focused → exactly the
+  // controller's own selectModel, as before.
+  const selectModelInActivePane = useCallback(
+    async (selection: { model: string; provider: string }): Promise<boolean> => {
+      const splitSelect = splitPaneModelSelect()
+
+      if (splitSelect && $activePaneId.get() === 'split' && !isSecondaryWindow()) {
+        return splitSelect(selection)
+      }
+
+      return selectModel(selection)
+    },
+    [selectModel]
   )
 
   useContextSuggestions({
@@ -586,7 +785,7 @@ export function DesktopController() {
     hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
-    refreshSessions,
+    scheduleSessionsRefresh,
     sessionStateByRuntimeIdRef,
     updateSessionState
   })
@@ -619,7 +818,12 @@ export function DesktopController() {
     ensureSessionState,
     getRouteToken,
     navigate,
-    requestGateway,
+    // The pane-aware wrapper, NOT the raw active-gateway request: the main
+    // pane's resume path also fires while the split is focused (reconnect
+    // route-resume, bounded auto-retry), and those background RPCs must ride
+    // the main session's own profile socket — the active gateway belongs to
+    // the split then. Split closed → pure pass-through, byte-identical.
+    requestGateway: mainPaneRequest,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -628,10 +832,98 @@ export function DesktopController() {
     updateSessionState
   })
 
+  // Pane-aware list actions. Deleting/archiving re-routes panes FIRST: the
+  // split closes when its own session goes away, and an active split hands
+  // focus back so the identity mirror is torn down before the action reads
+  // the id singletons. The one-macrotask defer lets that pane switch
+  // re-render, so the action's state closures see the restored main-pane ids
+  // rather than the mirrored split ones. Split closed → exactly the old
+  // synchronous call.
+  const removeSessionRef = useRef(removeSession)
+  removeSessionRef.current = removeSession
+  const archiveSessionRef = useRef(archiveSession)
+  archiveSessionRef.current = archiveSession
+
+  const removeSessionAnyPane = useCallback(
+    (sessionId: string) => {
+      if ($splitOpen.get() && !isSecondaryWindow()) {
+        if ($splitPaneSession.get()?.storedId === sessionId) {
+          closeSplitPane()
+        } else if ($activePaneId.get() === 'split') {
+          setActivePane('main')
+        }
+
+        window.setTimeout(() => void removeSessionRef.current(sessionId), 0)
+
+        return
+      }
+
+      void removeSession(sessionId)
+    },
+    [removeSession]
+  )
+
+  const archiveSessionAnyPane = useCallback(
+    (sessionId: string) => {
+      if ($splitOpen.get() && !isSecondaryWindow()) {
+        if ($splitPaneSession.get()?.storedId === sessionId) {
+          closeSplitPane()
+        } else if ($activePaneId.get() === 'split') {
+          setActivePane('main')
+        }
+
+        window.setTimeout(() => void archiveSessionRef.current(sessionId), 0)
+
+        return
+      }
+
+      void archiveSession(sessionId)
+    },
+    [archiveSession]
+  )
+
+  // Branching opens the child in the MAIN pane — focus it first so the
+  // identity mirror is down before forkBranch writes the main view. A no-op
+  // with the split closed.
+  const branchStoredSessionAnyPane = useCallback(
+    (sessionId: string) => {
+      setActivePane('main')
+      void branchStoredSession(sessionId)
+    },
+    [branchStoredSession]
+  )
+
+  // Session picker (/resume, /switch): pre-split this called resumeSession
+  // directly — including for the ALREADY-OPEN session, which is the way to
+  // force a re-resume of a wedged chat from the picker. The dispatcher's
+  // navigate() path would no-op there (same pathname ⇒ route-resume skips),
+  // so with the split closed and the picked session already selected, keep
+  // the forced re-resume. Everything else routes through the dispatcher
+  // (design §1.9).
+  const resumeFromPicker = useCallback(
+    (storedSessionId: string) => {
+      const splitInPlay = $splitOpen.get() && !isSecondaryWindow()
+
+      if (!splitInPlay && storedSessionId === selectedStoredSessionIdRef.current) {
+        void resumeSession(storedSessionId)
+
+        return
+      }
+
+      openSessionInActivePane(storedSessionId)
+    },
+    [openSessionInActivePane, resumeSession, selectedStoredSessionIdRef]
+  )
+
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
   useKeybinds({
-    startFreshSession: startFreshSessionDraft,
+    startFreshSession: () => {
+      // A keyboard new-chat is a MAIN-pane gesture: hand focus back first so
+      // the fresh draft never runs against mirrored split identity.
+      setActivePane('main')
+      startFreshSessionDraft()
+    },
     toggleCommandCenter,
     toggleSelectedPin
   })
@@ -647,8 +939,76 @@ export function DesktopController() {
     }
 
     lastFreshRef.current = freshSessionRequest
+    // Profile-driven fresh drafts are MAIN-pane context switches.
+    setActivePane('main')
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
+
+  // A profile switch restores that profile's remembered last session (or the
+  // explicit target of a rail-badge click) instead of always dropping to a
+  // blank draft — so hopping A → B → A lands back in each profile's context.
+  // Existence is checked against the already-fetched cross-profile list first;
+  // only an unlisted id pays for the by-id REST probe (resolveStoredSession).
+  // Deleted/archived memo → clear it and fall back to a fresh draft. The token
+  // ref makes a rapid second switch supersede an in-flight probe, so a stale
+  // restore can never navigate over a newer one.
+  const profileRestoreRequest = useStore($profileRestoreRequest)
+  const lastProfileRestoreTokenRef = useRef(0)
+
+  useEffect(() => {
+    const request = profileRestoreRequest
+
+    if (!request || request.token === lastProfileRestoreTokenRef.current) {
+      return
+    }
+
+    lastProfileRestoreTokenRef.current = request.token
+    // A profile switch restores the MAIN pane's context — focus it first so
+    // the restore's navigate/draft never runs against mirrored split identity.
+    setActivePane('main')
+    const remembered = request.sessionId ?? rememberedProfileSession(request.profile)
+
+    if (!remembered) {
+      startFreshSessionDraft()
+
+      return
+    }
+
+    if (isSessionListed($sessions.get(), remembered)) {
+      navigate(sessionRoute(remembered))
+
+      return
+    }
+
+    // Snapshot the selection as of the switch — the pre-switch profile's open
+    // session legitimately still sits in $selectedStoredSessionId here, so only
+    // a CHANGE during the probe means the user actively opened something newer.
+    const selectedAtRequest = $selectedStoredSessionId.get()
+
+    void (async () => {
+      const row = await resolveStoredSession(remembered).catch(() => undefined)
+
+      // Superseded while probing (another switch, or the user opened a chat /
+      // started a resume themselves) → never restore over the newer context.
+      if (
+        profileRestoreSuperseded({
+          currentToken: lastProfileRestoreTokenRef.current,
+          requestToken: request.token,
+          selectedAtRequest,
+          selectedNow: $selectedStoredSessionId.get()
+        })
+      ) {
+        return
+      }
+
+      if (row && !row.archived) {
+        navigate(sessionRoute(remembered))
+      } else {
+        forgetProfileSession(request.profile)
+        startFreshSessionDraft()
+      }
+    })()
+  }, [navigate, profileRestoreRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill. Both are nanostores, so the blanket
@@ -674,7 +1034,7 @@ export function DesktopController() {
   const composer = useComposerActions({
     activeSessionId,
     currentCwd,
-    requestGateway
+    requestGateway: mainPaneRequest
   })
 
   const branchInNewChat = useCallback(
@@ -735,6 +1095,8 @@ export function DesktopController() {
 
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
+      // Workspace "+" seeds the MAIN pane's next chat — focus it first.
+      setActivePane('main')
       startFreshSessionDraft()
 
       // A worktree lane carries its own path; the trunk "+" can be path-less (the
@@ -815,7 +1177,7 @@ export function DesktopController() {
     handleSkinCommand,
     openMemoryGraph: openStarmap,
     refreshSessions,
-    requestGateway,
+    requestGateway: mainPaneRequest,
     resumeStoredSession: resumeSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
@@ -853,6 +1215,9 @@ export function DesktopController() {
       const recent = $sessions.get()[0]
 
       if (recent?.id) {
+        // The pet resumes into the MAIN pane — focus it first so the resume's
+        // view writes never race the split's identity mirror.
+        setActivePane('main')
         void resumeSessionRef.current(recent.id)
       }
     })
@@ -876,6 +1241,11 @@ export function DesktopController() {
     return $attentionSessionIds.listen(sync)
   }, [])
 
+  const reconcileBusySessions = useReconnectReconciliation({
+    sessionStateByRuntimeIdRef,
+    updateSessionState
+  })
+
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
     onConnectionReady: c => {
@@ -884,6 +1254,7 @@ export function DesktopController() {
     onGatewayReady: g => {
       gatewayRef.current = g
     },
+    reconcileBusySessions,
     refreshHermesConfig,
     refreshSessions
   })
@@ -1015,9 +1386,9 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
-      onArchiveSession={sessionId => void archiveSession(sessionId)}
-      onBranchSession={sessionId => void branchStoredSession(sessionId)}
-      onDeleteSession={sessionId => void removeSession(sessionId)}
+      onArchiveSession={archiveSessionAnyPane}
+      onBranchSession={branchStoredSessionAnyPane}
+      onDeleteSession={removeSessionAnyPane}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
@@ -1027,7 +1398,7 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
-      onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onResumeSession={openSessionInActivePane}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
           .then(() => refreshCronJobs())
@@ -1053,13 +1424,13 @@ export function DesktopController() {
           onCompleted={() => {
             void refreshHermesConfig()
             void refreshCurrentModel()
-            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
           }}
           requestGateway={requestGateway}
         />
       )}
-      <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
-      <SessionPickerOverlay onResume={resumeSession} />
+      <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModelInActivePane} />
+      <SessionPickerOverlay onResume={resumeFromPicker} />
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
@@ -1078,14 +1449,14 @@ export function DesktopController() {
             onConfigSaved={() => {
               void refreshHermesConfig()
               void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
             }}
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
             }}
           />
         </Suspense>
@@ -1096,9 +1467,9 @@ export function DesktopController() {
           <CommandCenterView
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
-            onDeleteSession={removeSession}
+            onDeleteSession={async sessionId => removeSessionAnyPane(sessionId)}
             onNavigateRoute={path => navigate(path)}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={openSessionInActivePane}
           />
         </Suspense>
       )}
@@ -1111,10 +1482,13 @@ export function DesktopController() {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView
-            onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
-          />
+          <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openSessionInActivePane} />
+        </Suspense>
+      )}
+
+      {kanbanOpen && (
+        <Suspense fallback={null}>
+          <KanbanView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 
@@ -1145,7 +1519,7 @@ export function DesktopController() {
       onCancel={cancelRun}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {
-          void removeSession(selectedStoredSessionId)
+          removeSessionAnyPane(selectedStoredSessionId)
         }
       }}
       onDismissError={dismissError}
@@ -1164,6 +1538,69 @@ export function DesktopController() {
       onToggleSelectedPin={toggleSelectedPin}
       onTranscribeAudio={transcribeVoiceAudio}
     />
+  )
+
+  // The chat column hosts an inner, chat-only PaneShell (design §5): main
+  // chat + the split pane. Outer rails are untouched. The PaneShell/PaneMain
+  // wrappers (and the disabled 0px split cell) are ALWAYS mounted so toggling
+  // the split never remounts ChatView (thread/composer state survives); with
+  // the split closed they add two inert wrapper divs around the otherwise
+  // unchanged chat subtree. The main wrapper is a zero-box `display:contents`
+  // shell that only exists while the split is open; its capture handlers make
+  // any interaction focus the main pane BEFORE the subtree's own handlers
+  // run. (display:contents generates no box, so the main pane carries no
+  // focus ring of its own — the split pane's hairline flipping is the v1
+  // active-pane indicator; data-pane-active is provided for tooling.)
+  const chatArea = (
+    <PaneShell>
+      <PaneMain>
+        {splitOpen ? (
+          <div
+            className="contents"
+            data-pane-active={activePaneId === 'main' ? 'true' : 'false'}
+            data-pane-id="chat-main-view"
+            onFocusCapture={activateMainPane}
+            onPointerDownCapture={activateMainPane}
+          >
+            {chatView}
+          </div>
+        ) : (
+          chatView
+        )}
+      </PaneMain>
+      <Pane
+        defaultOpen={false}
+        disabled={!splitOpen}
+        divider
+        forceCollapsed={narrowViewport}
+        id={SPLIT_PANE_ID}
+        maxWidth="70%"
+        minWidth={380}
+        resizable
+        side="right"
+        width="44%"
+      >
+        {splitOpen ? (
+          <SplitChatPane
+            ensureSessionState={ensureSessionState}
+            gateway={gatewayRef.current}
+            maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
+            onRemoveSession={removeSessionAnyPane}
+            onToggleSelectedPin={toggleSelectedPin}
+            openMemoryGraph={openStarmap}
+            publishPaneState={publishPaneState}
+            refreshSessions={refreshSessions}
+            registerPaneView={registerPaneView}
+            requestGateway={requestGateway}
+            runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+            sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+            sttEnabled={sttEnabled}
+            syncSessionStateToView={syncSessionStateToView}
+            updateSessionState={updateSessionState}
+          />
+        ) : null}
+      </Pane>
+    </PaneShell>
   )
 
   // Flipped layout mirrors the default: sessions sidebar → right, file
@@ -1311,8 +1748,8 @@ export function DesktopController() {
       )}
       <PaneMain>
         <Routes>
-          <Route element={chatView} index />
-          <Route element={chatView} path=":sessionId" />
+          <Route element={chatArea} index />
+          <Route element={chatArea} path=":sessionId" />
           <Route
             element={
               <Suspense fallback={null}>
@@ -1338,6 +1775,7 @@ export function DesktopController() {
             path="artifacts"
           />
           <Route element={null} path="cron" />
+          <Route element={null} path="kanban" />
           <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />

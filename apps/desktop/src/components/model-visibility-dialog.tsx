@@ -19,6 +19,7 @@ import {
   setVisibleModels,
   toggleModelVisibility
 } from '@/store/model-visibility'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelVisibilityDialogProps {
@@ -41,8 +42,11 @@ export function ModelVisibilityDialog({
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
 
+  // Profile segment keeps each backend's catalog in its own cache slot.
+  const modelOptionsProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
+    queryKey: ['model-options', modelOptionsProfile, sessionId || 'global'],
     queryFn: (): Promise<ModelOptionsResponse> => {
       if (gw && sessionId) {
         return gw.request<ModelOptionsResponse>('model.options', { session_id: sessionId })

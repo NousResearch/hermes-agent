@@ -8,38 +8,70 @@ import { atom, type WritableAtom } from 'nanostores'
 // `$threadScrolledUp` dims the composer / status stack; `$threadJumpButtonVisible`
 // shows the floating jump control. Both track `!isAtBottom` today, but stay
 // separate so their thresholds can diverge again without touching consumers.
-export const $threadScrolledUp = atom(false)
-export const $threadJumpButtonVisible = atom(false)
+//
+// Factory-shaped for the split pane: each mounted thread + its chrome share ONE
+// instance (two threads writing a shared atom would fight over it), delivered
+// through the pane bundle (see app/chat/pane-view.ts). The module-level exports
+// below stay the MAIN pane's instance, so every existing consumer is untouched.
 
-// Skip no-op writes so subscribers don't churn on every scroll tick.
-const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
-  if (target.get() !== value) {
-    target.set(value)
+export interface ThreadScrollInstance {
+  $threadScrolledUp: WritableAtom<boolean>
+  $threadJumpButtonVisible: WritableAtom<boolean>
+  setThreadAtBottom: (isAtBottom: boolean) => void
+  resetThreadScroll: () => void
+  /** Fire the registered viewport handler(s) — the jump button's click path. */
+  requestScrollToBottom: () => void
+  /** Cross-component bridge: the jump button lives by the composer, the
+   *  viewport's `scrollToBottom` lives inside the thread. The thread registers
+   *  a handler; the button fires it. Mirrors the composer focus/insert emitter
+   *  pattern, scoped per pane so one pane's jump can't scroll the other. */
+  onScrollToBottomRequest: (handler: () => void) => () => void
+}
+
+export function createThreadScrollAtoms(): ThreadScrollInstance {
+  const $threadScrolledUp = atom(false)
+  const $threadJumpButtonVisible = atom(false)
+
+  // Skip no-op writes so subscribers don't churn on every scroll tick.
+  const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
+    if (target.get() !== value) {
+      target.set(value)
+    }
+  }
+
+  const setScrolledUp = setter($threadScrolledUp)
+  const setJumpButtonVisible = setter($threadJumpButtonVisible)
+
+  const setThreadAtBottom = (isAtBottom: boolean) => {
+    setScrolledUp(!isAtBottom)
+    setJumpButtonVisible(!isAtBottom)
+  }
+
+  const handlers = new Set<() => void>()
+
+  return {
+    $threadScrolledUp,
+    $threadJumpButtonVisible,
+    setThreadAtBottom,
+    resetThreadScroll: () => setThreadAtBottom(true),
+    requestScrollToBottom: () => handlers.forEach(handler => handler()),
+    onScrollToBottomRequest: handler => {
+      handlers.add(handler)
+
+      return () => void handlers.delete(handler)
+    }
   }
 }
 
-const setScrolledUp = setter($threadScrolledUp)
-const setJumpButtonVisible = setter($threadJumpButtonVisible)
+/** The main pane's instance — the atoms every pre-split consumer imported. */
+export const mainThreadScroll = createThreadScrollAtoms()
 
-export const setThreadAtBottom = (isAtBottom: boolean) => {
-  setScrolledUp(!isAtBottom)
-  setJumpButtonVisible(!isAtBottom)
-}
-
-export const resetThreadScroll = () => setThreadAtBottom(true)
-
-// Cross-component bridge: the jump button lives by the composer, the viewport's
-// `scrollToBottom` lives inside the thread. The bridge registers a handler; the
-// button fires it. Mirrors the composer focus/insert emitter pattern.
-const handlers = new Set<() => void>()
-
-export const onScrollToBottomRequest = (handler: () => void) => {
-  handlers.add(handler)
-
-  return () => void handlers.delete(handler)
-}
-
-export const requestScrollToBottom = () => handlers.forEach(handler => handler())
+export const $threadScrolledUp = mainThreadScroll.$threadScrolledUp
+export const $threadJumpButtonVisible = mainThreadScroll.$threadJumpButtonVisible
+export const setThreadAtBottom = mainThreadScroll.setThreadAtBottom
+export const resetThreadScroll = mainThreadScroll.resetThreadScroll
+export const onScrollToBottomRequest = mainThreadScroll.onScrollToBottomRequest
+export const requestScrollToBottom = mainThreadScroll.requestScrollToBottom
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
 // escapes stick-to-bottom before focus/layout; close clears the edit flag when

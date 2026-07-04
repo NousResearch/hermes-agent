@@ -25,6 +25,10 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      // Mint a fresh kanban /events WS URL on the primary backend (token or
+      // single-use OAuth ticket in the query string). `since` seeds the event
+      // cursor; `board` pins the stream's board at the handshake.
+      getKanbanEventsWsUrl?: (options?: { board?: null | string; since?: number }) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -63,6 +67,13 @@ declare global {
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
+      // Binary transfer for kanban attachments (the JSON-only `api` pipe can't
+      // carry blobs). Download saves into the OS Downloads dir and resolves
+      // with the written path; upload multipart-POSTs a local file by path.
+      kanbanAttachment?: {
+        download: (request: HermesKanbanAttachmentDownloadRequest) => Promise<{ path: string }>
+        upload: <T>(request: HermesKanbanAttachmentUploadRequest) => Promise<T>
+      }
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
@@ -512,6 +523,21 @@ export type DesktopBootstrapEvent =
       installCommand: string
       docsUrl: string
     }
+
+export interface HermesKanbanAttachmentDownloadRequest {
+  /** Backend API path of the blob, e.g. /api/plugins/kanban/attachments/3?board=x */
+  path: string
+  /** Server-recorded filename — the save target under Downloads. */
+  filename: string
+}
+
+export interface HermesKanbanAttachmentUploadRequest {
+  /** Backend API path, e.g. /api/plugins/kanban/tasks/t_1/attachments?board=x */
+  path: string
+  /** Absolute local path of the file to upload (read in the main process). */
+  filePath: string
+  uploadedBy?: string
+}
 
 export interface HermesApiRequest {
   path: string

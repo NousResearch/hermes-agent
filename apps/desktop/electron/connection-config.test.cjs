@@ -19,6 +19,7 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildKanbanEventsWsUrl,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
@@ -211,6 +212,54 @@ test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
 
 test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
   assert.equal(buildGatewayWsUrlWithTicket('https://host', 'a+b/c'), 'wss://host/api/ws?ticket=a%2Bb%2Fc')
+})
+
+// --- buildKanbanEventsWsUrl ---
+
+test('buildKanbanEventsWsUrl (token mode) carries token + since + board', () => {
+  const url = buildKanbanEventsWsUrl('http://127.0.0.1:8321', ['token', 'tok 1'], { since: 42, board: 'ops' })
+  assert.equal(url, 'ws://127.0.0.1:8321/api/plugins/kanban/events?token=tok+1&since=42&board=ops')
+})
+
+test('buildKanbanEventsWsUrl (ticket mode) uses ?ticket= and wss on https', () => {
+  const url = buildKanbanEventsWsUrl('https://gw.example.com', ['ticket', 'tkt-9'], { since: 7 })
+  assert.equal(url, 'wss://gw.example.com/api/plugins/kanban/events?ticket=tkt-9&since=7')
+  assert.ok(!url.includes('token='))
+})
+
+test('buildKanbanEventsWsUrl honors a path prefix', () => {
+  const url = buildKanbanEventsWsUrl('https://host/hermes/', ['token', 't'], {})
+  assert.equal(url, 'wss://host/hermes/api/plugins/kanban/events?token=t')
+})
+
+test('buildKanbanEventsWsUrl omits since when zero/negative/NaN and board when blank', () => {
+  assert.equal(
+    buildKanbanEventsWsUrl('http://host', ['token', 't'], { since: 0, board: '' }),
+    'ws://host/api/plugins/kanban/events?token=t'
+  )
+  assert.equal(
+    buildKanbanEventsWsUrl('http://host', ['token', 't'], { since: -3, board: '   ' }),
+    'ws://host/api/plugins/kanban/events?token=t'
+  )
+  assert.equal(
+    buildKanbanEventsWsUrl('http://host', ['token', 't'], { since: Number.NaN }),
+    'ws://host/api/plugins/kanban/events?token=t'
+  )
+  assert.equal(buildKanbanEventsWsUrl('http://host', ['token', 't']), 'ws://host/api/plugins/kanban/events?token=t')
+})
+
+test('buildKanbanEventsWsUrl floors fractional since values', () => {
+  assert.equal(
+    buildKanbanEventsWsUrl('http://host', ['token', 't'], { since: 9.7 }),
+    'ws://host/api/plugins/kanban/events?token=t&since=9'
+  )
+})
+
+test('buildKanbanEventsWsUrl url-encodes the credential and board', () => {
+  assert.equal(
+    buildKanbanEventsWsUrl('http://host', ['ticket', 'a+b/c'], { board: 'my board' }),
+    'ws://host/api/plugins/kanban/events?ticket=a%2Bb%2Fc&board=my+board'
+  )
 })
 
 // --- authModeFromStatus ---

@@ -39,7 +39,10 @@ interface MessageStreamOptions {
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
-  refreshSessions: () => Promise<void>
+  /** Coalesced sidebar refresh — every message.complete asks for one, so the
+   *  callback must debounce/single-flight internally (scheduleSessionsRefresh),
+   *  not fire a full 4-fetch fan-out per completed turn. */
+  scheduleSessionsRefresh: () => void
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
@@ -58,7 +61,7 @@ export function useMessageStream({
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
-  refreshSessions,
+  scheduleSessionsRefresh,
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
@@ -444,7 +447,7 @@ export function useMessageStream({
         }
       })
 
-      void refreshSessions().catch(() => undefined)
+      scheduleSessionsRefresh()
       // Sync the freshly-titled row to other windows (e.g. main, when the turn
       // ran in the pop-out).
       broadcastSessionsChanged()
@@ -464,7 +467,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [hydrateFromStoredSession, refreshSessions, updateSessionState]
+    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(

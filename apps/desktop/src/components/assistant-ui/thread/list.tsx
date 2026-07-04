@@ -13,15 +13,10 @@ import {
 } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import {
-  onScrollToBottomRequest,
-  onThreadEditClose,
-  onThreadEditOpen,
-  resetThreadScroll,
-  setThreadAtBottom
-} from '@/store/thread-scroll'
+import { onThreadEditClose, onThreadEditOpen } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
@@ -103,6 +98,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   const { t } = useI18n()
+  // Pane-scoped scroll mirror: each mounted thread writes ITS pane's atoms
+  // (composer dim + jump button), so two panes never fight over one flag.
+  // Unwrapped (single-pane) this is the same module singleton as before.
+  const { onScrollToBottomRequest, resetThreadScroll, setThreadAtBottom } = usePaneView()
   const groups = buildGroups(messageSignature)
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
@@ -150,11 +149,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
-  useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
-  useEffect(() => () => resetThreadScroll(), [])
+  useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom, setThreadAtBottom])
+  useEffect(() => () => resetThreadScroll(), [resetThreadScroll])
 
   // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [onScrollToBottomRequest, scrollToBottom])
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')

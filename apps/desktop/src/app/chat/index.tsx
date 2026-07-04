@@ -24,27 +24,9 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $gatewaySwapTarget } from '@/store/profile'
-import {
-  $activeSessionId,
-  $awaitingResponse,
-  $busy,
-  $contextSuggestions,
-  $currentCwd,
-  $currentModel,
-  $currentProvider,
-  $freshDraftReady,
-  $gatewayState,
-  $introPersonality,
-  $introSeed,
-  $lastVisibleMessageIsUser,
-  $messages,
-  $messagesEmpty,
-  $resumeExhaustedSessionId,
-  $selectedStoredSessionId,
-  $sessions,
-  sessionPinId
-} from '@/store/session'
+import { $activeGatewayProfile, $gatewaySwapTarget, normalizeProfileKey } from '@/store/profile'
+import { $gatewayState, $introPersonality, $introSeed, $sessions, sessionPinId } from '@/store/session'
+import { $activePaneId, $splitPaneSession } from '@/store/split'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -59,6 +41,7 @@ import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { usePaneView } from './pane-view'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
@@ -198,6 +181,9 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
+  // The pane's transcript atom — unwrapped (single-pane) this is the exact
+  // global $messages the boundary always subscribed to.
+  const { $messages } = usePaneView()
   const storeMessages = useStore($messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
@@ -283,14 +269,21 @@ export function ChatView({
 }: ChatViewProps) {
   const location = useLocation()
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
-  const awaitingResponse = useStore($awaitingResponse)
-  const busy = useStore($busy)
-  const contextSuggestions = useStore($contextSuggestions)
-  const currentCwd = useStore($currentCwd)
-  const currentModel = useStore($currentModel)
-  const currentProvider = useStore($currentProvider)
-  const freshDraftReady = useStore($freshDraftReady)
+  // The pane bundle: every session-view read below goes through it. With the
+  // default (main) context these are the exact global atoms this component
+  // always subscribed to — single-pane behavior is bit-for-bit unchanged.
+  const view = usePaneView()
+  const activePaneId = useStore($activePaneId)
+  const paneActive = activePaneId === view.paneId
+  const splitPaneSession = useStore($splitPaneSession)
+  const activeSessionId = useStore(view.$activeSessionId)
+  const awaitingResponse = useStore(view.$awaitingResponse)
+  const busy = useStore(view.$busy)
+  const contextSuggestions = useStore(view.$contextSuggestions)
+  const currentCwd = useStore(view.$currentCwd)
+  const currentModel = useStore(view.$currentModel)
+  const currentProvider = useStore(view.$currentProvider)
+  const freshDraftReady = useStore(view.$freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
@@ -301,11 +294,17 @@ export function ChatView({
   // the entire chat shell (header, chat bar, thread wrapper) per token. The
   // runtime that DOES need the messages lives in ChatRuntimeBoundary below;
   // this component only needs streaming-stable derivations.
-  const messagesEmpty = useStore($messagesEmpty)
-  const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
-  const selectedSessionId = useStore($selectedStoredSessionId)
-  const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
-  const routedSessionId = routeSessionId(location.pathname)
+  const messagesEmpty = useStore(view.$messagesEmpty)
+  const lastVisibleIsUser = useStore(view.$lastVisibleMessageIsUser)
+  const selectedSessionId = useStore(view.$selectedStoredSessionId)
+  const resumeExhaustedSessionId = useStore(view.$resumeExhaustedSessionId)
+
+  // The pane's routing target. The MAIN pane stays URL-derived (identical
+  // values + reactivity to before); the split pane reads its pane-local
+  // session pointer — the URL always belongs to the main pane.
+  const routedSessionId =
+    view.paneId === 'main' ? routeSessionId(location.pathname) : (splitPaneSession?.storedId ?? null)
+
   const isRoutedSessionView = Boolean(routedSessionId)
 
   // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /
@@ -315,8 +314,10 @@ export function ChatView({
   const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
-  // scratch window, not the full-height empty state.
+  // scratch window, not the full-height empty state. The split pane skips it
+  // too: its fresh draft is a side surface, not the app's empty state.
   const showIntro =
+    view.paneId === 'main' &&
     !isSecondaryWindow() &&
     freshDraftReady &&
     !isRoutedSessionView &&
@@ -347,8 +348,13 @@ export function ChatView({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
+  // Keyed by the live gateway profile: the catalog is served per backend, so
+  // profile A's models never paint under profile B and a hop back hits A's
+  // warm cache (no blanket invalidation on switch anymore).
+  const modelOptionsProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
+    queryKey: ['model-options', modelOptionsProfile, activeSessionId || 'global'],
     queryFn: () => {
       if (!activeSessionId) {
         return getGlobalModelOptions()
@@ -437,7 +443,11 @@ export function ChatView({
         selectedSessionId={selectedSessionId}
       />
 
-      <PromptOverlays />
+      {/* Blocking prompts (clarify/approval/sudo/secret) read active-scoped
+          globals, so only the ACTIVE pane may render them — the inactive pane
+          signals through the sidebar attention badge instead. Single-pane the
+          main pane is always active, so this renders exactly as before. */}
+      {paneActive && <PromptOverlays />}
 
       <ChatRuntimeBoundary
         busy={busy}
@@ -482,7 +492,12 @@ export function ChatView({
           )}
           {showChatBar && <ScrollToBottomButton />}
           <ChatDropOverlay kind={dragKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
+          {/* The swap pill describes the ACTIVE gateway's profile move, so
+              only the active pane paints it — with the panes on different
+              profiles every focus flip runs a swap, and an ungated overlay
+              would pulse over BOTH transcripts on each click. Single-pane
+              paneActive is always true — today's behavior. */}
+          <ChatSwapOverlay profile={paneActive ? gatewaySwapTarget : null} />
         </div>
         {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
             that wrapper is a containing block for — and clips — position:fixed

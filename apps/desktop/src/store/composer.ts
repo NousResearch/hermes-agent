@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, type WritableAtom } from 'nanostores'
 
 import { triggerHaptic } from '@/lib/haptics'
 
@@ -133,20 +133,29 @@ export function clearComposerDraft() {
   $composerDraft.set('')
 }
 
-export function addComposerAttachment(attachment: ComposerAttachment) {
-  const previous = $composerAttachments.get()
+// Every attachment mutator takes an optional `target` atom, defaulting to the
+// module singleton — the split pane owns a second attachments atom (see
+// app/chat/pane-view.ts), and its composer routes these same operations at it.
+// Existing callers pass nothing, so single-pane behavior is unchanged.
+type AttachmentsAtom = WritableAtom<ComposerAttachment[]>
+
+export function addComposerAttachment(attachment: ComposerAttachment, target: AttachmentsAtom = $composerAttachments) {
+  const previous = target.get()
   const next = upsertAttachment(previous, attachment)
-  $composerAttachments.set(next)
+  target.set(next)
 
   if (next.length > previous.length && attachment.kind !== 'url') {
     triggerHaptic('selection')
   }
 }
 
-export function removeComposerAttachment(id: string): ComposerAttachment | null {
-  const current = $composerAttachments.get()
+export function removeComposerAttachment(
+  id: string,
+  target: AttachmentsAtom = $composerAttachments
+): ComposerAttachment | null {
+  const current = target.get()
   const removed = current.find(attachment => attachment.id === id) || null
-  $composerAttachments.set(current.filter(attachment => attachment.id !== id))
+  target.set(current.filter(attachment => attachment.id !== id))
 
   return removed
 }
@@ -155,8 +164,11 @@ export function removeComposerAttachment(id: string): ComposerAttachment | null 
  * id is gone — e.g. the user removed the chip while an eager upload was still in
  * flight, so a late success must NOT resurrect it. Use this instead of
  * addComposerAttachment for async results that may land after a removal. */
-export function updateComposerAttachment(attachment: ComposerAttachment): boolean {
-  const current = $composerAttachments.get()
+export function updateComposerAttachment(
+  attachment: ComposerAttachment,
+  target: AttachmentsAtom = $composerAttachments
+): boolean {
+  const current = target.get()
   const index = current.findIndex(item => item.id === attachment.id)
 
   if (index < 0) {
@@ -165,19 +177,23 @@ export function updateComposerAttachment(attachment: ComposerAttachment): boolea
 
   const next = [...current]
   next[index] = attachment
-  $composerAttachments.set(next)
+  target.set(next)
 
   return true
 }
 
-export function clearComposerAttachments() {
-  $composerAttachments.set([])
+export function clearComposerAttachments(target: AttachmentsAtom = $composerAttachments) {
+  target.set([])
 }
 
 /** Update only the upload state of an existing attachment (no-op if it's gone,
  * e.g. the user removed it mid-upload). Pass `undefined` to clear it. */
-export function setComposerAttachmentUploadState(id: string, uploadState?: ComposerAttachment['uploadState']) {
-  const current = $composerAttachments.get()
+export function setComposerAttachmentUploadState(
+  id: string,
+  uploadState?: ComposerAttachment['uploadState'],
+  target: AttachmentsAtom = $composerAttachments
+) {
+  const current = target.get()
   const index = current.findIndex(attachment => attachment.id === id)
 
   if (index < 0) {
@@ -186,7 +202,7 @@ export function setComposerAttachmentUploadState(id: string, uploadState?: Compo
 
   const next = [...current]
   next[index] = { ...next[index]!, uploadState }
-  $composerAttachments.set(next)
+  target.set(next)
 }
 
 const TERMINAL_REF_RE = /@terminal:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g

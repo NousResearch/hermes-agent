@@ -1,3 +1,4 @@
+import type { WritableAtom } from 'nanostores'
 import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
@@ -8,6 +9,7 @@ import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalize } from '@/lib/text'
 import {
+  $composerAttachments,
   addComposerAttachment,
   type ComposerAttachment,
   removeComposerAttachment,
@@ -257,19 +259,32 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
 
 interface ComposerActionsOptions {
   activeSessionId: string | null
+  /** Attachments atom this instance's attach paths write into. Defaults to the
+   *  main composer's module singleton; the split pane passes its own bundle
+   *  atom (see app/chat/pane-view.ts). */
+  attachmentsAtom?: WritableAtom<ComposerAttachment[]>
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-/** Add to the main composer and focus it. All sidebar/picker/drop attach paths funnel through here. */
-const attachToMain = (attachment: ComposerAttachment) => {
-  addComposerAttachment(attachment)
-  requestComposerFocus('main')
-}
-
-export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
+export function useComposerActions({
+  activeSessionId,
+  attachmentsAtom = $composerAttachments,
+  currentCwd,
+  requestGateway
+}: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
+  /** Add to this pane's composer and focus it. All sidebar/picker/drop attach
+   *  paths funnel through here. */
+  const attachToMain = useCallback(
+    (attachment: ComposerAttachment) => {
+      addComposerAttachment(attachment, attachmentsAtom)
+      requestComposerFocus('main')
+    },
+    [attachmentsAtom]
+  )
 
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
@@ -288,21 +303,24 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     requestComposerInsert(refText, { mode: 'inline' })
   }, [])
 
-  const addContextRefAttachment = useCallback((refText: string, label?: string, detail?: string) => {
-    const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
-      ? 'folder'
-      : refText.startsWith('@url:')
-        ? 'url'
-        : 'file'
+  const addContextRefAttachment = useCallback(
+    (refText: string, label?: string, detail?: string) => {
+      const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
+        ? 'folder'
+        : refText.startsWith('@url:')
+          ? 'url'
+          : 'file'
 
-    attachToMain({
-      id: attachmentId(kind, refText),
-      kind,
-      label: label || refText.replace(/^@(file|folder|url):/, ''),
-      detail,
-      refText
-    })
-  }, [])
+      attachToMain({
+        id: attachmentId(kind, refText),
+        kind,
+        label: label || refText.replace(/^@(file|folder|url):/, ''),
+        detail,
+        refText
+      })
+    },
+    [attachToMain]
+  )
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
@@ -329,7 +347,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         })
       }
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -371,7 +389,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const attachImagePath = useCallback(
@@ -394,7 +412,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const previewUrl = await attachmentPreviewDataUrl(filePath)
 
         if (previewUrl) {
-          addComposerAttachment({ ...baseAttachment, previewUrl })
+          addComposerAttachment({ ...baseAttachment, previewUrl }, attachmentsAtom)
         }
 
         return true
@@ -404,7 +422,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return true
       }
     },
-    [copy.imagePreviewFailed]
+    [attachmentsAtom, attachToMain, copy.imagePreviewFailed]
   )
 
   const attachImageBlob = useCallback(
@@ -509,7 +527,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const attachDroppedItems = useCallback(
@@ -599,7 +617,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const removeAttachment = useCallback(
     async (id: string) => {
-      const removed = removeComposerAttachment(id)
+      const removed = removeComposerAttachment(id, attachmentsAtom)
 
       if (
         removed?.kind === 'image' &&
@@ -614,7 +632,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         }).catch(() => undefined)
       }
     },
-    [activeSessionId, requestGateway]
+    [activeSessionId, attachmentsAtom, requestGateway]
   )
 
   return {

@@ -13,8 +13,15 @@ const onboarding = atom({ manual: false })
 vi.mock('@/hermes', () => ({
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: () => getEnvVars(),
-  listOAuthProviders: () => listOAuthProviders()
+  // Pulled in transitively via @/store/profile (profile-scoped query keys).
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  listOAuthProviders: () => listOAuthProviders(),
+  setApiRequestProfile: vi.fn()
 }))
+
+// Keep the profile store's gateway/starmap side effects inert in this suite.
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => null }, ensureGatewayForProfile: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 vi.mock('@/store/onboarding', () => ({
   $desktopOnboarding: onboarding,

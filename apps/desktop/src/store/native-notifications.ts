@@ -5,6 +5,7 @@ import { persistString, storedString } from '@/lib/storage'
 import { $gateway } from './gateway'
 import { clearApprovalRequest } from './prompts'
 import { $activeSessionId } from './session'
+import { $splitPaneRuntimeSessionId, mainPaneRuntimeSessionId } from './split'
 
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
@@ -113,6 +114,33 @@ function isBackgrounded(): boolean {
   return typeof document.hasFocus === 'function' && !document.hasFocus()
 }
 
+// A session shown in either chat pane counts as foreground: the split pane's
+// transcript is exactly as on-screen as the main one. With the split closed
+// ($splitPaneRuntimeSessionId null, no divergent main-pane id) this reduces to
+// the pre-split active check. While the split is FOCUSED, $activeSessionId
+// mirrors the SPLIT's session — the main pane's on-screen transcript is then
+// only reachable through the controller-registered unmirrored getter, so both
+// pane ids are consulted.
+function isPaneVisibleSession(sessionId: null | string | undefined): boolean {
+  if (!sessionId) {
+    return false
+  }
+
+  if (sessionId === $activeSessionId.get()) {
+    return true
+  }
+
+  const splitRuntimeId = $splitPaneRuntimeSessionId.get()
+
+  if (splitRuntimeId !== null && sessionId === splitRuntimeId) {
+    return true
+  }
+
+  const mainRuntimeId = mainPaneRuntimeSessionId()
+
+  return mainRuntimeId !== null && sessionId === mainRuntimeId
+}
+
 function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, global = false): boolean {
   // Global notifications aren't tied to a chat session (e.g. pet generation,
   // which runs from the command center with no active conversation). They fire
@@ -124,12 +152,12 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
 
   // Attention kinds break through for an off-screen session even while focused.
   if (ATTENTION_KINDS.has(kind)) {
-    return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
+    return isBackgrounded() || (Boolean(sessionId) && !isPaneVisibleSession(sessionId))
   }
 
-  // Completion kinds: only the active session, only while away — so a busy
+  // Completion kinds: only a pane-visible session, only while away — so a busy
   // gateway (messaging, kanban, cron) can't spam a toast per background session.
-  return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+  return isBackgrounded() && isPaneVisibleSession(sessionId)
 }
 
 export interface NativeNotificationAction {

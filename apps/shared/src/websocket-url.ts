@@ -31,6 +31,37 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
   )
 }
 
+// HTTP auth statuses embedded in gateway/main-process error messages, e.g.
+// "401: {...}" from fetchJson or "status 403" from the HTML guard. Errors that
+// cross Electron's IPC bridge keep only their message (statusCode and
+// needsOauthLogin are stripped), so message inspection is the only renderer-side
+// signal. Word-boundary anchored so ports/ids containing "401" don't match.
+const AUTH_STATUS_PATTERN = /(?:^|[^0-9])(?:401|403)(?:[^0-9]|$)/
+// Canonical reauth phrasings the main process throws only for genuine
+// sign-in-required failures (buildRemoteConnection / mintGatewayWsTicket).
+const AUTH_MESSAGE_PATTERN = /session has expired|not signed in|sign in/i
+
+/** True when an error (possibly IPC-flattened to just a message) indicates the
+ *  gateway rejected our credentials — as opposed to a transport failure
+ *  (timeout, unreachable host) that a retry can recover from. */
+export function isGatewayAuthShapedError(error: unknown): boolean {
+  if (isGatewayReauthRequired(error)) {
+    return true
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const statusCode = (error as { statusCode?: unknown }).statusCode
+
+    if (statusCode === 401 || statusCode === 403) {
+      return true
+    }
+  }
+
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return AUTH_STATUS_PATTERN.test(message) || AUTH_MESSAGE_PATTERN.test(message)
+}
+
 export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: GatewayWsConnection): Promise<string> {
   const mint = deps.getGatewayWsUrl
   const profile = conn.profile ?? null
@@ -45,10 +76,19 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
     try {
       return await mint(profile)
     } catch (error) {
-      throw new GatewayReauthRequiredError(
-        'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
-        { cause: error }
-      )
+      // Only a credential rejection means the OAuth session is dead. A
+      // transport failure (Tailscale blip, sleep/wake race, backend restart)
+      // must stay a plain retryable error — wrapping it as reauth here sent
+      // users to a needless re-sign-in while the backoff loop would have
+      // recovered on its own.
+      if (isGatewayAuthShapedError(error)) {
+        throw new GatewayReauthRequiredError(
+          'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
+          { cause: error }
+        )
+      }
+
+      throw error
     }
   }
 

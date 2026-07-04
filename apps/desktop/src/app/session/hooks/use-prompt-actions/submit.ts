@@ -5,16 +5,11 @@ import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import {
-  $composerAttachments,
-  clearComposerAttachments,
-  type ComposerAttachment,
-  terminalContextBlocksFromDraft
-} from '@/store/composer'
+import { clearComposerAttachments, type ComposerAttachment, terminalContextBlocksFromDraft } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
+import type { PaneSessionView } from '../../../chat/pane-view'
 import type { ClientSessionState } from '../../../types'
 
 import {
@@ -46,6 +41,8 @@ interface SubmitPromptDeps {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+  /** The pane view this pipeline publishes into (threaded by usePromptActions). */
+  view: PaneSessionView
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
@@ -59,7 +56,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
-    updateSessionState
+    updateSessionState,
+    view
   } = deps
 
   return useCallback(
@@ -72,8 +70,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // this, the sibling iterations below (a.kind / a.label / a.refText, and the
       // sync step) throw "Cannot read properties of undefined (reading 'refText')"
       // and break the chat surface.
-      const attachments = (options?.attachments ?? $composerAttachments.get()).filter((a): a is ComposerAttachment =>
-        Boolean(a)
+      const attachments = (options?.attachments ?? view.$composerAttachments.get()).filter(
+        (a): a is ComposerAttachment => Boolean(a)
       )
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
@@ -142,8 +140,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const releaseBusy = () => {
         releaseSubmitLock()
         setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
+        view.setBusy(false)
+        view.setAwaitingResponse(false)
       }
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
@@ -182,7 +180,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const dropOptimistic = (sid: null | string) => {
         if (!sid) {
-          setMessages(current => current.filter(m => m.id !== optimisticId))
+          view.setMessages(current => current.filter(m => m.id !== optimisticId))
 
           return
         }
@@ -201,8 +199,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       setMutableRef(busyRef, true)
-      setBusy(true)
-      setAwaitingResponse(true)
+      view.setBusy(true)
+      view.setAwaitingResponse(true)
       clearNotifications()
 
       let sessionId: null | string = activeSessionId
@@ -210,7 +208,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       if (sessionId) {
         seedOptimistic(sessionId)
       } else {
-        setMessages(current => [...current, buildUserMessage()])
+        view.setMessages(current => [...current, buildUserMessage()])
       }
 
       if (!sessionId) {
@@ -283,7 +281,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (usingComposerAttachments) {
-          clearComposerAttachments()
+          clearComposerAttachments(view.$composerAttachments)
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit
@@ -341,7 +339,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       requestGateway,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
-      updateSessionState
+      updateSessionState,
+      view
     ]
   )
 }

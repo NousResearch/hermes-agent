@@ -4,8 +4,10 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import { activeProfileQueryKey } from '@/store/profile'
 import type { ModelOptionsResponse } from '@/types/hermes'
+
+import { MAIN_PANE_VIEW, type PaneSessionView } from '../../chat/pane-view'
 
 interface ModelSelection {
   model: string
@@ -16,9 +18,21 @@ interface ModelControlsOptions {
   activeSessionId: string | null
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  /** The pane view whose model chip a pick writes. Defaults to the main
+   *  bundle — the exact global atoms/persisting setters this hook always
+   *  used — so the controller's instance is unchanged; SplitChatPane runs a
+   *  second instance bound to its own bundle (plain, non-persisting setters)
+   *  and its profile-pinned request, so a split pick can never clobber the
+   *  main chip or the sticky composer-model localStorage keys. */
+  view?: PaneSessionView
 }
 
-export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({
+  activeSessionId,
+  queryClient,
+  requestGateway,
+  view = MAIN_PANE_VIEW
+}: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -26,10 +40,15 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+      // Keys carry the live gateway profile segment (see the model-options
+      // useQuery call sites) — writes land on the active profile's slot only.
+      queryClient.setQueryData<ModelOptionsResponse>(
+        ['model-options', activeProfileQueryKey(), activeSessionId || 'global'],
+        patch
+      )
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
+        queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeProfileQueryKey(), 'global'], patch)
       }
     },
     [activeSessionId, queryClient]
@@ -40,33 +59,36 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(async (force = false) => {
-    try {
-      if ($activeSessionId.get()) {
-        return
-      }
+  const refreshCurrentModel = useCallback(
+    async (force = false) => {
+      try {
+        if (view.$activeSessionId.get()) {
+          return
+        }
 
-      if (!force && $currentModel.get()) {
-        return
-      }
+        if (!force && view.$currentModel.get()) {
+          return
+        }
 
-      const result = await getGlobalModelInfo()
+        const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
-        return
-      }
+        if (view.$activeSessionId.get() || (!force && view.$currentModel.get())) {
+          return
+        }
 
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
-      }
+        if (typeof result.model === 'string') {
+          view.setCurrentModel(result.model)
+        }
 
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
+        if (typeof result.provider === 'string') {
+          view.setCurrentProvider(result.provider)
+        }
+      } catch {
+        // The delayed session.info event still updates this once the agent is ready.
       }
-    } catch {
-      // The delayed session.info event still updates this once the agent is ready.
-    }
-  }, [])
+    },
+    [view]
+  )
 
   // Returns whether the switch succeeded so callers can await it before applying
   // follow-up changes. The composer model is plain UI state: with no live
@@ -79,11 +101,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       // Snapshot for rollback: the switch is applied optimistically, so a
       // failure must restore the prior model/provider (store + query cache)
       // rather than leave the UI showing a model the backend never selected.
-      const prevModel = $currentModel.get()
-      const prevProvider = $currentProvider.get()
+      const prevModel = view.$currentModel.get()
+      const prevProvider = view.$currentProvider.get()
 
-      setCurrentModel(selection.model)
-      setCurrentProvider(selection.provider)
+      view.setCurrentModel(selection.model)
+      view.setCurrentProvider(selection.provider)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
@@ -99,19 +121,19 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
           value: `${selection.model} --provider ${selection.provider}`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey(), activeSessionId] })
 
         return true
       } catch (err) {
-        setCurrentModel(prevModel)
-        setCurrentProvider(prevProvider)
+        view.setCurrentModel(prevModel)
+        view.setCurrentProvider(prevProvider)
         updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [activeSessionId, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [activeSessionId, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache, view]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

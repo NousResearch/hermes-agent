@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { isGatewayAuthShapedError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
@@ -38,6 +38,7 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { $splitPaneSession } from '@/store/split'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -47,12 +48,55 @@ import type { RpcEvent } from '@/types/hermes'
 // dead end. The next successful reconnect clears it.
 const RECONNECT_ESCALATE_AFTER = 6
 
+// Backoff for re-attempting a FAILED initial boot (backend dead at launch —
+// e.g. the Tailscale tunnel isn't up yet when the app starts). Without this the
+// failure overlay sat there forever waiting for a manual Retry click even
+// though the backend came back seconds later. Capped at the last entry; ±20%
+// jitter so a fleet of windows doesn't stampede the backend in lockstep.
+const BOOT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000]
+
+const bootRetryDelay = (attempt: number): number => {
+  const base = BOOT_RETRY_DELAYS_MS[Math.min(attempt, BOOT_RETRY_DELAYS_MS.length - 1)]
+
+  return Math.round(base * (0.8 + Math.random() * 0.4))
+}
+
+/**
+ * Profiles whose background socket must survive pruning: any profile with a
+ * running (working) or blocked (needs-input) session, plus the split pane's
+ * session profile — an idle split session must keep its socket so its next
+ * stream/steer doesn't die with a reaped backend (design §4.4). Exported for
+ * tests; reads the stores directly so the subscriptions below can share it.
+ */
+export function keptGatewayProfiles(): Set<string> {
+  const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+  const keep = new Set<string>()
+
+  for (const session of $sessions.get()) {
+    if (live.has(session.id)) {
+      keep.add(normalizeProfileKey(session.profile))
+    }
+  }
+
+  const splitSession = $splitPaneSession.get()
+
+  if (splitSession) {
+    keep.add(normalizeProfileKey(splitSession.profile))
+  }
+
+  return keep
+}
+
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
+  /** Clear stale per-session busy state after a socket reconnect (the turns
+   *  whose message.complete died with the dropped socket). Optional so
+   *  lightweight harnesses (tests, pop-outs) can omit it. */
+  reconcileBusySessions?: (gateway: HermesGateway, profile: string) => Promise<void>
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
 }
@@ -61,6 +105,7 @@ export function useGatewayBoot({
   handleGatewayEvent,
   onConnectionReady,
   onGatewayReady,
+  reconcileBusySessions,
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
@@ -68,6 +113,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    reconcileBusySessions,
     refreshHermesConfig,
     refreshSessions
   })
@@ -76,6 +122,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    reconcileBusySessions,
     refreshHermesConfig,
     refreshSessions
   }
@@ -105,6 +152,18 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let bootCompleted = false
+    // Failed-boot recovery (dead backend at launch): while the boot overlay
+    // shows a failure we keep re-attempting boot() on a bounded backoff — and
+    // on the wake/online/visibility nudges — instead of waiting for a manual
+    // Retry click. A genuine auth failure latches instead: no retry can
+    // succeed until the user signs in, and auto-resetting just thrashed the
+    // failure loop (the "session has expired" reset churn in the logs).
+    let bootFailed = false
+    let bootAuthLatched = false
+    let bootInProgress = false
+    let bootFailureNotified = false
+    let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    let bootRetryAttempt = 0
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -127,6 +186,26 @@ export function useGatewayBoot({
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
+    }
+
+    const clearBootRetryTimer = () => {
+      if (bootRetryTimer !== null) {
+        clearTimeout(bootRetryTimer)
+        bootRetryTimer = null
+      }
+    }
+
+    function scheduleBootRetry() {
+      if (cancelled || bootRetryTimer !== null || bootAuthLatched) {
+        return
+      }
+
+      const delay = bootRetryDelay(bootRetryAttempt)
+      bootRetryAttempt += 1
+      bootRetryTimer = setTimeout(() => {
+        bootRetryTimer = null
+        void boot()
+      }, delay)
     }
 
     const attemptReconnect = async () => {
@@ -169,6 +248,12 @@ export function useGatewayBoot({
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
+        // The drop may have swallowed message.complete events for in-flight
+        // turns, leaving sessions latched busy ("Thinking…") forever. Ask the
+        // rebuilt gateway what is genuinely still running and clear the rest.
+        await callbacksRef.current
+          .reconcileBusySessions?.(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+          .catch(() => undefined)
       } catch (err) {
         // OAuth session expired mid-reconnect: surface the actionable "sign in
         // again" message once instead of silently looping the backoff against a
@@ -207,7 +292,22 @@ export function useGatewayBoot({
     }
 
     const reconnectNow = () => {
-      if (cancelled || !bootCompleted) {
+      if (cancelled) {
+        return
+      }
+
+      if (!bootCompleted) {
+        // Boot never succeeded. If it FAILED on a transport error, a wake /
+        // network-online / focus signal is exactly when a retry is likely to
+        // succeed — re-drive boot() immediately (it no-ops while one is in
+        // flight). An auth-latched failure stays latched: only the sign-in
+        // flow can fix it. A boot still in progress is left alone.
+        if (bootFailed && !bootAuthLatched) {
+          clearBootRetryTimer()
+          bootRetryAttempt = 0
+          void boot()
+        }
+
         return
       }
 
@@ -237,7 +337,13 @@ export function useGatewayBoot({
     callbacksRef.current.onGatewayReady(gateway)
     setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
-    configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
+    // Their reconnects run the same stale-busy reconciliation as the primary,
+    // scoped to the reconnected profile's sessions.
+    configureGatewayRegistry({
+      onEvent: event => callbacksRef.current.handleGatewayEvent(event),
+      onReconnected: (profile, secondary) =>
+        void callbacksRef.current.reconcileBusySessions?.(secondary, profile).catch(() => undefined)
+    })
 
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
@@ -284,31 +390,31 @@ export function useGatewayBoot({
 
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.
+    // The split pane's backend is touched explicitly too: its socket may not
+    // exist yet (restore pending), and the backend must not idle-reap first.
     const keepaliveTimer = setInterval(() => {
       touchActiveGatewayBackend()
       touchSecondaryGateways()
+      const splitSession = $splitPaneSession.get()
+
+      if (splitSession) {
+        void desktop.touchBackend?.(normalizeProfileKey(splitSession.profile)).catch(() => undefined)
+      }
     }, 60_000)
 
     // Bound concurrency cost to live work: keep a background socket only while
-    // its profile has a running (working) or blocked (needs-input) session.
-    // Once that profile goes idle its socket is dropped and its backend is free
-    // to idle-reap. The active profile is always spared.
+    // its profile has a running (working) or blocked (needs-input) session —
+    // or holds the split pane's session. Once a profile drops out of that set
+    // its socket is closed and its backend is free to idle-reap. The active
+    // profile is always spared.
     const recomputeKeptGateways = () => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      const keep = new Set<string>()
-
-      for (const session of $sessions.get()) {
-        if (live.has(session.id)) {
-          keep.add(normalizeProfileKey(session.profile))
-        }
-      }
-
-      pruneSecondaryGateways(keep)
+      pruneSecondaryGateways(keptGatewayProfiles())
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
+    const offSplitPane = $splitPaneSession.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -332,6 +438,12 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      if (cancelled || bootInProgress || bootCompleted) {
+        return
+      }
+
+      bootInProgress = true
+
       try {
         const conn = await desktop.getConnection()
 
@@ -397,13 +509,34 @@ export function useGatewayBoot({
         await callbacksRef.current.refreshSessions()
         completeDesktopBoot()
         bootCompleted = true
+        bootFailed = false
+        bootAuthLatched = false
+        bootFailureNotified = false
+        bootRetryAttempt = 0
+        clearBootRetryTimer()
       } catch (err) {
         if (!cancelled) {
+          bootFailed = true
+          bootAuthLatched = isGatewayAuthShapedError(err)
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+
+          // Toast once per failure episode, not on every backoff retry —
+          // identical error toasts (and their haptics) would otherwise stack
+          // every few seconds while the backend is down.
+          if (!bootFailureNotified) {
+            bootFailureNotified = true
+            notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+          }
+
           setSessionsLoading(false)
+
+          if (!bootAuthLatched) {
+            scheduleBootRetry()
+          }
         }
+      } finally {
+        bootInProgress = false
       }
     }
 
@@ -412,10 +545,12 @@ export function useGatewayBoot({
     return () => {
       cancelled = true
       clearReconnectTimer()
+      clearBootRetryTimer()
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()
       offActiveProfile()
+      offSplitPane()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()

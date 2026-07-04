@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -46,6 +46,16 @@ import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
+// Trailing-debounce window for session.info-driven config refetches. Every
+// session.info used to fire an immediate /api/config + /api/config/defaults
+// pair; with many concurrent sessions (each emitting session.info at turn
+// boundaries and settings changes, across every profile socket) that's a
+// steady 2-requests-per-event drip against the shared backend. One trailing
+// refetch per window keeps config-derived state fresh enough — the fields the
+// composer needs immediately (model/provider/personality/cwd) are applied
+// straight from the event payload above, not from the refetch.
+const CONFIG_REFRESH_DEBOUNCE_MS = 5_000
+
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
@@ -90,6 +100,31 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     updateSessionState,
     upsertToolCall
   } = deps
+
+  const configRefreshTimerRef = useRef<null | ReturnType<typeof setTimeout>>(null)
+  const refreshHermesConfigRef = useRef(refreshHermesConfig)
+  refreshHermesConfigRef.current = refreshHermesConfig
+
+  const scheduleConfigRefresh = useCallback(() => {
+    if (configRefreshTimerRef.current !== null) {
+      return
+    }
+
+    configRefreshTimerRef.current = setTimeout(() => {
+      configRefreshTimerRef.current = null
+      void refreshHermesConfigRef.current()
+    }, CONFIG_REFRESH_DEBOUNCE_MS)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (configRefreshTimerRef.current !== null) {
+        clearTimeout(configRefreshTimerRef.current)
+        configRefreshTimerRef.current = null
+      }
+    },
+    []
+  )
 
   return useCallback(
     (event: RpcEvent) => {
@@ -216,11 +251,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           requestDesktopOnboarding(payload.credential_warning)
         }
 
-        void refreshHermesConfig()
+        // Refetch config only when this event can actually change
+        // config-derived state: it carries a config-backed field
+        // (personality / cwd) or it targets the session on screen. A
+        // background profile's turn-boundary heartbeat changes neither.
+        if (isActiveEvent || typeof payload?.personality === 'string' || typeof payload?.cwd === 'string') {
+          scheduleConfigRefresh()
+        }
 
         if (modelChanged || providerChanged) {
+          // Keys are ['model-options', <profile>, <sessionId|'global'>]. This
+          // event can arrive over a BACKGROUND profile's socket, so match by
+          // session id across every profile segment instead of guessing one.
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            predicate: query =>
+              query.queryKey[0] === 'model-options' && (!explicitSid || !sessionId || query.queryKey[2] === sessionId)
           })
         }
       } else if (event.type === 'message.start') {
@@ -646,7 +691,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,
       queryClient,
-      refreshHermesConfig,
+      scheduleConfigRefresh,
       sessionInterrupted,
       updateSessionState,
       upsertToolCall

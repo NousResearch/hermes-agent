@@ -32,13 +32,6 @@ def test_status_command_is_available_in_cli_registry():
     assert cmd.gateway_only is False
 
 
-def test_egress_command_is_available_in_cli_registry():
-    cmd = resolve_command("egress")
-    assert cmd is not None
-    assert cmd.gateway_only is False
-    assert "status" in cmd.subcommands
-
-
 def test_process_command_status_dispatches_without_toggling_status_bar():
     cli_obj = _make_cli()
 
@@ -47,20 +40,6 @@ def test_process_command_status_dispatches_without_toggling_status_bar():
 
     mock_status.assert_called_once_with()
     assert cli_obj._status_bar_visible is True
-
-
-def test_process_command_egress_prints_proxy_status(monkeypatch):
-    cli_obj = _make_cli()
-    monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
-        lambda: "Egress proxy status\nEnabled: no",
-    )
-
-    assert cli_obj.process_command("/egress") is True
-
-    cli_obj.console.print.assert_called()
-    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Egress proxy status" in printed
 
 
 def test_statusbar_still_toggles_visibility():

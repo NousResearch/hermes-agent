@@ -240,7 +240,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: KeyRound,
-    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens', 'egress', 'iron proxy', 'sandbox proxy'],
+    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens'],
     labelKey: 'providerApiKeys',
     tab: 'providers&pview=keys'
   },
@@ -253,7 +253,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: Settings2,
-    keywords: ['gateway', 'proxy', 'server', 'webhook', 'env', 'egress proxy', 'iron proxy'],
+    keywords: ['gateway', 'proxy', 'server', 'webhook', 'env'],
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
   },

@@ -579,6 +579,39 @@ class TestCodexNormalizeResponse:
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
 
+    def test_text_fallback_ignores_broken_output_text_accessor(self, transport):
+        """SDK output_text can raise when response.output is malformed."""
+
+        class BrokenOutputTextResponse:
+            output = []
+            status = "completed"
+            incomplete_details = None
+            usage = SimpleNamespace(input_tokens=10, output_tokens=5,
+                                    input_tokens_details=None, output_tokens_details=None)
+
+            @property
+            def output_text(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        with pytest.raises(RuntimeError, match="Responses API returned no output items"):
+            transport.normalize_response(BrokenOutputTextResponse())
+
+    def test_text_fallback_still_uses_valid_output_text(self, transport):
+        """A valid output_text fallback still synthesizes assistant content."""
+        r = SimpleNamespace(
+            output=None,
+            output_text="  Hello from fallback  ",
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5,
+                                  input_tokens_details=None, output_tokens_details=None),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == "Hello from fallback"
+        assert nr.finish_reason == "stop"
+
     def test_message_items_preserved_in_provider_data(self, transport):
         """Codex assistant message item ids/phases must survive transport normalization."""
         r = SimpleNamespace(

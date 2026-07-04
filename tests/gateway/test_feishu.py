@@ -80,6 +80,18 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
 
 class TestFeishuMessageNormalization(unittest.TestCase):
+    def test_extract_feishu_drive_file_tokens_dedupes_file_links(self):
+        from plugins.platforms.feishu.adapter import _extract_feishu_drive_file_tokens
+
+        self.assertEqual(
+            _extract_feishu_drive_file_tokens(
+                "A https://bjrrtx.feishu.cn/file/SyzVbpd1Lo9UJGxwonwcK6TVnyd "
+                "B https://bjrrtx.feishu.cn/file/SyzVbpd1Lo9UJGxwonwcK6TVnyd "
+                "C https://example.com/file/not-feishu"
+            ),
+            ["SyzVbpd1Lo9UJGxwonwcK6TVnyd"],
+        )
+
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message
 
@@ -1364,6 +1376,37 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, ["application/pdf"])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_text_message_downloads_drive_file_links(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_drive_file = AsyncMock(
+            return_value=("/tmp/doc_linked_report.pdf", "application/pdf")
+        )
+        message = SimpleNamespace(
+            message_type="text",
+            content=json.dumps(
+                {
+                    "text": (
+                        "请补充这个资料 "
+                        "https://bjrrtx.feishu.cn/file/SyzVbpd1Lo9UJGxwonwcK6TVnyd"
+                    )
+                },
+                ensure_ascii=False,
+            ),
+            message_id="om_text_link",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertIn("请补充这个资料", text)
+        self.assertEqual(msg_type.value, "document")
+        self.assertEqual(media_urls, ["/tmp/doc_linked_report.pdf"])
+        self.assertEqual(media_types, ["application/pdf"])
+        adapter._download_feishu_drive_file.assert_awaited_once_with("SyzVbpd1Lo9UJGxwonwcK6TVnyd")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_media_message_with_image_mime_becomes_photo(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -1865,6 +1908,57 @@ class TestAdapterBehavior(unittest.TestCase):
         # down, which only works by accident (httpx's eager buffering).
         self.assertLess(events.index("content_read"), events.index("client_exit"))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_download_feishu_drive_file_caches_binary_response(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _Client:
+            def request(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    raw=SimpleNamespace(
+                        content=b"%PDF-1.4 linked file",
+                        headers={
+                            "Content-Type": "application/pdf",
+                            "Content-Disposition": "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf",
+                        },
+                    ),
+                )
+
+        adapter._client = _Client()
+        adapter._build_drive_file_download_request = Mock(
+            side_effect=lambda *, uri, file_token: SimpleNamespace(
+                uri=uri,
+                paths={"file_token": file_token},
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch(
+                "plugins.platforms.feishu.adapter.cache_document_from_bytes",
+                return_value="/tmp/doc_linked_report.pdf",
+            ) as cache_document,
+        ):
+            path, media_type = asyncio.run(adapter._download_feishu_drive_file("SyzVbpd1Lo9UJGxwonwcK6TVnyd"))
+
+        self.assertEqual(path, "/tmp/doc_linked_report.pdf")
+        self.assertEqual(media_type, "application/pdf")
+        self.assertEqual(
+            captured["request"].uri,
+            "/open-apis/drive/v1/medias/:file_token/download",
+        )
+        self.assertEqual(captured["request"].paths, {"file_token": "SyzVbpd1Lo9UJGxwonwcK6TVnyd"})
+        cache_document.assert_called_once_with(b"%PDF-1.4 linked file", "报告.pdf")
+
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -1951,6 +2045,129 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_quote_root_id_does_not_create_topic_session(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="被引用的原消息")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id="om_root_message",
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"请重点看这句"}',
+            message_id="om_quote_followup",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_quote_followup",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIsNone(event.source.thread_id)
+        self.assertEqual(event.reply_to_message_id, "om_root_message")
+        self.assertEqual(event.reply_to_text, "被引用的原消息")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_preserves_explicit_feishu_topic_thread(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="topic 内的父消息")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt_topic_123",
+            root_id="om_topic_root",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"继续处理"}',
+            message_id="om_topic_followup",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_topic_followup",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "omt_topic_123")
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+        self.assertEqual(event.reply_to_text, "topic 内的父消息")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_legacy_thread_like_root_id_remains_topic_id(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id="omt_topic_legacy",
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"topic follow-up"}',
+            message_id="om_topic_legacy_followup",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_topic_legacy_followup",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "omt_topic_legacy")
+        self.assertIsNone(event.reply_to_message_id)
+        adapter._fetch_message_text.assert_not_awaited()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
@@ -2174,6 +2391,78 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_thread_validation_falls_back_to_plain_chat_file(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"replies": [], "creates": []}
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["replies"].append(request)
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=99992402,
+                    msg="field validation failed",
+                    data=None,
+                )
+
+            def create(self, request):
+                captured["creates"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_plain_file_msg"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".docx", delete=False) as tmp:
+            tmp.write(b"PK\x03\x04 test")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={
+                            "thread_id": "omt-thread",
+                            "reply_to_message_id": "om_trigger",
+                        },
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_plain_file_msg")
+        self.assertEqual(len(captured["replies"]), 1)
+        self.assertEqual(len(captured["creates"]), 1)
+        create_request = captured["creates"][0]
+        self.assertEqual(create_request.receive_id_type, "chat_id")
+        self.assertEqual(create_request.request_body.receive_id, "oc_chat")
+        self.assertEqual(create_request.request_body.msg_type, "file")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_uploads_file_and_sends_file_message(self):

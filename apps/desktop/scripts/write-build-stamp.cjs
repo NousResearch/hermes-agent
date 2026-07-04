@@ -13,17 +13,17 @@
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
- *     "source":        "ci" | "local"
+ *     "source":        "ci" | "local" | "fallback"
  *   }
  *
  * Source preference order:
  *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
  *      shallow clones, detached HEADs, etc. in CI.
  *   2. Local `git rev-parse` against the parent repo (../..).
+ *   3. Fallback stamp for local/personal builds from non-git source trees.
  *
- * Dev / out-of-repo builds without git produce an explicit error rather than
- * silently writing an unstamped manifest -- the packaged app refuses to
- * bootstrap without a stamp.
+ * Dev / out-of-repo builds without git produce an explicit fallback stamp
+ * rather than aborting the whole build.
  */
 
 const fs = require("fs")
@@ -77,19 +77,42 @@ function fromLocalGit() {
   }
 }
 
+function fromFallback() {
+  // Non-git builds (ZIP download, bootstrap installer without .git) cannot
+  // determine a real commit.  Use a placeholder so local/personal builds
+  // can still complete.  The desktop bootstrap treats the all-zero commit as
+  // "unknown" and falls back to an unpinned branch bootstrap instead of trying
+  // to fetch a non-existent GitHub commit.
+  return {
+    commit: "0000000000000000000000000000000000000000",
+    branch: "main",
+    dirty: false,
+    source: "fallback"
+  }
+}
+
 function main() {
-  const stamp = fromCI() || fromLocalGit()
+  const stamp = fromCI() || fromLocalGit() || fromFallback()
   if (!stamp || !stamp.commit) {
+    // Should not happen — fromFallback() always provides a commit.
     console.error(
       "[write-build-stamp] ERROR: could not determine git commit.\n" +
         "  - $GITHUB_SHA not set\n" +
         "  - `git rev-parse HEAD` failed at " +
-        REPO_ROOT +
-        "\n" +
+        REPO_ROOT + "\n" +
         "Packaged builds require a git ref to pin first-launch install.ps1\n" +
         "against. Run from a git checkout or set $GITHUB_SHA explicitly."
     )
     process.exit(1)
+  }
+
+  if (stamp.commit === "0000000000000000000000000000000000000000") {
+    console.warn(
+      "[write-build-stamp] WARNING: no git commit found (non-git checkout?).\n" +
+        "  Using placeholder commit — the packaged app will fall back to the\n" +
+        "  default branch for first-launch bootstrap.  For production builds,\n" +
+        "  run from a git checkout."
+    )
   }
 
   if (stamp.dirty) {

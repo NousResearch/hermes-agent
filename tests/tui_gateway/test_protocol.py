@@ -1173,6 +1173,11 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["parent_session_id"] == parent_key
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}
+    # session_key must be in the response so the TUI can update the dashboard
+    # reconnect breadcrumb — without it, a WebSocket drop after /branch
+    # resumes the stale parent session instead of the branch.
+    result = resp.get("result", {})
+    assert result.get("session_key") == "20260101_000001_child0"
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):

@@ -88,10 +88,15 @@ CREATE TABLE IF NOT EXISTS project_meta (
 -- Git repos found by scanning the filesystem (desktop "repo-first" discovery).
 -- Cached here so the overview is instant after the first scan instead of
 -- re-walking the disk every time the Projects view opens.
+--
+-- `profile` scopes the cache to the active profile whose gateway wrote the
+-- row, so a filesystem scan broadcast to multiple profiles doesn't leak
+-- foreign repos into each profile's sidebar (see issue #58215).
 CREATE TABLE IF NOT EXISTS discovered_repos (
     root          TEXT PRIMARY KEY,
     label         TEXT,
-    last_seen     INTEGER NOT NULL
+    last_seen     INTEGER NOT NULL,
+    profile       TEXT NOT NULL DEFAULT 'default'
 );
 """
 
@@ -154,7 +159,7 @@ _INITIALIZED_PATHS: set[str] = set()
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the per-profile projects DB.
-
+    
     WAL with DELETE fallback for network filesystems (shared helper from
     ``hermes_state``). Schema init is idempotent (``CREATE TABLE IF NOT
     EXISTS`` + additive migrations) and cached per-path per-process.
@@ -166,12 +171,13 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         from hermes_state import apply_wal_with_fallback
-
+        
         apply_wal_with_fallback(conn, db_label="projects.db")
         conn.execute("PRAGMA foreign_keys=ON")
         if resolved not in _INITIALIZED_PATHS:
             conn.executescript(SCHEMA_SQL)
             _migrate_add_optional_columns(conn)
+            _migrate_discovered_repos_profile(conn)
             _INITIALIZED_PATHS.add(resolved)
     except Exception:
         conn.close()
@@ -209,6 +215,53 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     for col in _OPTIONAL_PROJECT_COLUMNS:
         if col not in cols:
             _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+
+
+def _migrate_discovered_repos_profile(conn: sqlite3.Connection) -> None:
+    """Idempotent migration for the ``profile`` column on ``discovered_repos``.
+
+    The column is defined in SCHEMA_SQL, but when opening a pre-existing DB the
+    table already exists without the new column, so ``CREATE TABLE IF NOT
+    EXISTS`` is a no-op.  Add it here and backfill with the active profile so
+    existing cached repos don't vanish — they simply get tagged with the
+    profile that originally discovered them (since HERMES_HOME is already
+    profile-scoped at the moment this migration runs).
+    """
+    _add_column_if_missing(
+        conn,
+        "discovered_repos",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    # Best-effort: stamp un-profiled rows with the current active profile.
+    # If this migration fires outside a profile context (e.g. a fresh test DB),
+    # the default 'default' from the column definition applies automatically.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        active = get_active_profile_name() or "default"
+    except Exception:
+        conn.commit()  # finalize any DDL
+        return
+    if conn.execute(
+        "SELECT 1 FROM project_meta WHERE key = 'dr_profile_migrated_v1'"
+    ).fetchone():
+        conn.commit()  # finalize any DDL
+        return
+    # Commit the ALTER TABLE's implicit transaction before starting the
+    # write_txn IMMEDIATE transaction — write_txn requires a clean slate.
+    conn.commit()
+    with write_txn(conn):
+        if conn.execute(
+            "SELECT COUNT(*) FROM discovered_repos WHERE profile = 'default'"
+        ).fetchone()[0] > 0:
+            conn.execute(
+                "UPDATE discovered_repos SET profile = ? WHERE profile = 'default'",
+                (active,),
+            )
+        conn.execute(
+            "INSERT INTO project_meta(key, value) VALUES (?, ?)",
+            ("dr_profile_migrated_v1", "1"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -623,46 +676,68 @@ def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _active_profile() -> str:
+    """Return the current profile name (used to scope `discovered_repos`)."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def record_discovered_repos(
     conn: sqlite3.Connection,
     repos: Iterable[tuple[str, Optional[str]]],
     *,
     replace: bool = False,
+    profile: Optional[str] = None,
 ) -> int:
-    """Persist scanned git repo roots into the cache.
+    """Persist scanned git repo roots into the cache, scoped to the active profile.
 
     ``repos`` is an iterable of ``(root, label)``. Roots are normalized; the
     label falls back to the basename. Returns the number of rows written.
+    When ``replace`` is true, delete stale rows first so old eval/worktree
+    noise disappears instead of living forever in the cache.
 
-    When ``replace`` is true, this is the authoritative result of a fresh disk
-    scan: delete stale rows first so old eval/worktree noise disappears instead
-    of living forever in the cache.
+    ``profile`` defaults to the active profile name.
     """
+    if profile is None:
+        profile = _active_profile()
     now = _now()
     rows = []
     for root, label in repos:
         norm = _normalize_path(root)
         if not norm:
             continue
-        rows.append((norm, (label or os.path.basename(norm) or norm), now))
+        rows.append((norm, (label or os.path.basename(norm) or norm), now, profile))
 
     with write_txn(conn):
         if replace:
-            conn.execute("DELETE FROM discovered_repos")
+            # Delete stale rows only for this profile
+            conn.execute("DELETE FROM discovered_repos WHERE profile = ?", (profile,))
         if rows:
             conn.executemany(
-                "INSERT INTO discovered_repos (root, label, last_seen) VALUES (?, ?, ?) "
+                "INSERT INTO discovered_repos (root, label, last_seen, profile) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(root) DO UPDATE SET label = excluded.label, "
-                "last_seen = excluded.last_seen",
+                "last_seen = excluded.last_seen, profile = excluded.profile",
                 rows,
             )
     return len(rows)
 
 
-def list_discovered_repos(conn: sqlite3.Connection) -> List[dict]:
-    """All cached discovered repo roots, most-recently-seen first."""
+def list_discovered_repos(
+    conn: sqlite3.Connection, *, profile: Optional[str] = None
+) -> List[dict]:
+    """Cached discovered repo roots for a profile, most-recently-seen first.
+
+    ``profile`` defaults to the active profile. Tests/admin tooling can pass
+    an explicit profile string.
+    """
+    use_profile = profile if profile is not None else _active_profile()
     rows = conn.execute(
-        "SELECT root, label, last_seen FROM discovered_repos ORDER BY last_seen DESC"
+        "SELECT root, label, last_seen FROM discovered_repos "
+        "WHERE profile = ? ORDER BY last_seen DESC",
+        (use_profile,),
     ).fetchall()
     return [
         {"root": r["root"], "label": r["label"], "last_seen": r["last_seen"]}

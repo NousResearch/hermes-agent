@@ -23,6 +23,7 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  isRemoteBackendConnection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
@@ -122,6 +123,48 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride({}, 'coder'), null)
   assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
   assert.equal(profileRemoteOverride(null, 'coder'), null)
+})
+
+// --- isRemoteBackendConnection ---
+
+test('isRemoteBackendConnection is false for local desktop backends', () => {
+  assert.equal(isRemoteBackendConnection({ mode: 'local', remote: {}, profiles: {} }, 'default', {}), false)
+  assert.equal(isRemoteBackendConnection({}, 'default', {}), false)
+})
+
+test('isRemoteBackendConnection detects global remote mode', () => {
+  assert.equal(
+    isRemoteBackendConnection({ mode: 'remote', remote: { url: 'https://gateway.example.com' } }, 'default', {}),
+    true
+  )
+})
+
+test('isRemoteBackendConnection detects global cloud mode', () => {
+  assert.equal(
+    isRemoteBackendConnection({ mode: 'cloud', remote: { url: 'https://agent.example.com' } }, 'default', {}),
+    true
+  )
+})
+
+test('isRemoteBackendConnection detects env-forced remote mode', () => {
+  assert.equal(
+    isRemoteBackendConnection({ mode: 'local', remote: {}, profiles: {} }, 'default', {
+      HERMES_DESKTOP_REMOTE_URL: ' http://127.0.0.1:9119 '
+    }),
+    true
+  )
+})
+
+test('isRemoteBackendConnection detects primary profile remote overrides', () => {
+  const config = {
+    mode: 'local',
+    profiles: {
+      work: { mode: 'remote', url: 'https://work.example.com' }
+    }
+  }
+
+  assert.equal(isRemoteBackendConnection(config, 'work', {}), true)
+  assert.equal(isRemoteBackendConnection(config, 'default', {}), false)
 })
 
 // --- pathWithGlobalRemoteProfile ---

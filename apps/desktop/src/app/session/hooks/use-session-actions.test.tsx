@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
   $currentCwd,
@@ -113,6 +114,8 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
     $currentCwd.set('')
     vi.restoreAllMocks()
   })
@@ -154,6 +157,24 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('falls back to the entered project cwd when the current cwd is blank', async () => {
+    const params = await createWith(() => {
+      $projectTree.set([
+        {
+          id: 'p_app',
+          label: 'App',
+          path: '/repo/app',
+          repos: [{ groups: [], id: '/repo/app', label: 'app', path: '/repo/app', sessionCount: 0 }],
+          sessionCount: 0
+        }
+      ])
+      $projectScope.set('p_app')
+      $currentCwd.set('')
+    })
+
+    expect(params).toMatchObject({ cwd: '/repo/app' })
   })
 })
 

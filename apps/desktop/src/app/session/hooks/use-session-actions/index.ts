@@ -38,8 +38,7 @@ import {
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive,
-  workspaceCwdForNewSession
+  setYoloActive
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
@@ -163,7 +162,7 @@ export function useSessionActions({
         // a backend resolves its own launch profile to None (_profile_home).
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
-        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        const cwd = $currentCwd.get().trim() || resolveNewSessionCwd()
         // The composer's model/effort/fast is sticky UI state ($currentModel,
         // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
         // with every session.create so the new chat opens on whatever the picker

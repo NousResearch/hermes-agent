@@ -97,6 +97,20 @@ def _check_kanban_orchestrator_mode() -> bool:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _require_result_for_verify() -> bool:
+    """Check the board config for ``kanban.require_result_for_verify``.
+
+    Best-effort: returns False when config is unavailable so existing
+    behaviour is preserved in test / minimal environments.
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        return bool(cfg_get(cfg, "kanban", "require_result_for_verify"))
+    except Exception:
+        return False
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
     if arg:
@@ -527,6 +541,13 @@ def _handle_complete(args: dict, **kw) -> str:
             pass
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
+    verdict = args.get("verdict")
+    # Normalise verdict: accept a string, strip whitespace, treat
+    # empty string as None (no verdict).
+    if isinstance(verdict, str):
+        verdict = verdict.strip() or None
+    else:
+        verdict = None
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -629,6 +650,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    verdict=verdict,
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -1287,6 +1309,19 @@ KANBAN_COMPLETE_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            "verdict": {
+                "type": "string",
+                "description": (
+                    "Optional structured verdict for this completion "
+                    "(e.g. PASS, FAIL, PASS-WITH-REPAIRS, BLOCKED). "
+                    "Consumed by verdict-aware parent gating: when "
+                    "``kanban.require_verdict_for_release`` is enabled, "
+                    "a FAIL verdict prevents dependent child tasks from "
+                    "auto-promoting to ready — the dispatcher-physics "
+                    "mechanism for M0 harness gating. Omit when the "
+                    "task is not a verification/approval task."
+                ),
+            },
         },
         "required": [],
     },

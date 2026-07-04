@@ -210,6 +210,7 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    "kanban_pre_spawn",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

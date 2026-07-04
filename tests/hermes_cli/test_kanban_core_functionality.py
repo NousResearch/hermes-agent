@@ -79,6 +79,31 @@ def test_idempotency_key_ignored_for_archived(kanban_home):
         conn.close()
 
 
+def test_idempotency_key_ignored_for_done(kanban_home):
+    """Regression: a DONE task must not block re-emission with the same
+    idempotency key. The key lookup must only match non-terminal statuses
+    (ready/todo/running/blocked), not done/archived."""
+    conn = kb.connect()
+    try:
+        a = kb.create_task(conn, title="first", idempotency_key="done-key")
+        # Complete the task normally (no result required, gate off)
+        kb.claim_task(conn, a)
+        kb.complete_task(conn, a, summary="first done")
+        # Re-create with same key — must yield a NEW task, not the DONE one
+        b = kb.create_task(conn, title="second attempt", idempotency_key="done-key")
+        assert a != b, (
+            f"DONE task {a} should not block fresh create with same key; "
+            f"got {b} (same as original)"
+        )
+        # The new task should have the new title
+        task = kb.get_task(conn, b)
+        assert task.title == "second attempt", (
+            f"new task should have new title, got {task.title}"
+        )
+    finally:
+        conn.close()
+
+
 def test_create_task_persists_model_override(kanban_home):
     conn = kb.connect()
     try:

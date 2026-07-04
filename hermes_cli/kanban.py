@@ -537,6 +537,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument("--verdict", default=None,
+                            help="Structured verdict (PASS, FAIL, PASS-WITH-REPAIRS, etc.). "
+                                 "Consumed by verdict-aware parent gating for dependency release.")
 
     p_edit = sub.add_parser(
         "edit",
@@ -1869,6 +1872,19 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _kanban_require_result_for_verify_cli() -> bool:
+    """Check the board config for ``kanban.require_result_for_verify``.
+
+    Best-effort: returns False when config is unavailable (test / minimal envs).
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        return bool(cfg_get(cfg, "kanban", "require_result_for_verify"))
+    except Exception:
+        return False
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1877,6 +1893,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    verdict = getattr(args, "verdict", None)
+    # Normalise verdict
+    if isinstance(verdict, str):
+        verdict = verdict.strip() or None
+    else:
+        verdict = None
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
@@ -1897,6 +1919,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    # Evidence gate: the DB backstop in complete_task handles evidence
+    # enforcement (currently WARN mode — logs + comments, allows
+    # completion). The CLI is a passthrough to the authoritative DB path.
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -1906,6 +1931,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                verdict=verdict,
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)

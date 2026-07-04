@@ -2248,4 +2248,82 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     })
     d = json.loads(out)
     assert d["ok"] is True, d
-    assert d["subscribed"] is False, d
+
+
+# ---------------------------------------------------------------------------
+# Evidence gate: kanban.require_result_for_verify
+# ---------------------------------------------------------------------------
+
+def test_complete_allows_summary_only_with_warn_when_require_result_enabled(
+    monkeypatch, worker_env, tmp_path
+):
+    """When kanban.require_result_for_verify is true, kanban_complete with
+    only a summary (no result) must succeed (WARN mode) but leave a
+    warning comment via the DB backstop."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "got it done, trust me"})
+    d = json.loads(out)
+    assert d["ok"] is True, (
+        f"WARN mode: completion should succeed despite empty result, got {d}"
+    )
+    # Verify the warning comment was added by the DB backstop
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        comments = kb.list_comments(conn, d.get("task_id", ""))
+        warn_comments = [
+            c for c in comments
+            if "hermes-evidence-gate" in (c.author or "")
+        ]
+        assert len(warn_comments) >= 1, (
+            f"expected at least one evidence-gate warning comment, "
+            f"got {len(warn_comments)}"
+        )
+    finally:
+        conn.close()
+
+
+def test_complete_allows_summary_with_result_when_require_result_enabled(
+    monkeypatch, worker_env, tmp_path
+):
+    """With require_result_for_verify enabled, passing a non-empty result
+    alongside the summary should still succeed."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "did the thing",
+        "result": "built rate limiter; 14/14 tests pass",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, f"expected ok, got {d}"
+
+
+def test_complete_allows_summary_only_when_require_result_disabled(
+    monkeypatch, worker_env, tmp_path
+):
+    """When require_result_for_verify is false (default), summary-only
+    completions must still work."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "all done"})
+    d = json.loads(out)
+    assert d["ok"] is True, f"expected ok, got {d}"

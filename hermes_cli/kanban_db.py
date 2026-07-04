@@ -191,6 +191,36 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
 
+def _kanban_require_result_for_verify() -> bool:
+    """Return True when the board config requires evidence in kanban_complete.
+
+    Reads ``kanban.require_result_for_verify`` from config.yaml. Best-effort:
+    when config can't be loaded (tests, minimal environments) the gate is
+    permissive (returns False) so existing behaviour is preserved.
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        return bool(cfg_get(cfg, "kanban", "require_result_for_verify"))
+    except Exception:
+        return False
+
+
+def _kanban_require_verdict_for_release() -> bool:
+    """Return True when verdict-aware parent gating is enabled.
+
+    Reads ``kanban.require_verdict_for_release`` from config.yaml.
+    Best-effort: returns False when config is unavailable so existing
+    behaviour is preserved.
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        return bool(cfg_get(cfg, "kanban", "require_verdict_for_release"))
+    except Exception:
+        return False
+
+
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
 
@@ -914,6 +944,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured verdict recorded at completion (PASS, FAIL,
+    # PASS-WITH-REPAIRS, BLOCKED, etc.). Consumed by verdict-aware
+    # parent gating in ``recompute_ready``. NULL when no verdict
+    # was recorded (legacy / backward-compatible default).
+    verdict: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -997,6 +1032,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            verdict=(
+                row["verdict"] if "verdict" in keys else None
             ),
         )
 
@@ -1175,7 +1213,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Verdict-aware parent gating (M0 harness physics): when a task
+    -- completes, the operator / verifier can record a structured verdict
+    -- (e.g. PASS, FAIL, PASS-WITH-REPAIRS, BLOCKED). The dependency
+    -- release path in recompute_ready consumes this field — a FAIL
+    -- verdict keeps children blocked so a failed verification never
+    -- silently releases downstream work. NULL on legacy rows and when
+    -- no verdict is recorded (backward-compatible default).
+    verdict              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1986,6 +2032,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "verdict" not in cols:
+        # Verdict-aware parent gating (M0 harness physics): structured
+        # verdict recorded at completion (PASS, FAIL, PASS-WITH-REPAIRS,
+        # etc.).  NULL on legacy rows preserves backward compatibility.
+        _add_column_if_missing(
+            conn, "tasks", "verdict", "verdict TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2552,7 +2606,7 @@ def create_task(
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
+            "AND status NOT IN ('done', 'archived') "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
@@ -3337,12 +3391,51 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.status, t.verdict FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                # Verdict-aware parent gating (M0 harness physics):
+                # when the board policy is enabled, a parent whose
+                # verdict is FAIL or BLOCKED must not auto-release
+                # its children. The operator must re-run the parent
+                # (to get a PASS) or manually unblock the child.
+                # Parents with NULL verdict (legacy / no verdict
+                # recorded) always release — backward-compatible
+                # default.
+                if _kanban_require_verdict_for_release():
+                    blocking_verdicts = {"FAIL", "BLOCKED"}
+                    blocked_by = [
+                        p["verdict"] for p in parents
+                        if p["verdict"] in blocking_verdicts
+                    ]
+                    if blocked_by:
+                        # At least one parent has a blocking verdict;
+                        # transition to blocked with a reason naming
+                        # the parents.  Inline the block rather than
+                        # calling _block_spawn (which opens its own
+                        # write_txn — we're already inside one).
+                        reason = (
+                            "parent_verdict_block: one or more parent "
+                            f"tasks completed with verdict(s) "
+                            f"{', '.join(blocked_by)}"
+                        )
+                        _end_run(conn, task_id, outcome="blocked",
+                                 status="blocked",
+                                 summary=f"Pre-spawn blocked: {reason}")
+                        conn.execute(
+                            "UPDATE tasks SET status = 'blocked', "
+                            "claim_lock = NULL, claim_expires = NULL, "
+                            "worker_pid = NULL WHERE id = ?",
+                            (task_id,),
+                        )
+                        _append_event(
+                            conn, task_id, "pre_spawn_blocked",
+                            {"reason": reason},
+                        )
+                        continue
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3985,6 +4078,98 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _apply_evidence_gate(
+    conn: sqlite3.Connection,
+    task_id: str,
+    result: Optional[str],
+    summary: Optional[str],
+) -> Optional[str]:
+    """WARN-mode evidence gate (M0 harness physics).
+
+    When ``kanban.require_result_for_verify`` is enabled and the result
+    field is empty or missing:
+
+    (a) Check recent comments for evidence — if found, backfill result.
+    (b) If both result AND comments are empty, log + comment a warning.
+    (c) If result already has evidence, pass through unchanged.
+
+    Completion ALWAYS proceeds in WARN mode. The enforce flip
+    (reject-on-empty) is a dated follow-up commit.
+
+    Returns the (possibly backfilled) result string, or None.
+    """
+    # Quick pass: gate not enabled or result already has evidence
+    if not _kanban_require_result_for_verify():
+        return result
+    if result and isinstance(result, str) and result.strip():
+        return result
+
+    # Check recent comments for evidence
+    evidence_from_comments = ""
+    try:
+        comments = list_comments(conn, task_id)
+        # Scan last 20 comments, newest first, for substantive evidence
+        for c in reversed(comments[-20:]):
+            body = (c.body or "").strip()
+            # Heuristic: non-trivial comments (>60 chars) with structured
+            # content are plausible evidence (verdicts, test results, etc.)
+            if len(body) > 60:
+                evidence_from_comments = body
+                break
+    except Exception:
+        pass
+
+    if evidence_from_comments:
+        # (b) Evidence found in comments — backfill to result
+        _log.warning(
+            "Evidence gate WARN: task %s completed with evidence in "
+            "comments but empty result. Auto-backfilling result from "
+            "comments.",
+            task_id,
+        )
+        try:
+            add_comment(
+                conn, task_id,
+                author="hermes-evidence-gate",
+                body=(
+                    "\u26a0\ufe0f **Evidence gate (WARN):** result field was "
+                    "empty at completion, but evidence was found in "
+                    "comments. Automatically backfilled the result field. "
+                    "Please use ``result=`` in future ``kanban_complete`` "
+                    "calls. This is a warning \u2014 completion was allowed. "
+                    "When the gate transitions to enforce mode, empty "
+                    "results will be rejected."
+                ),
+            )
+        except Exception:
+            pass
+        return evidence_from_comments
+
+    # (a) Both result and comments empty — warn
+    _log.warning(
+        "Evidence gate WARN: task %s completed with empty result and "
+        "no evidence in comments. Completion allowed (WARN mode).",
+        task_id,
+    )
+    try:
+        add_comment(
+            conn, task_id,
+            author="hermes-evidence-gate",
+            body=(
+                "\u26a0\ufe0f **Evidence gate (WARN):** this task was "
+                "completed without evidence in the ``result`` field and "
+                "with no verifiable evidence in comments. Completion was "
+                "allowed (WARN mode), but this will be rejected when the "
+                "gate transitions to enforce mode. Please use ``result=`` "
+                "with evidence of what was actually done in future "
+                "``kanban_complete`` calls."
+            ),
+        )
+    except Exception:
+        pass
+    return result
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3994,6 +4179,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    verdict: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4024,6 +4210,14 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # Evidence gate (M0 harness physics): WARN mode — when the board
+    # policy kanban.require_result_for_verify is enabled and the result
+    # field is empty, (a) check comments for evidence → backfill to
+    # result, (b) if both are empty, log + comment a warning. Completion
+    # always proceeds in WARN mode. The enforce flip (reject-on-empty)
+    # is a dated follow-up after weekly proof shows warn-count→0.
+    result = _apply_evidence_gate(conn, task_id, result, summary)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4064,11 +4258,12 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       verdict      = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (result, now, verdict, task_id),
             )
         else:
             cur = conn.execute(
@@ -4081,12 +4276,13 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       verdict      = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (result, now, verdict, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -5748,6 +5944,12 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    pre_spawn_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked by the pre-spawn precondition hook, as ``(task_id, reason)``
+    pairs. The task transitions from ``running`` (just claimed) to ``blocked``
+    with the reason recorded. Operator must unblock the task after addressing
+    the precondition failure; the claim is released so another dispatcher tick
+    can retry when the precondition is fixed."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -7284,6 +7486,17 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Pre-spawn hook (M0 harness physics): run precondition checks
+        # between claim and process launch. Plugins on the
+        # ``kanban_pre_spawn`` hook can return
+        # {'action':'block','reason':'...'} to veto the spawn. The
+        # board-config ``kanban.pre_spawn_command`` is also run here as a
+        # shell command whose non-zero exit blocks the spawn.
+        pre_spawn_block = _run_pre_spawn_checks(conn, claimed, str(workspace), board=board)
+        if pre_spawn_block is not None:
+            _block_spawn(conn, claimed.id, pre_spawn_block)
+            result.pre_spawn_blocked.append((claimed.id, pre_spawn_block))
+            continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -7667,6 +7880,131 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
             exc,
         )
         return None
+
+
+def _run_pre_spawn_checks(
+    conn: sqlite3.Connection,
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Run pre-spawn precondition checks for a just-claimed task.
+
+    Two layers, both best-effort (a failure here must never crash the
+    dispatcher):
+
+    1. **Plugin hook** ``kanban_pre_spawn`` — plugins return
+       ``{'action': 'block', 'reason': '...'}`` to veto the spawn.
+       The first valid block directive wins.
+
+    2. **Board-config command** ``kanban.pre_spawn_command`` — a shell
+       command run with ``task_id`` and ``workspace`` in the environment.
+       Non-zero exit → blocked with the command's stderr as the reason.
+
+    Returns ``None`` when all checks pass (proceed with spawn), or a
+    human-readable block reason when a check vetoes the spawn.
+    """
+    # Layer 1: plugin hook
+    try:
+        from hermes_cli.plugins import invoke_hook
+        hook_results = invoke_hook(
+            "kanban_pre_spawn",
+            task_id=task.id,
+            assignee=task.assignee,
+            workspace=workspace,
+            board=board,
+        )
+        for result in hook_results:
+            if not isinstance(result, dict):
+                continue
+            if result.get("action") != "block":
+                continue
+            reason = result.get("reason")
+            if isinstance(reason, str) and reason:
+                return reason
+    except Exception:
+        _log.debug("kanban_pre_spawn hook failed", exc_info=True)
+
+    # Layer 2: board-config command
+    pre_spawn_cmd = _kanban_pre_spawn_command(board=board)
+    if pre_spawn_cmd:
+        import subprocess as _sp
+        env = dict(os.environ)
+        env["KANBAN_TASK_ID"] = task.id
+        env["KANBAN_WORKSPACE"] = workspace
+        if task.assignee:
+            env["KANBAN_ASSIGNEE"] = task.assignee
+        env["KANBAN_BOARD"] = _normalize_board_slug(board) or get_current_board()
+        try:
+            proc = _sp.run(
+                pre_spawn_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+                cwd=workspace if os.path.isdir(workspace) else None,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or proc.stdout or "").strip()
+                reason = (
+                    f"pre_spawn_command exited {proc.returncode}: {stderr}"
+                    if stderr
+                    else f"pre_spawn_command exited {proc.returncode}"
+                )
+                return reason
+        except _sp.TimeoutExpired:
+            return "pre_spawn_command timed out after 30s"
+        except Exception as exc:
+            _log.debug("pre_spawn_command failed: %s", exc, exc_info=True)
+            return f"pre_spawn_command error: {exc}"
+
+    return None
+
+
+def _kanban_pre_spawn_command(board: Optional[str] = None) -> str:
+    """Read ``kanban.pre_spawn_command`` from config, best-effort."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        return str(cfg_get(cfg, "kanban", "pre_spawn_command", default="")).strip()
+    except Exception:
+        return ""
+
+
+def _block_spawn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Transition a just-claimed task back to ``blocked`` with a reason.
+
+    The task was atomically claimed (``ready → running``) just before this
+    call, so we release the claim and record the block in one transaction.
+    The dispatch tick will emit the appropriate event.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        # End the run that claim_task just created.
+        _end_run(conn, task_id, outcome="blocked", status="blocked",
+                 summary=f"Pre-spawn blocked: {reason}")
+        # Release the claim.
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+            (task_id,),
+        )
+        _append_event(
+            conn, task_id, "pre_spawn_blocked",
+            {"reason": reason},
+        )
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_blocked",
+        task_id,
+        board=get_current_board(),
+        reason=reason,
+    )
 
 
 def _default_spawn(
@@ -8087,6 +8425,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     body_lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
                     pass
+            # Surface the parent's structured verdict when present —
+            # the explicit contract consumed by verdict-aware gating
+            # (never prose-parsed from summaries).
+            if pt.verdict:
+                body_lines.append(f"_verdict_: {pt.verdict}")
             lines.extend(body_lines)
             lines.append("")
 

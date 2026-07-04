@@ -4777,3 +4777,530 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Evidence gate: kanban.require_result_for_verify — DB backstop
+# ---------------------------------------------------------------------------
+
+def test_complete_task_warns_summary_only_when_require_result_enabled(
+    tmp_path, monkeypatch
+):
+    """The DB backstop in complete_task must allow completion (WARN mode)
+    but add a warning comment when require_result_for_verify is enabled
+    and result is missing."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Re-import to pick up new config
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-evidence-gate",
+                                 assignee="test-worker")
+        kb_mod.claim_task(conn, tid)
+        # WARN mode: completion must succeed (not raise)
+        ok = kb_mod.complete_task(conn, tid, summary="done, trust me")
+        assert ok is True, "WARN mode: completion should succeed"
+        # Verify warning comment was added
+        comments = kb_mod.list_comments(conn, tid)
+        warn_comments = [
+            c for c in comments
+            if "hermes-evidence-gate" in (c.author or "")
+        ]
+        assert len(warn_comments) >= 1, (
+            f"expected evidence-gate warning comment, got {len(warn_comments)}"
+        )
+        assert "WARN" in warn_comments[0].body, (
+            f"warning comment should mention WARN: {warn_comments[0].body[:200]}"
+        )
+    finally:
+        conn.close()
+
+
+def test_complete_task_allows_result_when_require_result_enabled(
+    tmp_path, monkeypatch
+):
+    """With require_result_for_verify enabled, complete_task must succeed
+    when a non-empty result is provided."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-evidence-gate-ok",
+                                 assignee="test-worker")
+        kb_mod.claim_task(conn, tid)
+        ok = kb_mod.complete_task(
+            conn, tid,
+            summary="did the work",
+            result="built rate limiter; 14 tests pass",
+        )
+        assert ok is True
+    finally:
+        conn.close()
+
+
+def test_evidence_gate_backfills_from_comments(
+    tmp_path, monkeypatch
+):
+    """When result is empty but comments contain evidence, the gate must
+    auto-backfill the result field from comments (WARN mode)."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_result_for_verify: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-backfill",
+                                 assignee="test-worker")
+        kb_mod.claim_task(conn, tid)
+        # Pre-populate a comment with evidence
+        kb_mod.add_comment(
+            conn, tid,
+            author="test-worker",
+            body=(
+                "VERDICT: PASS. Evidence: ran 42 tests in "
+                "tests/test_pipeline.py, all passing. Coverage at 94%. "
+                "Changed files: pipeline.py, test_pipeline.py"
+            ),
+        )
+        # Complete with empty result — gate should backfill from comments
+        ok = kb_mod.complete_task(conn, tid, summary="all done")
+        assert ok is True, "completion should succeed (WARN mode)"
+        # Verify the task's result was backfilled
+        task = kb_mod.get_task(conn, tid)
+        assert task.result is not None, (
+            "result should have been backfilled from comments"
+        )
+        assert "VERDICT: PASS" in (task.result or ""), (
+            f"backfilled result should contain evidence: {task.result[:200]}"
+        )
+        # Verify a backfill warning comment was added
+        comments = kb_mod.list_comments(conn, tid)
+        backfill_comments = [
+            c for c in comments
+            if "hermes-evidence-gate" in (c.author or "")
+            and "backfilled" in (c.body or "").lower()
+        ]
+        assert len(backfill_comments) >= 1, (
+            f"expected backfill notice comment, got {len(backfill_comments)}"
+        )
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Pre-spawn hook: kanban_pre_spawn / pre_spawn_command
+# ---------------------------------------------------------------------------
+
+def test_pre_spawn_command_blocks_spawn_on_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    """A pre_spawn_command that exits non-zero must block the spawn."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  pre_spawn_command: 'exit 1'\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-pre-spawn-block",
+                                 assignee="test-worker")
+        # Simulate dispatch: claim, then run pre-spawn checks
+        claimed = kb_mod.claim_task(conn, tid)
+        assert claimed is not None
+        block_reason = kb_mod._run_pre_spawn_checks(
+            conn, claimed, str(tmp_path),
+        )
+        assert block_reason is not None, (
+            "pre_spawn_command exit 1 should return a block reason"
+        )
+        assert "exited 1" in block_reason, (
+            f"block reason should mention exit code: {block_reason}"
+        )
+        # Apply the block
+        kb_mod._block_spawn(conn, tid, block_reason)
+        task = kb_mod.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"expected blocked, got {task.status}"
+        )
+    finally:
+        conn.close()
+
+
+def test_pre_spawn_command_allows_spawn_on_zero_exit(
+    tmp_path, monkeypatch
+):
+    """A pre_spawn_command that exits zero must allow the spawn."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  pre_spawn_command: 'exit 0'\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-pre-spawn-ok",
+                                 assignee="test-worker")
+        claimed = kb_mod.claim_task(conn, tid)
+        assert claimed is not None
+        block_reason = kb_mod._run_pre_spawn_checks(
+            conn, claimed, str(tmp_path),
+        )
+        assert block_reason is None, (
+            f"pre_spawn_command exit 0 should return None, got {block_reason}"
+        )
+    finally:
+        conn.close()
+
+
+def test_no_pre_spawn_block_without_config(
+    tmp_path, monkeypatch
+):
+    """Without pre_spawn_command or pre_spawn hooks, checks must pass."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        tid = kb_mod.create_task(conn, title="test-no-block",
+                                 assignee="test-worker")
+        claimed = kb_mod.claim_task(conn, tid)
+        assert claimed is not None
+        block_reason = kb_mod._run_pre_spawn_checks(
+            conn, claimed, str(tmp_path),
+        )
+        assert block_reason is None, (
+            f"no preconditions configured, should pass: {block_reason}"
+        )
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Verdict-aware parent gating
+# ---------------------------------------------------------------------------
+
+def test_complete_task_stores_verdict(kanban_home):
+    """complete_task must persist a verdict when one is passed."""
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="test-verdict-store",
+                             assignee="test-worker")
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn, tid,
+            summary="did the verification",
+            result="build verification: 14 tests pass",
+            verdict="PASS",
+        )
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.verdict == "PASS", (
+            f"expected verdict=PASS, got {task.verdict!r}"
+        )
+    finally:
+        conn.close()
+
+
+def test_complete_task_stores_fail_verdict(kanban_home):
+    """complete_task must persist a FAIL verdict."""
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="test-verdict-fail",
+                             assignee="test-worker")
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn, tid,
+            summary="verification failed",
+            result="build verification: 3/14 tests FAIL",
+            verdict="FAIL",
+        )
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.verdict == "FAIL", (
+            f"expected verdict=FAIL, got {task.verdict!r}"
+        )
+    finally:
+        conn.close()
+
+
+def test_verdict_gating_blocks_child_on_parent_fail(
+    tmp_path, monkeypatch
+):
+    """When require_verdict_for_release is enabled and a parent completes
+    with verdict=FAIL, dependent children must NOT be promoted."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_verdict_for_release: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        parent_id = kb_mod.create_task(
+            conn, title="verify-something",
+            assignee="verifier",
+        )
+        child_id = kb_mod.create_task(
+            conn, title="downstream-work",
+            assignee="builder",
+        )
+        kb_mod.link_tasks(conn, parent_id, child_id)
+        kb_mod.claim_task(conn, parent_id)
+        kb_mod.complete_task(
+            conn, parent_id,
+            summary="verification failed",
+            result="3/14 tests FAIL",
+            verdict="FAIL",
+        )
+        parent = kb_mod.get_task(conn, parent_id)
+        assert parent.status == "done"
+        assert parent.verdict == "FAIL"
+        promoted = kb_mod.recompute_ready(conn)
+        assert promoted == 0, (
+            f"expected 0 promotions (child should be blocked by FAIL "
+            f"verdict), got {promoted}"
+        )
+        child = kb_mod.get_task(conn, child_id)
+        assert child.status == "blocked", (
+            f"expected child blocked, got {child.status}"
+        )
+    finally:
+        conn.close()
+
+
+def test_verdict_gating_allows_child_on_parent_pass(
+    tmp_path, monkeypatch
+):
+    """With require_verdict_for_release enabled, a PASS verdict
+    must still allow children to promote."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_verdict_for_release: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        parent_id = kb_mod.create_task(
+            conn, title="verify-passing",
+            assignee="verifier",
+        )
+        child_id = kb_mod.create_task(
+            conn, title="downstream-ok",
+            assignee="builder",
+        )
+        kb_mod.link_tasks(conn, parent_id, child_id)
+        kb_mod.claim_task(conn, parent_id)
+        kb_mod.complete_task(
+            conn, parent_id,
+            summary="verification passed",
+            result="14/14 tests pass",
+            verdict="PASS",
+        )
+        parent = kb_mod.get_task(conn, parent_id)
+        assert parent.status == "done"
+        assert parent.verdict == "PASS"
+        # complete_task internally calls recompute_ready, so the child
+        # should already be promoted to 'ready'.
+        child = kb_mod.get_task(conn, child_id)
+        assert child.status == "ready", (
+            f"expected child ready after parent PASS, got {child.status}"
+        )
+        promoted = kb_mod.recompute_ready(conn)
+        assert promoted == 0, (
+            f"expected 0 additional promotions (child already ready), "
+            f"got {promoted}"
+        )
+        child = kb_mod.get_task(conn, child_id)
+        assert child.status == "ready", (
+            f"expected child ready, got {child.status}"
+        )
+    finally:
+        conn.close()
+
+
+def test_verdict_gating_noop_when_disabled(
+    tmp_path, monkeypatch
+):
+    """When require_verdict_for_release is false, FAIL verdict
+    must NOT block child promotion (backward compat)."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_verdict_for_release: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        parent_id = kb_mod.create_task(
+            conn, title="verify-fail-disabled",
+            assignee="verifier",
+        )
+        child_id = kb_mod.create_task(
+            conn, title="downstream-disabled",
+            assignee="builder",
+        )
+        kb_mod.link_tasks(conn, parent_id, child_id)
+        kb_mod.claim_task(conn, parent_id)
+        kb_mod.complete_task(
+            conn, parent_id,
+            summary="verification failed",
+            result="3/14 tests FAIL",
+            verdict="FAIL",
+        )
+        parent = kb_mod.get_task(conn, parent_id)
+        assert parent.status == "done"
+        assert parent.verdict == "FAIL"
+        # complete_task internally calls recompute_ready, so the child
+        # should already be promoted (gate is disabled — FAIL doesn't block).
+        child = kb_mod.get_task(conn, child_id)
+        assert child.status == "ready", (
+            f"expected child ready (gate disabled), got {child.status}"
+        )
+        promoted = kb_mod.recompute_ready(conn)
+        assert promoted == 0, (
+            f"expected 0 additional promotions (child already ready), "
+            f"got {promoted}"
+        )
+    finally:
+        conn.close()
+
+
+def test_verdict_gating_null_verdict_always_releases(
+    tmp_path, monkeypatch
+):
+    """NULL verdict always releases children, even with gate enabled."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  require_verdict_for_release: true\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import importlib
+    import hermes_cli.kanban_db as kb_mod
+    importlib.reload(kb_mod)
+    kb_mod._INITIALIZED_PATHS.clear()
+    kb_mod.init_db()
+    conn = kb_mod.connect()
+    try:
+        parent_id = kb_mod.create_task(
+            conn, title="legacy-parent",
+            assignee="test-worker",
+        )
+        child_id = kb_mod.create_task(
+            conn, title="legacy-child",
+            assignee="builder",
+        )
+        kb_mod.link_tasks(conn, parent_id, child_id)
+        kb_mod.claim_task(conn, parent_id)
+        kb_mod.complete_task(
+            conn, parent_id,
+            summary="did the work",
+            result="done",
+        )
+        parent = kb_mod.get_task(conn, parent_id)
+        assert parent.status == "done"
+        assert parent.verdict is None
+        # complete_task internally calls recompute_ready, so the child
+        # should already be promoted (NULL verdict = release).
+        child = kb_mod.get_task(conn, child_id)
+        assert child.status == "ready", (
+            f"expected child ready (NULL verdict = release), got {child.status}"
+        )
+        promoted = kb_mod.recompute_ready(conn)
+        assert promoted == 0, (
+            f"expected 0 additional promotions (child already ready), "
+            f"got {promoted}"
+        )
+    finally:
+        conn.close()
+
+
+def test_build_worker_context_includes_parent_verdict(kanban_home):
+    """Parent verdicts must be surfaced in build_worker_context."""
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent_id = kb.create_task(
+            conn, title="verify-context-test",
+            assignee="verifier",
+        )
+        child_id = kb.create_task(
+            conn, title="child-context-test",
+            assignee="builder",
+        )
+        kb.link_tasks(conn, parent_id, child_id)
+        kb.claim_task(conn, parent_id)
+        kb.complete_task(
+            conn, parent_id,
+            summary="verification done",
+            result="PASS: all checks green",
+            verdict="PASS",
+        )
+        ctx = kb.build_worker_context(conn, child_id)
+        assert "_verdict_: PASS" in ctx, (
+            f"worker context should include parent verdict, got:\n{ctx}"
+        )
+    finally:
+        conn.close()

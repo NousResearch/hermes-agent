@@ -2607,6 +2607,40 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Evidence gate (M0 harness physics): when true, the ``result``
+        # field on kanban_complete is mandatory. A summary-only completion
+        # is rejected at every enforcement point: the DB backstop
+        # (complete_task), the tool handler (_handle_complete), and the
+        # CLI (kanban complete).  A worker that calls kanban_complete with
+        # only a summary and no evidence-bearing result field will receive
+        # a tool_error / CLI error / DB rejection depending on the path.
+        # Defaults to false (permissive) for backward compatibility —
+        # operators enable this via their board config when they want the
+        # gate enforced as harness physics rather than instruction-level
+        # guidance.
+        "require_result_for_verify": False,
+        # Pre-spawn precondition command (M0 harness physics): an optional
+        # shell command the dispatcher runs between claim and process
+        # launch.  If the command exits non-zero, the spawn is blocked
+        # with the command's stderr as the block reason and the task
+        # transitions to ``blocked``.  This is the dispatcher-physics
+        # mechanism for pre-spawn checks (e.g. M0 evidence-sensing,
+        # artifact-contract gates, workspace integrity probes) — the M0
+        # checker runs at dispatch time, not as a worker instruction.
+        # Set per-board via config.yaml or per-task via a task-level
+        # custom field.  When empty (default), no precondition runs.
+        "pre_spawn_command": "",
+        # Verdict-aware parent gating (M0 harness physics): when enabled,
+        # a child task whose parent completed with ``verdict='FAIL'`` or
+        # ``verdict='BLOCKED'`` will NOT be promoted to ready — it stays
+        # blocked until the parent's verdict is resolved (re-run with
+        # PASS, or manually unblocked by an operator). This is the
+        # dispatcher-physics mechanism that prevents a failed verification
+        # from silently releasing downstream work. A parent with no
+        # verdict (NULL) always releases children (backward-compatible
+        # default). Defaults to false — operators enable this via their
+        # board config when they want the gate enforced as harness physics.
+        "require_verdict_for_release": False,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

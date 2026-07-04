@@ -1,0 +1,4 @@
+name: kanban
+version: "1.0.0"
+description: Kanban board lifecycle hooks — evidence gate, pre-spawn checks, and board policy enforcement
+author: Hermes Agent

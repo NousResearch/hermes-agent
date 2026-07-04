@@ -143,7 +143,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
@@ -151,6 +151,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             trusted_roots = [SKILLS_DIR]
             try:
                 trusted_roots.extend(get_external_skills_dirs())
+                _project_skills = get_project_skills_dir()
+                if _project_skills is not None:
+                    trusted_roots.append(_project_skills)
             except Exception:
                 pass
 
@@ -356,7 +359,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -365,6 +368,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
         dirs_to_scan.extend(get_external_skills_dirs())
+        _project_skills = get_project_skills_dir()
+        if _project_skills is not None:
+            dirs_to_scan.append(_project_skills)
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):

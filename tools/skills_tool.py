@@ -505,8 +505,11 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     # then fall back to external dirs from config.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
         dirs_to_check.extend(get_external_skills_dirs())
+        _project_skills = get_project_skills_dir()
+        if _project_skills is not None:
+            dirs_to_check.append(_project_skills)
     except Exception:
         pass
     for skills_dir in dirs_to_check:
@@ -612,7 +615,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -625,6 +628,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())
+    _project_skills = get_project_skills_dir()
+    if _project_skills is not None:
+        dirs_to_scan.append(_project_skills)
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -966,7 +972,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -987,6 +993,9 @@ def skill_view(
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
         all_dirs.extend(get_external_skills_dirs())
+        _project_skills = get_project_skills_dir()
+        if _project_skills is not None:
+            all_dirs.append(_project_skills)
 
         if not all_dirs:
             return json.dumps(

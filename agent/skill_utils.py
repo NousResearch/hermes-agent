@@ -496,14 +496,36 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_project_skills_dir() -> Optional[Path]:
+    """Return the project-local skills directory if it exists.
+
+    Checks for ``.agent_context/skills/`` relative to the current working
+    directory. This is the fallback path used by Multica and other tools
+    for agent skill injection.
+    """
+    try:
+        cwd = Path.cwd()
+        project_skills = cwd / ".agent_context" / "skills"
+        if project_skills.is_dir():
+            return project_skills
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
+    Project-local ``.agent_context/skills/`` is included if it exists.
     """
     dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
+    # Add project-local skills directory (Multica fallback path)
+    project_skills = get_project_skills_dir()
+    if project_skills is not None and project_skills not in dirs:
+        dirs.append(project_skills)
     return dirs
 
 

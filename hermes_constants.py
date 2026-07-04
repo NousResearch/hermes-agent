@@ -317,11 +317,14 @@ def node_tool_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -562,11 +565,14 @@ def agent_browser_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -785,21 +791,29 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
         env["HOME"] = home
 
 
-VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
-def parse_reasoning_effort(effort: str) -> dict | None:
+def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
+    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max".
     Returns None when the input is empty or unrecognized (caller uses default).
-    Returns {"enabled": False} for "none".
+    Returns {"enabled": False} for "none" (aliases: "false", "disabled", and
+    YAML boolean False — users write ``reasoning_effort: false``/``off``/``no``
+    in config.yaml and YAML hands us a bool, which must mean disabled, not
+    "fall back to the default and keep thinking").
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
     """
-    if not effort or not effort.strip():
+    if effort is False:
+        return {"enabled": False}
+    if effort is None or effort is True:
+        return None
+    effort = str(effort)
+    if not effort.strip():
         return None
     effort = effort.strip().lower()
-    if effort == "none":
+    if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}

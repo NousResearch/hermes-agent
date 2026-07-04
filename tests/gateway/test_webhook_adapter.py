@@ -829,7 +829,6 @@ class TestDeliveryCleanup:
         adapter._delivery_info[chat_id] = {
             "deliver": "log",
             "deliver_extra": {},
-            "payload": {"x": 1},
         }
         adapter._delivery_info_created[chat_id] = time.time()
 

@@ -491,11 +491,17 @@ def test_profile_store_cache_lru_eviction(test_env, monkeypatch):
 
 def test_session_db_reuses_store_connection(test_env):
     """_session_db reuses the profile SessionStore's connection rather than
-    opening a SECOND SQLite handle to the same state.db (the FD doubling)."""
+    opening a SECOND SQLite handle to the same state.db (the FD doubling).
+
+    Call sites now await through an AsyncSessionDB facade, so the identity
+    guarantee lives one level down: the facade must wrap the store's own
+    connection, and the facade itself must be stable across accesses."""
     runner = GatewayRunner(config=GatewayConfig(platforms={}))
     store = runner.session_store
     assert store._db is not None
-    assert runner._session_db is store._db
+    facade = runner._session_db
+    assert facade._db is store._db
+    assert runner._session_db is facade
 
 
 def test_session_db_setter_override_is_honored(test_env):

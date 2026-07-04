@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -163,6 +165,25 @@ def test_twilio_inbox_marks_seen_checkpoint(tmp_path: Path):
     assert result["count"] == 1
     assert result["messages"][0]["sid"] == "SM3"
     assert state["twilio"]["last_inbound_message_sid"] == "SM3"
+
+
+def test_json_request_wraps_malformed_success_json(monkeypatch):
+    mod = load_module()
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"<html>not json"
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout=30: FakeResponse())
+
+    with pytest.raises(mod.TelephonyError, match="Malformed JSON response"):
+        mod._json_request("GET", "https://api.example.test/resource")
 
 
 def test_vapi_import_twilio_number_saves_phone_number_id(tmp_path: Path):

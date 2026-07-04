@@ -2015,8 +2015,22 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     )
     if isinstance(reasoning_content, str) and not _already_has_thinking:
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
-    # Anthropic rejects empty assistant content
+    # Anthropic rejects empty assistant content. A merely non-empty *list*
+    # isn't sufficient — a list containing only empty-string text blocks
+    # (e.g. [{"type": "text", "text": ""}]) passes `blocks or content` but
+    # still trips Bedrock/Anthropic's "text content blocks must be
+    # non-empty" validation. Strip empty text blocks and only then fall
+    # back to the placeholder if nothing usable remains.
     effective = blocks or content
+    if isinstance(effective, list):
+        effective = [
+            b for b in effective
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "text"
+                and not str(b.get("text", "")).strip()
+            )
+        ]
     if not effective or effective == "":
         effective = [{"type": "text", "text": "(empty)"}]
     return {"role": "assistant", "content": effective}

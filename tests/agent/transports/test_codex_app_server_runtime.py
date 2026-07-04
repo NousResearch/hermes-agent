@@ -296,6 +296,66 @@ class TestSpawnEnvIsolation:
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
 
+    def test_kanban_worker_honors_profile_danger_default_permissions(
+        self, monkeypatch, tmp_path
+    ):
+        """A profile-local Codex config may intentionally opt a kanban
+        worker into danger-full-access. In that case Hermes must not append
+        the workspace-write override that would silently narrow Codex back to
+        the default sandbox and re-block git refs writes.
+        """
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            'default_permissions = ":danger-full-access"\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes/profiles/coder")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
+        )
+
+        client = cas.CodexAppServerClient(
+            codex_bin="codex", codex_home=str(codex_home)
+        )
+        client._closed = True
+
+        cmd = captured["cmd"]
+        assert cmd == ["codex", "app-server"]
+        assert captured["env"].get("CODEX_HOME") == str(codex_home)
+
 
 class TestSpawnEnvSecretStripping:
     """codex app-server routes its spawn env through hermes_subprocess_env(

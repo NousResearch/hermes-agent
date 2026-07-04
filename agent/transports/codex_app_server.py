@@ -17,19 +17,47 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import subprocess
 import threading
 import time
+import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
 
+logger = logging.getLogger(__name__)
+
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+_DANGER_DEFAULT_PERMISSIONS = ":danger-full-access"
+
+
+def _codex_home_default_permissions(codex_home: Optional[str]) -> Optional[str]:
+    """Read Codex's top-level ``default_permissions`` from CODEX_HOME."""
+    if not codex_home:
+        return None
+    config_path = os.path.join(codex_home, "config.toml")
+    try:
+        with open(config_path, "rb") as handle:
+            config = tomllib.load(handle)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.debug(
+            "codex app-server: failed to read Codex config %s",
+            config_path,
+            exc_info=True,
+        )
+        return None
+
+    value = config.get("default_permissions")
+    return value if isinstance(value, str) else None
 
 
 @dataclass
@@ -112,16 +140,26 @@ class CodexAppServerClient:
                     ),
                 )
             )
-            app_server_args.extend(
-                [
-                    "-c",
-                    'sandbox_mode="workspace-write"',
-                    "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
-                    "-c",
-                    "sandbox_workspace_write.network_access=false",
-                ]
+            default_permissions = _codex_home_default_permissions(
+                spawn_env.get("CODEX_HOME")
             )
+            if default_permissions == _DANGER_DEFAULT_PERMISSIONS:
+                logger.info(
+                    "codex app-server: using profile default_permissions for "
+                    "kanban worker (CODEX_HOME=%s)",
+                    spawn_env.get("CODEX_HOME"),
+                )
+            else:
+                app_server_args.extend(
+                    [
+                        "-c",
+                        'sandbox_mode="workspace-write"',
+                        "-c",
+                        f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                        "-c",
+                        "sandbox_workspace_write.network_access=false",
+                    ]
+                )
 
         cmd = [codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

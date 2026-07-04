@@ -1,0 +1,137 @@
+/* Hermes Mini App — 5 fixed brand palettes, ported from the Claude Design
+   handoff's reference file (Hermes Mini App.dc.html). Deliberately NOT bound
+   to Telegram's own theme (WebApp.themeParams) or the desktop dashboard's
+   ThemeProvider — these are fixed brand palettes the user picks explicitly
+   via the palette-switcher sheet, independent of both.
+
+   Scoped under .miniapp-root (not a bare [data-palette] selector) so this
+   can never collide with an unrelated data-palette attribute elsewhere in
+   the app. */
+
+.miniapp-root[data-palette] {
+  --card: color-mix(in srgb, var(--mid) 5%, var(--bg));
+  --card2: color-mix(in srgb, var(--mid) 10%, var(--bg));
+  --line: color-mix(in srgb, var(--mid) 16%, transparent);
+  --line2: color-mix(in srgb, var(--mid) 30%, transparent);
+  --t2: color-mix(in srgb, var(--mid) 72%, var(--bg));
+  --t3: color-mix(in srgb, var(--mid) 46%, var(--bg));
+  --headbg: color-mix(in srgb, var(--mid) 7%, var(--bg));
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+.miniapp-root[data-palette="solarpunk"] {
+  --bg: #f0edda;
+  --mid: #2f5238;
+  --accent: #a97f14;
+  --success: #3f7d4a;
+  --warning: #a97f14;
+  --destr: #b04a32;
+  --on-accent: #f7f4e6;
+}
+.miniapp-root[data-palette="dieselpunk"] {
+  --bg: #1a1714;
+  --mid: #d8c49c;
+  --accent: #e2a13c;
+  --success: #93b064;
+  --warning: #e2a13c;
+  --destr: #cf5b40;
+  --on-accent: #1a1714;
+}
+.miniapp-root[data-palette="biopunk"] {
+  --bg: #0a1811;
+  --mid: #c4ef6a;
+  --accent: #a06bf5;
+  --success: #45f0bd;
+  --warning: #e6d84f;
+  --destr: #f55c86;
+  --on-accent: #f4edff;
+}
+.miniapp-root[data-palette="cyberpunk"] {
+  --bg: #05070f;
+  --mid: #62c9ff;
+  --accent: #ff3fa5;
+  --success: #3df2b6;
+  --warning: #ffc84a;
+  --destr: #ff4d61;
+  --on-accent: #fff0f8;
+}
+.miniapp-root[data-palette="steampunk"] {
+  --bg: #251611;
+  --mid: #d2a75d;
+  --accent: #c2703d;
+  --success: #8aa35e;
+  --warning: #d2a75d;
+  --destr: #b5452e;
+  --on-accent: #f5e9d8;
+}
+
+@keyframes miniapp-hpulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes miniapp-sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes miniapp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes miniapp-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.miniapp-root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  background: var(--bg);
+  color: var(--mid);
+  font-family: var(--sans);
+  /* FIXED height, not min-height: the root must be exactly the viewport so
+     the middle content region (flex:1, min-height:0) scrolls WITHIN it and
+     the header/tab-bar stay pinned. With min-height, a long list grows the
+     root past the viewport, the content region never overflows (so it never
+     scrolls), and the tab bar is pushed below the fold -- the exact
+     scroll-dead + disappearing-footer bug this replaces. 100vh fallback
+     first, then 100dvh for mobile browsers that shrink the visual viewport
+     when chrome is shown. */
+  height: 100vh;
+  height: 100dvh;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.miniapp-noscroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.miniapp-noscroll::-webkit-scrollbar {
+  display: none;
+}

@@ -397,6 +397,22 @@ def _compute_tool_definitions(
     # is enabled, any tools belonging to a disabled toolset are strictly
     # stripped out. See issue #17309.
     if disabled_toolsets:
+        # Snapshot the union of tools contributed by ENABLED toolsets that
+        # are NOT also in the disabled list. This is the protection pool
+        # used below to decide whether a disabled composite's tool is
+        # "exclusive" (subtract) or "shared with an enabled toolset"
+        # (preserve). Computing it against ``tools_to_include`` directly
+        # would be wrong when the same composite name appears in both
+        # ``enabled_toolsets`` and ``disabled_toolsets`` — at that point
+        # the enabled-loop has already added its exclusive tools to
+        # ``tools_to_include`` and the snapshot would no longer see them
+        # as removable (#58281 follow-up from PR #58324 review).
+        enabled_protecting: set = set()
+        for _t in enabled_toolsets or []:
+            if _t in (disabled_toolsets or []):
+                continue
+            if validate_toolset(_t):
+                enabled_protecting.update(resolve_toolset(_t))
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 if toolset_name.startswith("hermes-"):
@@ -432,9 +448,17 @@ def _compute_tool_definitions(
                     # with an enabled toolset are preserved so a minimal
                     # "Blank Slate" config that disables a composite doesn't
                     # have its explicit tools gutted.
+                    #
+                    # Compare against ``enabled_protecting`` (snapshot of
+                    # tools contributed by toolsets that are enabled and not
+                    # also disabled), NOT ``tools_to_include`` directly:
+                    # the latter has already been unioned with the disabled
+                    # composite's tools when the same name appears in both
+                    # lists, and would yield zero overlap, gutting shared-
+                    # intent #58281/PR #58324 review cases.
                     resolved = set(resolve_toolset(toolset_name))
-                    if tools_to_include:
-                        shared = resolved & tools_to_include
+                    if enabled_protecting:
+                        shared = resolved & enabled_protecting
                         if shared and not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
                             _WARNED_DISABLED_BUNDLES.add(toolset_name)
                             logger.info(
@@ -450,7 +474,7 @@ def _compute_tool_definitions(
                             )
                     # Subtract only the exclusive subset; whatever any enabled
                     # toolset still contributes stays.
-                    exclusive = resolved - tools_to_include
+                    exclusive = resolved - enabled_protecting
                     tools_to_include.difference_update(exclusive)
                     resolved_for_log = sorted(exclusive)
                 if not quiet_mode:

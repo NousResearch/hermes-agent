@@ -159,6 +159,32 @@ class TestCompositeDisabledSubtraction:
         for tool in _RESOLVED["terminal"] + _RESOLVED["file"]:
             assert tool in names
 
+    def test_composite_in_both_enabled_and_disabled_subtracts_exclusive(self):
+        """Same name in enabled_toolsets AND disabled_toolsets must
+        subtract its exclusive tools (#58281/PR-#58324 review).
+
+        When ``coding`` is the only source of tools like ``execute_code``
+        and ``code_lookup``, putting coding in both lists still has to
+        remove them: subtractions compare against the snapshot of
+        enabled-but-not-also-disabled toolsets, not against the full
+        ``tools_to_include`` (which has already been unioned with the
+        coding contribution above).
+        """
+        result = _run(
+            enabled=["coding", "terminal", "file"],
+            disabled=["coding"],
+        )
+        names = _tool_names(result)
+        # Coding-exclusive tools get subtracted:
+        assert "execute_code" not in names
+        assert "code_lookup" not in names
+        # Shared tools survive:
+        for tool in _RESOLVED["terminal"] + _RESOLVED["file"]:
+            assert tool in names, (
+                f"{tool!r} was stripped even though its toolset is still "
+                f"enabled alongside the composite."
+            )
+
 
 class TestHermesBundleSubtractionRegression:
     """Pin #33924 — hermes-* bundle subtraction must stay non-core-only.

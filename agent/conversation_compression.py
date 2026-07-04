@@ -264,7 +264,14 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
 
         threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
+        # Skip auto-lower when the aux context came from explicit user
+        # config (auxiliary.compression.context_length).  A user-configured
+        # context_length declares an *input budget* for the summarizer,
+        # not a capability limit of the compression model — auto-lowering
+        # the session threshold to match it causes near-useless compression
+        # loops on long sessions (issue #58407).
+        _from_config = getattr(agent, "_aux_compression_context_length_config", None) is not None
+        if aux_context < threshold and not _from_config:
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,

@@ -74,16 +74,23 @@ EOF
 fi
 
 # --- Bootstrap HERMES_HOME as root ---
-# Create the directory (and any missing parents) while we still have root
-# privileges so the chown checks below see real metadata and the later
-# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
-# ancestors. Without this, custom HERMES_HOME paths whose parents only
-# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
-# file, or any path under a fresh / not pre-populated by the image)
-# fail on first boot with `mkdir: cannot create directory '/...': Permission
-# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
-# is a no-op if the dir already exists. (#18482, salvages #18488)
-mkdir -p "$HERMES_HOME"
+# When running as root, create the directory (and any missing parents) so
+# the chown checks below see real metadata and the later `s6-setuidgid
+# hermes mkdir -p` block doesn't EACCES on root-owned ancestors. Without
+# this, custom HERMES_HOME paths whose parents only root can create (e.g.
+# `HERMES_HOME=/home/hermes/.hermes` in a Compose file) fail on first boot
+# (#18482, salvages #18488).
+#
+# In rootless Podman (or when the data volume is bind-mounted from the
+# host) the operator must pre-create $HERMES_HOME — mapped "root" often
+# cannot mkdir under /opt. With set -eu a hard failure here aborts the
+# whole cont-init hook, so treat mkdir failure as non-fatal and continue;
+# the as_hermes mkdir -p block below seeds subdirs when the volume is
+# writable.
+if [ "$(id -u)" = 0 ]; then
+    mkdir -p "$HERMES_HOME" 2>/dev/null || \
+        echo "[stage2] Warning: mkdir $HERMES_HOME failed (rootless?) — host must pre-create"
+fi
 
 # Numeric UID/GID validation: must be digits only, non-root, 1-65534.
 # NAS hosts such as Unraid commonly use low non-root IDs (99:100).
@@ -94,19 +101,25 @@ validate_uid_gid() {
     esac
 }
 
-# --- UID/GID remap ---
+# --- UID/GID remap (root only) ---
 # Accept PUID/PGID as aliases for HERMES_UID/HERMES_GID.  NAS users (UGOS,
 # Synology, unRAID) expect the LinuxServer.io PUID/PGID convention and
 # bind-mount /opt/data from a host directory owned by their own UID; without
 # this alias those vars are silently ignored and the s6-setuidgid drop to
 # UID 10000 leaves the runtime unable to read the volume.  HERMES_UID/
 # HERMES_GID still win when both are set.  See #15290, salvages #25872.
+#
+# Skipped when not root (e.g. K8s restricted PSA uses securityContext.runAsUser
+# instead of usermod). usermod/groupmod may also fail harmlessly under
+# rootless Podman even when id -u is 0.
+if [ "$(id -u)" = 0 ]; then
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
 if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
-    usermod -u "$HERMES_UID" hermes
+    usermod -u "$HERMES_UID" hermes 2>/dev/null || \
+        echo "[stage2] Warning: usermod -u $HERMES_UID hermes failed (rootless?) — continuing"
 fi
 if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
@@ -170,8 +183,9 @@ for sock in /var/run/docker.sock /run/docker.sock; do
     fi
     break
 done
+fi
 
-# --- Fix ownership of data volume ---
+# --- Fix ownership of data volume (root only) ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
 # the runtime hermes UID, restore ownership to hermes — but ONLY for the
 # directories hermes actually writes to. The full $HERMES_HOME may be a
@@ -220,6 +234,10 @@ chown_hermes_tree() {
         echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
 }
 
+# chown requires real root; skipped when the container starts as the hermes
+# user (K8s runAsUser). Under rootless Podman, chown usually fails
+# harmlessly — the bind-mounted volume is already owned correctly on the host.
+if [ "$(id -u)" = 0 ]; then
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
@@ -248,6 +266,7 @@ if [ "$needs_chown" = true ]; then
         fi
     done
 fi
+fi
 
 # --- Immutable install tree ---
 # Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
@@ -273,9 +292,8 @@ fi
 # are invoked via `docker exec <container> hermes …` (which defaults
 # to root unless `-u` is passed), and that breaks the cont-init
 # reconciler (02-reconcile-profiles) which runs as hermes and walks
-# the profiles dir. Idempotent; skipped on rootless containers where
-# chown would fail.
-if [ -d "$HERMES_HOME/profiles" ]; then
+# the profiles dir. Root-only; no-op when chown is unavailable.
+if [ "$(id -u)" = 0 ] && [ -d "$HERMES_HOME/profiles" ]; then
     chown_hermes_tree "$HERMES_HOME/profiles"
 fi
 
@@ -283,7 +301,7 @@ fi
 # docker-exec/root-write reason as profiles/. The cron scheduler state
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
 # after root-context maintenance commands or scheduler writes.
-if [ -d "$HERMES_HOME/cron" ]; then
+if [ "$(id -u)" = 0 ] && [ -d "$HERMES_HOME/cron" ]; then
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
@@ -301,7 +319,8 @@ fi
 # touched — same targeted-ownership contract as the subdir chown above
 # (issue #19788, PR #19795). The list mirrors the top-level *file*
 # entries of hermes_cli.profile_distribution.USER_OWNED_EXCLUDE plus the
-# runtime lock files; keep them in sync if that set changes.
+# runtime lock files; keep them in sync if that set changes. Root-only.
+if [ "$(id -u)" = 0 ]; then
 for f in \
     auth.json auth.lock .env \
     state.db state.db-shm state.db-wal \
@@ -317,11 +336,12 @@ for f in \
         fi
     fi
 done
+fi
 
 # --- config.yaml permissions ---
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.
-if [ -f "$HERMES_HOME/config.yaml" ]; then
+if [ "$(id -u)" = 0 ] && [ -f "$HERMES_HOME/config.yaml" ]; then
     if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/config.yaml"; then
         :
     else
@@ -397,7 +417,9 @@ if [ -f "$HERMES_HOME/.env" ]; then
     if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/.env"; then
         :
     else
-        chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
+        if [ "$(id -u)" = 0 ]; then
+            chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
+        fi
         chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
     fi
 fi
@@ -421,7 +443,9 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
         :
     else
         printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
+        if [ "$(id -u)" = 0 ]; then
+            chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
+        fi
         chmod 600 "$HERMES_HOME/auth.json"
     fi
 fi
@@ -457,7 +481,9 @@ if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
         :
     else
         printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
-        chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+        if [ "$(id -u)" = 0 ]; then
+            chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+        fi
         chmod 644 "$HERMES_HOME/gateway_state.json"
     fi
 fi
@@ -522,3 +548,4 @@ if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
 fi
 
 echo "[stage2] Setup complete; starting user services"
+

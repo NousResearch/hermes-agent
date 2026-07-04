@@ -41,6 +41,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    WORKFLOW_DISPLAY_GUIDANCE,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -183,6 +184,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (default True) and only injected when tools are actually loaded.
     if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+
+    # Up-front [Workflow] announcement. Lives here (always-on system prompt)
+    # rather than in the on-demand user-workflow-routing skill, which never
+    # entered active context. Gated by config.yaml ``workflow_guardrails.enabled``
+    # (default True) — previously an inert flag. Only injected when tools are
+    # loaded, since a no-tool (conversational) turn is Level 0 with nothing to
+    # announce.
+    if getattr(agent, "_workflow_display_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(WORKFLOW_DISPLAY_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

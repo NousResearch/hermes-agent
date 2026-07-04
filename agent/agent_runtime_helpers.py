@@ -709,22 +709,39 @@ def recover_with_credential_pool(
         # the agent's CURRENT base_url actually resolves to this pool key,
         # so a fallback provider (or a different custom endpoint) still
         # triggers the guard.
+        #
+        # Relayer exception (#45715): when the agent routes through a proxy
+        # (e.g. a shared reverse-proxy or model-router endpoint) the agent's
+        # base_url does NOT match any custom_providers entry — but the user
+        # DID originally request the named pool. agent.requested_provider
+        # (propagated from hermes_cli.runtime_provider.resolve_runtime_provider)
+        # carries that named form (e.g. "custom:claude"). Match it against
+        # pool_provider directly. This stays strict: a fallback to a
+        # different custom pool leaves requested_provider != pool_provider
+        # and the guard still refuses to mutate the wrong pool (#33088/#33163).
         _custom_match = False
         if current_provider == "custom" and pool_provider.startswith("custom:"):
             try:
                 from agent.credential_pool import get_custom_provider_pool_key
+
                 _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _custom_match = bool(_agent_base) and (
+                _agent_requested = (
+                    getattr(agent, "requested_provider", "") or ""
+                ).strip().lower()
+                _base_url_match = bool(_agent_base) and (
                     (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
                     == pool_provider
                 )
+                _named_match = bool(_agent_requested) and _agent_requested == pool_provider
+                _custom_match = _base_url_match or _named_match
             except Exception:
                 _custom_match = False
         if not _custom_match:
             _ra().logger.warning(
                 "Credential pool provider mismatch: pool=%s, agent=%s — "
                 "skipping pool mutation to avoid cross-provider contamination",
-                pool_provider, current_provider,
+                pool_provider,
+                current_provider,
             )
             return False, has_retried_429
 

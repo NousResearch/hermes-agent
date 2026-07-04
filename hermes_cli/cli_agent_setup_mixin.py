@@ -345,6 +345,12 @@ class CLIAgentSetupMixin:
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
+                # Named provider form (e.g. "custom:claude") is resolved by
+                # hermes_cli.runtime_provider.resolve_runtime_provider(). Pass
+                # it through so the credential-pool guard can match the named
+                # pool key when agent.base_url is a relayer that doesn't
+                # resolve to any custom_providers entry. Fixes #45715.
+                requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),

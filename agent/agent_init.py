@@ -235,6 +235,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    requested_provider: Optional[str] = None,
 ):
     """
     Initialize the AI Agent.
@@ -242,7 +243,17 @@ def init_agent(
     Args:
         base_url (str): Base URL for the model API (optional)
         api_key (str): API key for authentication (optional, uses env var if not provided)
-        provider (str): Provider identifier (optional; used for telemetry/routing hints)
+        provider (str): Provider identifier (optional; used for telemetry/routing hints).
+            May be the *bare* form (e.g. ``"custom"``) for backward compatibility — the
+            :class:`AIAgent` API and the credential-pool mismatch guard (#33088/#33163)
+            historically key off this bare label.
+        requested_provider (str): Original *named* provider form (e.g. ``"custom:claude"``)
+            as resolved upstream by :func:`hermes_cli.runtime_provider.resolve_runtime_provider`.
+            Carried on the agent as ``agent.requested_provider`` so downstream consumers
+            (credential-pool guard, fallback chain, session persistence) can match the
+            resolved pool key without depending on the bare ``agent.provider`` label.
+            Defaults to ``""`` when not provided — callers that don't have the named
+            form (legacy code, tests) are unaffected.
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
@@ -324,6 +335,14 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    # Preserve the *named* provider form (e.g. "custom:claude") as resolved by
+    # hermes_cli.runtime_provider.resolve_runtime_provider(). Carrying the
+    # named form alongside the bare agent.provider lets the credential-pool
+    # mismatch guard (agent/agent_runtime_helpers.py:recover_with_credential_pool)
+    # resolve relayer scenarios where agent.base_url doesn't match any
+    # custom_providers entry but the user did request that named pool.
+    # Fixes #45715.
+    agent.requested_provider = (requested_provider or "").strip().lower()
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:

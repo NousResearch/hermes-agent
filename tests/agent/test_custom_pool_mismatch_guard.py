@@ -13,6 +13,7 @@ The fix accepts the pair only when the agent's current base_url resolves to
 the same pool key, preserving the guard's original purpose (#33088/#33163:
 never mutate the primary's pool while a fallback provider is active).
 """
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,10 +25,14 @@ from agent.error_classifier import FailoverReason
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1"
 
 
-def _agent(provider, base_url, pool_provider):
+def _agent(provider, base_url, pool_provider, requested_provider=""):
     agent = MagicMock()
     agent.provider = provider
     agent.base_url = base_url
+    # Default to bare "custom" so older test setups (and the bug repro in
+    # #45715) don't need to set it explicitly. The guard only consults
+    # requested_provider inside the bare-custom branch.
+    agent.requested_provider = requested_provider or ""
     pool = MagicMock()
     pool.provider = pool_provider
     agent._credential_pool = pool
@@ -54,8 +59,7 @@ class TestCustomPoolMismatchGuard:
                 classified_reason=FailoverReason.rate_limit,
             )
         assert pool.current.called, (
-            "guard short-circuited: pool never touched despite matching "
-            "custom base_url"
+            "guard short-circuited: pool never touched despite matching custom base_url"
         )
 
     def test_unrelated_custom_pool_still_guarded(self):
@@ -81,7 +85,9 @@ class TestCustomPoolMismatchGuard:
         """Original #33088/#33163 contract: when a fallback provider is
         active (agent.provider != pool.provider, non-custom), the pool is
         never mutated."""
-        agent, pool = _agent("openai-codex", "https://chatgpt.com/backend-api", "custom:fireworks")
+        agent, pool = _agent(
+            "openai-codex", "https://chatgpt.com/backend-api", "custom:fireworks"
+        )
         recovered, _ = recover_with_credential_pool(
             agent,
             status_code=401,
@@ -98,6 +104,73 @@ class TestCustomPoolMismatchGuard:
             status_code=429,
             has_retried_429=False,
             classified_reason=FailoverReason.rate_limit,
+        )
+        assert recovered is False
+        assert not pool.method_calls
+
+    def test_relayer_routed_custom_matches_via_requested_provider(self):
+        """#45715: agent=custom + pool=custom:<name> + base_url is a relayer
+        that resolves to NO custom_providers entry — must still match when
+        agent.requested_provider carries the named form the user originally
+        requested (propagated from resolve_runtime_provider)."""
+        RELAYER_URL = "https://relayer.internal.example/v1"
+        agent, pool = _agent(
+            "custom", RELAYER_URL, "custom:claude", requested_provider="custom:claude"
+        )
+        pool.current.return_value = None
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            # Relayer URL is NOT in custom_providers → key resolution returns None
+            return_value=None,
+        ):
+            recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+        assert pool.current.called, (
+            "guard short-circuited: pool never touched despite "
+            "agent.requested_provider matching the named pool"
+        )
+
+    def test_relayer_with_unrelated_requested_provider_still_guarded(self):
+        """#45715 defensive case: relayer + agent.requested_provider pointing
+        at a DIFFERENT custom pool than the one loaded must still be guarded
+        — prevents mutating the wrong pool during a fallback chain."""
+        RELAYER_URL = "https://relayer.internal.example/v1"
+        agent, pool = _agent(
+            "custom", RELAYER_URL, "custom:claude", requested_provider="custom:minimax"
+        )
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value=None,
+        ):
+            recovered, _ = recover_with_credential_pool(
+                agent,
+                status_code=401,
+                has_retried_429=False,
+                classified_reason=FailoverReason.auth,
+            )
+        assert recovered is False
+        assert not pool.method_calls
+
+    def test_requested_provider_ignored_for_non_custom(self):
+        """#45715 narrow scope: agent.requested_provider is only consulted
+        inside the bare-custom branch. A non-custom agent with a matching
+        requested_provider string must NOT short-circuit the original
+        fallback-guard contract (#33088/#33163)."""
+        agent, pool = _agent(
+            "openai-codex",
+            "https://chatgpt.com/backend-api",
+            "custom:claude",
+            requested_provider="custom:claude",
+        )
+        recovered, _ = recover_with_credential_pool(
+            agent,
+            status_code=401,
+            has_retried_429=False,
+            classified_reason=FailoverReason.auth,
         )
         assert recovered is False
         assert not pool.method_calls

@@ -341,6 +341,10 @@ def _run_agent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
+        # Named provider form (e.g. "custom:claude") — see #45715. Propagating
+        # it onto the agent lets the credential-pool mismatch guard match the
+        # named pool key for relayer-routed custom providers.
+        requested_provider=runtime.get("requested_provider"),
         api_mode=runtime.get("api_mode"),
         model=effective_model,
         enabled_toolsets=toolsets_list,

@@ -580,7 +580,11 @@ def load_cli_config() -> Dict[str, Any]:
     defaults = managed_scope.apply_managed_overlay(defaults)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
-    terminal_config = defaults.get("terminal", {})
+    terminal_config = defaults.get("terminal") or {}
+    # Guard: empty/null "terminal:" in config.yaml parses as None, which
+    # crashes downstream.  Treat missing/null the same as an empty dict.
+    if not isinstance(defaults.get("terminal"), dict):
+        defaults["terminal"] = terminal_config
     
     # Normalize config key: the new config system (hermes_cli/config.py) and all
     # documentation use "backend", the legacy cli-config.yaml uses "env_type".

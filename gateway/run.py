@@ -215,6 +215,28 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _systemd_sigterm_is_planned_stop(
+    received_signal: Any, shutdown_context: Optional[Dict[str, Any]]
+) -> bool:
+    """Return True when systemd is performing a normal unit stop/restart.
+
+    ``systemctl --user stop/restart hermes-gateway`` delivers SIGTERM without
+    Hermes' planned-stop marker. Under the installed systemd service that is an
+    operator-requested lifecycle action, not a crash. Treat it as planned so
+    systemd does not record the stop phase as a failure.
+    """
+    if received_signal != signal.SIGTERM or not isinstance(shutdown_context, dict):
+        return False
+    if not shutdown_context.get("under_systemd"):
+        return False
+    parent = shutdown_context.get("parent")
+    if not isinstance(parent, dict):
+        return False
+    parent_name = str(parent.get("name") or "").strip().lower()
+    parent_cmdline = str(parent.get("cmdline") or "").strip().lower()
+    return parent_name == "systemd" or "systemd --user" in parent_cmdline
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -20019,6 +20041,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
+        if (
+            not planned_takeover
+            and not planned_stop
+            and _systemd_sigterm_is_planned_stop(received_signal, _shutdown_ctx)
+        ):
+            planned_stop = True
+
         if planned_takeover:
             logger.info(
                 "Received %s as a planned --replace takeover — exiting cleanly",
@@ -20048,9 +20077,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # is one line, key=value, parent_cmdline last (often long).
         if _shutdown_ctx is not None:
             try:
-                logger.warning(
-                    "Shutdown context: %s", format_context_for_log(_shutdown_ctx)
+                log_shutdown_context = (
+                    logger.info if (planned_takeover or planned_stop) else logger.warning
                 )
+                log_shutdown_context("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
             except Exception as _e:
                 logger.debug("format_context_for_log failed: %s", _e)
 

@@ -89,7 +89,7 @@ class WinPtyBridge:
                 )
             raise PtyUnavailableError("ConPTY is unavailable on this platform.")
         spawn_env = (os.environ.copy() if env is None else dict(env))
-        if not spawn_env.get("TERM"):
+        if not spawn_env.get("TERM") or spawn_env.get("TERM") == "dumb":
             spawn_env["TERM"] = "xterm-256color"
         # pywinpty mirrors ptyprocess: dimensions=(rows, cols).
         # This call shape is the one already used in tools/process_registry.py.

@@ -6586,6 +6586,18 @@ def apply_terminal_config_to_env(
     return target
 
 
+def apply_interactive_terminal_env(
+    *,
+    env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Normalize TERM for interactive child terminals without forcing color."""
+    target = os.environ if env is None else env
+    term = (target.get("TERM") or "").strip()
+    if not term or term == "dumb":
+        target["TERM"] = "xterm-256color"
+    return target
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()

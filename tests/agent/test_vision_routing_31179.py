@@ -180,16 +180,15 @@ model:
         assert client is not None
         assert provider == "anthropic"
 
-    def test_unknown_capability_does_not_block(self, isolated_home, monkeypatch):
-        """When models.dev has no entry, fall back to permissive (attempt the call).
-
-        This keeps new/custom providers working — only providers we have
-        cataloged as text-only are skipped.
+    def test_unknown_capability_routes_through_aux_chain(self, isolated_home, monkeypatch):
+        """When models.dev has no entry, assume text-only so vision requests
+        route through the auxiliary fallback chain instead of being sent to a
+        potentially text-only main model.  See #51513.
         """
         _fresh_modules()
         from agent.auxiliary_client import _main_model_supports_vision
-        # Bogus provider/model — capability lookup returns None → permissive.
-        assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
+        # Bogus provider/model — capability lookup returns None → conservative.
+        assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is False
 
 
 # ---------------------------------------------------------------------------

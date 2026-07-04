@@ -2754,6 +2754,26 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_geo_blocked_error(exc: Exception) -> bool:
+    """Detect geo-blocked/location errors that warrant provider fallback.
+
+    Gemini returns ``400 FAILED_PRECONDITION: User location is not supported``
+    from restricted regions (China, corporate VPNs).  Neither
+    :func:`_is_connection_error` nor :func:`_is_payment_error` match these.
+    See #51513.
+    """
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "failed_precondition",
+        "user location is not supported",
+        "location is not supported",
+        "not available in your country",
+        "not available in your region",
+        "geo-restricted",
+        "geo_blocked",
+    ))
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
@@ -2948,6 +2968,7 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     return any(kw in err_lower for kw in (
         "is not supported when using",   # codex/ChatGPT-account model gating
         "model is not supported",
+        "not supported model",           # xiaomi-tp: 'Not supported model X'
         "not supported with this",
         "not supported for this account",
         "model_not_supported",
@@ -4775,10 +4796,10 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     except Exception:  # pragma: no cover - defensive
         return True
     if supports is None:
-        # No capability data — keep current behaviour and let the call attempt
-        # happen rather than silently skipping. This avoids false-positive
-        # skips for new/custom providers.
-        return True
+        # Unknown model capabilities — assume text-only so vision requests
+        # route through the auxiliary fallback chain instead of being sent
+        # to a potentially text-only main model.  See #51513.
+        return False
     return bool(supports)
 
 
@@ -6392,6 +6413,7 @@ def call_llm(
             or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_geo_blocked_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
@@ -6415,6 +6437,7 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_geo_blocked_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
@@ -6463,15 +6486,51 @@ def call_llm(
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
+            # Build list of fallback candidates to try.  When a configured
+            # fallback_chain is set, iterate ALL entries so that if the first
+            # candidate fails at call time (e.g. model not available on the
+            # provider), the chain continues instead of stopping.  See #51513.
+            _fb_candidates = []
             if fb_client is not None:
-                fb_kwargs = _build_call_kwargs(
-                    fb_label, fb_model, messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
-                return _validate_llm_response(
-                    fb_client.chat.completions.create(**fb_kwargs), task)
+                _fb_candidates.append((fb_client, fb_model, fb_label))
+            _tcfg = _get_auxiliary_task_config(task or "")
+            _chain = _tcfg.get("fallback_chain") if _tcfg else None
+            if _chain and isinstance(_chain, list):
+                _skip_p = (resolved_provider or "").lower().strip()
+                for _i, _entry in enumerate(_chain):
+                    if not isinstance(_entry, dict):
+                        continue
+                    _ep = str(_entry.get("provider", "")).strip()
+                    if not _ep or _ep.lower() == _skip_p:
+                        continue
+                    _em = str(_entry.get("model", "")).strip() or None
+                    _el = f"fallback_chain[{_i}]({_ep})"
+                    if _el == fb_label:
+                        continue  # already first pick
+                    if _ep and _em:
+                        try:
+                            _ec, _emr = _resolve_fallback_entry(_entry)
+                        except Exception:
+                            _ec, _emr = None, None
+                        if _ec is not None:
+                            _fb_candidates.append((_ec, _emr or _em, _el))
+
+            _last_fb_err = None
+            for _fb_c, _fb_m, _fb_l in _fb_candidates:
+                try:
+                    fb_kwargs = _build_call_kwargs(
+                        _fb_l, _fb_m, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(_fb_c, "base_url", "") or ""))
+                    return _validate_llm_response(
+                        _fb_c.chat.completions.create(**fb_kwargs), task)
+                except Exception as _fb_err:
+                    _last_fb_err = _fb_err
+                    logger.info("Auxiliary %s: fallback %s failed (%s), trying next",
+                                task or "call", _fb_l, _fb_err)
+                    continue
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.
@@ -6889,6 +6948,7 @@ async def async_call_llm(
             or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_geo_blocked_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
@@ -6904,6 +6964,7 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_geo_blocked_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
@@ -6948,21 +7009,57 @@ async def async_call_llm(
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
+            # Build list of fallback candidates to try.  When a configured
+            # fallback_chain is set, iterate ALL entries so that if the first
+            # candidate fails at call time (e.g. model not available on the
+            # provider), the chain continues instead of stopping.  See #51513.
+            _fb_candidates = []
             if fb_client is not None:
-                fb_kwargs = _build_call_kwargs(
-                    fb_label, fb_model, messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
-                # Convert sync fallback client to async
-                async_fb, async_fb_model = _to_async_client(
-                    fb_client, fb_model or "", is_vision=(task == "vision")
-                )
-                if async_fb_model and async_fb_model != fb_kwargs.get("model"):
-                    fb_kwargs["model"] = async_fb_model
-                return _validate_llm_response(
-                    await async_fb.chat.completions.create(**fb_kwargs), task)
+                _fb_candidates.append((fb_client, fb_model, fb_label))
+            _tcfg = _get_auxiliary_task_config(task or "")
+            _chain = _tcfg.get("fallback_chain") if _tcfg else None
+            if _chain and isinstance(_chain, list):
+                _skip_p = (resolved_provider or "").lower().strip()
+                for _i, _entry in enumerate(_chain):
+                    if not isinstance(_entry, dict):
+                        continue
+                    _ep = str(_entry.get("provider", "")).strip()
+                    if not _ep or _ep.lower() == _skip_p:
+                        continue
+                    _em = str(_entry.get("model", "")).strip() or None
+                    _el = f"fallback_chain[{_i}]({_ep})"
+                    if _el == fb_label:
+                        continue  # already first pick
+                    if _ep and _em:
+                        try:
+                            _ec, _emr = _resolve_fallback_entry(_entry)
+                        except Exception:
+                            _ec, _emr = None, None
+                        if _ec is not None:
+                            _fb_candidates.append((_ec, _emr or _em, _el))
+
+            _last_fb_err = None
+            for _fb_c, _fb_m, _fb_l in _fb_candidates:
+                try:
+                    fb_kwargs = _build_call_kwargs(
+                        _fb_l, _fb_m, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(_fb_c, "base_url", "") or ""))
+                    # Convert sync fallback client to async
+                    async_fb, async_fb_model = _to_async_client(
+                        _fb_c, _fb_m or "", is_vision=(task == "vision")
+                    )
+                    if async_fb_model and async_fb_model != fb_kwargs.get("model"):
+                        fb_kwargs["model"] = async_fb_model
+                    return _validate_llm_response(
+                        await async_fb.chat.completions.create(**fb_kwargs), task)
+                except Exception as _fb_err:
+                    _last_fb_err = _fb_err
+                    logger.info("Auxiliary %s (async): fallback %s failed (%s), trying next",
+                                task or "call", _fb_l, _fb_err)
+                    continue
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "

@@ -14,6 +14,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 def _write_env(path: Path, contents: str) -> None:
     path.write_text(contents, encoding="utf-8")
@@ -190,4 +192,55 @@ def test_load_env_handles_missing_file():
             assert load_env() == {}
             assert load_env() == {}  # cached
     finally:
+        invalidate_env_cache()
+
+
+def test_get_env_value_uses_profile_secret_scope_before_environ(tmp_path, monkeypatch):
+    from agent import secret_scope
+    from hermes_cli.config import get_env_value, invalidate_env_cache
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XAI_API_KEY", "foreign-xai-key")
+    invalidate_env_cache()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"XAI_API_KEY": "scoped-xai-key"})
+    try:
+        assert get_env_value("XAI_API_KEY") == "scoped-xai-key"
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+        invalidate_env_cache()
+
+
+def test_get_env_value_fails_closed_without_secret_scope(tmp_path, monkeypatch):
+    from agent import secret_scope
+    from hermes_cli.config import get_env_value, invalidate_env_cache
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XAI_API_KEY", "foreign-xai-key")
+    invalidate_env_cache()
+    secret_scope.set_multiplex_active(True)
+    try:
+        with pytest.raises(secret_scope.UnscopedSecretError):
+            get_env_value("XAI_API_KEY")
+    finally:
+        secret_scope.set_multiplex_active(False)
+        invalidate_env_cache()
+
+
+def test_get_env_value_prefer_dotenv_preserves_unscoped_fail_closed(
+    tmp_path, monkeypatch
+):
+    from agent import secret_scope
+    from hermes_cli.config import get_env_value_prefer_dotenv, invalidate_env_cache
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XAI_API_KEY", "foreign-xai-key")
+    invalidate_env_cache()
+    secret_scope.set_multiplex_active(True)
+    try:
+        with pytest.raises(secret_scope.UnscopedSecretError):
+            get_env_value_prefer_dotenv("XAI_API_KEY")
+    finally:
+        secret_scope.set_multiplex_active(False)
         invalidate_env_cache()

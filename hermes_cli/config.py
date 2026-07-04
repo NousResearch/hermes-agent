@@ -7245,6 +7245,18 @@ def reload_env() -> int:
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
+    try:
+        from agent.secret_scope import (
+            current_secret_scope as _current_secret_scope,
+            get_secret as _get_secret,
+            is_multiplex_active as _is_multiplex_active,
+        )
+
+        if _is_multiplex_active() or _current_secret_scope() is not None:
+            return _get_secret(key)
+    except ImportError:
+        pass
+
     # Check environment first
     if key in os.environ:
         return os.environ[key]
@@ -7276,7 +7288,7 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
         from agent.secret_scope import get_secret as _get_secret
 
         return _get_secret(key)
-    except Exception:
+    except ImportError:
         return os.environ.get(key)
 
 

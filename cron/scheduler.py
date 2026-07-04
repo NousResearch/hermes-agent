@@ -20,6 +20,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import uuid
+from datetime import datetime, timezone
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -405,6 +408,33 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+# Phase 0.5 token-leak instrumentation: per-fire usage audit log.
+# Resolved lazily via Path.home() so test envs that override HOME work.
+def _usage_audit_path() -> Path:
+    return Path.home() / ".hermes" / "cron" / "usage_audit.jsonl"
+
+
+def _utcnow_iso_ms() -> str:
+    """RFC3339 UTC timestamp with millisecond precision and 'Z' suffix."""
+    now = datetime.now(timezone.utc)
+    # %f gives microseconds; trim to milliseconds.
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _write_usage_audit(record: dict) -> None:
+    """Append a single JSONL line to ~/.hermes/cron/usage_audit.jsonl.
+
+    NEVER raises — a logger bug must not break cron jobs. Wraps the entire
+    write (path resolve, mkdir, json.dumps, file append) in a single try.
+    """
+    try:
+        path = _usage_audit_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, ensure_ascii=False)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        logger.warning("usage_audit write failed: %s", e)
 
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
@@ -2871,8 +2901,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        # Cron context max_tokens cap (env-controlled, default None = no cap).
+        # Mitigates degenerate-loop hallucinations on small / open-source models
+        # where a single repetition trap can produce 64KB+ of output before the
+        # API max-tokens limit fires. Caps the response so any worst-case
+        # hallucination is bounded to e.g. ~6000 chars (3 Discord messages)
+        # instead of 33+ message bursts via cron deliver mechanism.
+        # Set HERMES_CRON_MAX_TOKENS=2048 (or similar) to enable.
+        _cron_max_tokens_env = os.getenv("HERMES_CRON_MAX_TOKENS", "").strip()
+        _cron_max_tokens = int(_cron_max_tokens_env) if _cron_max_tokens_env else None
+
+        # Title generation is gateway/CLI-side only; cron does not invoke maybe_auto_title (verified 2026-05-01).
         agent = AIAgent(
             model=model,
+            max_tokens=_cron_max_tokens,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
@@ -2899,6 +2941,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
@@ -2931,6 +2974,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
+        # Phase 0.5 token-leak instrumentation: tag this fire and time the
+        # run_conversation call for the usage_audit.jsonl entry.
+        _audit_fire_id = uuid.uuid4().hex
+        _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
@@ -3072,11 +3119,49 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+
+        # Phase 0.5 token-leak instrumentation: emit one JSONL line per fire.
+        _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
+        _audit_response_silent = (
+            not final_response.strip()
+            or SILENT_MARKER in (final_response or "").upper()
+        )
+        _write_usage_audit({
+            "ts": _utcnow_iso_ms(),
+            "job_id": job_id,
+            "fire_id": _audit_fire_id,
+            "prompt_tokens": result.get("prompt_tokens"),
+            "completion_tokens": result.get("completion_tokens"),
+            "total_tokens": result.get("total_tokens"),
+            "response_silent": _audit_response_silent,
+            "deliver_target": job.get("deliver"),
+            "model": model or None,
+            "duration_ms": _audit_duration_ms,
+            "error": None,
+        })
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        # Phase 0.5: best-effort audit write on failure path. _audit_fire_id
+        # may be unset if the exception fired before submit() — guard with
+        # locals() lookup so the audit write itself never raises.
+        if "_audit_fire_id" in locals():
+            _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
+            _write_usage_audit({
+                "ts": _utcnow_iso_ms(),
+                "job_id": job_id,
+                "fire_id": _audit_fire_id,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "response_silent": False,
+                "deliver_target": job.get("deliver"),
+                "model": (model or None) if "model" in locals() else None,
+                "duration_ms": _audit_duration_ms,
+                "error": error_msg,
+            })
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

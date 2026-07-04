@@ -543,6 +543,8 @@ def load_cli_config() -> Dict[str, Any]:
                 if key == "model":
                     continue  # Already handled above
                 if key in file_config:
+                    if isinstance(defaults[key], dict) and file_config[key] is None:
+                        continue
                     if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
                         defaults[key].update(file_config[key])
                     else:

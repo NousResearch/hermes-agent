@@ -868,3 +868,41 @@ async def test_handle_polling_network_error_updater_stop_timeout():
     assert drain_called, "_drain_polling_connections was not called after stop() timeout"
     assert start_polling_called, "start_polling was not called after stop() timeout"
 
+
+@pytest.mark.asyncio
+async def test_polling_conflict_counter_not_reset_on_success():
+    """The retry counter must NOT reset to 0 after start_polling() succeeds.
+
+    If the counter resets, a recurring 409 conflict (Telegram server-side
+    session not yet expired) loops at (1/5) forever because the retry ladder
+    never escalates past the first rung.  Keeping the counter means the second
+    conflict enters at (2/5) with a longer back-off, eventually exhausting
+    retries and surfacing a fatal error.
+
+    Regression test for #58484.
+    """
+    adapter = _make_adapter()
+    adapter._polling_conflict_count = 2  # simulate two prior conflicts
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock()  # succeeds
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_conflict(
+            Exception("Conflict: terminated by other getUpdates request")
+        )
+
+    # Counter was 2 before, +1 in the handler = 3, and must remain 3 after
+    # start_polling() succeeds.  It must NOT be reset to 0.
+    assert adapter._polling_conflict_count == 3, (
+        f"Counter should be 3 (preserved after success), "
+        f"got {adapter._polling_conflict_count}"
+    )
+    assert not adapter.has_fatal_error, "Should not be fatal after successful retry"
+

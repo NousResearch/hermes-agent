@@ -2428,7 +2428,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
-                self._polling_conflict_count = 0  # reset counter on success
                 return
             except Exception as retry_err:
                 logger.warning(

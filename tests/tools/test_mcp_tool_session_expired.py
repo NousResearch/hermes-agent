@@ -97,15 +97,52 @@ def test_is_session_expired_rejects_empty_message():
     assert _is_session_expired_error(Exception()) is False
 
 
+def test_is_session_expired_detects_session_terminated():
+    """ROB-89: auto_trader emits session-terminated transport expiry."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+    assert _is_session_expired_error(RuntimeError("McpError: Session terminated")) is True
+
+
+def test_is_session_expired_detects_session_terminated_case_insensitive():
+    """Case variants from SDK/server formatters should still match."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("SESSION TERMINATED")) is True
+    assert _is_session_expired_error(RuntimeError("session terminated")) is True
+    assert _is_session_expired_error(RuntimeError("McpError: session terminated")) is True
+
+
+def _assert_stale_transport_payload(out: str, server_name: str):
+    parsed = json.loads(out)
+    assert parsed["stale_transport"] is True
+    assert parsed["server"] == server_name
+    assert "transport session was terminated" in parsed["error"]
+    assert "not a server-down condition" in parsed["error"]
+    assert f"hermes mcp test {server_name}" in parsed["error"]
+    return parsed
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------
 
 
 def _install_stub_server(name: str = "wpcom"):
-    """Register a minimal server stub that _handle_session_expired_and_retry
-    can signal via _reconnect_event, and that reports ready+session after
-    the event fires."""
+    """Register a minimal server stub for stale-session recovery tests.
+
+    The real MCPServerTask keeps ``_ready`` set across reconnects but replaces
+    ``session`` only after the transport has been rebuilt. The stub mirrors
+    that lifecycle: signalling ``_reconnect_event`` records the signal and
+    swaps in a new session object, so tests catch retry-before-rebuild bugs.
+
+    Tests must override session methods via direct attribute assignment
+    (``server.session.call_tool = my_async``) — the ``__dict__`` check below
+    only copies attributes that landed in the instance dict, which is how
+    ``=`` works but not how MagicMock auto-attribute access (``getattr``)
+    works. This filter is what keeps the swap behaviour-equivalent across
+    initial vs reconnected sessions; sidestepping it (e.g. via ``spec=``
+    auto-attrs) will silently drop the override on the rebuilt session.
+    """
     from tools import mcp_tool
 
     mcp_tool._ensure_mcp_loop()
@@ -115,10 +152,26 @@ def _install_stub_server(name: str = "wpcom"):
     # _reconnect_event is called via loop.call_soon_threadsafe(…set); use
     # a threading-safe substitute.
     reconnect_flag = threading.Event()
+    initial_session = MagicMock(name=f"{name}-initial-session")
+    reconnected_session = MagicMock(name=f"{name}-reconnected-session")
 
     class _EventAdapter:
         def set(self):
             reconnect_flag.set()
+            for method_name in (
+                "call_tool",
+                "list_resources",
+                "read_resource",
+                "list_prompts",
+                "get_prompt",
+            ):
+                if method_name in initial_session.__dict__:
+                    setattr(
+                        reconnected_session,
+                        method_name,
+                        getattr(initial_session, method_name),
+                    )
+            server.session = reconnected_session
 
     server._reconnect_event = _EventAdapter()
 
@@ -130,9 +183,10 @@ def _install_stub_server(name: str = "wpcom"):
     server._ready.is_set = ready_flag.is_set
 
     # session attr must be truthy for the handler's initial check
-    # (``if not server or not server.session``) and for the post-
-    # reconnect readiness probe (``srv.session is not None``).
-    server.session = MagicMock()
+    # (``if not server or not server.session``) and the post-reconnect probe.
+    server.session = initial_session
+    server.initial_session = initial_session
+    server.reconnected_session = reconnected_session
     return server, reconnect_flag
 
 
@@ -186,6 +240,45 @@ def test_call_tool_handler_reconnects_on_session_expired(monkeypatch, tmp_path):
     finally:
         mcp_tool._servers.pop("wpcom", None)
         mcp_tool._server_error_counts.pop("wpcom", None)
+
+
+def test_call_tool_handler_reconnects_on_session_terminated(monkeypatch, tmp_path):
+    """ROB-89 auto_trader symptom: McpError: Session terminated should
+    reconnect and retry once instead of falling through as server-down."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("auto_trader")
+    mcp_tool._servers["auto_trader"] = server
+    mcp_tool._server_error_counts.pop("auto_trader", None)
+
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("McpError: Session terminated")
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text='{"account":"paper"}')]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler("auto_trader", "alpaca_paper_get_account", 10.0)
+        out = handler({})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        assert parsed["result"] == '{"account":"paper"}'
+        assert reconnect_flag.is_set()
+        assert call_count["n"] == 2
+    finally:
+        mcp_tool._servers.pop("auto_trader", None)
+        mcp_tool._server_error_counts.pop("auto_trader", None)
 
 
 def test_call_tool_handler_non_session_expired_error_falls_through(
@@ -270,12 +363,11 @@ def test_session_expired_handler_returns_none_without_server_record():
     assert out is None
 
 
-def test_session_expired_handler_returns_none_when_retry_also_fails(
+def test_session_expired_handler_returns_structured_error_when_retry_raises(
     monkeypatch, tmp_path
 ):
-    """If the retry after reconnect also raises, fall through to the
-    generic error path (don't loop forever, don't mask the second
-    failure)."""
+    """If the retry after reconnect also raises, return a structured
+    stale-transport operator signal instead of generic server-down text."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -283,6 +375,7 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
 
     server, _ = _install_stub_server("srv-retry-fail")
     mcp_tool._servers["srv-retry-fail"] = server
+    mcp_tool._server_error_counts.pop("srv-retry-fail", None)
 
     def _retry_raises():
         raise RuntimeError("retry blew up too")
@@ -294,12 +387,179 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
             _retry_raises,
             "tools/call",
         )
-        assert out is None, (
-            "When the retry itself fails, the handler must return None "
-            "so the caller's generic error path runs — no retry loop."
-        )
+        _assert_stale_transport_payload(out, "srv-retry-fail")
     finally:
         mcp_tool._servers.pop("srv-retry-fail", None)
+        mcp_tool._server_error_counts.pop("srv-retry-fail", None)
+
+
+@pytest.mark.parametrize("mode", ["timeout", "raise", "error-json"])
+def test_session_expired_handler_bumps_breaker_when_recovery_fails(
+    monkeypatch, tmp_path, mode
+):
+    """A failed stale-session recovery must trip the circuit-breaker
+    counter so the model stops hammering a permanently broken transport.
+
+    Before this regression guard, the structured stale-transport return
+    bypassed the caller's ``_bump_server_error()`` (which used to run on
+    the fall-through path), letting the model retry the tool indefinitely.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server_name = f"srv-bump-{mode}"
+    server, _ = _install_stub_server(server_name)
+    mcp_tool._servers[server_name] = server
+    mcp_tool._server_error_counts.pop(server_name, None)
+
+    if mode == "timeout":
+        # Force the readiness wait to time out by keeping ``_ready`` clear.
+        server._ready.is_set = MagicMock(return_value=False)
+        monkeypatch.setattr(mcp_tool, "_SESSION_EXPIRED_RECONNECT_TIMEOUT", 0.01)
+        retry_call = lambda: '{"ok": true}'  # noqa: E731 — never invoked
+    elif mode == "raise":
+        def retry_call():
+            raise RuntimeError("retry blew up too")
+    else:  # error-json
+        retry_call = lambda: '{"error": "still stale"}'  # noqa: E731
+
+    try:
+        out = _handle_session_expired_and_retry(
+            server_name,
+            RuntimeError("Session terminated"),
+            retry_call,
+            "tools/call",
+        )
+        _assert_stale_transport_payload(out, server_name)
+        assert mcp_tool._server_error_counts.get(server_name, 0) == 1, (
+            f"{mode}: expected breaker count to be bumped to 1, "
+            f"got {mcp_tool._server_error_counts.get(server_name, 0)}"
+        )
+    finally:
+        mcp_tool._servers.pop(server_name, None)
+        mcp_tool._server_error_counts.pop(server_name, None)
+
+
+def test_session_expired_handler_resets_breaker_on_retry_success(
+    monkeypatch, tmp_path
+):
+    """A successful stale-session retry must fully close the breaker —
+    both the count and the opened-at timestamp — so prior failures do
+    not leave behind a half-open state that misfires next time."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, _ = _install_stub_server("srv-reset")
+    mcp_tool._servers["srv-reset"] = server
+    # Pre-existing failure state, as if prior calls had already bumped.
+    mcp_tool._server_error_counts["srv-reset"] = 2
+    mcp_tool._server_breaker_opened_at["srv-reset"] = 12345.0
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-reset",
+            RuntimeError("Session terminated"),
+            lambda: '{"ok": true}',
+            "tools/call",
+        )
+        assert json.loads(out) == {"ok": True}
+        assert mcp_tool._server_error_counts.get("srv-reset", 0) == 0
+        assert "srv-reset" not in mcp_tool._server_breaker_opened_at, (
+            "Successful recovery must clear the opened-at timestamp; "
+            "leaving it set means the next breaker trip would compute "
+            "cooldown against a stale (long-past) opened-at."
+        )
+    finally:
+        mcp_tool._servers.pop("srv-reset", None)
+        mcp_tool._server_error_counts.pop("srv-reset", None)
+        mcp_tool._server_breaker_opened_at.pop("srv-reset", None)
+
+
+def test_session_expired_handler_returns_structured_error_when_reconnect_times_out(
+    monkeypatch, tmp_path
+):
+    """Once reconnect is attempted, readiness timeout should be reported
+    as stale transport, not as generic MCP server-down."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-timeout")
+    server._ready.is_set = MagicMock(return_value=False)
+    mcp_tool._servers["srv-timeout"] = server
+    monkeypatch.setattr(mcp_tool, "_SESSION_EXPIRED_RECONNECT_TIMEOUT", 0.01)
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-timeout",
+            RuntimeError("Session terminated"),
+            lambda: '{"ok": true}',
+            "tools/call",
+        )
+        assert reconnect_flag.is_set()
+        _assert_stale_transport_payload(out, "srv-timeout")
+    finally:
+        mcp_tool._servers.pop("srv-timeout", None)
+
+
+def test_session_expired_handler_returns_structured_error_when_retry_fails(
+    monkeypatch, tmp_path
+):
+    """A retry returning JSON error is still failed stale-session recovery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-retry-error")
+    mcp_tool._servers["srv-retry-error"] = server
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-retry-error",
+            RuntimeError("McpError: Session terminated"),
+            lambda: '{"error": "still stale"}',
+            "tools/call",
+        )
+        assert reconnect_flag.is_set()
+        _assert_stale_transport_payload(out, "srv-retry-error")
+    finally:
+        mcp_tool._servers.pop("srv-retry-error", None)
+
+
+def test_session_expired_handler_waits_for_rebuilt_session_before_retry(
+    monkeypatch, tmp_path
+):
+    """Do not retry on the stale session just because _ready was already set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-rebuilt-session")
+    mcp_tool._servers["srv-rebuilt-session"] = server
+
+    def _retry_requires_rebuilt_session():
+        assert reconnect_flag.is_set()
+        assert server.session is server.reconnected_session
+        assert server.session is not server.initial_session
+        return '{"ok": true}'
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-rebuilt-session",
+            RuntimeError("McpError: Session terminated"),
+            _retry_requires_rebuilt_session,
+            "tools/call",
+        )
+        assert json.loads(out) == {"ok": True}
+    finally:
+        mcp_tool._servers.pop("srv-rebuilt-session", None)
 
 
 # ---------------------------------------------------------------------------

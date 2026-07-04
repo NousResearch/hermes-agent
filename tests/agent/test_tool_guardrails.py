@@ -228,16 +228,59 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
-def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+def test_unknown_tools_are_never_tracked_for_repeated_identical_success_output():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            mutating_no_progress_warn_after=2,
+            mutating_no_progress_block_after=2,
+        )
     )
 
-    for _ in range(3):
-        assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
+    for _ in range(6):
         assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+
+
+def test_mutating_tools_warn_then_block_on_repeated_identical_success_output():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            mutating_no_progress_warn_after=2,
+            mutating_no_progress_block_after=3,
+        )
+    )
+    args = {"path": "/tmp/x", "content": "x"}
+
+    assert controller.after_call("write_file", args, "ok", failed=False).action == "allow"
+    warn = controller.after_call("write_file", args, "ok", failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "mutating_no_progress_warning"
+    assert controller.after_call("write_file", args, "ok", failed=False).count == 3
+
+    blocked = controller.before_call("write_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "mutating_no_progress_block"
+    assert controller.halt_decision is blocked
+
+    # Changing output resets the streak: identical args with fresh results are
+    # legitimate repeats (append, poll-with-side-effect) and must stay allowed.
+    controller.reset_for_turn()
+    for i in range(5):
+        assert controller.before_call("write_file", args).action == "allow"
+        assert controller.after_call("write_file", args, f"ok-{i}", failed=False).action == "allow"
+
+
+def test_mutating_tools_only_warn_on_repeated_identical_success_when_hard_stop_disabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=False, mutating_no_progress_warn_after=2)
+    )
+    args = {"command": "echo hi"}
+
+    for i in range(1, 8):
+        assert controller.before_call("terminal", args).action == "allow"
+        decision = controller.after_call("terminal", args, '{"exit_code":0,"output":"hi"}', failed=False)
+        assert decision.action == ("warn" if i >= 2 else "allow"), (i, decision.action)
 
 
 def test_reset_for_turn_clears_bounded_guardrail_state():

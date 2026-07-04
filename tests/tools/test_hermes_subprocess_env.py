@@ -78,6 +78,16 @@ class TestStripByDefault:
         result = _build()
         assert result.get("PYTHONUTF8") == "1"
 
+    def test_active_env_markers_stripped(self):
+        result = _build({
+            "VIRTUAL_ENV": "/venv",
+            "CONDA_PREFIX": "/conda",
+            "CONDA_DEFAULT_ENV": "hermes",
+        })
+        assert "VIRTUAL_ENV" not in result
+        assert "CONDA_PREFIX" not in result
+        assert "CONDA_DEFAULT_ENV" not in result
+
 
 class TestInheritCredentials:
     def test_provider_keys_preserved_when_inheriting(self):

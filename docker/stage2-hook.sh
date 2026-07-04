@@ -473,6 +473,33 @@ if [ -d "$INSTALL_DIR/skills" ]; then
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 
+# Mark skills as synced so gateway/run.py start_gateway skips its own sync.
+export SPARK_SKILLS_SYNCED=1
+
+# Spark/Nexus hosted：每次 Pod 启动把 template/config_maps 进程 env mirror 到 .env / config.yaml。
+if [ -f "$INSTALL_DIR/docker/bootstrap_spark_runtime.py" ]; then
+    /opt/hermes/.venv/bin/python3 "$INSTALL_DIR/docker/bootstrap_spark_runtime.py" || true
+fi
+
+# Nexus hosted sandbox: MCP merge + HERMES_CUSTOM_SOUL → SOUL.md (see sync_nexus_hermes_config.py).
+NEXUS_MCP_SNIPPET="$HERMES_HOME/nexus-mcp-servers.yaml"
+if [ -f "$INSTALL_DIR/docker/sync_nexus_hermes_config.py" ]; then
+    _nexus_bootstrap=false
+    if [ -f "$NEXUS_MCP_SNIPPET" ]; then
+        _nexus_bootstrap=true
+    fi
+    if [ -n "${HERMES_CUSTOM_SOUL+x}" ]; then
+        _nexus_bootstrap=true
+    fi
+    if [ "$_nexus_bootstrap" = true ]; then
+        set -- "$HERMES_HOME/config.yaml"
+        if [ -f "$NEXUS_MCP_SNIPPET" ]; then
+            set -- "$@" "$NEXUS_MCP_SNIPPET"
+        fi
+        /opt/hermes/.venv/bin/python3 "$INSTALL_DIR/docker/sync_nexus_hermes_config.py" "$@" || true
+    fi
+fi
+
 # --- Discover agent-browser's Chromium binary ---
 # The image's Dockerfile runs `npx playwright install chromium`, which
 # populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright) with

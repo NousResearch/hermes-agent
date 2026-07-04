@@ -919,7 +919,7 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None, db_path: Path = None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -931,7 +931,10 @@ class SessionStore:
         self._db = None
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            if db_path is None:
+                from hermes_constants import get_hermes_home
+                db_path = get_hermes_home() / "state.db"
+            self._db = SessionDB(db_path=db_path)
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     
@@ -1116,10 +1119,10 @@ class SessionStore:
         to (``source.profile`` — set by the /p/<profile>/ URL prefix or
         per-credential adapter), falling back to the active profile name.
         """
-        if not getattr(self.config, "multiplex_profiles", False):
-            return None
         if source is not None and source.profile:
             return source.profile
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"

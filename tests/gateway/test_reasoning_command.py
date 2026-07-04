@@ -78,7 +78,8 @@ class TestReasoningCommand:
         assert "level" in result and "show" in result and "hide" in result
 
     def test_reasoning_is_known_command(self):
-        source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
+        func = getattr(gateway_run.GatewayRunner, "_handle_message_inner", gateway_run.GatewayRunner._handle_message)
+        source = inspect.getsource(func)
         assert '"reasoning"' in source
 
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):

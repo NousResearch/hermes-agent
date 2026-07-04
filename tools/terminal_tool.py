@@ -2359,6 +2359,10 @@ def terminal_tool(
                 default_cwd=cwd,
             )
             try:
+                from gateway.session_context import get_session_env
+                active_profile = get_session_env("HERMES_SESSION_AGENT_PROFILE", "")
+                active_home = get_session_env("HERMES_SESSION_AGENT_HERMES_HOME", "")
+
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
                         command=command,
@@ -2367,6 +2371,8 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        agent_profile=active_profile,
+                        agent_hermes_home=active_home,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -2375,6 +2381,8 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        agent_profile=active_profile,
+                        agent_hermes_home=active_home,
                     )
 
                 result_data = {

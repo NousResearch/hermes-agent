@@ -161,7 +161,7 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model)
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model --global"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation

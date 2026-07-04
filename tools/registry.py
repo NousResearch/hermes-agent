@@ -136,9 +136,11 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
-# Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+# Keyed by (fn, home_path) so each profile home tracks its own availability —
+# a success under one HERMES_HOME must not suppress a real failure under another.
+_check_fn_cache: Dict[tuple, tuple[float, bool]] = {}
+# Monotonic timestamp of the most recent True result per (check_fn, home).
+_check_fn_last_good: Dict[tuple, float] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
@@ -152,8 +154,15 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+    try:
+        from hermes_constants import get_hermes_home
+        home_path = get_hermes_home()
+    except Exception:
+        home_path = None
+    cache_key = (fn, home_path)
+
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -168,11 +177,11 @@ def _check_fn_cached(fn: Callable) -> bool:
 
     with _check_fn_cache_lock:
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -193,7 +202,7 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
         return False
 
 
@@ -297,6 +306,18 @@ class ToolRegistry:
 
     def get_toolset_alias_target(self, alias: str) -> Optional[str]:
         """Return the canonical toolset name for an alias, or None."""
+        try:
+            from tools.mcp_tool import _load_mcp_config, _get_mcp_config_fingerprint, discover_mcp_tools, _servers
+            cfg = _load_mcp_config().get(alias)
+            if cfg:
+                fp = _get_mcp_config_fingerprint(alias, cfg)
+                # Lazily connect if not already connected
+                if fp not in _servers:
+                    discover_mcp_tools()
+                return f"mcp-{fp}"
+        except Exception:
+            pass
+
         with self._lock:
             return self._toolset_aliases.get(alias)
 

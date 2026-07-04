@@ -46,21 +46,22 @@ def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
     assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
     assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
 
-    # cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
-    # fresh import under this env anchors the store at <profile>/cron.
+    # cron/jobs.py resolves paths lazily from get_hermes_home(), so a long-lived
+    # process can switch into a profile runtime scope without freezing the root
+    # path at import.
     import cron.jobs as jobs
 
     importlib.reload(jobs)
     try:
-        assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
+        assert jobs._hermes_dir().resolve() == profile_home.resolve()
         assert (
-            jobs.JOBS_FILE.resolve()
+            jobs._jobs_file().resolve()
             == (profile_home / "cron" / "jobs.json").resolve()
         )
         # The shared-root path must NOT be the store — that would re-break
         # per-profile isolation (#4707).
         assert (
-            jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
+            jobs._jobs_file().resolve() != (root / "cron" / "jobs.json").resolve()
         )
     finally:
         monkeypatch.undo()
@@ -119,8 +120,8 @@ def test_cron_storage_unaffected_when_no_profile(tmp_path, monkeypatch):
 
     importlib.reload(jobs)
     try:
-        assert jobs.HERMES_DIR.resolve() == root.resolve()
-        assert jobs.JOBS_FILE.resolve() == (root / "cron" / "jobs.json").resolve()
+        assert jobs._hermes_dir().resolve() == root.resolve()
+        assert jobs._jobs_file().resolve() == (root / "cron" / "jobs.json").resolve()
     finally:
         monkeypatch.undo()
         importlib.reload(jobs)

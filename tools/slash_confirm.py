@@ -129,8 +129,44 @@ async def resolve(
 
     if not handler:
         return None
+
+    # Resolve profile-scoping if session_key contains a named profile.
+    profile_home = None
+    if session_key.startswith("agent:"):
+        parts = session_key.split(":")
+        if len(parts) > 1 and parts[1] != "main":
+            profile_name = parts[1]
+            try:
+                from hermes_cli.profiles import get_profile_dir
+                profile_home = get_profile_dir(profile_name)
+            except Exception:
+                profile_home = None
+
     try:
-        result = await handler(choice)
+        if profile_home:
+            import contextlib
+            from pathlib import Path
+            from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+            from agent.secret_scope import (
+                build_profile_secret_scope,
+                set_secret_scope,
+                reset_secret_scope,
+            )
+
+            @contextlib.contextmanager
+            def _profile_runtime_scope(ph: Path):
+                home_token = set_hermes_home_override(str(ph))
+                secret_token = set_secret_scope(build_profile_secret_scope(ph))
+                try:
+                    yield
+                finally:
+                    reset_secret_scope(secret_token)
+                    reset_hermes_home_override(home_token)
+
+            with _profile_runtime_scope(Path(profile_home)):
+                result = await handler(choice)
+        else:
+            result = await handler(choice)
     except Exception as exc:
         logger.error(
             "Slash-confirm handler for /%s raised: %s",

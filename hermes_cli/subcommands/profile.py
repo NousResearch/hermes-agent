@@ -103,6 +103,27 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="With --auto, run on every profile missing a description",
     )
 
+    profile_audit = profile_subparsers.add_parser(
+        "audit-isolation",
+        help="Audit routed profile isolation without printing secrets",
+    )
+    profile_audit.add_argument("profile_name", help="Profile to audit")
+    profile_audit.add_argument(
+        "--safe-root",
+        default=None,
+        help="Expected topic_profiles_safe_root for routed profiles",
+    )
+    profile_audit.add_argument(
+        "--write-marker",
+        action="store_true",
+        help="Write or refresh .hermes_profile.json before auditing",
+    )
+    profile_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable audit output",
+    )
+
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 

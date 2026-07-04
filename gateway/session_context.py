@@ -83,6 +83,8 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_SESSION_AGENT_PROFILE: ContextVar = ContextVar("HERMES_SESSION_AGENT_PROFILE", default=_UNSET)
+_SESSION_AGENT_HERMES_HOME: ContextVar = ContextVar("HERMES_SESSION_AGENT_HERMES_HOME", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
@@ -124,6 +126,8 @@ _VAR_MAP = {
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "HERMES_SESSION_AGENT_PROFILE": _SESSION_AGENT_PROFILE,
+    "HERMES_SESSION_AGENT_HERMES_HOME": _SESSION_AGENT_HERMES_HOME,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -160,6 +164,8 @@ def set_session_vars(
     profile: str = "",
     cwd: str = "",
     async_delivery: bool = True,
+    agent_profile: str = "",
+    agent_hermes_home: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -194,6 +200,8 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_AGENT_PROFILE.set(agent_profile),
+        _SESSION_AGENT_HERMES_HOME.set(agent_hermes_home),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -226,6 +234,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_KEY,
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _SESSION_AGENT_PROFILE,
+        _SESSION_AGENT_HERMES_HOME,
         _SESSION_PROFILE,
     ):
         var.set("")

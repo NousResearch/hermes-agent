@@ -96,6 +96,30 @@ def test_busy_steer_mode_falls_back_to_queue_when_rejected(monkeypatch):
     assert session["queued_prompt"]["text"] == "nudge"
 
 
+def test_busy_frontdesk_mode_spawns_background_without_interrupt_or_queue(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "frontdesk")
+    calls = {"interrupt": 0, "background": []}
+    agent = types.SimpleNamespace(
+        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent)
+    monkeypatch.setattr(
+        server,
+        "_start_frontdesk_background_task",
+        lambda sid, sess, text, *, reason: calls["background"].append(
+            (sid, sess, text, reason)
+        )
+        or "fd_test",
+    )
+
+    resp = server._handle_busy_submit("r1", "sid", session, "nouvelle idée", "ws-1")
+
+    assert resp["result"] == {"status": "background", "task_id": "fd_test"}
+    assert calls["interrupt"] == 0
+    assert calls["background"] == [("sid", session, "nouvelle idée", "busy_frontdesk_mode")]
+    assert session.get("queued_prompt") is None
+
+
 # ── _drain_queued_prompt ───────────────────────────────────────────────────
 
 def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):

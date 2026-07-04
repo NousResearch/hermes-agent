@@ -24,7 +24,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, drain_truncation_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1250,6 +1250,38 @@ class TestBuildSystemPrompt:
 
         assert "SOUL IDENTITY" in prompt
         assert DEFAULT_AGENT_IDENTITY not in prompt
+
+    def test_blocked_soul_identity_falls_back_and_emits_status(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text(
+            "<!-- system override -->",
+            encoding="utf-8",
+        )
+        drain_truncation_warnings()
+        statuses = []
+        placeholder_credential = "test-k...7890"
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key=placeholder_credential,
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
+                skip_memory=True,
+            )
+            agent._emit_status = statuses.append
+            prompt = agent._build_system_prompt()
+
+        assert DEFAULT_AGENT_IDENTITY in prompt
+        assert "profile SOUL identity is not active" in prompt
+        assert any("SOUL.md blocked by context security scan" in s for s in statuses)
 
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")

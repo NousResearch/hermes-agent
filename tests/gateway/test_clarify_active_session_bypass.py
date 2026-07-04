@@ -1,7 +1,7 @@
 """Regression tests for clarify replies while a gateway session is busy."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -85,3 +85,61 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     adapter._message_handler.assert_awaited_once_with(event)
     adapter._busy_session_handler.assert_not_awaited()
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_pending_clarify_voice_reply_is_transcribed_and_resolves_before_busy_path():
+    """A Telegram voice note sent after tapping clarify Other must resolve the prompt.
+
+    The active-session adapter bypass already routes the media event to the
+    runner; this guards the runner-side intercept.  Without transcription here,
+    a captionless voice note has empty event.text, falls through as a normal
+    busy follow-up, and the clarify wait remains unresolved.
+    """
+    _clear_clarify_state()
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="private",
+        user_id="user1",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/clarify-other-voice.ogg"],
+        media_types=["audio/ogg"],
+        message_id="voice-msg-1",
+    )
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {}
+    runner._update_prompt_pending = {}
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda _source: True
+
+    session_key = runner._session_key_for_source(source)
+    cm.register("clarify-voice", session_key, "Pick", ["A", "B"])
+    cm.mark_awaiting_text("clarify-voice")
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "ma réponse vocale autre",
+            "provider": "whisper",
+        },
+    ) as transcribe:
+        response = await runner._handle_message(event)
+
+    assert response == ""
+    transcribe.assert_called_once_with("/tmp/clarify-other-voice.ogg")
+    with cm._lock:
+        entry = cm._entries["clarify-voice"]
+    assert entry.response == "ma réponse vocale autre"
+    assert entry.event.is_set()

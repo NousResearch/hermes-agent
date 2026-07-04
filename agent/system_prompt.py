@@ -485,8 +485,9 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
-    # Surface context-file truncation warnings through the normal agent status
-    # channel so gateway/CLI users see them in chat instead of only in logs.
+    # Surface context-file warnings through the normal agent status channel so
+    # gateway/CLI users see truncation or blocked-SOUL fallback in chat instead
+    # of only in logs.
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
 

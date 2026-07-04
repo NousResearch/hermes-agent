@@ -25,6 +25,18 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+_HERMES_CREDENTIAL_STORE_REL_PATHS = (
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    ".env",
+    "webhook_subscriptions.json",
+    os.path.join("auth", "google_oauth.json"),
+    # Bitwarden Secrets Manager disk cache stores plaintext secret values.
+    os.path.join("cache", "bws_cache.json"),
+)
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -46,6 +58,14 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Keep the write side aligned with the read-side Hermes credential
+            # store list so dashboard/file writes cannot poison stores that
+            # read_file already refuses to expose.
+            *(
+                str(base / rel_path)
+                for base in (hermes_home, hermes_root)
+                for rel_path in _HERMES_CREDENTIAL_STORE_REL_PATHS
+            ),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -238,18 +258,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     # Credential / secret stores. Exact-file matches under either
     # HERMES_HOME or <root>.
-    credential_file_names = (
-        "auth.json",
-        "auth.lock",
-        ".anthropic_oauth.json",
-        ".env",
-        "webhook_subscriptions.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Bitwarden Secrets Manager disk cache: stores plaintext secret values
-        # to avoid re-fetching across back-to-back CLI invocations. The file
-        # was introduced by #31968 but not added to this guard.
-        os.path.join("cache", "bws_cache.json"),
-    )
+    credential_file_names = _HERMES_CREDENTIAL_STORE_REL_PATHS
     for hd in hermes_dirs:
         for name in credential_file_names:
             try:

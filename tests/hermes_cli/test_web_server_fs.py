@@ -174,6 +174,33 @@ def test_fs_write_text_rejects_mcp_token_files(client, tmp_path, monkeypatch):
     assert not target.exists()
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "auth.json",
+        "auth.lock",
+        "webhook_subscriptions.json",
+        "auth/google_oauth.json",
+        "cache/bws_cache.json",
+    ],
+)
+def test_fs_write_text_rejects_hermes_credential_stores(
+    client, tmp_path, monkeypatch, relative_path
+):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = hermes_home / relative_path
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "attacker-controlled"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

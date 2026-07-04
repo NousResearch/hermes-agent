@@ -840,13 +840,49 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         *run_argv,
     ]
 
+    # The watcher leg has the same console trap as the respawned gateway:
+    # ``sys.executable`` here is the venv's console ``python.exe``.  Under a
+    # uv venv that launcher re-execs the *base* console interpreter — a
+    # fresh CreateProcess that inherits none of our DETACHED /
+    # CREATE_NO_WINDOW flags — so a blank visible console sits on screen for
+    # the whole drain window (it belongs to the watcher, not the gateway).
+    # Route the watcher through the same windowless rewrite as the gateway
+    # leg above; the env overlay lets the base ``pythonw.exe`` import
+    # ``hermes_cli`` / ``gateway.status`` without the venv launcher.
+    watcher_cwd = ""
+    watcher_env: dict[str, str] | None = None
+    if sys.platform == "win32":
+        try:
+            from hermes_cli.gateway_windows import (
+                windowless_gateway_restart_spec,
+            )
+
+            watcher_argv, watcher_cwd, watcher_env_overlay = (
+                windowless_gateway_restart_spec(watcher_argv)
+            )
+            if watcher_env_overlay:
+                watcher_env = {**os.environ, **watcher_env_overlay}
+        except Exception:
+            # Best-effort, mirroring the gateway-leg fallback above: a
+            # visible watcher window beats a restart that never happens.
+            watcher_cwd = ""
+            watcher_env = None
+
+    watcher_popen_kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if watcher_cwd:
+        watcher_popen_kwargs["cwd"] = watcher_cwd
+    if watcher_env is not None:
+        watcher_popen_kwargs["env"] = watcher_env
+
     # Same platform-aware detach for the watcher process itself — so
     # closing the user's terminal doesn't kill the watcher.
     try:
         subprocess.Popen(
             watcher_argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            **watcher_popen_kwargs,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -863,8 +899,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             )
             subprocess.Popen(
                 watcher_argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                **watcher_popen_kwargs,
                 **fallback_kwargs,
             )
         except OSError:

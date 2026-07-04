@@ -1052,6 +1052,73 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "HERMES_HOME) so the windowless base pythonw resolves hermes_cli."
         )
 
+    def test_watcher_process_itself_is_windowless(self):
+        """The watcher *process* must not launch via the venv's console
+        ``python.exe`` either.
+
+        Same trap, other leg: ``watcher_argv`` led with bare
+        ``sys.executable``. Under a uv venv that console launcher re-execs
+        the base console interpreter with default creationflags — a fresh
+        CreateProcess that inherits none of the watcher's DETACHED /
+        CREATE_NO_WINDOW flags — so a blank console window stays visible for
+        the whole drain window even though the respawned gateway leg was
+        already rewritten to pythonw.
+
+        Static check: the watcher spawn must route ``watcher_argv`` through
+        ``windowless_gateway_restart_spec`` and thread the resulting cwd /
+        env overlay into the watcher ``Popen``.
+        """
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+        start = text.find("watcher_argv = [")
+        assert start != -1
+        block = text[start:]
+        assert "windowless_gateway_restart_spec(watcher_argv)" in block, (
+            "_spawn_gateway_restart_watcher must rewrite watcher_argv via "
+            "windowless_gateway_restart_spec so the watcher runs under the "
+            "windowless base pythonw.exe, not the venv console python.exe."
+        )
+
+    def test_watcher_popen_carries_windowless_interpreter_and_overlay(self):
+        """Behavioral: on win32 the watcher ``Popen`` argv leads with the
+        windowless interpreter and carries the cwd + env overlay from
+        ``windowless_gateway_restart_spec``."""
+        import hermes_cli.gateway as gateway_mod
+        import hermes_cli.gateway_windows as gw
+
+        popen_calls: list[tuple[list[str], dict]] = []
+
+        def fake_spec(argv):
+            return (
+                ["C:/base/pythonw.exe", *argv[1:]],
+                "C:/hermes",
+                {"VIRTUAL_ENV": "C:/venv", "PYTHONPATH": "C:/proj"},
+            )
+
+        def fake_popen(argv, **kwargs):
+            popen_calls.append((argv, kwargs))
+            return MagicMock()
+
+        with mock.patch.object(
+            gw, "windowless_gateway_restart_spec", side_effect=fake_spec
+        ), mock.patch.object(
+            gateway_mod.subprocess, "Popen", side_effect=fake_popen
+        ), mock.patch.object(gateway_mod.sys, "platform", "win32"):
+            ok = gateway_mod._spawn_gateway_restart_watcher(
+                1234,
+                ["C:/venv/Scripts/python.exe", "-m", "hermes_cli.main", "gateway", "run"],
+            )
+
+        assert ok is True
+        assert popen_calls, "watcher Popen was never invoked"
+        argv, kwargs = popen_calls[-1]
+        assert argv[0] == "C:/base/pythonw.exe", (
+            "watcher must launch under the windowless base interpreter"
+        )
+        assert kwargs.get("cwd") == "C:/hermes"
+        assert kwargs["env"]["VIRTUAL_ENV"] == "C:/venv"
+        assert "C:/proj" in kwargs["env"]["PYTHONPATH"]
+
 
 class TestWindowlessGatewayRestartSpec:
     """gateway_windows.windowless_gateway_restart_spec — the helper that

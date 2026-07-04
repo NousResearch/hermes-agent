@@ -128,6 +128,26 @@ def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
     assert result["job"]["script"] == "alert.sh"
 
 
+def test_cronjob_tool_create_output_retention_zero_roundtrips(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    script_path = hermes_env / "scripts" / "retain.sh"
+    script_path.write_text("#!/bin/bash\necho retain\n")
+
+    result = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            script="retain.sh",
+            no_agent=True,
+            output_retention=0,
+            deliver="local",
+        )
+    )
+    assert result.get("success") is True
+    assert result["job"]["output_retention"] == 0
+
+
 def test_cronjob_tool_update_toggles_no_agent(hermes_env):
     from tools.cronjob_tools import cronjob
 
@@ -225,6 +245,7 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     assert success is True
     assert error is None
     assert final_response == SILENT_MARKER
+    assert "silent (empty output)" in doc
 
 
 def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
@@ -257,7 +278,8 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     success, doc, final_response, error = run_job(job)
     assert success is False
     assert error is not None
-    assert "oops" in final_response or "exited with code 3" in final_response
+    assert "oops" in final_response
+    assert "exited with code 3" in final_response
     assert "Cron watchdog" in final_response  # alert header
 
 
@@ -293,9 +315,10 @@ def test_run_job_script_shell_script_runs_via_bash(hermes_env):
     # No shebang — relies on the interpreter-by-extension rule.
     script_path.write_text('echo "shell: $BASH_VERSION" | head -c 7\n')
 
-    ok, output = _run_job_script("shelly.sh")
+    ok, output, stderr = _run_job_script("shelly.sh")
     assert ok is True
     assert output.startswith("shell:")
+    assert stderr == ""
 
 
 def test_run_job_script_bash_extension_also_runs_via_bash(hermes_env):
@@ -304,9 +327,10 @@ def test_run_job_script_bash_extension_also_runs_via_bash(hermes_env):
     script_path = hermes_env / "scripts" / "thing.bash"
     script_path.write_text('printf "via bash\\n"\n')
 
-    ok, output = _run_job_script("thing.bash")
+    ok, output, stderr = _run_job_script("thing.bash")
     assert ok is True
     assert output == "via bash"
+    assert stderr == ""
 
 
 def test_run_job_script_python_still_runs_via_python(hermes_env):
@@ -316,9 +340,10 @@ def test_run_job_script_python_still_runs_via_python(hermes_env):
     script_path = hermes_env / "scripts" / "py.py"
     script_path.write_text("import sys\nprint(f'python {sys.version_info.major}')\n")
 
-    ok, output = _run_job_script("py.py")
+    ok, output, stderr = _run_job_script("py.py")
     assert ok is True
     assert output.startswith("python ")
+    assert stderr == ""
 
 
 def test_run_job_script_path_traversal_still_blocked(hermes_env):
@@ -326,6 +351,7 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     from cron.scheduler import _run_job_script
 
     # Absolute path outside the scripts dir should be rejected.
-    ok, output = _run_job_script("/etc/passwd")
+    ok, output, stderr = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+    assert stderr == ""

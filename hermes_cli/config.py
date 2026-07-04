@@ -2568,6 +2568,13 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Silent runs can use a lower retention cap than substantive/error
+        # runs to preserve an audit trail without keeping every quiet heartbeat
+        # forever. Falls back to output_retention when unset. Default 20.
+        "output_retention_silent": 20,
+        # Substantive/error runs can override the global fallback separately.
+        # Falls back to output_retention when unset. Default 50.
+        "output_retention_substantive": 50,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

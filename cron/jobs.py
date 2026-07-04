@@ -847,6 +847,43 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _normalize_output_retention(value: Any) -> Optional[int]:
+    """Normalize an optional per-job output retention cap."""
+    if value is None or value == "" or value is False:
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Cron output_retention must be an integer or null (got {value!r})") from exc
+    return ivalue
+
+
+def _normalize_state_paths(paths: Any) -> Optional[List[str]]:
+    """Normalize a cron job state/audit manifest."""
+    if paths is None or paths == "" or paths is False:
+        return None
+    raw_items = [paths] if isinstance(paths, str) else list(paths) if isinstance(paths, list) else None
+    if raw_items is None:
+        raise ValueError("Cron state_paths must be a path string, a list of path strings, or null")
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for item in raw_items:
+        raw = str(item).strip()
+        if not raw:
+            continue
+        expanded = Path(raw).expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"Cron state_paths entries must be absolute or ~/ paths (got {raw!r})"
+            )
+        canonical = str(expanded.resolve(strict=False))
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        normalized.append(canonical)
+    return normalized or None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -865,6 +902,8 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    output_retention: Optional[int] = None,
+    state_paths: Optional[Union[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -941,6 +980,8 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_output_retention = _normalize_output_retention(output_retention)
+    normalized_state_paths = _normalize_state_paths(state_paths)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1016,6 +1057,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "output_retention": normalized_output_retention,
+        "state_paths": normalized_state_paths,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1111,6 +1154,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "output_retention" in updates:
+                updates["output_retention"] = _normalize_output_retention(updates.get("output_retention"))
+
+            if "state_paths" in updates:
+                updates["state_paths"] = _normalize_state_paths(updates.get("state_paths"))
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
@@ -1668,16 +1717,57 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 # accumulated one file per run forever and could fill the disk (#52383). Keep the
 # most recent N files per job; a non-positive value disables pruning (opt-out).
 _CRON_OUTPUT_DEFAULT_KEEP = 50
+_CRON_SILENT_OUTPUT_DEFAULT_KEEP = 20
 
 
-def _cron_output_keep() -> int:
-    """Resolve the per-job output-file retention cap from config (``cron.output_retention``)."""
+def _cron_output_keep(job: Optional[Dict[str, Any]] = None, *, silent: Optional[bool] = None) -> int:
+    """Resolve the output-file retention cap.
+
+    Priority:
+    1. Per-job ``output_retention`` override (when set)
+    2. Global config ``cron.output_retention_silent`` / ``cron.silent_output_retention``
+       for silent runs, or ``cron.output_retention_substantive`` /
+       ``cron.substantive_output_retention`` for substantive/error runs
+    3. Global config ``cron.output_retention``
+    4. Built-in defaults
+    """
     try:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        return int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
+        override = None
+        if isinstance(job, dict):
+            override = _normalize_output_retention(job.get("output_retention"))
+            if override is not None:
+                return override
+        default_keep = int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
+        if silent is True:
+            return int(
+                cron_cfg.get(
+                    "output_retention_silent",
+                    cron_cfg.get("silent_output_retention", _CRON_SILENT_OUTPUT_DEFAULT_KEEP),
+                )
+            )
+        if silent is False:
+            return int(
+                cron_cfg.get(
+                    "output_retention_substantive",
+                    cron_cfg.get("substantive_output_retention", default_keep),
+                )
+            )
+        return default_keep
     except Exception:
+        if isinstance(job, dict):
+            try:
+                override = _normalize_output_retention(job.get("output_retention"))
+            except ValueError:
+                override = None
+            if override is not None:
+                return override
+        if silent is True:
+            return _CRON_SILENT_OUTPUT_DEFAULT_KEEP
+        if silent is False:
+            return _CRON_OUTPUT_DEFAULT_KEEP
         return _CRON_OUTPUT_DEFAULT_KEEP
 
 
@@ -1710,7 +1800,7 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
+def save_job_output(job_id: str, output: str, *, keep: Optional[int] = None):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
@@ -1735,10 +1825,50 @@ def save_job_output(job_id: str, output: str):
             pass
         raise
 
-    # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
-    _prune_job_output(job_output_dir, _cron_output_keep())
+    # Bound per-job history so frequently-running crons don't grow without
+    # limit. The append-only ``runs.jsonl`` index is intentionally retained
+    # separately; this cap applies only to the heavier per-run markdown docs.
+    _prune_job_output(job_output_dir, _cron_output_keep() if keep is None else keep)
 
     return output_file
+
+
+def append_job_output_footer(output_file: Union[str, Path], footer: str) -> None:
+    """Append a footer to an existing run artifact atomically."""
+    path = Path(output_file)
+    existing = path.read_text(encoding="utf-8")
+    updated = existing.rstrip() + "\n\n---\n\n" + footer.strip() + "\n"
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp', prefix='.output_footer_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(updated)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+        _secure_file(path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def append_job_run_index(job_id: str, record: Dict[str, Any]) -> Path:
+    """Append a compact per-run JSONL index record for ``job_id``."""
+    ensure_dirs()
+    job_output_dir = _job_output_dir(job_id)
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(job_output_dir)
+    index_path = job_output_dir / "runs.jsonl"
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with open(index_path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+        fh.flush()
+        os.fsync(fh.fileno())
+    _secure_file(index_path)
+    return index_path
 
 
 # =============================================================================

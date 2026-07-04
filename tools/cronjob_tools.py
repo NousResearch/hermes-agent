@@ -598,6 +598,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("output_retention") is not None:
+        result["output_retention"] = job["output_retention"]
+    if job.get("state_paths"):
+        result["state_paths"] = job["state_paths"]
     return result
 
 
@@ -667,6 +671,8 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    output_retention: Optional[int] = None,
+    state_paths: Optional[List[str]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -740,6 +746,8 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                output_retention=output_retention,
+                state_paths=state_paths,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -913,6 +921,10 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if output_retention is not None:
+                updates["output_retention"] = output_retention
+            if state_paths is not None:
+                updates["state_paths"] = state_paths
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -1075,6 +1087,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "output_retention": {
+                "type": "integer",
+                "description": "Optional per-job output file retention cap. Overrides cron.output_retention for this one job. Positive integers keep only the N most recent output .md files for the job; 0 or negative disables pruning for that job. On update, omitting the field leaves the existing value unchanged; there is currently no explicit unset sentinel through the tool schema."
+            },
+            "state_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of absolute or home-relative (~/...) state file paths relevant to this job's execution. These paths are recorded in output footers and run metadata for audit/debugging; they are not automatically read or enforced. On update, pass an empty array to clear."
+            },
         },
         "required": ["action"]
     }
@@ -1130,6 +1151,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        output_retention=args.get("output_retention"),
+        state_paths=args.get("state_paths"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

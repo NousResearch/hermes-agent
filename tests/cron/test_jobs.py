@@ -1309,6 +1309,37 @@ class TestCronOutputRetention:
         )
         assert jobs._cron_output_keep() == 7
 
+    def test_cron_output_keep_silent_respects_job_override(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"output_retention_silent": 99, "output_retention": 12}},
+        )
+        assert jobs._cron_output_keep({"output_retention": 5}, silent=True) == 5
+
+    def test_cron_output_keep_bad_config_still_respects_job_override(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": "oops"}}
+        )
+        assert jobs._cron_output_keep({"output_retention": 4}, silent=True) == 4
+
+    def test_cron_output_keep_job_override_can_disable_pruning(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"output_retention_silent": 99, "output_retention": 12}},
+        )
+        assert jobs._cron_output_keep({"output_retention": 0}, silent=True) == 0
+        assert jobs._cron_output_keep({"output_retention": -5}, silent=False) == -5
+
+    def test_cron_output_keep_corrupt_job_override_does_not_raise(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": "oops"}}
+        )
+        assert jobs._cron_output_keep({"output_retention": "bogus"}, silent=True) == jobs._CRON_SILENT_OUTPUT_DEFAULT_KEEP
+
     def test_cron_output_keep_defaults_on_bad_config(self, monkeypatch):
         import cron.jobs as jobs
         monkeypatch.setattr(

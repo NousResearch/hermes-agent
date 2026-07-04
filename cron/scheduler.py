@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -237,7 +238,17 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
+from cron.jobs import (
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+    advance_next_run,
+    claim_dispatch,
+    append_job_output_footer,
+    append_job_run_index,
+    _cron_output_keep,
+    _normalize_state_paths,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1853,10 +1864,10 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str) -> tuple[bool, str, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    Scripts must reside within HERMES_HOME/scripts/. Both relative and
     absolute paths are resolved and validated against this directory to
     prevent arbitrary script execution via path traversal or absolute
     path injection.
@@ -1876,13 +1887,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to the script. Relative paths are resolved against
+            HERMES_HOME/scripts/. Absolute and ~-prefixed paths are also
+            validated to ensure they stay within the scripts dir.
 
     Returns:
-        (success, output) — on failure *output* contains the error message so the
-        LLM can report the problem to the user.
+        ``(success, stdout, stderr)``. On failure, stdout/stderr preserve the
+        redacted subprocess streams so the scheduler can build a useful audit
+        artifact instead of losing quiet-decision context.
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -1902,12 +1914,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"
-        )
+        ), ""
 
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, f"Script not found: {path}", ""
     if not path.is_file():
-        return False, f"Script path is not a file: {path}"
+        return False, f"Script path is not a file: {path}", ""
 
     script_timeout = _get_script_timeout()
 
@@ -1927,10 +1939,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         )
         if _bash is None:
             return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
+                "Shell cron scripts require 'bash' on PATH (or /bin/bash on Unix), "
+                "but bash not found on this system. Install Git Bash / WSL bash on Windows, "
                 "or rewrite the script as Python (.py)."
-            )
+            ), ""
         argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
@@ -1962,19 +1974,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stderr = "[REDACTED - redaction failed]"
 
         if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
             if stderr:
-                parts.append(f"stderr:\n{stderr}")
-            if stdout:
-                parts.append(f"stdout:\n{stdout}")
-            return False, "\n".join(parts)
+                stderr = f"Script exited with code {result.returncode}\n{stderr}"
+            else:
+                stderr = f"Script exited with code {result.returncode}"
+            return False, stdout, stderr
 
-        return True, stdout
+        return True, stdout, stderr
 
     except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
+        return False, "", f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+        return False, "", f"Script execution failed: {exc}"
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2003,16 +2014,35 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _normalize_script_result(result: Optional[tuple]) -> tuple[bool, str, str]:
+    """Normalize legacy/new script result tuples to ``(success, stdout, stderr)``.
+
+    Older tests and helper call sites may still provide ``(success, stdout)``.
+    Keep accepting that shape so broader scheduler/test compatibility does not
+    depend on every mock being updated in lockstep.
+    """
+    if result is None:
+        return False, "", ""
+    if len(result) == 3:
+        success, stdout, stderr = result
+        return bool(success), str(stdout or ""), str(stderr or "")
+    if len(result) == 2:
+        success, stdout = result
+        return bool(success), str(stdout or ""), ""
+    raise ValueError(f"Expected script result tuple of len 2 or 3, got {len(result)}")
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
         job: The cron job dict.
-        prerun_script: Optional ``(success, stdout)`` from a script that has
-            already been executed by the caller (e.g. for a wake-gate check).
-            When provided, the script is not re-executed and the cached
-            result is used for prompt injection. When omitted, the script
-            (if any) runs inline as before.
+        prerun_script: Optional cached script result from a caller-side
+            execution (e.g. for a wake-gate check). Accepts both the legacy
+            ``(success, stdout)`` shape and the richer
+            ``(success, stdout, stderr)`` shape. When provided, the script is
+            not re-executed and the cached result is used for prompt injection.
+            When omitted, the script (if any) runs inline as before.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -2028,9 +2058,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     script_path = job.get("script")
     if script_path:
         if prerun_script is not None:
-            success, script_output = prerun_script
+            success, script_output, script_stderr = _normalize_script_result(prerun_script)
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output, script_stderr = _normalize_script_result(_run_job_script(script_path))
         if success:
             if script_output:
                 prompt = (
@@ -2045,10 +2075,16 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 # Script produced no output — nothing to report, skip AI call.
                 return None
         else:
+            error_parts = []
+            if script_stderr:
+                error_parts.append(f"stderr:\n{script_stderr}")
+            if script_output:
+                error_parts.append(f"stdout:\n{script_output}")
+            error_blob = "\n\n".join(error_parts) or "Script failed with no output."
             prompt = (
                 "## Script Error\n"
                 "The data-collection script failed. Report this to the user.\n\n"
-                f"```\n{script_output}\n```\n\n"
+                f"```\n{error_blob}\n```\n\n"
                 f"{prompt}"
             )
             has_injected_data = True
@@ -2370,7 +2406,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output, script_stderr = _normalize_script_result(_run_job_script(script_path))
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2381,12 +2417,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
         if not ok:
-            # Script crashed / timed out / exited non-zero.  Deliver the
+            # Script crashed / timed out / exited non-zero. Deliver the
             # error so the user knows the watchdog itself broke — silent
             # failure for an alerting job is the worst-case outcome.
+            error_lines = [f"Script exited with a failure in watchdog '{job_name}'"]
+            if script_stderr:
+                error_lines.append(f"stderr:\n{script_stderr}")
+            if output:
+                error_lines.append(f"stdout:\n{output}")
+            error_blob = "\n\n".join(error_lines)
             alert = (
                 f"⚠ Cron watchdog '{job_name}' script failed\n\n"
-                f"{output}\n\n"
+                f"{error_blob}\n\n"
                 f"Time: {now_iso}"
             )
             doc = (
@@ -2395,9 +2437,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {now_iso}\n"
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** script failed\n\n"
-                f"{output}\n"
+                f"## Script stderr\n\n```\n{script_stderr or '(empty)'}\n```\n\n"
+                f"## Script stdout\n\n```\n{output or '(empty)'}\n```\n"
             )
-            return False, doc, alert, output
+            return False, doc, alert, error_blob
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
         # means "nothing to report this tick", same as empty stdout.
@@ -2410,7 +2453,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
                 f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (wakeAgent=false)\n"
+                f"**Status:** silent (wakeAgent=false)\n\n"
+                f"## Gate stdout\n\n```\n{output or '(empty)'}\n```\n\n"
+                f"## Gate stderr\n\n```\n{script_stderr or '(empty)'}\n```\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -2421,7 +2466,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
                 f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (empty output)\n"
+                f"**Status:** silent (empty output)\n\n"
+                f"## Script stderr\n\n```\n{script_stderr or '(empty)'}\n```\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -2430,8 +2476,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {now_iso}\n"
             f"**Mode:** no_agent (script)\n\n"
-            f"---\n\n"
-            f"{output}\n"
+            f"## Script stdout\n\n```\n{output}\n```\n"
         )
         return True, doc, output, None
 
@@ -2459,8 +2504,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
-        _ran_ok, _script_output = prerun_script
+        prerun_script = _normalize_script_result(_run_job_script(script_path))
+        _ran_ok, _script_output, _script_stderr = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
@@ -2469,8 +2514,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Status:** silent (wakeAgent=false)\n\n"
+                f"## Gate stdout\n\n```\n{_script_output or '(empty)'}\n```\n\n"
+                f"## Gate stderr\n\n```\n{_script_stderr or '(empty)'}\n```\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -2501,7 +2548,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        script_stdout = ""
+        script_stderr = ""
+        if prerun_script is not None:
+            _, script_stdout, script_stderr = prerun_script
+        silent_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** silent (empty script output)\n\n"
+            f"## Script stdout\n\n```\n{script_stdout or '(empty)'}\n```\n\n"
+            f"## Script stderr\n\n```\n{script_stderr or '(empty)'}\n```\n"
+        )
+        return True, silent_doc, SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -3059,6 +3118,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
+**Session ID:** {_cron_session_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
@@ -3081,6 +3141,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
+**Session ID:** {_cron_session_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
@@ -3156,6 +3217,53 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _cron_state_paths(job: dict) -> list[str]:
+    try:
+        return _normalize_state_paths(job.get("state_paths")) or []
+    except ValueError as exc:
+        logger.warning("Job '%s': invalid state_paths ignored: %s", job.get("id", "?"), exc)
+        return []
+
+
+def _cron_delivery_footer(job: dict, *, should_deliver: bool, delivery_error: Optional[str], delivery_targets: Optional[list[dict]]) -> str:
+    sections: list[str] = []
+    if should_deliver:
+        lines = []
+        if delivery_targets:
+            for target in delivery_targets:
+                platform = str(target.get("platform") or "?")
+                chat_id = str(target.get("chat_id") or "?")
+                thread_id = target.get("thread_id")
+                label = f"{platform}:{chat_id}"
+                if thread_id not in {None, ""}:
+                    label += f" thread={thread_id}"
+                if delivery_error:
+                    lines.append(f"- `{label}`: error — {delivery_error}")
+                else:
+                    lines.append(f"- `{label}`: delivered")
+        else:
+            lines.append("- local-only or no external delivery target")
+        sections.append("## Delivery\n" + "\n".join(lines))
+    elif delivery_error:
+        sections.append(f"## Delivery\n- error while delivery was suppressed: {delivery_error}")
+    else:
+        sections.append("## Delivery\n- not delivered (silent/local-only run)")
+
+    state_paths = _cron_state_paths(job)
+    if state_paths:
+        sections.append("## State Paths\n" + "\n".join(f"- `{path}`" for path in state_paths))
+
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def _cron_run_status(success: bool, final_response: str, error: Optional[str]) -> str:
+    if not success:
+        return "error"
+    if _is_cron_silence_response(final_response or ""):
+        return "silent"
+    return "ok"
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -3186,6 +3294,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
+        started_at = time.monotonic()
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
         # gateway profiles / room→profile multiplexing), and cron fires from
@@ -3206,30 +3315,27 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success, output, final_response, error = run_job(job)
         finally:
             reset_secret_scope(_scope_token)
+        initial_status = _cron_run_status(success, final_response, error)
 
-        output_file = save_job_output(job["id"], output)
+        output_file = save_job_output(
+            job["id"],
+            output,
+            keep=_cron_output_keep(job, silent=(initial_status == "silent")),
+        )
         if verbose:
             logger.info("Output saved to: %s", output_file)
 
         # Deliver the final response to the origin/target chat.
-        # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
+        # If the agent responded with [SILENT], skip delivery. Failed jobs
+        # always deliver a compact failure summary instead.
         deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
         should_deliver = bool(deliver_content.strip())
-        # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-        # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-        # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-        # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-        # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-        # tolerance the cron contract relies on.
         if should_deliver and success and _is_cron_silence_response(deliver_content):
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 
         delivery_error = None
+        delivery_targets = _resolve_delivery_targets(job) if should_deliver else None
         if should_deliver:
             try:
                 delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
@@ -3237,12 +3343,46 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 delivery_error = str(de)
                 logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
+        # Treat empty final_response as a soft failure so last_status is not
+        # "ok" — unless it was an intentional cron-silent run.
+        if success and not final_response.strip() and initial_status != "silent":
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        final_status = _cron_run_status(success, final_response, error)
+        footer = _cron_delivery_footer(
+            job,
+            should_deliver=should_deliver,
+            delivery_error=delivery_error,
+            delivery_targets=delivery_targets,
+        )
+        if footer.strip():
+            try:
+                append_job_output_footer(output_file, footer)
+            except OSError:
+                logger.debug("Job '%s': could not append footer to %s", job["id"], output_file, exc_info=True)
+
+        duration_seconds = round(time.monotonic() - started_at, 3)
+        try:
+            output_size = Path(output_file).stat().st_size
+        except OSError:
+            output_size = None
+        try:
+            append_job_run_index(
+                job["id"],
+                {
+                    "delivery_error": delivery_error,
+                    "delivery_targets": delivery_targets,
+                    "duration_seconds": duration_seconds,
+                    "error": error,
+                    "output_bytes": output_size,
+                    "output_file": str(output_file),
+                    "run_at": _hermes_now().isoformat(),
+                    "status": final_status,
+                },
+            )
+        except Exception:
+            logger.warning("Job '%s': could not write run index", job["id"], exc_info=True)
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True

@@ -2549,7 +2549,7 @@ class TestSilentDelivery:
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
-        save_mock.assert_called_once_with("monitor-job", "# full output")
+        save_mock.assert_called_once_with("monitor-job", "# full output", keep=20)
         deliver_mock.assert_not_called()
 
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):
@@ -2569,6 +2569,18 @@ class TestSilentDelivery:
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
         )
+
+    def test_run_index_write_failure_does_not_flip_success(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "done", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.append_job_run_index", side_effect=OSError("disk full")), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        mark_mock.assert_called_once_with("monitor-job", True, None, delivery_error=None)
 
 
 class TestOneShotDispatchClaim:
@@ -2752,14 +2764,15 @@ class TestRunJobWakeGate:
         import cron.scheduler as scheduler
 
         with patch.object(scheduler, "_run_job_script",
-                          return_value=(True, '{"wakeAgent": false}')), \
+                          return_value=(True, '{"wakeAgent": false}', '')), \
              patch("run_agent.AIAgent") as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
         assert success is True
         assert err is None
         assert final == SILENT_MARKER
-        assert "Script gate returned `wakeAgent=false`" in doc
+        assert "**Status:** silent (wakeAgent=false)" in doc
+        assert "## Gate stdout" in doc
         agent_cls.assert_not_called()
 
     def test_wake_true_runs_agent_with_injected_output(self):
@@ -2773,7 +2786,7 @@ class TestRunJobWakeGate:
             "final_response": "ok", "messages": []
         })
         with patch.object(scheduler, "_run_job_script",
-                          return_value=(True, script_output)), \
+                          return_value=(True, script_output, '')), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
@@ -2796,7 +2809,7 @@ class TestRunJobWakeGate:
         def _script_stub(path):
             nonlocal call_count
             call_count += 1
-            return (True, "regular output")
+            return (True, "regular output", "")
 
         agent = MagicMock()
         agent.run_conversation = MagicMock(return_value={
@@ -2820,7 +2833,7 @@ class TestRunJobWakeGate:
             "final_response": "ok", "messages": []
         })
         with patch.object(scheduler, "_run_job_script",
-                          return_value=(False, '{"wakeAgent": false}')), \
+                          return_value=(False, '{"wakeAgent": false}', '')), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
@@ -2842,6 +2855,23 @@ class TestRunJobWakeGate:
 
         script_fn.assert_not_called()
         agent_cls.assert_called_once()
+
+
+class TestCronStatePaths:
+    def test_cron_state_paths_reuses_store_normalization(self):
+        from cron.scheduler import _cron_state_paths
+
+        job = {"id": "job1", "state_paths": ["~/state.json", "/tmp/state.json", "~/state.json"]}
+        paths = _cron_state_paths(job)
+        assert all(path.startswith("/") for path in paths)
+        assert len(paths) == 2
+
+    def test_cron_state_paths_ignores_invalid_relative_entries(self, caplog):
+        from cron.scheduler import _cron_state_paths
+
+        paths = _cron_state_paths({"id": "job1", "state_paths": ["relative/state.json"]})
+        assert paths == []
+        assert "invalid state_paths ignored" in caplog.text
 
 
 class TestBuildJobPromptMissingSkill:

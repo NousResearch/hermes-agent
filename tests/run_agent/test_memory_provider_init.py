@@ -165,3 +165,124 @@ def test_aiagent_forwards_warning_callback_to_cli_memory_provider():
     assert provider.init_kwargs["platform"] == "cli"
     assert provider.init_kwargs["warning_callback"] == agent._emit_warning
     assert provider.init_kwargs["status_callback"] == agent._emit_status
+
+
+class AsyncDiscoveryProvider:
+    """Provider that discovers tools asynchronously (starts with 0 tools)."""
+
+    name = "async-discovery"
+
+    def __init__(self):
+        self._schemas = []
+        self._discovered = False
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return list(self._schemas)
+
+    def discover_tools(self, schemas):
+        """Simulate async tool discovery completing."""
+        self._schemas = schemas
+        self._discovered = True
+
+    def shutdown(self):
+        pass
+
+
+def test_rebuild_provider_tools_populates_after_async_discovery():
+    """Providers with async tool discovery can call rebuild_provider_tools()
+
+    after discovery completes so that tools registered as 0 at add_provider()
+    time are picked up for dispatch routing (#58360).
+    """
+    from agent.memory_manager import MemoryManager
+
+    mm = MemoryManager()
+    provider = AsyncDiscoveryProvider()
+
+    # Register while provider has no tools (pre-discovery).
+    mm.add_provider(provider)
+    assert mm.get_all_tool_names() == set()
+    assert not mm.has_tool("mimir_remember")
+
+    # Simulate async discovery completing.
+    provider.discover_tools([
+        {"name": "mimir_remember", "description": "Store a memory", "parameters": {}},
+        {"name": "mimir_search", "description": "Search memories", "parameters": {}},
+    ])
+
+    # Rebuild picks up the newly-discovered tools.
+    mm.rebuild_provider_tools(provider)
+    assert mm.has_tool("mimir_remember")
+    assert mm.has_tool("mimir_search")
+    assert mm.get_all_tool_names() == {"mimir_remember", "mimir_search"}
+
+
+def test_rebuild_provider_tools_is_idempotent():
+    """Calling rebuild_provider_tools() multiple times is safe."""
+    from agent.memory_manager import MemoryManager
+
+    mm = MemoryManager()
+    provider = AsyncDiscoveryProvider()
+    mm.add_provider(provider)
+
+    provider.discover_tools([
+        {"name": "tool_a", "description": "A", "parameters": {}},
+    ])
+    mm.rebuild_provider_tools(provider)
+    assert mm.has_tool("tool_a")
+
+    # Second call with same tools — no duplicates, no errors.
+    mm.rebuild_provider_tools(provider)
+    assert mm.has_tool("tool_a")
+    assert len(mm.get_all_tool_names()) == 1
+
+
+def test_rebuild_provider_tools_preserves_other_providers():
+    """rebuild_provider_tools() only touches the given provider's entries."""
+    from agent.memory_manager import MemoryManager
+
+    mm = MemoryManager()
+
+    # First provider with static tools.
+    static = CoreShadowProvider()  # has honcho_search
+    mm.add_provider(static)
+    assert mm.has_tool("honcho_search")
+
+    # Second provider with async discovery.
+    async_prov = AsyncDiscoveryProvider()
+    mm.add_provider(async_prov)
+    assert not mm.has_tool("new_tool")
+
+    # Discover and rebuild only the async provider.
+    async_prov.discover_tools([
+        {"name": "new_tool", "description": "New", "parameters": {}},
+    ])
+    mm.rebuild_provider_tools(async_prov)
+
+    # Both providers' tools present.
+    assert mm.has_tool("honcho_search")
+    assert mm.has_tool("new_tool")
+
+
+def test_rebuild_provider_tools_respects_core_tool_names():
+    """rebuild_provider_tools() still rejects core tool name shadows."""
+    from agent.memory_manager import MemoryManager
+
+    mm = MemoryManager()
+    provider = AsyncDiscoveryProvider()
+    mm.add_provider(provider)
+
+    provider.discover_tools([
+        {"name": "clarify", "description": "shadows core", "parameters": {}},
+        {"name": "legit_tool", "description": "legit", "parameters": {}},
+    ])
+    mm.rebuild_provider_tools(provider)
+
+    assert not mm.has_tool("clarify")
+    assert mm.has_tool("legit_tool")

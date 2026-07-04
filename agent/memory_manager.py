@@ -439,6 +439,52 @@ class MemoryManager:
             len(provider.get_tool_schemas()),
         )
 
+    def rebuild_provider_tools(self, provider: MemoryProvider) -> None:
+        """Re-scan a provider's tool schemas and refresh the routing table.
+
+        Call this after a provider completes asynchronous tool discovery so
+        that tools which were not available at ``add_provider()`` time are
+        picked up.  Idempotent — safe to call multiple times.
+
+        Only the given provider's entries in ``_tool_to_provider`` are
+        touched; other providers' mappings are preserved.
+        """
+        from toolsets import _HERMES_CORE_TOOLS
+
+        _core_tool_names = set(_HERMES_CORE_TOOLS)
+
+        # Remove stale entries that point to this provider.
+        stale = [
+            name
+            for name, prov in self._tool_to_provider.items()
+            if prov is provider
+        ]
+        for name in stale:
+            del self._tool_to_provider[name]
+
+        # Re-index.
+        added = 0
+        for raw_schema in provider.get_tool_schemas():
+            schema = normalize_tool_schema(raw_schema)
+            if schema is None:
+                continue
+            tool_name = schema["name"]
+            if tool_name in _core_tool_names:
+                continue
+            if tool_name and tool_name not in self._tool_to_provider:
+                self._tool_to_provider[tool_name] = provider
+                added += 1
+
+        if stale or added:
+            logger.info(
+                "Memory provider '%s' tools rebuilt: removed %d stale, "
+                "added %d new (%d total)",
+                provider.name,
+                len(stale),
+                added,
+                len(provider.get_tool_schemas()),
+            )
+
     @property
     def providers(self) -> List[MemoryProvider]:
         """All registered providers in order."""

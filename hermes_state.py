@@ -909,10 +909,13 @@ class SessionDB:
             conn.create_function(
                 "compact_punct", 1, _compact_punct, deterministic=True
             )
-        except TypeError:
+        except (TypeError, sqlite3.NotSupportedError):
             # ``deterministic`` requires Python 3.8+ compiled against
-            # SQLite 3.8.3+. If unavailable, register without it — the
-            # function still works in WHERE/LIKE, just isn't query-optimized.
+            # SQLite 3.8.3+. On Python < 3.8 the kwarg itself is unknown
+            # (``TypeError``); on a new-enough Python linked against an
+            # older SQLite, sqlite3 raises ``NotSupportedError`` instead.
+            # Either way, register without it — the function still works in
+            # WHERE/LIKE, just isn't query-optimized.
             conn.create_function("compact_punct", 1, _compact_punct)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):

@@ -94,6 +94,45 @@ class TestQuerySessionListingSearch:
         finally:
             db.close()
 
+    def test_old_sqlite_deterministic_unsupported_falls_back(self, tmp_path, monkeypatch):
+        # sqlite3.create_function(..., deterministic=True) raises
+        # sqlite3.NotSupportedError (NOT TypeError) when the module knows the
+        # kwarg but the linked SQLite is < 3.8.3. SessionDB.__init__ must
+        # survive that by re-registering compact_punct without deterministic —
+        # never crash the whole DB open on an old-SQLite runtime.
+        import functools
+        import sqlite3
+
+        from hermes_state import SessionDB
+
+        class _OldSqliteConnection(sqlite3.Connection):
+            # Mimic a Python linked against SQLite < 3.8.3: the deterministic
+            # kwarg is recognised by the module but rejected by the engine.
+            def create_function(self, name, narg, func, *args, **kwargs):
+                if kwargs.get("deterministic"):
+                    raise sqlite3.NotSupportedError(
+                        "deterministic=True requires SQLite 3.8.3 or higher"
+                    )
+                return super().create_function(name, narg, func, *args, **kwargs)
+
+        real_connect = sqlite3.connect
+        monkeypatch.setattr(
+            sqlite3,
+            "connect",
+            functools.partial(real_connect, factory=_OldSqliteConnection),
+        )
+
+        db = SessionDB(db_path=tmp_path / "old_sqlite.db")
+        try:
+            # __init__ succeeded; the fallback (non-deterministic) registration
+            # produced a working compact_punct — the compact-title path still
+            # matches, proving we fell back rather than skipping the function.
+            db.create_session("sess_x3", "telegram", user_id="1", chat_id="2")
+            db.set_session_title("sess_x3", "R&D Notes")
+            assert self._ids(db, source="telegram", search_query="rd") == ["sess_x3"]
+        finally:
+            db.close()
+
     def test_id_substring_match_includes_unnamed(self, db):
         assert self._ids(db, source="telegram", search_query="untitled") == ["sess_untitled"]
 

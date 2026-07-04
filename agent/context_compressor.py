@@ -555,12 +555,23 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     except (json.JSONDecodeError, TypeError):
         args = {}
 
+    def _arg_text(name: str, default: str = "") -> str:
+        value = args.get(name, default)
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+
     content = tool_content or ""
     content_len = len(content)
     line_count = content.count("\n") + 1 if content.strip() else 0
 
     if tool_name == "terminal":
-        cmd = args.get("command", "")
+        cmd = _arg_text("command")
         if len(cmd) > 80:
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
@@ -574,7 +585,8 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        written_content = _arg_text("content")
+        written_lines = written_content.count("\n") + 1 if written_content else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -609,14 +621,15 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[web_extract] {url_desc} ({content_len:,} chars)"
 
     if tool_name == "delegate_task":
-        goal = args.get("goal", "")
+        goal = _arg_text("goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
         return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
-        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
-        if len(args.get("code", "")) > 60:
+        code = _arg_text("code")
+        code_preview = code[:60].replace("\n", " ")
+        if len(code) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
@@ -625,7 +638,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
-        question = args.get("question", "")[:50]
+        question = _arg_text("question")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
     if tool_name == "memory":

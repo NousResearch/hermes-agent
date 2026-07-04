@@ -2755,6 +2755,59 @@ class TestUpdateModelResetsCalibration:
         assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
 
 
+class TestSummarizeToolResultArgs:
+    """Regression guards for non-string historical tool arguments."""
+
+    def test_write_file_dict_content_does_not_crash_pruning(self):
+        import json as _json
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        messages = [
+            {"role": "user", "content": "please write"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "write_file", "arguments": _json.dumps({
+                     "path": "x.txt",
+                     "content": {"nested": "value"},
+                 })}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": '{"error":"content must be string","detail":"' + ("x" * 240) + '"}'},
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        result, pruned = c._prune_old_tool_results(messages, protect_tail_count=2)
+
+        assert pruned == 1
+        assert result[2]["content"] == "[write_file] wrote to x.txt (1 lines)"
+
+    def test_preview_tools_coerce_non_string_args(self):
+        import json as _json
+        from agent.context_compressor import _summarize_tool_result
+
+        code_summary = _summarize_tool_result(
+            "execute_code",
+            _json.dumps({"code": {"snippet": "print(1)"}}),
+            "ok",
+        )
+        vision_summary = _summarize_tool_result(
+            "vision_analyze",
+            _json.dumps({"question": {"text": "what is this?"}}),
+            "analysis",
+        )
+
+        assert code_summary == '[execute_code] `{"snippet": "print(1)"}` (1 lines output)'
+        assert vision_summary == '[vision_analyze] \'{"text": "what is this?"}\' (8 chars)'
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

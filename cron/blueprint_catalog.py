@@ -553,7 +553,8 @@ def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
     sched = blueprint.schedule_template
     if sched.startswith("*/"):
         iv = next((s for s in blueprint.slots if s.name == "interval_min"), None)
-        every = (iv.default if iv else None) or sched.split("/")[1].split()[0]
+        rest = sched.split("/", 1)[1].split()
+        every = (iv.default if iv else None) or (rest[0] if rest else "?")
         return f"every {every} minutes"
     if "{interval_hours}" in sched:
         iv = next((s for s in blueprint.slots if s.name == "interval_hours"), None)

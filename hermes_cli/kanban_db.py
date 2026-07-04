@@ -4648,8 +4648,17 @@ def block_task(
         # An un-typed (None) block compares as "same" to a prior un-typed block.
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
+        # The single-card code-review convention intentionally does
+        # block(review-required) -> unblock -> block(review-required) while a
+        # reviewer requests changes. That is not the cron-unblock loop this
+        # breaker protects against, so keep review handoffs in the normal
+        # blocked bucket even after multiple rounds. The explicit review
+        # comments remain the human-in-the-loop control plane.
+        is_review_required = bool(
+            reason and reason.strip().lower().startswith("review-required:")
+        )
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if recurrences >= BLOCK_RECURRENCE_LIMIT and not is_review_required:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(

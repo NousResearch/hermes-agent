@@ -598,6 +598,24 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+            if task and os.environ.get("HERMES_KANBAN_TASK") == tid:
+                comments = kb.list_comments(conn, tid)
+                last_changes = -1
+                last_approve = -1
+                for idx, comment in enumerate(comments):
+                    body = (comment.body or "").upper()
+                    if "CHANGES REQUESTED" in body:
+                        last_changes = idx
+                    if "APPROVE" in body:
+                        last_approve = idx
+                if last_changes >= 0 and last_changes > last_approve:
+                    return tool_error(
+                        "kanban_complete rejected: latest review verdict is "
+                        "CHANGES REQUESTED and no later APPROVE comment exists. "
+                        "Fix the findings, commit, post kanban_comment with "
+                        "evidence, then call kanban_block(reason='review-required: ...') "
+                        "for re-review instead of completing."
+                    )
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""

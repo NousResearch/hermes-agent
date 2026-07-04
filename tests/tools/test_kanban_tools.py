@@ -311,6 +311,45 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_rejects_unresolved_changes_requested(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, worker_env, "reviewer", "CHANGES REQUESTED: fix edge case")
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "fixed it without re-review"})
+    err = json.loads(out).get("error", "")
+    assert "CHANGES REQUESTED" in err
+    assert "kanban_block" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_allows_later_approve_after_changes_requested(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, worker_env, "reviewer", "CHANGES REQUESTED: fix edge case")
+        kb.add_comment(conn, worker_env, "reviewer", "APPROVE: fixed in follow-up")
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "fixed after approval"})
+    assert json.loads(out).get("ok") is True
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

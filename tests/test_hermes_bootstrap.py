@@ -204,6 +204,11 @@ class TestStdioReconfigureErrorHandling:
         hb = _fresh_import()
         hb._IS_WINDOWS = True
         hb._bootstrap_applied = False
+        monkeypatch.setattr(
+            hb,
+            "_clear_windows_pycache_after_source_update",
+            lambda root: False,
+        )
 
         fake = io.BytesIO()  # no .reconfigure attribute
         monkeypatch.setattr(sys, "stdout", fake)
@@ -219,6 +224,11 @@ class TestStdioReconfigureErrorHandling:
         hb = _fresh_import()
         hb._IS_WINDOWS = True
         hb._bootstrap_applied = False
+        monkeypatch.setattr(
+            hb,
+            "_clear_windows_pycache_after_source_update",
+            lambda root: False,
+        )
 
         class _BrokenStream:
             encoding = "utf-8"
@@ -229,6 +239,91 @@ class TestStdioReconfigureErrorHandling:
         monkeypatch.setattr(sys, "stderr", _BrokenStream())
         # Must not raise.
         hb.apply_windows_utf8_bootstrap()
+
+
+class TestWindowsPycacheSelfHeal:
+    """Windows startup clears stale bytecode once per source revision."""
+
+    @staticmethod
+    def _write_git_head(root, revision="abc123"):
+        git_dir = root / ".git"
+        ref = git_dir / "refs" / "heads" / "main"
+        ref.parent.mkdir(parents=True)
+        ref.write_text(f"{revision}\n", encoding="utf-8")
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    def test_revision_change_clears_pycache_and_writes_marker(self, tmp_path):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        self._write_git_head(tmp_path, "abc123")
+
+        pycache = tmp_path / "agent" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "prompt_builder.pyc").write_bytes(b"stale")
+
+        assert hb._clear_windows_pycache_after_source_update(tmp_path) is True
+
+        assert not pycache.exists()
+        marker = tmp_path / ".git" / hb._PYCACHE_REVISION_MARKER
+        assert marker.read_text(encoding="utf-8").strip() == "abc123"
+        assert not (tmp_path / hb._PYCACHE_REVISION_MARKER).exists()
+
+    def test_same_revision_skips_cleanup(self, tmp_path):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        self._write_git_head(tmp_path, "abc123")
+        (tmp_path / ".git" / hb._PYCACHE_REVISION_MARKER).write_text(
+            "abc123\n", encoding="utf-8"
+        )
+
+        pycache = tmp_path / "agent" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "prompt_builder.pyc").write_bytes(b"current")
+
+        assert hb._clear_windows_pycache_after_source_update(tmp_path) is False
+        assert pycache.exists()
+        assert not (tmp_path / hb._PYCACHE_REVISION_MARKER).exists()
+
+    def test_packed_ref_revision_is_supported(self, tmp_path):
+        hb = _fresh_import()
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (git_dir / "packed-refs").write_text(
+            "# pack-refs with: peeled fully-peeled sorted\n"
+            "abc123 refs/heads/main\n",
+            encoding="utf-8",
+        )
+
+        assert hb._source_revision(tmp_path) == "abc123"
+
+    def test_posix_skips_cleanup_even_when_revision_changed(self, tmp_path):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = False
+        self._write_git_head(tmp_path, "abc123")
+
+        pycache = tmp_path / "agent" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "prompt_builder.pyc").write_bytes(b"stale")
+
+        assert hb._clear_windows_pycache_after_source_update(tmp_path) is False
+        assert pycache.exists()
+        assert not (tmp_path / hb._PYCACHE_REVISION_MARKER).exists()
+
+    def test_skips_dependency_directories(self, tmp_path):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        self._write_git_head(tmp_path, "abc123")
+
+        source_cache = tmp_path / "agent" / "__pycache__"
+        venv_cache = tmp_path / "venv" / "Lib" / "site-packages" / "__pycache__"
+        source_cache.mkdir(parents=True)
+        venv_cache.mkdir(parents=True)
+
+        assert hb._clear_windows_pycache_after_source_update(tmp_path) is True
+
+        assert not source_cache.exists()
+        assert venv_cache.exists()
 
 
 class TestEntryPointsImportBootstrap:

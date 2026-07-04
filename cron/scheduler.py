@@ -1853,13 +1853,67 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _get_trusted_script_roots() -> list[Path]:
+    """Return resolved cron script symlink roots configured by the operator.
+
+    Cron job records still name scripts under HERMES_HOME/scripts.  This list is
+    only for link-mode installs where a file in that directory is a symlink into
+    an explicitly trusted source checkout such as ~/hermes-automation-harness.
+    """
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("trusted_script_roots") or []
+    except Exception as exc:
+        logger.debug("Failed to load cron trusted script roots from config: %s", exc)
+        return []
+
+    if isinstance(configured, (str, os.PathLike)):
+        roots = [configured]
+    elif isinstance(configured, (list, tuple)):
+        roots = configured
+    else:
+        logger.warning("Ignoring invalid cron.trusted_script_roots=%r", configured)
+        return []
+
+    resolved: list[Path] = []
+    for root in roots:
+        if not isinstance(root, (str, os.PathLike)):
+            logger.warning("Ignoring non-path cron.trusted_script_roots entry: %r", root)
+            continue
+        value = os.fspath(root).strip()
+        if not value:
+            continue
+        expanded = _expand_env_vars(value)
+        if not isinstance(expanded, str):
+            logger.warning("Ignoring invalid cron trusted script root %r", value)
+            continue
+        path = Path(expanded).expanduser()
+        if not path.is_absolute():
+            path = _get_hermes_home() / path
+        try:
+            resolved.append(path.resolve())
+        except OSError as exc:
+            logger.warning("Ignoring unresolved cron trusted script root %r: %s", value, exc)
+    return resolved
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Script names must originate within HERMES_HOME/scripts/.  The resolved
+    target must either remain in that directory or, for link-mode installs, sit
+    under an operator-configured cron.trusted_script_roots entry.  This preserves
+    path-traversal protection while allowing reviewed symlinks into source
+    checkouts such as ~/hermes-automation-harness.
 
     Supported interpreters (chosen by file extension):
 
@@ -1878,7 +1932,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            are also validated to ensure they originate within the scripts dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -1889,19 +1943,32 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir_resolved = scripts_dir.resolve()
 
     raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
-
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    candidate = raw if raw.is_absolute() else scripts_dir / raw
+    # Normalize dot/dot-dot path components without resolving symlinks first.
+    # A script may be a reviewed symlink in scripts/, but the job path itself
+    # must not traverse or point outside scripts/.
+    candidate_norm = Path(os.path.abspath(os.fspath(candidate)))
+    if not _is_relative_to(candidate_norm, scripts_dir_resolved):
         return False, (
-            f"Blocked: script path resolves outside the scripts directory "
+            f"Blocked: script path originates outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"
+        )
+
+    path = candidate.resolve()
+    if not _is_relative_to(path, scripts_dir_resolved):
+        trusted_root = next(
+            (root for root in _get_trusted_script_roots() if _is_relative_to(path, root)),
+            None,
+        )
+        if trusted_root is None:
+            return False, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
+        logger.debug(
+            "Allowing cron script %s resolved under trusted root %s",
+            path,
+            trusted_root,
         )
 
     if not path.exists():

@@ -2564,6 +2564,10 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Optional reviewed source roots for cron link-mode installs. Cron job
+        # records still name scripts under HERMES_HOME/scripts; this list only
+        # permits symlink targets to resolve under explicit operator-owned roots.
+        "trusted_script_roots": [],
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

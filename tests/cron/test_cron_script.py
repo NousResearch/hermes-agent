@@ -417,6 +417,46 @@ class TestScriptPathContainment:
         assert success is False
         assert "blocked" in output.lower() or "outside" in output.lower()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
+    def test_symlink_to_configured_trusted_root_allowed(self, cron_env, tmp_path):
+        """Scripts symlinked from scripts/ into configured trusted roots may run."""
+        from cron.scheduler import _run_job_script
+
+        trusted = tmp_path / "trusted-cron-scripts"
+        trusted.mkdir()
+        script = trusted / "trusted.py"
+        script.write_text('print("trusted ok")\n')
+        (cron_env / "config.yaml").write_text(
+            f"cron:\n  trusted_script_roots:\n    - {trusted}\n"
+        )
+
+        link = cron_env / "scripts" / "trusted.py"
+        link.symlink_to(script)
+
+        success, output = _run_job_script("trusted.py")
+        assert success is True
+        assert output == "trusted ok"
+
+    def test_relative_traversal_to_trusted_root_still_blocked(self, cron_env, tmp_path):
+        """Trusted roots allow scripts/ symlink targets, not ../ traversal."""
+        from cron.scheduler import _run_job_script
+
+        trusted = tmp_path / "trusted-cron-scripts"
+        trusted.mkdir()
+        script = trusted / "trusted.py"
+        script.write_text('print("should not run")\n')
+        (cron_env / "config.yaml").write_text(
+            f"cron:\n  trusted_script_roots:\n    - {trusted}\n"
+        )
+        traversal = os.path.relpath(script, cron_env / "scripts")
+
+        success, output = _run_job_script(traversal)
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
 
 class TestCronjobToolScriptValidation:
     """Test API-boundary validation of cron script paths in cronjob_tools."""

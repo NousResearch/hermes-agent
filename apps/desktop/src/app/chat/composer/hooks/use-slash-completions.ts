@@ -163,6 +163,7 @@ export function useSlashCompletions(options: {
         const replaceFrom = typeof result.replace_from === 'number' ? result.replace_from : 1
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
+        const exactCommandQuery = commandText(query).toLowerCase()
 
         const decorated = (result.items ?? [])
           .map(item => {
@@ -174,7 +175,13 @@ export function useSlashCompletions(options: {
 
             return { ...item, text: `${prefix}${argText}` }
           })
-          .filter(item => isArgCompletion || isDesktopSlashSuggestion(item.text))
+          .filter(
+            item =>
+              isArgCompletion ||
+              isDesktopSlashSuggestion(item.text, {
+                includeAlias: commandText(item.text).toLowerCase() === exactCommandQuery
+              })
+          )
           .map(item => ({
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one

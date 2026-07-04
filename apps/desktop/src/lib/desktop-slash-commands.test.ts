@@ -87,6 +87,8 @@ describe('desktop slash command curation', () => {
 
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
+    expect(isDesktopSlashSuggestion('/reset', { includeAlias: true })).toBe(true)
+    expect(isDesktopSlashSuggestion('/memory-graph', { includeAlias: true })).toBe(true)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
   })
 

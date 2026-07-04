@@ -300,12 +300,12 @@ export function isDesktopSlashCommand(command: string): boolean {
 }
 
 /** Gates discovery in the popover/completions. */
-export function isDesktopSlashSuggestion(command: string): boolean {
+export function isDesktopSlashSuggestion(command: string, options: { includeAlias?: boolean } = {}): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (ALIAS_TO_CANONICAL.has(normalized)) {
-    return false
+    return Boolean(options.includeAlias && isDesktopSlashCommand(normalized))
   }
 
   const spec = SPEC_BY_NAME.get(normalized)

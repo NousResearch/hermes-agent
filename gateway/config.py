@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import math
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
@@ -41,9 +42,10 @@ def _coerce_float(value: Any, default: float) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -51,8 +53,10 @@ def _coerce_int(value: Any, default: int) -> int:
     if value is None:
         return default
     try:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(value)
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

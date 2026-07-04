@@ -96,6 +96,26 @@ class TestResolvePersistBehavior:
         with _config({"model": {"persist_switch_by_default": True}}):
             assert resolve_persist_behavior(True, True) is False
 
+    def test_provider_flag_defaults_to_session_only(self):
+        # --provider without --global/--session → session only.
+        with _config({"model": {"persist_switch_by_default": True}}):
+            assert resolve_persist_behavior(False, False, explicit_provider="anthropic") is False
+
+    def test_provider_with_global_still_persists(self):
+        # --provider + --global → persists.
+        with _config({"model": {"persist_switch_by_default": False}}):
+            assert resolve_persist_behavior(True, False, explicit_provider="anthropic") is True
+
+    def test_provider_with_session_still_session_only(self):
+        # --provider + --session → session only.
+        with _config({"model": {"persist_switch_by_default": True}}):
+            assert resolve_persist_behavior(False, True, explicit_provider="anthropic") is False
+
+    def test_no_provider_uses_config_default(self):
+        # No --provider → respects config default (True).
+        with _config({"model": {"persist_switch_by_default": True}}):
+            assert resolve_persist_behavior(False, False, explicit_provider="") is True
+
 
 # ---------------------------------------------------------------------------
 # helper

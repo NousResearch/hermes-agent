@@ -8229,7 +8229,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # config-gated default, --global forces persist, otherwise defer to
         # model.persist_switch_by_default (defaults to True so /model survives
         # across sessions).
-        persist_global = resolve_persist_behavior(is_global_flag, is_session, is_once=one_turn)
+        persist_global = resolve_persist_behavior(
+            is_global_flag, is_session, is_once=one_turn,
+            explicit_provider=explicit_provider,
+        )
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's

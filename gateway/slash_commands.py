@@ -1478,6 +1478,7 @@ class GatewaySlashCommandsMixin:
             is_global_flag,
             is_session,
             is_once=one_turn,
+            explicit_provider=explicit_provider,
         )
 
         # --refresh: bust the disk cache so the picker shows live data.

@@ -552,7 +552,12 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
     )
 
 
-def resolve_persist_behavior(is_global: bool, is_session: bool, is_once: bool = False) -> bool:
+def resolve_persist_behavior(
+    is_global: bool,
+    is_session: bool,
+    is_once: bool = False,
+    explicit_provider: str = "",
+) -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.
 
     Resolution order:
@@ -560,7 +565,11 @@ def resolve_persist_behavior(is_global: bool, is_session: bool, is_once: bool = 
     1. ``--once`` explicitly opts out → ``False`` (next turn only).
     2. ``--session`` explicitly opts out → ``False`` (this session only).
     3. ``--global`` explicitly opts in → ``True``.
-    4. Otherwise defer to ``model.persist_switch_by_default`` in
+    4. ``--provider`` given without an explicit persist flag → ``False``
+       (session only).  Provider switches are typically exploratory — the
+       user is trying a different backend for this conversation, not
+       reconfiguring the default.  ``--global`` can still force persist.
+    5. Otherwise defer to ``model.persist_switch_by_default`` in
        ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
        survives across sessions — the behavior users expect).
 
@@ -574,6 +583,8 @@ def resolve_persist_behavior(is_global: bool, is_session: bool, is_once: bool = 
         return False
     if is_global:
         return True
+    if explicit_provider:
+        return False
     try:
         from hermes_cli.config import load_config
 

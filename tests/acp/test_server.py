@@ -423,6 +423,47 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_stamps_history_index_on_user_chunks(self, agent):
+        """Replayed user chunks carry _meta.hermes.historyIndex — the absolute
+        state.history coordinate a client passes back as keepHistory on fork."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        # Index 0 is a hidden system message replay skips; the user turns sit at
+        # absolute indices 1 and 3, which is exactly what must be stamped.
+        state.history = [
+            {"role": "system", "content": "hidden system"},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+
+        user_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "user_message_chunk"
+        ]
+        assert len(user_calls) == 2
+        assert user_calls[0].kwargs["update"].content.text == "first question"
+        assert user_calls[0].kwargs["hermes"] == {"historyIndex": 1}
+        assert user_calls[1].kwargs["update"].content.text == "second question"
+        assert user_calls[1].kwargs["hermes"] == {"historyIndex": 3}
+
+        # Assistant chunks are not stamped — only user turns are fork points.
+        assistant_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "agent_message_chunk"
+        ]
+        assert assistant_calls and all("hermes" not in c.kwargs for c in assistant_calls)
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
         """Persisted todo tool results should rebuild Zed's native plan panel."""
         mock_conn = MagicMock(spec=acp.Client)
@@ -1145,6 +1186,61 @@ class TestPrompt:
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
         assert state.history == expected_history
+
+    @pytest.mark.asyncio
+    async def test_prompt_returns_user_history_index_meta(self, agent):
+        """PromptResponse carries _meta.hermes.userHistoryIndex — the absolute
+        post-turn index of this turn's user message, for fork-from-here."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        # Simulate a turn appended after a prior user/assistant exchange, so the
+        # new user message lands at absolute index 2 in the post-turn history.
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 2
+            return {
+                "final_response": "sure",
+                "messages": [
+                    {"role": "user", "content": "earlier"},
+                    {"role": "assistant", "content": "earlier reply"},
+                    {"role": "user", "content": "now"},
+                    {"role": "assistant", "content": "sure"},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta == {"hermes": {"userHistoryIndex": 2}}
+
+    @pytest.mark.asyncio
+    async def test_prompt_omits_user_history_index_when_unavailable(self, agent):
+        """No _persist_user_message_idx (e.g. a bare turn) → no _meta stamp."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        # Ensure the attribute is absent so the getattr fallback fires.
+        if hasattr(state.agent, "_persist_user_message_idx"):
+            delattr(state.agent, "_persist_user_message_idx")
+
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "hi",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta is None
 
     @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):

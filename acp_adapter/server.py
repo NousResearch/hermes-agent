@@ -1041,9 +1041,20 @@ class HermesACPAgent(acp.Agent):
 
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
 
-        async def _send(update: Any) -> bool:
+        async def _send(update: Any, meta: dict[str, Any] | None = None) -> bool:
             try:
-                await self._conn.session_update(session_id=state.session_id, update=update)
+                # ``meta`` becomes the notification-level ``_meta`` (the acp lib
+                # forwards session_update **kwargs into SessionNotification's
+                # field_meta). We use it to stamp each replayed user turn with
+                # its absolute ``state.history`` index so the client can pass
+                # that coordinate back as ``_meta.hermes.keepHistory`` on
+                # ``session/fork`` — the same list ``fork_session`` slices.
+                if meta:
+                    await self._conn.session_update(
+                        session_id=state.session_id, update=update, **meta
+                    )
+                else:
+                    await self._conn.session_update(session_id=state.session_id, update=update)
                 return True
             except Exception:
                 logger.warning(
@@ -1053,14 +1064,16 @@ class HermesACPAgent(acp.Agent):
                 )
                 return False
 
-        for message in state.history:
+        for index, message in enumerate(state.history):
             role = str(message.get("role") or "")
 
             if role == "user":
                 text = self._history_message_text(message)
                 if text:
                     update = self._history_message_update(role=role, text=text)
-                    if update is not None and not await _send(update):
+                    if update is not None and not await _send(
+                        update, {"hermes": {"historyIndex": index}}
+                    ):
                         return
                 continue
 
@@ -1598,6 +1611,17 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        # Absolute index of this turn's user message in the post-turn history,
+        # in the same coordinate space ``fork_session`` slices and history
+        # replay stamps as ``_meta.hermes.historyIndex``. Returned to the client
+        # so a "fork from this message" affordance can pass it back verbatim as
+        # ``_meta.hermes.keepHistory`` without re-deriving it from replay. Read
+        # before draining queued prompts, since each drained follow-up rewrites
+        # ``_persist_user_message_idx`` for its own turn.
+        user_history_index = getattr(state.agent, "_persist_user_message_idx", None)
+        if not isinstance(user_history_index, int) or user_history_index < 0:
+            user_history_index = None
+
         if result.get("messages"):
             state.history = result["messages"]
             # Persist updated history so sessions survive process restarts.
@@ -1706,7 +1730,12 @@ class HermesACPAgent(acp.Agent):
         await self._send_usage_update(state)
 
         stop_reason = "cancelled" if cancelled else "end_turn"
-        return PromptResponse(stop_reason=stop_reason, usage=usage)
+        field_meta = (
+            {"hermes": {"userHistoryIndex": user_history_index}}
+            if user_history_index is not None
+            else None
+        )
+        return PromptResponse(stop_reason=stop_reason, usage=usage, field_meta=field_meta)
 
     # ---- Slash commands (headless) -------------------------------------------
 

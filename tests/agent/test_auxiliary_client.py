@@ -185,7 +185,6 @@ class TestBuildCallKwargsMaxTokens:
             ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
             ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
             ("custom", "gpt-5", "https://api.openai.com/v1"),
-            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
             ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
             ("custom", "qwen", "http://localhost:8080/v1"),
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
@@ -235,6 +234,25 @@ class TestBuildCallKwargsMaxTokens:
             base_url="https://integrate.api.nvidia.com/v1",
         )
         assert kwargs["max_tokens"] == 4096
+
+    @pytest.mark.parametrize(
+        "provider,base_url",
+        [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("custom", "https://openrouter.ai/api/v1"),
+        ],
+    )
+    def test_keeps_max_tokens_for_openrouter(self, provider, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 500
 
 
 class TestNousTagsScoping:

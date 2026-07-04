@@ -5781,6 +5781,10 @@ def _build_call_kwargs(
         # 200 with an empty choices[] payload when max_tokens is omitted. The main
         # NVIDIA chat path already sends an output cap via the provider profile;
         # preserve it on the auxiliary path too.
+        #
+        # OpenRouter is a third exception: omitting max_tokens lets OpenRouter
+        # apply its own high model cap, which can turn tiny auxiliary calls like
+        # title generation into confusing credit-limit failures.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
@@ -5789,9 +5793,14 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
+        _is_openrouter = (
+            _provider_norm == "openrouter"
+            or base_url_host_matches(_effective_base, "openrouter.ai")
+        )
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
+            or _is_openrouter
         ):
             kwargs["max_tokens"] = max_tokens
 

@@ -7411,9 +7411,12 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     try:
         from agent.secret_scope import get_secret as _get_secret
 
-        return _get_secret(key)
+        val = _get_secret(key)
+        if val:
+            return val
     except Exception:
-        return os.environ.get(key)
+        pass
+    return os.environ.get(key)
 
 
 # =============================================================================

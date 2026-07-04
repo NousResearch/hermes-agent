@@ -105,6 +105,33 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
 
+    def test_sync_ignore_patterns_parse_from_root_config(self, tmp_path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-api-key-12345",
+            "syncIgnorePatterns": ["CUSTOM-PROBE", "  ", 123],
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.sync_ignore_patterns == ["CUSTOM-PROBE"]
+
+    def test_sync_ignore_patterns_host_overrides_root_config(self, tmp_path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-api-key-12345",
+            "syncIgnorePatterns": ["ROOT-PROBE"],
+            "hosts": {
+                "hermes": {
+                    "syncIgnorePatterns": ["HOST-PROBE"],
+                },
+            },
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.sync_ignore_patterns == ["HOST-PROBE"]
+
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
 def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):

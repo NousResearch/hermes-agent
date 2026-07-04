@@ -369,8 +369,24 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+    try:
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        # Oneshot bypasses cli.py's normal _run_cleanup() path.  External
+        # memory providers such as Honcho can leave background sync/session
+        # threads alive after a successful response; under WSL that has been
+        # observed to abort during interpreter teardown (SIGABRT/exit 134).
+        # Mirror the normal CLI session-boundary shutdown here so providers get
+        # on_session_end() + shutdown_all() before run_oneshot returns.
+        try:
+            messages = getattr(agent, "_session_messages", None)
+            if isinstance(messages, list):
+                agent.shutdown_memory_provider(messages)
+            else:
+                agent.shutdown_memory_provider()
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

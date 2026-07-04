@@ -1211,11 +1211,45 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
+    def _honcho_memory_active() -> bool:
+        try:
+            agent = getattr(cli, "agent", None) or _active_agent_ref
+            manager = getattr(agent, "_memory_manager", None)
+            providers = getattr(manager, "providers", []) if manager else []
+            if any(getattr(provider, "name", "") == "honcho" for provider in providers):
+                return True
+        except Exception:
+            pass
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            return str(cfg_get(load_config(), "memory", "provider", default="")).strip() == "honcho"
+        except Exception:
+            return False
+
+    force_exit_after_release = _honcho_memory_active()
     try:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
+        # In WSL, one-shot Hermes runs that exercise the Honcho SDK can abort
+        # during CPython interpreter teardown after the final answer has already
+        # been printed and all explicit cleanup has run (SIGABRT/exit 134, no
+        # Python frame).  Avoid Py_FinalizeEx for this one-shot/Honcho path by
+        # performing the same deliberate hard-exit pattern used by the cleanup
+        # watchdog, but only after the active-session lease is released.
+        if force_exit_after_release and not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                import logging as _lg
+                _lg.shutdown()
+            except Exception:
+                pass
+            for _stream in (sys.stdout, sys.stderr):
+                try:
+                    _stream.flush()
+                except Exception:
+                    pass
+            os._exit(0)
 
 
 def _reset_terminal_input_modes_on_exit() -> None:

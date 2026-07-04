@@ -11,6 +11,7 @@ from plugins.memory.honcho.session import (
     HonchoSessionManager,
 )
 from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho.client import HonchoClientConfig
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +517,7 @@ class TestConcludeToolDispatch:
         result = provider.handle_tool_call("honcho_conclude", {})
 
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one action must be provided: conclusion, delete_id, delete_text, delete_tag, or list_recent=true."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
@@ -532,7 +533,7 @@ class TestConcludeToolDispatch:
             {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
         )
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one action must be provided: conclusion, delete_id, delete_text, delete_tag, or list_recent=true."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
@@ -545,7 +546,7 @@ class TestConcludeToolDispatch:
         provider._manager = MagicMock()
         result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one action must be provided: conclusion, delete_id, delete_text, delete_tag, or list_recent=true."}
         provider._manager.create_conclusion.assert_not_called()
 
     def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
@@ -557,7 +558,7 @@ class TestConcludeToolDispatch:
         provider._manager = MagicMock()
         result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one action must be provided: conclusion, delete_id, delete_text, delete_tag, or list_recent=true."}
         provider._manager.delete_conclusion.assert_not_called()
 
     def test_sync_turn_strips_leaked_memory_context_before_honcho_ingest(self):
@@ -592,6 +593,48 @@ class TestConcludeToolDispatch:
 
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+
+    def test_sync_turn_skips_exact_response_smoke_test(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = HonchoClientConfig(message_max_chars=25000, sync_ignore_patterns=[])
+
+        provider.sync_turn("Reply exactly: OK", "OK")
+
+        provider._manager.get_or_create.assert_not_called()
+        assert provider._sync_thread is None
+
+    def test_sync_turn_skips_default_temporary_test_markers(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = HonchoClientConfig(message_max_chars=25000, sync_ignore_patterns=[])
+
+        provider.sync_turn(
+            "Default-profile Honcho SIGABRT fix verification",
+            "PASS HONCHO ACTIVE CLEAN EXIT",
+        )
+
+        provider._manager.get_or_create.assert_not_called()
+        assert provider._sync_thread is None
+
+    def test_sync_turn_honors_custom_sync_ignore_patterns(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = HonchoClientConfig(
+            message_max_chars=25000,
+            sync_ignore_patterns=[r"CUSTOM-PROBE-\d+"],
+        )
+
+        provider.sync_turn("run CUSTOM-PROBE-42", "done")
+
+        provider._manager.get_or_create.assert_not_called()
+        assert provider._sync_thread is None
 
 
 # ---------------------------------------------------------------------------

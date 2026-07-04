@@ -1102,6 +1102,83 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
 
+    def _conclusion_scope(self, session: HonchoSession, peer: str = "user"):
+        """Return the SDK conclusion scope matching create/delete semantics."""
+        target_peer_id = self._resolve_peer_id(session, peer)
+        if target_peer_id is None:
+            return None
+        if target_peer_id == session.assistant_peer_id:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(session.assistant_peer_id)
+        if self._ai_observe_others:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(target_peer_id)
+        target_peer = self._get_or_create_peer(target_peer_id)
+        return target_peer.conclusions_of(target_peer_id)
+
+    @staticmethod
+    def _format_conclusion_record(conclusion: Any) -> dict[str, Any]:
+        """Normalize SDK conclusion objects/dicts for tool output."""
+        if isinstance(conclusion, dict):
+            data = conclusion
+        else:
+            data = {}
+            for key in ("id", "content", "observer_id", "observed_id", "session_id", "level", "created_at"):
+                if hasattr(conclusion, key):
+                    value = getattr(conclusion, key)
+                    data[key] = str(value) if key == "created_at" and value is not None else value
+        return {
+            "id": data.get("id"),
+            "content": data.get("content", ""),
+            "observer_id": data.get("observer_id"),
+            "observed_id": data.get("observed_id"),
+            "session_id": data.get("session_id"),
+            "level": data.get("level"),
+            "created_at": data.get("created_at"),
+        }
+
+    def query_conclusions(
+        self,
+        session_key: str,
+        query: str,
+        peer: str = "user",
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Semantic-search conclusions and return IDs for safe deletion/correction."""
+        session = self._cache.get(session_key)
+        if not session or not query.strip():
+            return []
+        try:
+            scope = self._conclusion_scope(session, peer)
+            if scope is None:
+                return []
+            results = scope.query(query.strip(), top_k=max(1, min(int(top_k), 50)))
+            return [self._format_conclusion_record(item) for item in results]
+        except Exception as e:
+            logger.debug("Honcho query_conclusions failed: %s", e)
+            return []
+
+    def list_conclusions(
+        self,
+        session_key: str,
+        peer: str = "user",
+        size: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List recent conclusions with IDs for inspection and cleanup."""
+        session = self._cache.get(session_key)
+        if not session:
+            return []
+        try:
+            scope = self._conclusion_scope(session, peer)
+            if scope is None:
+                return []
+            page = scope.list(size=max(1, min(int(size), 100)))
+            items = getattr(page, "items", page)
+            return [self._format_conclusion_record(item) for item in items]
+        except Exception as e:
+            logger.debug("Honcho list_conclusions failed: %s", e)
+            return []
+
     def search_context(
         self,
         session_key: str,
@@ -1143,6 +1220,21 @@ class HonchoSessionManager:
             card = ctx["card"] or []
             if card:
                 parts.append("\n".join(f"- {f}" for f in card))
+
+            matches = self.query_conclusions(session_key, query, peer=peer, top_k=10)
+            if matches:
+                lines = ["## Matching conclusions (with IDs)"]
+                for item in matches:
+                    cid = item.get("id") or "unknown-id"
+                    content = (item.get("content") or "").strip()
+                    meta = []
+                    if item.get("level"):
+                        meta.append(f"level={item['level']}")
+                    if item.get("created_at"):
+                        meta.append(f"created_at={item['created_at']}")
+                    suffix = f" ({', '.join(meta)})" if meta else ""
+                    lines.append(f"- id={cid}{suffix}: {content}")
+                parts.append("\n".join(lines))
             return "\n\n".join(parts)
         except Exception as e:
             logger.debug("Honcho search_context failed: %s", e)

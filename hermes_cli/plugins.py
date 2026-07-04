@@ -171,6 +171,16 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Telegram inline-button callbacks that core does not claim itself.
+    # Fired from the Telegram adapter after built-in callback prefixes
+    # (approvals, clarify, ack, etc.) and before the legacy update_prompt
+    # fallback. Plugins may return:
+    #   {"handled": True, "answer_text": "...", "edit_text": "..."}
+    #   {"action": "handled" | "answer", ...}
+    #   {"action": "allow"} / None -> leave callback unhandled.
+    # Kwargs include callback_data, user_id/name, chat_id/type, thread_id,
+    # adapter, and raw_query. Adapter performs answer/edit awaits.
+    "telegram_callback_query",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

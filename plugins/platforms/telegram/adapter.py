@@ -5099,6 +5099,95 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_plugin_callback_query(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id: Any = None,
+        query_chat_type: Any = None,
+        query_thread_id: Any = None,
+        query_user_name: Any = None,
+    ) -> bool:
+        """Offer an unclaimed Telegram callback query to plugin hooks.
+
+        The plugin hook is synchronous (like the rest of hermes_cli.plugins),
+        so plugins return a small result dict and the adapter performs the
+        async Telegram answer/edit operations here.
+        """
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if not has_hook("telegram_callback_query"):
+                return False
+
+            caller = getattr(query, "from_user", None)
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            chat_id = query_chat_id if query_chat_id is not None else getattr(message, "chat_id", None)
+            chat_type = query_chat_type if query_chat_type is not None else getattr(chat, "type", None)
+            thread_id = query_thread_id if query_thread_id is not None else getattr(message, "message_thread_id", None)
+            user_name = (
+                query_user_name
+                or getattr(caller, "username", None)
+                or getattr(caller, "full_name", None)
+                or getattr(caller, "first_name", None)
+            )
+
+            results = invoke_hook(
+                "telegram_callback_query",
+                callback_data=data,
+                user_id=str(getattr(caller, "id", "") or ""),
+                user_name=str(user_name).strip() if user_name else None,
+                chat_id=str(chat_id) if chat_id is not None else None,
+                chat_type=str(chat_type) if chat_type is not None else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+                message_text=getattr(message, "text", None),
+                adapter=self,
+                raw_query=query,
+            )
+        except Exception as exc:
+            logger.warning("[%s] telegram_callback_query hook failed: %s", self.name, exc, exc_info=True)
+            return False
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "").strip().lower()
+            if action == "allow":
+                continue
+            handled = bool(result.get("handled")) or action in {"handled", "answer", "skip"}
+            if not handled:
+                continue
+
+            answer_text = result.get("answer_text")
+            if answer_text is not False:
+                if answer_text is None:
+                    answer_text = result.get("text") if action == "answer" else "✓"
+                try:
+                    await query.answer(
+                        text=str(answer_text)[:200],
+                        show_alert=bool(result.get("show_alert", False)),
+                    )
+                except Exception:
+                    logger.debug("[%s] plugin callback answer failed", self.name, exc_info=True)
+
+            edit_text = result.get("edit_text")
+            if isinstance(edit_text, str):
+                try:
+                    remove_keyboard = result.get("remove_keyboard", True)
+                    reply_markup = None
+                    if not remove_keyboard:
+                        reply_markup = getattr(getattr(query, "message", None), "reply_markup", None)
+                    await query.edit_message_text(
+                        text=edit_text,
+                        parse_mode=result.get("parse_mode"),
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    logger.debug("[%s] plugin callback edit failed", self.name, exc_info=True)
+            return True
+        return False
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5472,6 +5561,17 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as exc:
                 await query.answer(text="❌ Ack failed.")
                 logger.error("[%s] ack alert callback exception: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Plugin-owned callbacks (custom inline buttons) ---
+        if await self._handle_plugin_callback_query(
+            query,
+            data,
+            query_chat_id=query_chat_id,
+            query_chat_type=query_chat_type,
+            query_thread_id=query_thread_id,
+            query_user_name=query_user_name,
+        ):
             return
 
         # --- Update prompt callbacks ---

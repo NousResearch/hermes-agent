@@ -117,6 +117,71 @@ def test_gated_html_redirects_to_login(gated_app):
     assert r.headers["location"].startswith("/auth/login?provider=stub")
 
 
+class _PasswordOnlyProvider(StubAuthProvider):
+    """A password provider whose OAuth ``start_login`` raises, exactly like
+    the shipped ``BasicAuthProvider``.
+
+    ``supports_password = True`` marks it as a credential-form provider with
+    no redirect flow; ``start_login`` raising ``NotImplementedError`` models
+    the shipped basic provider (``plugins/dashboard_auth/basic``), so if
+    ``_auto_sso_response`` ever redirected here it would 500.
+    """
+
+    name = "pwonly"
+    display_name = "Password Only (test only)"
+    supports_password = True
+
+    def start_login(self, *, redirect_uri: str):
+        raise NotImplementedError(
+            "password-only provider has no OAuth redirect flow"
+        )
+
+
+def test_single_password_provider_does_not_auto_sso_and_500s():
+    """Regression: a lone password provider must fall through to ``/login``.
+
+    ``_auto_sso_response`` auto-redirects an unauthenticated first HTML load
+    to ``/auth/login?provider=<name>`` when exactly ONE session provider is
+    registered. For a password-only provider (``supports_password = True``,
+    e.g. the shipped ``BasicAuthProvider``) that route runs ``start_login``,
+    which raises ``NotImplementedError`` → HTTP 500 on the very first visit,
+    locking the operator out. The guard makes auto-SSO skip password
+    providers so the ``/login`` credential form renders instead.
+
+    Contrast with ``test_gated_html_redirects_to_login`` (single OAuth
+    provider → auto-SSO to ``/auth/login`` is correct). Set up bare state
+    here so only the password provider is registered.
+    """
+    clear_providers()
+    register_provider(_PasswordOnlyProvider())
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.auth_required = True
+    try:
+        client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+        r = client.get("/", follow_redirects=False)
+        # Must be a 302 to the credential form, NOT a 500 from start_login
+        # and NOT an auto-SSO bounce to /auth/login.
+        assert r.status_code == 302, (
+            f"first HTML load with a lone password provider returned "
+            f"{r.status_code} (auto-SSO tried /auth/login → start_login "
+            f"NotImplementedError → 500): {r.text[:200]}"
+        )
+        location = r.headers["location"]
+        assert "/auth/login" not in location, (
+            f"auto-SSO redirected a password provider to {location}; it must "
+            "fall through to the /login credential form instead"
+        )
+        assert location in ("/login", "/login?next=%2F"), (
+            f"expected a redirect to /login, got {location}"
+        )
+    finally:
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.auth_required = prev_required
+
+
 def test_gated_auth_providers_is_public(gated_app):
     r = gated_app.get("/api/auth/providers")
     assert r.status_code == 200

@@ -1500,6 +1500,22 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_code_line_with_trailing_fence_text_is_not_closing_fence(self):
+        adapter = self._adapter()
+        msg = (
+            "Before\n"
+            "```text\n"
+            "``` not a close\n"
+            + "inside line\n" * 80
+            + "```\n"
+            "After"
+        )
+        chunks = adapter.truncate_message(msg, max_length=180)
+        assert len(chunks) > 1
+        assert any(chunk.startswith("```text\n") for chunk in chunks[1:]), (
+            "continuation chunks should reopen the still-active text fence"
+        )
+
     def test_continuation_chunks_have_balanced_fences(self):
         """Regression: continuation chunks must close reopened code blocks."""
         adapter = self._adapter()

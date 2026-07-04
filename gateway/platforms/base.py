@@ -36,6 +36,17 @@ _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
+def _markdown_backtick_fence(line: str, *, in_code: bool) -> str | None:
+    """Return the opening info string or closing marker for a backtick fence."""
+    stripped = line.strip()
+    if not stripped.startswith("```"):
+        return None
+    tail = stripped[3:]
+    if in_code:
+        return "" if tail.strip() == "" else None
+    return tail.strip()
+
+
 def _platform_name(platform) -> str:
     """Normalize a Platform enum / raw string into a lowercase name."""
     value = getattr(platform, "value", platform)
@@ -5594,15 +5605,14 @@ class BasePlatformAdapter(ABC):
             in_code = carry_lang is not None
             lang = carry_lang or ""
             for line in chunk_body.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
+                fence = _markdown_backtick_fence(line, in_code=in_code)
+                if fence is not None:
                     if in_code:
                         in_code = False
                         lang = ""
                     else:
                         in_code = True
-                        tag = stripped[3:].strip()
-                        lang = tag.split()[0] if tag else ""
+                        lang = fence.split()[0] if fence else ""
 
             if in_code:
                 # Close the orphaned fence so the chunk is valid on its own

@@ -111,6 +111,50 @@ class KeryxStreamHub:
 hub = KeryxStreamHub()
 
 
+def drain_coalesced(
+    queue: "asyncio.Queue[Tuple[str, Optional[str]]]",
+    first: Tuple[str, Optional[str]],
+) -> Tuple[List[Tuple[str, Optional[str]]], bool]:
+    """Merge a burst of queued token deltas into as few frames as possible.
+
+    Takes the item already pulled from [queue] ([first]) plus everything currently queued
+    (non-blocking) and returns ``(frames, stop)``: an ordered list of ``(event, text)`` frames
+    ready to write, and whether a ``stop`` was seen (the caller then closes the channel).
+
+    Consecutive ``delta`` events are concatenated into a single ``delta`` frame; non-delta
+    boundaries (``segment``/``stop``) flush the accumulator and pass through in order. This is
+    byte-exact — delta concatenation is associative — and bounds the write rate to how fast the
+    consumer drains, so a brain generating faster than a remote client drains can't back the
+    per-subscriber queue up to _QUEUE_MAX and lose tokens to overflow. A dropped token would
+    break the client's stream/commit reconciliation (accumulated stream no longer byte-matches
+    the committed message), which is exactly what this coalescing prevents.
+    """
+    pending: List[Tuple[str, Optional[str]]] = [first]
+    while True:
+        try:
+            pending.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+
+    frames: List[Tuple[str, Optional[str]]] = []
+    buf: List[str] = []
+    stop = False
+    for event, text in pending:
+        if event == "delta":
+            buf.append(text or "")
+            continue
+        if buf:
+            frames.append(("delta", "".join(buf)))
+            buf = []
+        frames.append((event, text))
+        if event == "stop":
+            stop = True
+            break
+    if buf:
+        frames.append(("delta", "".join(buf)))
+    return frames, stop
+
+
 def _platform_of(adapter: Any) -> str:
     """Stable lowercase platform key for an adapter ("matrix", "telegram", …)."""
     try:
@@ -177,14 +221,19 @@ def make_stream_handler(check_auth):
         try:
             while True:
                 try:
-                    event, text = await asyncio.wait_for(sub.queue.get(), timeout=20.0)
+                    first = await asyncio.wait_for(sub.queue.get(), timeout=20.0)
                 except asyncio.TimeoutError:
                     # Keepalive: keeps NATs open and lets a dead client surface as a write error.
                     await resp.write(b"event: ping\ndata: {}\n\n")
                     continue
-                payload = json.dumps({"text": text} if text is not None else {})
-                await resp.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
-                if event == "stop":
+
+                # Coalesce whatever else is queued into as few frames as possible so a fast brain
+                # can't overflow the bounded queue and drop tokens (see drain_coalesced).
+                frames, stop = drain_coalesced(sub.queue, first)
+                for event, text in frames:
+                    payload = json.dumps({"text": text} if text is not None else {})
+                    await resp.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+                if stop:
                     break  # transient channel: one turn per subscription
         except (ConnectionResetError, asyncio.CancelledError):
             pass

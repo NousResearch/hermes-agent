@@ -104,6 +104,47 @@ def test_matrix_fallback_tier_when_no_subscriber(monkeypatch):
     asyncio.run(scenario())
 
 
+def _make_queue(items):
+    q = asyncio.Queue()
+    for it in items:
+        q.put_nowait(it)
+    return q
+
+
+def test_drain_coalesced_merges_burst_byte_exact():
+    """A burst of token deltas collapses to one frame whose text is the exact concatenation.
+
+    This is the fast-brain safety property: coalescing bounds the SSE write rate to the client's
+    drain rate (so the bounded queue can't overflow and drop tokens) while staying byte-identical
+    to the per-token stream — the client's stream/commit reconciliation depends on that.
+    """
+    tokens = [f"t{i}" for i in range(1000)]
+    q = _make_queue([("delta", t) for t in tokens] + [("stop", None)])
+    frames, stop = ks.drain_coalesced(q, q.get_nowait())
+    assert stop is True
+    assert [ev for ev, _ in frames] == ["delta", "stop"]
+    assert frames[0][1] == "".join(tokens)  # every token present, in order, once
+
+
+def test_drain_coalesced_preserves_segment_boundaries():
+    """Segment/stop boundaries flush the accumulator and pass through in wire order."""
+    q = _make_queue([
+        ("delta", "before"),
+        ("delta", " tool"),
+        ("segment", None),
+        ("delta", "after"),
+        ("stop", None),
+    ])
+    frames, stop = ks.drain_coalesced(q, q.get_nowait())
+    assert stop is True
+    assert frames == [
+        ("delta", "before tool"),
+        ("segment", None),
+        ("delta", "after"),
+        ("stop", None),
+    ]
+
+
 def test_overflow_drops_without_blocking(monkeypatch):
     """A stalled subscriber whose queue is full drops events instead of blocking the publisher."""
     async def scenario():

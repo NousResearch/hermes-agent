@@ -5979,6 +5979,19 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
 
+  // Wayland-in-VM (e.g. GNOME-on-Wayland in a Proxmox/KVM guest accessed via
+  // VNC, with no DRM render node and no xdg-desktop-portal) can finish loading
+  // the renderer but never deliver the first-paint signal that backs
+  // ready-to-show, so the window — created with show:false — stays hidden
+  // forever. Force show after 4s if ready-to-show hasn't fired yet; the
+  // renderer keeps streaming frames once a surface is mapped, so a
+  // slightly-empty first paint is fine.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      try { mainWindow.show() } catch { /* destroyed mid-call */ }
+    }
+  }, 4000)
+
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))

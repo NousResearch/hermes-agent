@@ -1468,6 +1468,18 @@ def _dispatch_tick_lock(db_path: Path):
                 acquired = True
             except (BlockingIOError, OSError):
                 acquired = False
+        # Liveness heartbeat: refresh mtime while we hold the lock so external
+        # watchdogs can distinguish a healthy dispatcher (mtime advancing on
+        # every tick) from a stuck one (mtime frozen). The lock is opened with
+        # "a+b" and never written to, so without this utime the mtime would
+        # only advance on first creation — causing every long-lived dispatcher
+        # to look "stale" to a naive mtime-based watchdog. Best-effort: a
+        # utime failure (e.g. read-only filesystem) must not degrade dispatch.
+        if acquired:
+            try:
+                os.utime(lock_path, None)
+            except OSError:
+                pass
     except OSError:
         # Could not even open the lock file (permissions, read-only FS).
         # Degrade to a no-op so a probe failure never blocks dispatch.

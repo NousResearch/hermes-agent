@@ -289,7 +289,10 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     ):
         if _shutil.which(cmd[0]):
             try:
-                _subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+                _subprocess.run(
+                    cmd, check=True, capture_output=True, timeout=30,
+                    stdin=_subprocess.DEVNULL,
+                )
                 if out_path.exists() and out_path.stat().st_size > 0:
                     return True
             except Exception:

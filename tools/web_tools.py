@@ -676,7 +676,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "success": False,
                 "error": (
                     "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
+                    "Run `hermes tools` to set one up, or install the free "
+                    "ddgs backend: pip install ddgs (no API key required)."
                 ),
             }
         else:
@@ -845,7 +846,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, or parallel. Run `hermes tools` to configure."
                             ),
                         },
                         ensure_ascii=False,
@@ -925,7 +926,11 @@ async def web_extract_tool(
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:
-            result_json = tool_error("Content was inaccessible or not found")
+            result_json = tool_error(
+                "No content could be extracted from the provided URLs. "
+                "Try: 1) Check cache/web/ for cached content. "
+                "2) Use browser_navigate for direct page access."
+            )
         else:
             result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
 

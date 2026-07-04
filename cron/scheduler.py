@@ -1410,6 +1410,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
+        # Diagnostic: dump adapters dict keys to debug yuanbao delivery failure
+        if platform == Platform.YUANBAO:
+            _adapter_keys = [(str(k), type(k).__name__) for k in (adapters or {}).keys()]
+            logger.warning(
+                "Job '%s': adapters dict keys: %s, platform=%s(%s)",
+                job["id"], _adapter_keys, platform, type(platform).__name__,
+            )
         delivered = False
         target_errors = []
 
@@ -1758,57 +1765,133 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
-            try:
-                result = asyncio.run(coro)
-            except RuntimeError:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
-                coro.close()
-                # The thread-pool fallback can itself raise (SMTP ConnectionError,
-                # future.result timeout, etc.). An exception raised inside this
-                # `except RuntimeError` block is NOT caught by the sibling
-                # `except Exception` below — it would escape _deliver_result()
-                # and crash the whole delivery loop, silently skipping every
-                # remaining target (#47163). Wrap the fallback in its own
-                # try/except so a per-target failure is logged and the loop
-                # continues to the next target.
-                try:
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            # Standalone path: run the async send in a fresh event loop.
+            # Issue #58184: Yuanbao WS disconnects are transient — retry with
+            # increasing delays (3s / 5s / 8s) and fall back to the class-level
+            # singleton when runtime_adapter is None.
+            if platform == Platform.YUANBAO:
+                import time as _time
+                from gateway.platforms.yuanbao import YuanbaoAdapter
+
+                _retry_delays = [3.0, 5.0, 8.0]
+                for retry_idx, delay in enumerate(_retry_delays + [0.0]):
+                    # Wire the live adapter into the singleton for Yuanbao.
+                    # Prefer runtime_adapter; fall back to the class singleton.
+                    _prev_adapter = YuanbaoAdapter.get_active()
+                    if runtime_adapter is not None:
+                        YuanbaoAdapter.set_active(runtime_adapter)
+                        logger.warning(
+                            "Job '%s': injected runtime_adapter into singleton (loop=%s)",
+                            job["id"],
+                            "present" if loop is not None else "None",
+                        )
+                    elif _prev_adapter is not None:
+                        logger.warning(
+                            "Job '%s': runtime_adapter=None but singleton is alive (loop=%s)",
+                            job["id"],
+                            "present" if loop is not None else "None",
+                        )
+                    else:
+                        logger.warning(
+                            "Job '%s': no yuanbao adapter available "
+                            "(runtime_adapter=None, singleton=None, loop=%s)",
+                            job["id"],
+                            "present" if loop is not None else "None",
+                        )
+
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                        result = future.result(timeout=30)
+                        coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+                        result = asyncio.run(coro)
+                    except RuntimeError:
+                        coro.close()
+                        try:
+                            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                            try:
+                                future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                                result = future.result(timeout=30)
+                            finally:
+                                pool.shutdown(wait=False)
+                        except Exception as e:
+                            msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                            logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                            target_errors.extend([msg])
+                            delivery_errors.extend(target_errors)
+                            YuanbaoAdapter.set_active(_prev_adapter)
+                            continue
+                    except Exception as e:
+                        msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                        logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                        target_errors.extend([msg])
+                        delivery_errors.extend(target_errors)
+                        YuanbaoAdapter.set_active(_prev_adapter)
+                        continue
                     finally:
-                        pool.shutdown(wait=False)
+                        YuanbaoAdapter.set_active(_prev_adapter)
+
+                    if result and isinstance(result, dict) and result.get("error"):
+                        err_text = result["error"]
+                        is_retryable = (
+                            ("not running" in err_text or "adapter" in err_text.lower())
+                            and retry_idx < len(_retry_delays)
+                        )
+                        if is_retryable:
+                            logger.warning(
+                                "Job '%s': Yuanbao adapter unavailable (attempt %d/%d), retrying in %.1fs",
+                                job["id"], retry_idx + 1, len(_retry_delays) + 1, delay,
+                            )
+                            _time.sleep(delay)
+                            continue
+
+                        msg = f"delivery error: {err_text}"
+                        logger.error("Job '%s': %s", job["id"], msg)
+                        target_errors.extend([msg])
+                        delivery_errors.extend(target_errors)
+                        continue
+
+                    logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+                    _maybe_mirror_cron_delivery(
+                        job, platform_name, chat_id, mirror_text,
+                        thread_id=thread_id, user_id=origin_user_id,
+                        enabled=mirror_this_target and not thread_seeded,
+                    )
+                    break  # exit retry loop on success
+            else:
+                # Non-Yuanbao: single-attempt standalone send (original path).
+                coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+                try:
+                    result = asyncio.run(coro)
+                except RuntimeError:
+                    coro.close()
+                    try:
+                        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                        try:
+                            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                            result = future.result(timeout=30)
+                        finally:
+                            pool.shutdown(wait=False)
+                    except Exception as e:
+                        msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                        logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                        target_errors.extend([msg])
+                        delivery_errors.extend(target_errors)
                 except Exception as e:
                     msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                     logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                     target_errors.extend([msg])
                     delivery_errors.extend(target_errors)
-                    continue
-            except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
-                target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
-                continue
-
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
-                logger.error("Job '%s': %s", job["id"], msg)
-                target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
-                continue
-
-            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
-            _maybe_mirror_cron_delivery(
-                job, platform_name, chat_id, mirror_text,
-                thread_id=thread_id, user_id=origin_user_id,
-                enabled=mirror_this_target and not thread_seeded,
-            )
+                else:
+                    if result and isinstance(result, dict) and result.get("error"):
+                        msg = f"delivery error: {result['error']}"
+                        logger.error("Job '%s': %s", job["id"], msg)
+                        target_errors.extend([msg])
+                        delivery_errors.extend(target_errors)
+                    else:
+                        logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+                        _maybe_mirror_cron_delivery(
+                            job, platform_name, chat_id, mirror_text,
+                            thread_id=thread_id, user_id=origin_user_id,
+                            enabled=mirror_this_target and not thread_seeded,
+                        )
 
     if delivery_errors:
         return "; ".join(delivery_errors)

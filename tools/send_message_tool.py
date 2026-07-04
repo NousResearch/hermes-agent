@@ -1767,17 +1767,31 @@ async def _send_yuanbao(chat_id, message, media_files=None):
     except ImportError:
         return _error("Yuanbao adapter module not available.")
 
-    adapter = get_active_adapter()
-    if adapter is None:
-        return _error(
-            "Yuanbao adapter is not running. "
-            "Start the gateway with yuanbao platform enabled first."
-        )
+    # Retry when adapter is unavailable — WS can be reconnecting briefly.
+    # Issue #58184: Yuanbao WS disconnects are transient (~few seconds);
+    # a short retry loop avoids false "not running" failures.
+    import asyncio as _asyncio
 
-    try:
-        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
-    except Exception as e:
-        return _error(f"Yuanbao send failed: {e}")
+    logger.warning("_send_yuanbao: RETRY PATCH IS ACTIVE (Issue #58184)")
+
+    max_retries = 3
+    retry_delay = 2.0
+    for attempt in range(max_retries):
+        adapter = get_active_adapter()
+        if adapter is not None:
+            try:
+                result = await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
+                logger.warning("_send_yuanbao: send_direct returned: %s", str(result)[:200])
+                return result
+            except Exception as e:
+                return _error(f"Yuanbao send failed: {e}")
+        if attempt < max_retries - 1:
+            await _asyncio.sleep(retry_delay)
+
+    return _error(
+        "Yuanbao adapter is not running after retries. "
+        "Start the gateway with yuanbao platform enabled first."
+    )
 
 
 # --- Registry ---

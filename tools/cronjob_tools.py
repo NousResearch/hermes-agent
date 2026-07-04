@@ -840,7 +840,7 @@ def cronjob(
                 result["execution_skipped"] = (
                     "Already being fired by the scheduler; not run again."
                 )
-            elif exec_result.get("error"):
+            elif isinstance(exec_result, dict) and exec_result.get("error"):
                 result["execution_error"] = exec_result["error"]
             return json.dumps({"success": True, "job": result}, indent=2)
 

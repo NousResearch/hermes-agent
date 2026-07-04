@@ -3868,6 +3868,12 @@ class ConnectionManager:
                     "[%s] Reconnected on attempt %d. connectId=%s",
                     adapter.name, attempt + 1, self._connect_id,
                 )
+                # Restore the class-level singleton after reconnect.
+                # The initial connect() sets it, disconnect() clears it,
+                # but _do_reconnect() never restored it — leaving cron
+                # delivery unable to find the live adapter after any
+                # WS disconnect/reconnect cycle. (#58363)
+                YuanbaoAdapter.set_active(adapter)
                 return True
 
             except asyncio.TimeoutError:

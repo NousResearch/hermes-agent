@@ -396,3 +396,134 @@ class TestHardenImportPath:
             sys.path[:] = original
             if original_env is not None:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+
+class TestDualVenvDrift:
+    """Detect when both ``venv/`` and ``.venv/`` carry an independent
+    ``pyvenv.cfg`` — the precursor to a stale-version daemon failure
+    (plans/001-dual-venv-pyvenv-config-drift.md)."""
+
+    def _reset_warned(self, hb):
+        """Allow tests to re-trigger the warning after each scenario."""
+        hb._dual_venv_warned = False
+
+    def test_dual_venv_drift_warns(self, monkeypatch, caplog):
+        """When the detector sees two materialized venvs, warn_dual_venv_drift
+        must emit a WARNING that names both offending directories."""
+        hb = _fresh_import()
+        self._reset_warned(hb)
+        # Pretend the detector finds both venvs at the parent of sys.prefix.
+        monkeypatch.setattr(hb, "detect_dual_venv_drift", lambda: True)
+        parent = os.path.dirname(sys.prefix)
+        monkeypatch.setattr(
+            hb,
+            "_has_pyvenv_cfg",
+            lambda d: d in (os.path.join(parent, "venv"), os.path.join(parent, ".venv")),
+        )
+
+        with caplog.at_level("WARNING", logger="hermes_bootstrap"):
+            fired = hb.warn_dual_venv_drift()
+
+        assert fired is True
+        # At least one warning mentions the parent and the dual-venv hazard.
+        joined = "\n".join(caplog.messages)
+        assert "dual venv detected" in joined
+        assert parent in joined
+        assert caplog.records and any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_dual_venv_warning_is_idempotent(self, monkeypatch, caplog):
+        """Calling warn_dual_venv_drift twice must emit the warning at most
+        once per process. The module-level _dual_venv_warned flag guards
+        against log spam on entry points that import hermes_bootstrap
+        transitively from multiple submodules."""
+        hb = _fresh_import()
+        self._reset_warned(hb)
+        monkeypatch.setattr(hb, "detect_dual_venv_drift", lambda: True)
+        parent = os.path.dirname(sys.prefix)
+        monkeypatch.setattr(
+            hb,
+            "_has_pyvenv_cfg",
+            lambda d: d in (os.path.join(parent, "venv"), os.path.join(parent, ".venv")),
+        )
+
+        with caplog.at_level("WARNING", logger="hermes_bootstrap"):
+            first = hb.warn_dual_venv_drift()
+            second = hb.warn_dual_venv_drift()
+
+        assert first is True
+        assert second is False, "second call must short-circuit on the warned flag"
+        warn_lines = [r for r in caplog.records if "dual venv detected" in r.message]
+        assert len(warn_lines) == 1, (
+            f"expected exactly one warning, got {len(warn_lines)}: "
+            f"{[r.message for r in caplog.records]}"
+        )
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows directory junctions are the target shape for this fix",
+    )
+    def test_junction_detection_windows(self, tmp_path, monkeypatch):
+        """Create ``venv`` as a directory junction pointing at ``.venv`` on
+        Windows. ``_has_pyvenv_cfg`` must report False for the junction (no
+        materialized pyvenv.cfg of its own) — so ``detect_dual_venv_drift``
+        returns False and ``warn_dual_venv_drift`` stays silent."""
+        dot = tmp_path / ".venv"
+        bare = tmp_path / "venv"
+        dot.mkdir()
+        (dot / "pyvenv.cfg").write_text("home = X\nversion_info = 3.11.15\n")
+        # mklink /J creates a directory junction: bare\\ resolves into dot\\.
+        # pathlib.Path.is_junction only exists on Python 3.12+, so detect
+        # the junction via the cmd-level "dir" output that calls it <JUNCTION>.
+        subprocess.check_call(["cmd", "/c", "mklink", "/J", str(bare), str(dot)])
+        # Sanity check: the junction exists and the underlying os module
+        # treats it as a directory (which it is, semantically).
+        assert bare.exists()
+        assert bare.is_dir()
+        dir_output = subprocess.check_output(
+            ["cmd", "/c", "dir", str(tmp_path)], text=True, errors="replace"
+        )
+        assert "<JUNCTION>" in dir_output, (
+            f"expected <JUNCTION> in dir output, got:\n{dir_output}"
+        )
+
+        # Pretend we're running inside the junctioned venv.
+        monkeypatch.setattr(sys, "prefix", str(bare))
+
+        hb = _fresh_import()
+        self._reset_warned(hb)
+        assert hb.detect_dual_venv_drift() is False, (
+            "junction form must NOT register as drift — only materialized "
+            "pyvenv.cfg files do"
+        )
+        assert hb.warn_dual_venv_drift() is False
+
+    def test_single_venv_is_silent(self, monkeypatch, caplog):
+        """When only ``.venv/`` exists (the canonical layout), the detector
+        must return False and the warning must not fire."""
+        hb = _fresh_import()
+        self._reset_warned(hb)
+        monkeypatch.setattr(hb, "detect_dual_venv_drift", lambda: False)
+
+        with caplog.at_level("WARNING", logger="hermes_bootstrap"):
+            fired = hb.warn_dual_venv_drift()
+
+        assert fired is False
+        assert not any("dual venv detected" in m for m in caplog.messages)
+
+    def test_allow_dual_venv_env_opt_out(self, monkeypatch):
+        """HERMES_ALLOW_DUAL_VENV=1 must suppress drift detection for users
+        who keep two venvs in sync by hand. Matches the STOP-condition
+        backstop in plans/001-dual-venv-pyvenv-config-drift.md."""
+        hb = _fresh_import()
+        self._reset_warned(hb)
+        monkeypatch.setenv("HERMES_ALLOW_DUAL_VENV", "1")
+        # Even with two materialized pyvenv.cfg files present, the detector
+        # must short-circuit to False under the opt-out.
+        parent = os.path.dirname(sys.prefix)
+        monkeypatch.setattr(
+            hb,
+            "_has_pyvenv_cfg",
+            lambda d: d in (os.path.join(parent, "venv"), os.path.join(parent, ".venv")),
+        )
+        assert hb.detect_dual_venv_drift() is False
+        assert hb.warn_dual_venv_drift() is False

@@ -1,0 +1,548 @@
+# Hermes static-message catalog -- Czech
+# Source: locales/en.yaml. Keep keys and placeholders in sync.
+
+approval:
+  dangerous_header: '⚠️ DANGEROUS COMMAND: {description}'
+  choose_long: '[o]jednou |  [s]session |  [a]vždy |  [d]eny'
+  choose_short: '[o]jednou |  [s]session |  [d]eny'
+  prompt_long: 'Volba [o/s/a/D]:'
+  prompt_short: 'Volba [o/s/D]:'
+  timeout: ⏱ Timeout - odmítnutí příkazu
+  allowed_once: ✓ Povoleno jednou
+  allowed_session: ✓ Povoleno pro tuto relaci
+  allowed_always: ✓ Přidáno do trvalého seznamu povolených
+  denied: ✗ Zamítnuto
+  cancelled: ✗ Zrušeno
+  blocklist_message: Tento příkaz je na bezpodmínečném seznamu blokovaných a nelze jej schválit.
+gateway:
+  approval_expired: ⚠️ Platnost schválení vypršela (agent již nečeká). Požádejte zástupce, aby to zkusil znovu.
+  draining: ⏳ Vypouštění aktivních látek {count} před restartem...
+  goal_cleared: ✓ Cíl vymazán.
+  no_active_goal: Žádný aktivní cíl.
+  config_read_failed: '⚠️ Nelze přečíst config.yaml: {error}'
+  config_save_failed: '⚠️ Nelze uložit konfiguraci: {error}'
+  model:
+    error_prefix: 'Chyba: {error}'
+    switched: Model přešel na `{model}`
+    provider_label: 'Poskytovatel: {provider}'
+    context_label: 'Kontext: Tokeny {tokens}'
+    max_output_label: 'Maximální výstup: {tokens} tokeny'
+    cost_label: 'Cena: {cost}'
+    capabilities_label: 'Schopnosti: {capabilities}'
+    prompt_caching_enabled: 'Ukládání výzvy do mezipaměti: povoleno'
+    warning_prefix: 'Upozornění: {warning}'
+    saved_global: Uloženo do config.yaml (`--global`)
+    session_only_hint: _(pouze relace – pro zachování přidejte `--global`)_
+    current_label: 'Aktuální: `{model}` na {provider}'
+    current_tag: (aktuální)
+    more_models_suffix: (+{count} další)
+    usage_switch_model: '`/model <name>` — model spínače'
+    usage_switch_provider: '`/model <name> --provider <slug>` — přepnout poskytovatele'
+    usage_persist: '`/model <name> --global` — trvat'
+  agents:
+    header: 🤖 **Aktivní agenti a úkoly**
+    active_agents: '**Aktivní agenti:** {count}'
+    this_chat: · tento chat
+    more: '... a další {count}'
+    running_processes: '**Spuštěné procesy na pozadí:** {count}'
+    async_jobs: '**Asynchronní úlohy brány:** {count}'
+    none: Žádní aktivní agenti ani spuštěné úlohy.
+    state_starting: spouštění
+    state_running: běžící
+  approve:
+    no_pending: Žádný čekající příkaz ke schválení.
+    once_singular: ✅ Příkaz schválen. The agent is resuming...
+    once_plural: ✅ Příkazy schváleny (příkazy {count}). Agent pokračuje...
+    session_singular: ✅ Příkaz schválen (vzor schválen pro tuto relaci). Agent pokračuje...
+    session_plural: ✅ Příkazy schváleny (vzor schválen pro tuto relaci) (příkazy {count}). Agent pokračuje...
+    always_singular: ✅ Příkaz schválen (vzor schválen trvale). Agent pokračuje...
+    always_plural: ✅ Příkazy schváleny (vzor schválen trvale) (příkazy {count}). Agent pokračuje...
+  background:
+    usage: 'Použití: /pozadí <prompt>
+
+      Příklad: /background Shrňte dnešní nejlepší články HN
+
+
+      Spustí výzvu v samostatné relaci. Můžete pokračovat v chatování – po dokončení se zde zobrazí výsledek.'
+    started: '🔄 Úloha na pozadí spuštěna: "{preview}"
+
+      Task ID: {task_id}
+
+      Můžete pokračovat v chatování – výsledky se zobrazí po dokončení.'
+  branch:
+    db_unavailable: Databáze relací není k dispozici.
+    no_conversation: Žádná konverzace na větev – nejprve pošlete zprávu.
+    create_failed: 'Nepodařilo se vytvořit větev: {error}'
+    switch_failed: Větev byla vytvořena, ale nepodařilo se na ni přepnout.
+    branched_one: '⑂ Rozvětvený na **{title}** (zpráva {count} zkopírována)
+
+      Original: `{parent}`
+
+      Branch: `{new}`
+
+      Pomocí `/resume` přepněte zpět na originál.'
+    branched_many: '⑂ Rozvětvený na **{title}** (zprávy {count} zkopírovány)
+
+      Originál: `{parent}`
+
+      Větev: `{new}`
+
+      Pomocí `/resume` přepněte zpět na originál.'
+  commands:
+    usage: 'Usage: `/commands [page]`'
+    skill_header: '⚡ **Příkazy dovedností**:'
+    default_desc: Dovednostní příkaz
+    none: No commands available.
+    header: 📚 **Příkazy** (celkem {total}, stránka {page}/{total_pages})
+    nav_prev: '`/commands {page}` ← předchozí'
+    nav_next: další → `/commands {page}`
+    out_of_range: _(Požadovaná stránka {requested} byla mimo rozsah, zobrazuje se stránka {page}.)_
+  compress:
+    not_enough: Nedostatek konverzace ke komprimaci (potřebujete alespoň 4 zprávy).
+    no_provider: Není nakonfigurován žádný poskytovatel – nelze komprimovat.
+    nothing_to_do: Zatím není co komprimovat (přepis je stále chráněný kontext).
+    focus_line: 'Focus: "{topic}"'
+    summary_failed: ⚠️ Generování souhrnu se nezdařilo ({error}). Historické zprávy {count} byly odstraněny a nahrazeny zástupným
+      symbolem; dřívější kontext již nelze obnovit. Zvažte kontrolu konfigurace modelu auxiliary.compression.
+    aborted: ⚠️ Komprese přerušena ({error}). Žádné zprávy nebyly zahozeny – konverzace se nezměnila. Spusťte /compress pro
+      opakování, /reset pro čistou relaci nebo zkontrolujte konfiguraci modelu auxiliary.compression.
+    aux_failed: ℹ️ Konfigurovaný kompresní model `{model}` se nezdařil ({error}). Obnoveno pomocí vašeho hlavního modelu –
+      kontext je nedotčený – ale možná budete chtít zkontrolovat `auxiliary.compression.model` v config.yaml.
+    failed: 'Komprese se nezdařila: {error}'
+    aggressive_unsupported: "--aggressive není podporováno; použijte '/compress here [N]' pro zachování pouze nedávných výměn, nebo /undo pro odstranění turn."
+  debug:
+    upload_failed: '✗ Nepodařilo se nahrát zprávu o ladění: {error}'
+    header: '**Hlášení ladění nahráno:**'
+    auto_delete: ⏱ Vložené položky se automaticky odstraní za 6 hodin.
+    full_logs_hint: Pro nahrání celého protokolu použijte `hermes debug share` ze CLI.
+    share_hint: Sdílejte tyto odkazy s týmem Hermes pro podporu.
+  deny:
+    stale: ❌ Příkaz zamítnut (schválení bylo zastaralé).
+    no_pending: Žádný čekající příkaz k odmítnutí.
+    denied_singular: ❌ Příkaz zamítnut.
+    denied_plural: ❌ Příkazy odepřeny (příkazy {count}).
+  fast:
+    not_supported: ⚡ /fast je k dispozici pouze pro modely OpenAI, které podporují prioritní zpracování.
+    status: '⚡ Prioritní zpracování
+
+
+      Aktuální režim: `{mode}`
+
+
+      _Použití:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ Neznámý argument: `{arg}`
+
+
+      **Platné možnosti:** normální, rychlý, stav'
+    saved: '⚡ ✓ Prioritní zpracování: **{label}** (uloženo do konfigurace)
+
+      _(vstoupí v platnost v další zprávě)_'
+    session_only: '⚡ ✓ Prioritní zpracování: **{label}** (pouze tato relace)'
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: rychle
+    status_normal: normální
+  footer:
+    status: '📎 Zápatí za běhu: **{state}**
+
+      Pole: `{fields}`
+
+      Platforma: `{platform}`'
+    usage: 'Použití: `/footer [on|off|status]`'
+    saved: '📎 Zápatí běhu: **{state}**{example}
+
+      _(uloženo globálně — projeví se v další zprávě)_'
+    example_line: 'Příklad: `{preview}`'
+    state_on: 'ON'
+    state_off: 'OFF'
+  goal:
+    unavailable: Cíle nejsou v této relaci k dispozici.
+    no_goal_set: Není stanoven žádný cíl.
+    paused: '⏸ Cíl pozastaven: {goal}'
+    no_resume: Žádný cíl k obnovení.
+    resumed: '▶ Cíl obnoven: {goal}
+
+      Chcete-li pokračovat, pošlete libovolnou zprávu nebo počkejte – další krok udělám v příštím kroku.'
+    invalid: 'Neplatný cíl: {error}'
+    set: '⊙ Stanovený cíl (rozpočet {budget}-turn): {goal}
+
+      Budu pokračovat v práci, dokud nebude cíl splněn, dokud jej nepozastavíte/nevymažete nebo dokud nebude vyčerpán rozpočet.
+
+      Ovládání: /stav cíle · /pozastavení cíle · /obnovení cíle · /vymazání cíle'
+  help:
+    header: 📖 **Příkazy Hermes**
+    skill_header: '⚡ **Příkazy dovedností** ({count} aktivní):'
+    more_use_commands: '... a další {count}. Pro úplný stránkovaný seznam použijte `/commands`.'
+  insights:
+    invalid_days: 'Neplatná hodnota --days: {value}'
+    error: 'Chyba při generování přehledů: {error}'
+  kanban:
+    error_prefix: '⚠ Chyba kanbanu: {error}'
+    subscribed_suffix: (přihlášeno – budete upozorněni, když se {task_id} dokončí nebo zablokuje)
+    truncated_suffix: … (zkráceno; pro plný výstup použijte `hermes kanban …` ve svém terminálu)
+    no_output: (žádný výstup)
+    wake:
+      completed: dokončeno
+      gave_up: vzdali jsme (vyčerpány opakované pokusy)
+      crashed: havaroval (worker ukončen); dispatcher bude opakovat
+      timed_out: časový limit vypršel; dispatcher bude opakovat
+      blocked: zablokováno; potřebuje pozornost
+      status_default: stav změněn
+      status_joiner: ', '
+      message: '[kanban] Úkol {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nZkontrolujte výsledek nebo se rozhodněte co dál.'
+  personality:
+    none_configured: V `{path}/config.yaml` nejsou nakonfigurovány žádné osobnosti
+    header: 🎭 **Dostupné osobnosti**
+    none_option: • `none` — (žádné překrytí osobnosti)
+    item: • `{name}` — {preview}
+    usage: 'Použití: `/personality <name>`'
+    save_failed: '⚠️ Nepodařilo se uložit změnu osobnosti: {error}'
+    cleared: '🎭 Osobnost vymazána – pomocí chování základního agenta.
+
+      _(vstoupí v platnost v další zprávě)_'
+    set_to: '🎭 Osobnost nastavena na **{name}**
+
+      _(vstoupí v platnost v další zprávě)_'
+    unknown: 'Neznámá osobnost: `{name}`
+
+
+      Dostupné: {available}'
+  profile:
+    header: 👤 **Profil:** `{profile}`
+    home: 📂 **Domov:** `{home}`
+  reasoning:
+    level_default: střední (výchozí)
+    level_disabled: žádné (zakázáno)
+    scope_session: přepsání relace
+    scope_global: globální konfigurace
+    status: '🧠 **Nastavení uvažování**
+
+
+      **Úsilí:** `{level}`
+
+      **Rozsah:** {scope}
+
+      **Displej:** {display}
+
+
+      _Použití:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: na ✓
+    display_off: vypnuto
+    display_set_on: '🧠 ✓ Zobrazení důvodu: **ON**
+
+      Modelové myšlení se zobrazí před každou odpovědí na **{platform}**.'
+    display_set_off: '🧠 ✓ Zobrazení důvodu: **OFF** pro **{platform}**'
+    reset_global_unsupported: ⚠️ `/reasoning reset --global` není podporováno. Ke změně globálního výchozího nastavení použijte
+      `/reasoning <level> --global`.
+    reset_done: 🧠 ✓ Přepsání zdůvodnění relace bylo vymazáno; návrat ke globální konfiguraci.
+    unknown_arg: '⚠️ Neznámý argument: `{arg}`
+
+
+      **Platné úrovně:** žádné, minimální, nízké, střední, vysoké, xhigh
+
+      **Zobrazit:** ukázat, skrýt
+
+      **Přetrvávat:** přidejte `--global`, abyste ukládali po této relaci'
+    set_global: '🧠 ✓ Rozumné úsilí nastaveno na `{effort}` (uloženo do konfigurace)
+
+      _(vstoupí v platnost v další zprávě)_'
+    set_global_save_failed: '🧠 ✓ Rozumné úsilí nastaveno na `{effort}` (pouze relace – uložení konfigurace se nezdařilo)
+
+      _(vstoupí v platnost v další zprávě)_'
+    set_session: '🧠 ✓ Rozumové úsilí nastaveno na `{effort}` (pouze relace – přidejte `--global`, chcete-li přetrvat)
+
+      _(vstoupí v platnost v další zprávě)_'
+  reload_mcp:
+    cancelled: 🟡 /reload-mcp zrušeno. Nástroje MCP beze změny.
+    always_followup: 'ℹ️ Budoucí hovory `/reload-mcp` budou probíhat bez potvrzení. Znovu povolte přes `approvals.mcp_reload_confirm:
+      true` v config.yaml.'
+    confirm_prompt: '⚠️ **Potvrdit /reload-mcp**
+
+
+      Opětovné načtení serverů MCP znovu sestaví sadu nástrojů pro tuto relaci a **zruší platnost mezipaměti výzvy poskytovatele**
+      – další zpráva znovu odešle úplné vstupní tokeny.  U modelů s dlouhým kontextem nebo u modelů s vysokým uvažováním to
+      může být drahé.
+
+
+      Vyberte:
+
+      • **Schválit jednou** – načtěte znovu
+
+      • **Vždy schválit** – znovu načtěte a ztište tuto výzvu trvale
+
+      • **Storno** — ponechání nástrojů MCP beze změny
+
+
+      _Záložní text: odpovězte `/approve`, `/always` nebo `/cancel`._'
+    header: 🔄 ** Servery MCP znovu načteny**
+    reconnected: '♻️ Znovu připojeno: {names}'
+    added: '➕ Přidáno: {names}'
+    removed: '➖ Odebráno: {names}'
+    none_connected: Nejsou připojeny žádné servery MCP.
+    tools_available: 🔧 Nástroje {tools} dostupné na serverech {servers}
+    failed: '❌ Opětovné načtení MCP se nezdařilo: {error}'
+  reload_skills:
+    header: 🔄 **Schopnosti znovu načteny**
+    no_new: Nebyly zjištěny žádné nové dovednosti.
+    total: 📚 Dostupné dovednosti {count}
+    added_header: ➕ **Přidané dovednosti:**
+    removed_header: ➖ **Odstraněné dovednosti:**
+    item_with_desc: '- {name}: {desc}'
+    item_no_desc: '- {name}'
+    failed: '❌ Znovu načtení dovedností selhalo: {error}'
+  reset:
+    header_default: ✨ Resetování relace! Začínáme znovu.
+    header_new: ✨ Nová relace zahájena!
+    header_titled: '✨ Nová relace zahájena: {title}'
+    title_rejected: '⚠️ Titul zamítnut: {error}'
+    title_error_untitled: ⚠️ {error} — relace zahájena bez názvu.
+    title_empty_untitled: ⚠️ Název je po vyčištění prázdný – relace začala bez názvu.
+    tip: '✦ Tip: {tip}'
+  restart:
+    in_progress: ⏳ Restart brány již probíhá...
+    restarting: ♻ Restartování brány. Pokud nebudete upozorněni do 60 sekund, restartujte z konzole pomocí `hermes gateway
+      restart`.
+  resume:
+    db_unavailable: Databáze relací není k dispozici.
+    parse_error: '⚠️ Nelze analyzovat argumenty `/resume`: {error}.
+
+      Používejte uvozovky kolem nadpisů s mezerami, například: `/resume "Project A Plan"`.'
+    matrix_no_named_sessions: 'Pro tuto místnost Matrix nebyly nalezeny žádné pojmenované relace.
+
+      Použijte `/title My Session` k pojmenování aktuální relace místnosti, `/resume --all` k zobrazení všech maticových relací
+      nebo `/resume --cross-room <session name>` k explicitnímu překročení hranic místnosti.'
+    matrix_blocked_no_origin: '⚠️ Matrix/obnovení blokováno: tato pojmenovaná relace nemá žádný zaznamenaný původ místnosti,
+      takže ji Hermes ve výchozím nastavení neobnoví v aktuální místnosti. Pokud chcete záměrně překročit hranice místnosti,
+      použijte `/resume --cross-room {name}`.'
+    matrix_blocked_other_room: '⚠️ Matrix / pokračování blokováno: tato relace patří do jiné místnosti Matrix ({room}). Pokud
+      jej zde chcete úmyslně obnovit, použijte `/resume --cross-room {name}`.'
+    matrix_cross_room_success: '⚠️ Pokračování mezi místnostmi: obnoveno **{title}** v místnosti Matrix **{room}**.
+
+      Budoucí zprávy v této místnosti budou používat tento přepis do `/reset` nebo jiného `/resume`.{msg_part}'
+    blocked_not_owner: '⚠️ /resume blocked: ''**{name}**'' patří jinému uživateli nebo chatu. Relace můžete obnovit pouze
+      z tohoto chatu.'
+    no_named_sessions: 'Nebyly nalezeny žádné pojmenované relace.
+
+      Pomocí `/title My Session` pojmenujte svou aktuální relaci a poté pomocí `/resume My Session` se k ní vraťte později.'
+    list_header: 📋 **Pojmenované relace**
+    list_item: • **{title}**{preview_part}
+    list_item_numbered: '{index}. **{title}**{preview_part}'
+    list_preview_suffix: — _{preview}_
+    list_footer: 'Použití: `/resume <session name>`'
+    list_footer_numbered: 'Použití: `/resume <session name>` nebo `/resume <number>` (např. `/resume 1` pro nejnovější)'
+    list_failed: 'Nelze vypsat relace: {error}'
+    out_of_range: 'Index obnovení {index} je mimo rozsah.
+
+      Chcete-li zobrazit dostupné relace, použijte `/resume` bez argumentů.'
+    not_found: 'Nebyla nalezena žádná relace odpovídající ''**{name}**''.
+
+      Chcete-li zobrazit dostupné relace, použijte `/resume` bez argumentů.'
+    already_on: 📌 Již v relaci **{name}**.
+    switch_failed: Přepnutí relace se nezdařilo.
+    resumed_one: ↻ Obnovená relace **{title}** (zpráva {count}). Konverzace obnovena.
+    resumed_many: ↻ Obnovená relace **{title}** (zprávy {count}). Konverzace obnovena.
+    resumed_no_count: ↻ Obnovená relace **{title}**. Konverzace obnovena.
+  retry:
+    no_previous: Žádná předchozí zpráva k opakování.
+  rollback:
+    not_enabled: "Kontrolní body nejsou povoleny.\nPovolit v config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: Pro {cwd} nebyly nalezeny žádné kontrolní body
+    invalid_number: Neplatné číslo kontrolního bodu. Použijte 1-{max}.
+    restored: '✅ Obnoveno na kontrolní bod {hash}: {reason}
+
+      Automaticky byl uložen snímek před vrácením zpět.'
+    restore_failed: ❌ {error}
+  set_home:
+    save_failed: 'Nepodařilo se uložit domácí kanál: {error}'
+    success: '✅ Domácí kanál nastaven na **{name}** (ID: {chat_id}).
+
+      Zde budou doručovány úlohy cronu a zprávy napříč platformami.'
+  status:
+    header: 📊 **Stav Hermes Gateway**
+    matrix_scope_header: '**Rozsah matice:**'
+    matrix_scope_room: 'místnost: {room}'
+    matrix_scope_room_id: 'room_id: {room_id}'
+    matrix_scope_thread: 'ID_vlákna: {thread_id}'
+    matrix_scope_mode: 'rozsah_relace: {scope}'
+    matrix_scope_key: 'klíč_relace: {session_key}'
+    session_id: '**ID relace:** `{session_id}`'
+    title: '**Název:** {title}'
+    created: '**Vytvořeno:** {timestamp}'
+    last_activity: '**Poslední aktivita:** {timestamp}'
+    model: '**Model:** `{model}`'
+    model_provider: '**Model:** `{model}` ({provider})'
+    context: '**Kontext:** {used} / {total} ({pct} %)'
+    context_used: '**Kontext:** ~{used} tokeny'
+    tokens: '**Kumulativní tokeny API (zasílat znovu každé volání):** {tokens}'
+    agent_running: '**Agent běží:** {state}'
+    state_yes: Ano ⚡
+    state_no: Ne
+    queued: '**Navazující zprávy ve frontě:** {count}'
+    platforms: '**Připojené platformy:** {platforms}'
+  stop:
+    stopped_pending: ⚡ Zastaveno. Agent ještě nezačal — v této relaci můžete pokračovat.
+    stopped: ⚡ Zastaveno. V této relaci můžete pokračovat.
+    no_active: Žádný aktivní úkol k zastavení.
+  title:
+    db_unavailable: Databáze relací není k dispozici.
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ Název je po vyčištění prázdný. Použijte tisknutelné znaky.
+    set_to: '✏️ Sada titulků relace: **{title}**'
+    not_found: Relace nebyla nalezena v databázi.
+    current_with_title: '📌 Relace: `{session_id}`
+
+      Název: **{title}**'
+    current_no_title: '📌 Relace: `{session_id}`
+
+      Není nastaven žádný titul. Použití: `/title My Session Name`'
+  topic:
+    not_telegram_dm: Příkaz /topic je dostupný pouze v soukromých chatech Telegram.
+    no_session_db: Databáze relací není k dispozici.
+    unauthorized: Nemáte oprávnění používat /topic u tohoto robota.
+    restore_needs_topic: Chcete-li obnovit relaci, nejprve vytvořte nebo otevřete téma telegramu a poté do tohoto tématu odešlete
+      /topic <session-id>. Chcete-li vytvořit nové téma, otevřete Všechny zprávy a odešlete libovolnou zprávu tam.
+    topics_disabled: 'Témata telegramů pro tohoto robota zatím nejsou povolena.
+
+
+      Jak je povolit:
+
+      1. Otevřete @BotFather.
+
+      2. Vyberte si robota.
+
+      3. Otevřete Nastavení bota → Nastavení vláken.
+
+      4. Zapněte režim vláken a ujistěte se, že uživatelé mohou vytvářet nová vlákna.
+
+
+      Poté znovu odešlete /topic.'
+    topics_user_disallowed: 'Témata telegramů jsou povolena, ale uživatelé nemohou vytvářet témata.
+
+
+      Otevřete @BotFather → vyberte svého robota → Nastavení bota → Nastavení vláken a vypněte možnost „Zakázat uživatelům
+      vytvářet nová vlákna“.
+
+
+      Poté znovu odešlete /topic.'
+    enable_failed: 'Nepodařilo se povolit tématický režim telegramu: {error}'
+    bound_status: 'Toto téma souvisí s:
+
+      Relace: {label}
+
+      ID: {session_id}
+
+
+      Použijte /new k nahrazení tohoto tématu novou relací.
+
+      Pro paralelní práci otevřete Všechny zprávy a pošlete tam zprávu, abyste vytvořili další téma.'
+    thread_ready: 'Témata telegramů s více relacemi jsou povolena.
+
+
+      Toto téma bude použito jako nezávislá Hermes session. Použijte /new k nahrazení aktuální relace tohoto tématu. Pro paralelní
+      práci otevřete Všechny zprávy a pošlete tam zprávu, abyste vytvořili další téma.'
+    untitled_session: Relace bez názvu
+  undo:
+    nothing: Není co vrátit.
+    removed: '↩️ Zrušte otočení {turns} (zprávy {count}).
+
+      Zálohováno na: "{preview}"
+
+      Zkopírujte/upravte výše uvedený text a odešlete jej k opětovnému dotazu odtud.'
+    invalid_count: Neplatný počet "{arg}" — použijte /undo nebo /undo N.
+  update:
+    platform_not_messaging: ✗ /update je k dispozici pouze z platforem pro zasílání zpráv. Spusťte `hermes update` z terminálu.
+    not_git_repo: ✗ Nejedná se o úložiště git – nelze aktualizovat.
+    hermes_cmd_not_found: ✗ Nelze najít příkaz `hermes`. Hermes je spuštěn, ale příkaz update nemohl najít spustitelný soubor
+      na PATH nebo přes aktuální interpret Pythonu. Zkuste `hermes update` spustit ručně ve svém terminálu.
+    start_failed: '✗ Nepodařilo se spustit aktualizaci: {error}'
+    starting: ⚕ Spouštění aktualizace Hermes... Zde budu streamovat pokrok.
+  usage:
+    rate_limits: ⏱️ **Limity sazby:** {state}
+    header_session: 📊 **Použití tokenu relace**
+    label_model: 'Model: `{model}`'
+    label_input_tokens: 'Vstupní tokeny: {count}'
+    label_cache_read: 'Mezipaměť čtení tokenů: {count}'
+    label_cache_write: 'Tokeny zápisu do mezipaměti: {count}'
+    label_output_tokens: 'Výstupní tokeny: {count}'
+    label_total: 'Celkem: {count}'
+    label_api_calls: 'Volání API: {count}'
+    label_cost: 'Cena: {prefix}${amount}'
+    label_cost_included: 'Cena: v ceně'
+    label_context: 'Kontext: {used} / {total} ({pct} %)'
+    label_compressions: 'Komprese: {count}'
+    breakdown_header: 🧩 **Rozdělení podle kontextu** _(odhad)_
+    breakdown_line: '• {label}: ~{count} ({pct} %)'
+    breakdown_cat_system_prompt: Systémová výzva
+    breakdown_cat_tool_definitions: Definice nástrojů
+    breakdown_cat_rules: Pravidla
+    breakdown_cat_skills: Dovednosti
+    breakdown_cat_mcp: MCP
+    breakdown_cat_subagent_definitions: Definice subagentů
+    breakdown_cat_memory: Paměť
+    breakdown_cat_conversation: Konverzace
+    header_session_info: 📊 **Informace o relaci**
+    label_messages: 'Zprávy: {count}'
+    label_estimated_context: 'Odhadovaný kontext: ~{count} tokeny'
+    detailed_after_first: _(Podrobné použití je k dispozici po první odpovědi agenta)_
+    no_data: Pro tuto relaci nejsou k dispozici žádné údaje o využití.
+  credits:
+    not_logged_in: Nejste přihlášeni k portálu Nous. Přihlaste se, abyste viděli zůstatek svého kreditu a dobili jej.
+  verbose:
+    not_enabled: "Příkaz `/verbose` není povolen pro platformy pro zasílání zpráv.\n\nPovolte jej v `config.yaml`:\n```yaml\n\
+      display:\n  tool_progress_command: true\n```"
+    mode_off: '⚙️ Průběh nástroje: **OFF** – žádná aktivita nástroje není zobrazena.'
+    mode_new: '⚙️ Průběh nástroje: **NEW** – zobrazí se při výměně nástroje (délka náhledu: `display.tool_preview_length`,
+      výchozí 40).'
+    mode_all: '⚙️ Průběh nástroje: **ALL** — zobrazeno každé volání nástroje (délka náhledu: `display.tool_preview_length`,
+      výchozí 40).'
+    mode_verbose: '⚙️ Průběh nástroje: **VERBOSE** – každé volání nástroje s úplnými argumenty.'
+    mode_log: '⚙️ Průběh nástroje: **LOG** – tichý v chatu; volání nástroje zapsána do ~/.hermes/logs/tool_calls.log.'
+    saved_suffix: _(uloženo pro **{platform}** — projeví se v další zprávě)_
+    save_failed: '_(nepodařilo se uložit do konfigurace: {error})_'
+  voice:
+    enabled_voice_only: 'Hlasový režim povolen.
+
+      Když odešlete hlasové zprávy, odpovím hlasem.
+
+      Pomocí /voice tts získáte hlasové odpovědi na všechny zprávy.'
+    disabled_text: Hlasový režim deaktivován. Textové odpovědi.
+    tts_enabled: 'Auto-TTS povoleno.
+
+      Všechny odpovědi budou obsahovat hlasovou zprávu.'
+    status_mode: 'Hlasový režim: {label}'
+    status_channel: 'Hlasový kanál: #{channel}'
+    status_participants: 'Účastníci: {count}'
+    status_member: '- {name}{status}'
+    speaking: (mluví)
+    enabled_short: Hlasový režim povolen.
+    disabled_short: Hlasový režim deaktivován.
+    label_off: Vypnuto (pouze text)
+    label_voice_only: Zapnuto (hlasová odpověď na hlasové zprávy)
+    label_all: TTS (hlasová odpověď na všechny zprávy)
+    help: '{toggle}
+
+
+      **Jak /hlas funguje**
+
+      • `/voice on` — hlasová odpověď při odeslání hlasové zprávy
+
+      • `/voice tts` — hlasová odpověď na *každou* zprávu
+
+      • `/voice off` — zpět na textové odpovědi
+
+      • `/voice status` — zobrazení aktuálního režimu
+
+      • `/voice` (žádný argument) — rychlé přepínání mezi zapnutím a vypnutím{channels}'
+    help_channels: '**Živé hlasové kanály (Discord)**
+
+      • Nejprve se připojte k hlasovému kanálu, poté `/voice channel` – připojím se, poslouchám a vyslovuji své odpovědi
+
+      • `/voice leave` — odpojení od hlasového kanálu'
+  yolo:
+    disabled: ⚠️ Režim YOLO **OFF** pro tuto relaci — nebezpečné příkazy budou vyžadovat schválení.
+    enabled: ⚡ Režim YOLO **ZAPNUTO** pro tuto relaci – všechny příkazy jsou automaticky schváleny. Používejte opatrně.
+  shared:
+    session_db_unavailable: Databáze relací není k dispozici.
+    session_db_unavailable_prefix: Databáze relací není k dispozici
+    session_not_found: Relace nebyla nalezena v databázi.
+    warn_passthrough: ⚠️ {error}

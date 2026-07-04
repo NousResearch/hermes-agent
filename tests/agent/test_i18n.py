@@ -95,6 +95,9 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    assert i18n._normalize_lang("Czech") == "cs"
+    assert i18n._normalize_lang("čeština") == "cs"
+    assert i18n._normalize_lang("cs-CZ") == "cs"
 
 
 def test_normalize_lang_unknown_falls_back():
@@ -134,6 +137,7 @@ def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
     assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
     assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
+    assert i18n.t("approval.denied", lang="cs").endswith("Zamítnuto")
 
 
 def test_t_formats_placeholders():

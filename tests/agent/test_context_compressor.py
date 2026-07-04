@@ -3155,6 +3155,72 @@ class TestSanitizerStripsOrphanedToolCalls:
         assert not asst.get("tool_calls")
         # No stub tool messages (which would have call_id != id mismatch)
 
+    def test_sanitizer_keeps_valid_pair_matching_on_id_not_call_id(self, compressor):
+        """A genuinely matching Codex-format pair must survive when the
+        result's tool_call_id matches ``id`` rather than ``call_id`` (#58168
+        class). ``_get_tool_call_id``'s ``call_id || id`` precedence picks
+        ``call_id`` first, so building the known-id set from a single value
+        per tool_call misclassified this valid pair as orphaned on BOTH
+        sides — dropping the result AND stripping the tool_call, even though
+        neither was actually orphaned."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_777",
+                        "call_id": "call_777",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "fc_777", "content": "result"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert asst.get("tool_calls"), "valid tool_call must not be stripped"
+        assert asst["tool_calls"][0]["id"] == "fc_777"
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1, "valid tool result must not be dropped as orphaned"
+        assert tool_msgs[0]["tool_call_id"] == "fc_777"
+
+    def test_sanitizer_still_drops_genuine_orphan_with_dual_ids(self, compressor):
+        """Negative control: registering both id and call_id must not
+        over-relax orphan detection. A genuinely orphaned tool_call (no
+        result matching either id variant) is still stripped, while a valid
+        dual-id pair in the same window survives."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                    {
+                        "id": "fc_2",
+                        "call_id": "call_2",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        surviving_ids = {tc["id"] for tc in asst.get("tool_calls") or []}
+        assert surviving_ids == {"fc_1"}
+
 
 class TestCooldownReentryAbort:
     """Regression: a second compress() call during the failure cooldown must

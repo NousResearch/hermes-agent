@@ -2160,10 +2160,33 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
-        """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
+        """Extract the canonical call ID from a tool_call entry (dict or
+        SimpleNamespace), for logging/display only. Matching logic must use
+        :meth:`_tool_call_id_variants` instead — see its docstring."""
         if isinstance(tc, dict):
             return tc.get("call_id", "") or tc.get("id", "") or ""
         return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+
+    @staticmethod
+    def _tool_call_id_variants(tc) -> set:
+        """Return every id variant a tool result might reference *tc* by.
+
+        A tool result's ``tool_call_id`` may be keyed on either ``id`` or
+        ``call_id`` depending on which code path built it — in the Codex
+        Responses API format they are distinct (``id`` is the ``fc_...``
+        response-item id, ``call_id`` is the ``call_...`` function-call id).
+        Matching on a single value (the old ``call_id || id`` precedence)
+        misclassified a genuinely matching pair as orphaned whenever the
+        result used the field that precedence didn't pick, dropping BOTH the
+        valid result and its tool_call. Registering the superset of both ids
+        is the same fix #58168 applied to ``repair_message_sequence``'s
+        known-id set.
+        """
+        if isinstance(tc, dict):
+            get = tc.get
+        else:
+            get = lambda key: getattr(tc, key, None)
+        return {v for v in (get("id"), get("call_id")) if v}
 
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
@@ -2191,9 +2214,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         for msg in messages:
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
-                    cid = self._get_tool_call_id(tc)
-                    if cid:
-                        surviving_call_ids.add(cid)
+                    surviving_call_ids |= self._tool_call_id_variants(tc)
 
         result_call_ids: set = set()
         for msg in messages:
@@ -2216,16 +2237,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         #    were dropped.  Stripping is preferred over inserting stub results
         #    because stubs can be dropped by downstream repair_message_sequence
         #    when call_id != id (Codex Responses API format), re-exposing orphans.
-        missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
+        #    A tool_call survives if ANY of its id variants still has a
+        #    matching result — checking only one variant per side is exactly
+        #    the mismatch this method exists to avoid.
+        stripped_count = 0
+        if surviving_call_ids - result_call_ids:
             for msg in messages:
                 if msg.get("role") != "assistant":
                     continue
                 tcs = msg.get("tool_calls")
                 if not tcs:
                     continue
-                kept = [tc for tc in tcs if self._get_tool_call_id(tc) not in missing_results]
+                kept = [tc for tc in tcs if self._tool_call_id_variants(tc) & result_call_ids]
                 if len(kept) != len(tcs):
+                    stripped_count += len(tcs) - len(kept)
                     if kept:
                         msg["tool_calls"] = kept
                     else:
@@ -2235,10 +2260,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                         content = msg.get("content")
                         if not content or (isinstance(content, str) and not content.strip()):
                             msg["content"] = "(tool call removed)"
-            if not self.quiet_mode:
+            if stripped_count and not self.quiet_mode:
                 logger.info(
                     "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
-                    len(missing_results),
+                    stripped_count,
                 )
 
         return messages

@@ -346,6 +346,33 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     return None
 
 
+def _timestamp_newer(candidate: Any, reference: Any) -> bool:
+    """True when both timestamps parse and candidate is strictly newer."""
+    candidate_ts = _parse_absolute_timestamp(candidate)
+    reference_ts = _parse_absolute_timestamp(reference)
+    return (
+        candidate_ts is not None
+        and reference_ts is not None
+        and candidate_ts > reference_ts
+    )
+
+
+def _with_cleared_failure_status(
+    entry: "PooledCredential",
+    **field_updates: Any,
+) -> "PooledCredential":
+    return replace(
+        entry,
+        last_status=None,
+        last_status_at=None,
+        last_error_code=None,
+        last_error_reason=None,
+        last_error_message=None,
+        last_error_reset_at=None,
+        **field_updates,
+    )
+
+
 def _normalize_custom_pool_name(name: str) -> str:
     """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
@@ -685,10 +712,18 @@ class CredentialPool:
             # another process means our entry's pair is consumed/stale.
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
-            if store_access and (
+            tokens_differ = bool(store_access) and (
                 store_access != entry_access
                 or (store_refresh and store_refresh != entry_refresh)
-            ):
+            )
+            auth_refresh_after_failure = (
+                entry.last_status == STATUS_EXHAUSTED
+                and _timestamp_newer(
+                    state.get("last_refresh"),
+                    entry.last_status_at or entry.last_refresh,
+                )
+            )
+            if store_access and (tokens_differ or auth_refresh_after_failure):
                 logger.debug(
                     "Pool entry %s: syncing Codex tokens from auth.json "
                     "(refreshed by another process)",
@@ -697,16 +732,10 @@ class CredentialPool:
                 field_updates: Dict[str, Any] = {
                     "access_token": store_access,
                     "refresh_token": store_refresh or entry.refresh_token,
-                    "last_status": None,
-                    "last_status_at": None,
-                    "last_error_code": None,
-                    "last_error_reason": None,
-                    "last_error_message": None,
-                    "last_error_reset_at": None,
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
-                updated = replace(entry, **field_updates)
+                updated = _with_cleared_failure_status(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
@@ -2044,6 +2073,37 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("device_code")
             custom_label = str(state.get("label") or "").strip()
+            existing_singleton = next(
+                (entry for entry in entries if entry.source == "device_code"),
+                None,
+            )
+            store_access = tokens.get("access_token", "")
+            store_refresh = tokens.get("refresh_token", "")
+            tokens_differ = existing_singleton is not None and bool(store_access) and (
+                store_access != (existing_singleton.access_token or "")
+                or (
+                    store_refresh
+                    and store_refresh != (existing_singleton.refresh_token or "")
+                )
+            )
+            auth_refresh_after_failure = existing_singleton is not None and (
+                existing_singleton.last_status == STATUS_EXHAUSTED
+                and _timestamp_newer(
+                    state.get("last_refresh"),
+                    existing_singleton.last_status_at or existing_singleton.last_refresh,
+                )
+            )
+            clear_seeded_failure = bool(
+                existing_singleton is not None
+                and (
+                    tokens_differ
+                    or auth_refresh_after_failure
+                )
+                and (
+                    existing_singleton.last_status != STATUS_DEAD
+                    or tokens_differ
+                )
+            )
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -2058,6 +2118,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
                 },
             )
+            if clear_seeded_failure:
+                for idx, entry in enumerate(entries):
+                    if entry.source == "device_code":
+                        entries[idx] = _with_cleared_failure_status(entry)
+                        changed = True
+                        break
 
     elif provider == "xai-oauth":
         # When the user logs in via ``hermes model`` -> xAI Grok OAuth,

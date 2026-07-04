@@ -254,6 +254,43 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_prunes_stale_bundled_manifest(self, profile_env):
+        """Clone must drop .bundled_manifest entries for skills absent on disk."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skills_dir = default_home / "skills"
+
+        # Source has two skills on disk but the manifest lists three.
+        (skills_dir / "real-skill-a").mkdir(parents=True)
+        (skills_dir / "real-skill-a" / "SKILL.md").write_text(
+            "---\nname: real-skill-a\n---\n"
+        )
+        (skills_dir / "real-skill-b").mkdir(parents=True)
+        (skills_dir / "real-skill-b" / "SKILL.md").write_text(
+            "---\nname: real-skill-b\n---\n"
+        )
+        (skills_dir / ".bundled_manifest").write_text(
+            "real-skill-a:aaa111\n"
+            "real-skill-b:bbb222\n"
+            "ghost-skill:ccc333\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("cloner", clone_config=True, no_alias=True)
+
+        # Ghost entry must be pruned; real entries preserved.
+        manifest = profile_dir / "skills" / ".bundled_manifest"
+        assert manifest.exists()
+        lines = [
+            l.strip()
+            for l in manifest.read_text(encoding="utf-8").splitlines()
+            if l.strip()
+        ]
+        names = [l.split(":", 1)[0] for l in lines]
+        assert "real-skill-a" in names
+        assert "real-skill-b" in names
+        assert "ghost-skill" not in names
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

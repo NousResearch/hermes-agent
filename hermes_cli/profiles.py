@@ -775,6 +775,35 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
+def _prune_stale_bundled_manifest(skills_dir: Path) -> None:
+    """Remove .bundled_manifest entries for skills absent from *skills_dir*.
+
+    After a profile clone copies the source's skills tree, the destination
+    may contain manifest entries for skills that no longer exist on disk
+    (e.g. removed from the bundled set between the source's last sync and
+    now).  ``sync_skills()`` interprets "in manifest, not on disk" as an
+    intentional user deletion and permanently blocks re-seeding, so stale
+    entries must be pruned immediately after the copy.
+    """
+    manifest = skills_dir / ".bundled_manifest"
+    if not manifest.is_file():
+        return
+    kept: list[str] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        name = stripped.split(":", 1)[0].strip()
+        if not name:
+            continue
+        # A skill directory exists if it contains a SKILL.md anywhere under
+        # it, but the fast path is checking the directory itself — the
+        # manifest records top-level skill names, not nested categories.
+        if (skills_dir / name).is_dir():
+            kept.append(stripped)
+    manifest.write_text("\n".join(kept) + "\n" if kept else "", encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # profile.yaml — per-profile metadata (description, role, etc.)
 # ---------------------------------------------------------------------------
@@ -1077,6 +1106,13 @@ def create_profile(
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                # Prune stale .bundled_manifest entries for skills that no
+                # longer exist on disk.  Without this, the clone inherits the
+                # source's full manifest (e.g. 73 entries) even when only a
+                # subset of skills survived the copy.  sync_skills() treats
+                # "in manifest, absent from disk" as intentional user deletion
+                # and permanently blocks re-seeding of those skills.
+                _prune_stale_bundled_manifest(profile_dir / "skills")
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

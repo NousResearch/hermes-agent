@@ -100,6 +100,28 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
     assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
 
 
+def test_read_nous_access_token_uses_hermes_oauth_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    hermes_home = tmp_path / "hermes"
+    shared_auth = tmp_path / "shared" / "auth.json"
+    shared_auth.parent.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_OAUTH_FILE", str(shared_auth))
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    shared_auth.write_text(json.dumps({
+        "providers": {
+            "nous": {
+                "access_token": "shared-token",
+                "refresh_token": "refresh-token",
+                "expires_at": expires_at,
+            }
+        }
+    }))
+
+    assert managed_tool_gateway.read_nous_access_token() == "shared-token"
+    assert not (hermes_home / "auth.json").exists()
+
+
 def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

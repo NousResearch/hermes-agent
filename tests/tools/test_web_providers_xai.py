@@ -100,6 +100,25 @@ class TestXAIProviderIsAvailable:
         from plugins.web.xai.provider import XAIWebSearchProvider
         assert XAIWebSearchProvider().is_available() is True
 
+    def test_available_via_hermes_oauth_file(self, monkeypatch, tmp_path):
+        """Cheap probe should follow HERMES_OAUTH_FILE for shared auth stores."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        hermes_home = tmp_path / "hermes"
+        shared_auth = tmp_path / "shared" / "auth.json"
+        shared_auth.parent.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_OAUTH_FILE", str(shared_auth))
+        shared_auth.write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "xai-oauth": {"tokens": {"access_token": "ya29.shared-access-token"}},
+            },
+        }))
+
+        from plugins.web.xai.provider import XAIWebSearchProvider
+        assert XAIWebSearchProvider().is_available() is True
+        assert not (hermes_home / "auth.json").exists()
+
     def test_unavailable_when_no_env_and_no_auth_store(self, monkeypatch, tmp_path):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

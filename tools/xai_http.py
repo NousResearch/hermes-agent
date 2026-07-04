@@ -26,7 +26,7 @@ def has_xai_credentials() -> bool:
     Resolution order, fast-to-slow:
 
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
-    2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
+    2. Hermes auth store has a non-empty ``providers.xai-oauth.tokens.access_token``
        (single file read, no expiry check, no refresh).
 
     Returns False on any exception so a corrupted auth store can't block
@@ -36,9 +36,9 @@ def has_xai_credentials() -> bool:
     if os.environ.get("XAI_API_KEY", "").strip():
         return True
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_oauth_file
 
-        auth_path = get_hermes_home() / "auth.json"
+        auth_path = get_hermes_oauth_file()
         if not auth_path.exists():
             return False
         store = json.loads(auth_path.read_text())

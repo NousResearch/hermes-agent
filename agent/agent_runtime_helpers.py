@@ -465,6 +465,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
     known_tool_ids: set = set()
+    seen_tool_ids: set = set()
     filtered: List[Dict] = []
     for msg in collapsed:
         if not isinstance(msg, dict):
@@ -473,6 +474,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         role = msg.get("role")
         if role == "assistant":
             known_tool_ids = set()
+            seen_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
                 tc_id = tc.get("id") if isinstance(tc, dict) else None
                 if tc_id:
@@ -480,8 +482,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
-            if tc_id and tc_id in known_tool_ids:
+            if tc_id and tc_id in known_tool_ids and tc_id not in seen_tool_ids:
                 filtered.append(msg)
+                seen_tool_ids.add(tc_id)
             else:
                 repairs += 1
         else:
@@ -490,6 +493,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 # tool messages without a fresh assistant tool_call
                 # are orphans.
                 known_tool_ids = set()
+                seen_tool_ids = set()
             filtered.append(msg)
 
     # Pass 2: merge consecutive user messages. Preserves all user input

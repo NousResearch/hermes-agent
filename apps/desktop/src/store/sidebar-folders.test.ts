@@ -7,7 +7,9 @@ import {
   folderForKey,
   folderKeySet,
   moveSessionToFolder,
+  moveSessionToFolderInScope,
   removeSessionFromFolder,
+  removeSessionFromFolderInScope,
   renameFolder,
   reorderFolders,
   reorderFolderSessions,
@@ -68,8 +70,8 @@ describe('sidebar-folders store', () => {
       expect($sidebarFolders.get()[0].profileKey).toBe('film-maker')
     })
 
-    it('creates a global folder when no profileKey is given', () => {
-      createFolder('Global')
+    it('creates an unscoped legacy-compatible folder when no profileKey is given', () => {
+      createFolder('Unscoped')
 
       expect($sidebarFolders.get()[0].profileKey).toBeUndefined()
     })
@@ -159,6 +161,30 @@ describe('sidebar-folders store', () => {
 
       expect($sidebarFolders.get()[0].sessionIds).toEqual(['s1'])
     })
+
+    it('moves a session only within the requested profile scope', () => {
+      const a1 = createFolder('A1', 'film-maker')
+      const a2 = createFolder('A2', 'film-maker')
+      const b = createFolder('B', 'life-advisor')
+
+      moveSessionToFolderInScope('s1', a1, 'film-maker')
+      moveSessionToFolderInScope('s1', b, 'life-advisor')
+      moveSessionToFolderInScope('s1', a2, 'film-maker')
+
+      const folders = $sidebarFolders.get()
+
+      expect(folders.find(f => f.id === a1)?.sessionIds).toEqual([])
+      expect(folders.find(f => f.id === a2)?.sessionIds).toEqual(['s1'])
+      expect(folders.find(f => f.id === b)?.sessionIds).toEqual(['s1'])
+    })
+
+    it('refuses to move into a folder outside the requested profile scope', () => {
+      const a = createFolder('A', 'film-maker')
+
+      moveSessionToFolderInScope('s1', a, 'life-advisor')
+
+      expect($sidebarFolders.get().find(f => f.id === a)?.sessionIds).toEqual([])
+    })
   })
 
   describe('removeSessionFromFolder', () => {
@@ -170,6 +196,20 @@ describe('sidebar-folders store', () => {
       removeSessionFromFolder('s1')
 
       expect($sidebarFolders.get()[0].sessionIds).toEqual(['s2'])
+    })
+
+    it('unfiles a session only within the requested profile scope', () => {
+      const a = createFolder('A', 'film-maker')
+      const b = createFolder('B', 'life-advisor')
+
+      moveSessionToFolderInScope('s1', a, 'film-maker')
+      moveSessionToFolderInScope('s1', b, 'life-advisor')
+      removeSessionFromFolderInScope('s1', 'film-maker')
+
+      const folders = $sidebarFolders.get()
+
+      expect(folders.find(f => f.id === a)?.sessionIds).toEqual([])
+      expect(folders.find(f => f.id === b)?.sessionIds).toEqual(['s1'])
     })
   })
 
@@ -244,6 +284,17 @@ describe('sidebar-folders store', () => {
 
       expect(folderForKey($sidebarFolders.get(), 's1')?.id).toBe(a)
       expect(folderForKey($sidebarFolders.get(), 'nope')).toBeUndefined()
+    })
+
+    it('folderForKey respects profile scope', () => {
+      const a = createFolder('A', 'film-maker')
+      const b = createFolder('B', 'life-advisor')
+
+      moveSessionToFolderInScope('s1', a, 'film-maker')
+      moveSessionToFolderInScope('s1', b, 'life-advisor')
+
+      expect(folderForKey($sidebarFolders.get(), 's1', 'film-maker')?.id).toBe(a)
+      expect(folderForKey($sidebarFolders.get(), 's1', 'life-advisor')?.id).toBe(b)
     })
   })
 })

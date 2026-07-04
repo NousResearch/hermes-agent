@@ -101,8 +101,14 @@ describe('visibleFoldersForScope', () => {
     expect(visibleFoldersForScope([a], 'life-advisor').map(f => f.id)).toEqual(['a'])
   })
 
-  it('treats pre-scoping folders (no profileKey) as global', () => {
+  it('hides pre-scoping folders without a profileKey unless explicitly pinned global', () => {
     const legacy = folder({ id: 'legacy' })
+
+    expect(visibleFoldersForScope([legacy], 'anything').map(f => f.id)).toEqual([])
+  })
+
+  it('shows pinned legacy folders in every profile', () => {
+    const legacy = folder({ id: 'legacy', pinned: true })
 
     expect(visibleFoldersForScope([legacy], 'anything').map(f => f.id)).toEqual(['legacy'])
   })

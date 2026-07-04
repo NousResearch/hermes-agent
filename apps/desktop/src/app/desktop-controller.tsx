@@ -127,6 +127,7 @@ import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
 
+const ActiveChatsView = lazy(async () => ({ default: (await import('./active-chats')).ActiveChatsView }))
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
@@ -803,6 +804,7 @@ export function DesktopController() {
     handleThreadMessagesChange,
     reloadFromMessage,
     restoreToMessage,
+    sendTextToSession,
     steerPrompt,
     submitText,
     transcribeVoiceAudio
@@ -1313,6 +1315,25 @@ export function DesktopController() {
         <Routes>
           <Route element={chatView} index />
           <Route element={chatView} path=":sessionId" />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <ActiveChatsView
+                  onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+                  onRefreshSessions={refreshSessions}
+                  onSendReply={(session, text) =>
+                    sendTextToSession({
+                      profile: session.profile,
+                      runtimeSessionId: runtimeIdByStoredSessionIdRef.current.get(session.id) ?? null,
+                      storedSessionId: session.id,
+                      text
+                    })
+                  }
+                />
+              </Suspense>
+            }
+            path="active-chats"
+          />
           <Route
             element={
               <Suspense fallback={null}>

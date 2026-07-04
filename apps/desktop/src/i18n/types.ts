@@ -1217,6 +1217,31 @@ export interface Translations {
     copyPath: string
   }
 
+  activeChats: {
+    search: string
+    title: string
+    subtitle: string
+    emptyTitle: string
+    emptyDesc: string
+    groupStatus: string
+    groupProfile: string
+    groupWorkspace: string
+    loadingTranscript: string
+    failedTranscript: string
+    replyPlaceholder: string
+    answer: string
+    open: string
+    waiting: string
+    running: string
+    recent: string
+    idle: string
+    messages: (count: number) => string
+    profile: (name: string) => string
+    noPreview: string
+    sent: string
+    sendFailed: string
+  }
+
   sidebar: {
     nav: Record<string, string>
     searchAria: string

@@ -1656,9 +1656,35 @@ export const zh: Translations = {
     copyPath: '复制路径'
   },
 
+  activeChats: {
+    search: '搜索活跃对话…',
+    title: '活跃对话',
+    subtitle: '正在运行和等待你回复的对话',
+    emptyTitle: '暂无活跃对话',
+    emptyDesc: '正在运行的对话和需要回复的会话会显示在这里。',
+    groupStatus: '状态',
+    groupProfile: '配置',
+    groupWorkspace: '工作区',
+    loadingTranscript: '正在加载记录…',
+    failedTranscript: '记录加载失败',
+    replyPlaceholder: '回复此对话…',
+    answer: '回复',
+    open: '打开',
+    waiting: '等待',
+    running: '运行中',
+    recent: '最近',
+    idle: '空闲',
+    messages: count => `${count} 条消息`,
+    profile: name => `配置档案：${name}`,
+    noPreview: '暂无记录预览。',
+    sent: '回复已发送',
+    sendFailed: '回复失败'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新建会话',
+      'active-chats': '活跃对话',
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物'

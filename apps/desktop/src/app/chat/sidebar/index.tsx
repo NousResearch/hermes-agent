@@ -109,6 +109,8 @@ import {
   deleteFolder,
   ensureSessionsInNamedFolder,
   folderKeySet,
+  moveSessionToFolderInScope,
+  removeSessionFromFolderInScope,
   renameFolder,
   reorderFolders,
   reorderFolderSessions,
@@ -117,7 +119,7 @@ import {
   toggleFolderPinned
 } from '@/store/sidebar-folders'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { ACTIVE_CHATS_ROUTE, type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
 import { countLabel } from './chrome'
@@ -163,6 +165,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     action: 'new-session'
   },
   {
+    id: 'active-chats',
+    label: '',
+    icon: props => <Codicon name="comment-discussion" {...props} />,
+    route: ACTIVE_CHATS_ROUTE
+  },
+  {
     id: 'skills',
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
@@ -172,6 +180,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
+const ACTIVE_CHATS_NAV_ITEM = SIDEBAR_NAV.find(item => item.id === 'active-chats')!
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
 //   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
@@ -406,8 +415,9 @@ export function ChatSidebar({
 
   // Desktop-local custom folders. Membership is keyed by the durable id
   // (sessionPinId), the same key pinning uses, so a foldered session survives
-  // compaction. `folderedKeys` drives the unfiled-list filter below; resolving
-  // each folder's own sessions happens at render time via sessionByAnyId.
+  // compaction. `visibleFolders` is scoped to the active profile; `folderedKeys`
+  // drives the unfiled-list filter below from that same scoped list, so a folder
+  // in one profile cannot hide a session from another profile.
   useEffect(() => {
     const keys = sortedSessions.filter(s => s.source === 'open-arthouse-watch').map(sessionPinId)
     ensureSessionsInNamedFolder('OPEN-ARTHOUSE', keys, profileScope)
@@ -929,7 +939,11 @@ export function ChatSidebar({
 
   const displayAgentGroups = showAllProfiles ? profileGroups : undefined
 
-  const folderedKeys = useMemo(() => folderKeySet(folders), [folders])
+  const visibleFolders = useMemo(
+    () => (showAllProfiles ? [] : visibleFoldersForScope(folders, profileScope)),
+    [folders, profileScope, showAllProfiles]
+  )
+  const folderedKeys = useMemo(() => folderKeySet(visibleFolders), [visibleFolders])
   const displayAgentSessions = useMemo(
     () =>
       showAllProfiles
@@ -939,11 +953,11 @@ export function ChatSidebar({
   )
   const folderSections = useMemo(
     () =>
-      visibleFoldersForScope(folders, profileScope).map(folder => ({
+      visibleFolders.map(folder => ({
         folder,
         sessions: resolveFolderSessions(folder, sessionByAnyId)
       })),
-    [folders, profileScope, sessionByAnyId]
+    [visibleFolders, sessionByAnyId]
   )
   const [folderNameDialog, setFolderNameDialog] = useState<{
     id?: string
@@ -977,6 +991,29 @@ export function ChatSidebar({
         return session ? sessionPinId(session) : id
       })
     )
+
+  const folderKeyForDroppedSession = useCallback(
+    (sessionId: string) => {
+      const session = sessionByAnyId.get(sessionId)
+
+      return session ? sessionPinId(session) : sessionId
+    },
+    [sessionByAnyId]
+  )
+
+  const dropSessionIntoFolder = useCallback(
+    (folderId: string, sessionId: string) => {
+      moveSessionToFolderInScope(folderKeyForDroppedSession(sessionId), folderId, profileScope)
+    },
+    [folderKeyForDroppedSession, profileScope]
+  )
+
+  const dropSessionOutOfFolder = useCallback(
+    (sessionId: string) => {
+      removeSessionFromFolderInScope(folderKeyForDroppedSession(sessionId), profileScope)
+    },
+    [folderKeyForDroppedSession, profileScope]
+  )
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -1130,6 +1167,7 @@ export function ChatSidebar({
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
+                  (item.id === 'active-chats' && currentView === 'active-chats') ||
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts')
@@ -1270,6 +1308,7 @@ export function ChatSidebar({
                     onBranchSession={onBranchSession}
                     onDeleteFolder={setFolderToDelete}
                     onDeleteSession={onDeleteSession}
+                    onDropSession={dropSessionIntoFolder}
                     onRenameFolder={f => setFolderNameDialog({ id: f.id, mode: 'rename', name: f.name })}
                     onReorderSessions={reorderFolderRows}
                     onResumeSession={onResumeSession}
@@ -1325,8 +1364,9 @@ export function ChatSidebar({
                 forceEmptyState={showSessionSkeletons}
                 groups={displayAgentGroups}
                 headerAction={
-                  inProject && enteredProject ? (
-                    <div className="group/workspace flex shrink-0 items-center gap-0.5">
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {inProject && enteredProject ? (
+                      <>
                       {enteredProject.path && (
                         <StartWorkButton onStarted={onNewSessionInWorkspace} repoPath={enteredProject.path} />
                       )}
@@ -1336,7 +1376,62 @@ export function ChatSidebar({
                         project={enteredProject}
                         scoped
                       />
-                      <div className="grid size-6 place-items-center">
+                      </>
+                    ) : null}
+                    <Tip label={s.nav['active-chats'] ?? ACTIVE_CHATS_NAV_ITEM.label}>
+                      <Button
+                        aria-label={s.nav['active-chats'] ?? ACTIVE_CHATS_NAV_ITEM.label}
+                        className={cn(
+                          'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                          currentView === 'active-chats' && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                        )}
+                        onClick={event => {
+                          event.stopPropagation()
+                          onNavigate(ACTIVE_CHATS_NAV_ITEM)
+                        }}
+                        size="icon-xs"
+                        variant="ghost"
+                      >
+                        <Codicon name="comment-discussion" size="0.75rem" />
+                      </Button>
+                    </Tip>
+                    {!inProject && !showAllProfiles ? (
+                      <Tip label={s.createFolder}>
+                        <Button
+                          aria-label={s.createFolder}
+                          className={HEADER_ACTION_BTN}
+                          onClick={event => {
+                            event.stopPropagation()
+                            setFolderNameDialog({ mode: 'create', name: s.customFolderDefaultName })
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name="new-folder" size="0.75rem" />
+                        </Button>
+                      </Tip>
+                    ) : null}
+                    {!inProject && !showAllProfiles ? (
+                      <Button
+                        aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                        className={HEADER_ACTION_BTN}
+                        onClick={event => {
+                          event.stopPropagation()
+
+                          if (agentsGrouped) {
+                            openProjectCreate()
+                          } else {
+                            onNewSessionInWorkspace(null)
+                          }
+                        }}
+                        size="icon-xs"
+                        variant="ghost"
+                      >
+                        <Codicon name="add" size="0.75rem" />
+                      </Button>
+                    ) : null}
+                    <div className="grid size-6 place-items-center">
+                      {inProject && enteredProject ? (
                         <Button
                           aria-label={s.showProjects}
                           className={HEADER_NAV_BTN}
@@ -1349,67 +1444,26 @@ export function ChatSidebar({
                         >
                           <Codicon name="list-unordered" size="0.75rem" />
                         </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      {!showAllProfiles ? (
-                        <Tip label={s.createFolder}>
-                          <Button
-                            aria-label={s.createFolder}
-                            className={HEADER_ACTION_BTN}
-                            onClick={event => {
-                              event.stopPropagation()
-                              setFolderNameDialog({ mode: 'create', name: s.customFolderDefaultName })
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name="new-folder" size="0.75rem" />
-                          </Button>
-                        </Tip>
-                      ) : null}
-                      {!showAllProfiles ? (
+                      ) : !showAllProfiles && agentSessions.length > 0 ? (
                         <Button
-                          aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                          className={HEADER_ACTION_BTN}
+                          aria-label={agentsGrouped ? s.showSessions : s.showProjects}
+                          className={cn(
+                            HEADER_NAV_BTN,
+                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                          )}
                           onClick={event => {
                             event.stopPropagation()
-
-                            if (agentsGrouped) {
-                              openProjectCreate()
-                            } else {
-                              onNewSessionInWorkspace(null)
-                            }
+                            setSidebarRecentsOpen(true)
+                            setSidebarAgentsGrouped(!agentsGrouped)
                           }}
                           size="icon-xs"
                           variant="ghost"
                         >
-                          <Codicon name="add" size="0.75rem" />
+                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
                         </Button>
                       ) : null}
-                      <div className="grid size-6 place-items-center">
-                        {!showAllProfiles && agentSessions.length > 0 ? (
-                          <Button
-                            aria-label={agentsGrouped ? s.showSessions : s.showProjects}
-                            className={cn(
-                              HEADER_NAV_BTN,
-                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                            )}
-                            onClick={event => {
-                              event.stopPropagation()
-                              setSidebarRecentsOpen(true)
-                              setSidebarAgentsGrouped(!agentsGrouped)
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                          </Button>
-                        ) : null}
-                      </div>
                     </div>
-                  )
+                  </div>
                 }
                 label={sessionsLabel}
                 labelMeta={
@@ -1426,6 +1480,7 @@ export function ChatSidebar({
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
+                onDropSession={showAllProfiles ? undefined : dropSessionOutOfFolder}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
@@ -1573,6 +1628,7 @@ interface FolderSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string, profile?: string) => void
   onReorderSessions: (folderId: string, ids: string[]) => void
+  onDropSession: (folderId: string, sessionId: string) => void
   onRenameFolder: (folder: SidebarFolder) => void
   onDeleteFolder: (folder: SidebarFolder) => void
   onTogglePinned: (id: string) => void
@@ -1593,6 +1649,7 @@ function FolderSection({
   onArchiveSession,
   onBranchSession,
   onReorderSessions,
+  onDropSession,
   onRenameFolder,
   onDeleteFolder,
   onTogglePinned
@@ -1683,6 +1740,7 @@ function FolderSection({
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
+        onDropSession={sessionId => onDropSession(folder.id, sessionId)}
         onReorderSessions={ids => onReorderSessions(folder.id, ids)}
         onResumeSession={onResumeSession}
         onToggle={() => toggleFolderOpen(folder.id)}

@@ -2,6 +2,7 @@ import type { useSensors } from '@dnd-kit/core'
 import type * as React from 'react'
 import { useMemo } from 'react'
 
+import { dragHasSession, readSessionDrag } from '@/app/chat/composer/inline-refs'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -134,6 +135,7 @@ interface SidebarSessionsSectionProps {
   onReorderProjects?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
   projectBackRow?: React.ReactNode
+  onDropSession?: (sessionId: string) => void
   dndSensors?: ReturnType<typeof useSensors>
 }
 
@@ -174,6 +176,7 @@ export function SidebarSessionsSection({
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
+  onDropSession,
   dndSensors
 }: SidebarSessionsSectionProps) {
   const sectionOpen = collapsible ? open : true
@@ -338,8 +341,33 @@ export function SidebarSessionsSection({
   // to avoid a double scroll container.
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
+  const handleDragOver = (event: React.DragEvent) => {
+    if (!onDropSession || !dragHasSession(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  const handleDrop = (event: React.DragEvent) => {
+    if (!onDropSession || !dragHasSession(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    const payload = readSessionDrag(event.dataTransfer)
+
+    if (payload?.id) {
+      onDropSession(payload.id)
+    }
+  }
+
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={rootClassName} onDragOver={handleDragOver} onDrop={handleDrop}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}

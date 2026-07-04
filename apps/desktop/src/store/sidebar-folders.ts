@@ -14,8 +14,8 @@ export interface SidebarFolder {
   sessionIds: string[]
   open: boolean
   // The profile (normalizeProfileKey) this folder belongs to; the folder only
-  // shows while that profile is the active scope. Undefined on folders created
-  // before scoping existed — those are treated as global (see normalize).
+  // shows while that profile is the active scope. Undefined folders are legacy
+  // local state and are hidden unless explicitly pinned global.
   profileKey?: string
   // Global folder: shows in every profile regardless of profileKey.
   pinned?: boolean
@@ -46,8 +46,6 @@ function normalize(value: SidebarFolder): SidebarFolder {
     // Drop blank/duplicate keys defensively so a corrupted store can't render
     // ghost rows or double-count.
     open: typeof value.open === 'boolean' ? value.open : true,
-    // Pre-scoping folders have no profileKey: leaving it undefined makes
-    // visibleFoldersForScope treat them as global so they don't vanish.
     pinned: typeof value.pinned === 'boolean' ? value.pinned : undefined,
     profileKey: typeof value.profileKey === 'string' && value.profileKey.length > 0 ? value.profileKey : undefined,
     sessionIds: [...new Set(value.sessionIds.filter(id => id.length > 0))]
@@ -165,13 +163,21 @@ export function deleteFolder(id: string) {
 // A session lives in at most one folder: clear it from every folder first, then
 // add it to the target. No-op if the target folder is gone.
 export function moveSessionToFolder(sessionKey: string, folderId: string) {
+  moveSessionToFolderInScope(sessionKey, folderId)
+}
+
+function folderVisibleInScope(folder: SidebarFolder, profileKey?: string): boolean {
+  return !profileKey || folder.pinned || folder.profileKey === profileKey
+}
+
+export function moveSessionToFolderInScope(sessionKey: string, folderId: string, profileKey?: string) {
   if (!sessionKey) {
     return
   }
 
   const current = $sidebarFolders.get()
 
-  if (!current.some(f => f.id === folderId)) {
+  if (!current.some(f => f.id === folderId && folderVisibleInScope(f, profileKey))) {
     return
   }
 
@@ -179,6 +185,10 @@ export function moveSessionToFolder(sessionKey: string, folderId: string) {
     current.map(f => {
       if (f.id === folderId) {
         return f.sessionIds.includes(sessionKey) ? f : { ...f, sessionIds: [...f.sessionIds, sessionKey] }
+      }
+
+      if (profileKey && !folderVisibleInScope(f, profileKey)) {
+        return f
       }
 
       return f.sessionIds.includes(sessionKey)
@@ -197,9 +207,11 @@ export function ensureSessionsInNamedFolder(name: string, sessionKeys: string[],
 
   const current = $sidebarFolders.get()
   const targetName = name.trim()
+
   const existing = current.find(
-    f => f.name.localeCompare(targetName, undefined, { sensitivity: 'accent' }) === 0 && (f.pinned || !f.profileKey || f.profileKey === profileKey)
+    f => f.name.localeCompare(targetName, undefined, { sensitivity: 'accent' }) === 0 && (f.pinned || f.profileKey === profileKey)
   )
+
   const folderId = existing?.id ?? createFolderId()
   const target = existing ?? { id: folderId, name: targetName, open: true, profileKey, sessionIds: [] }
   const wanted = new Set(keys)
@@ -223,8 +235,10 @@ export function ensureSessionsInNamedFolder(name: string, sessionKeys: string[],
     }
 
     const filtered = folder.sessionIds.filter(id => !wanted.has(id))
+
     if (filtered.length !== folder.sessionIds.length) {
       changed = true
+
       return { ...folder, sessionIds: filtered }
     }
 
@@ -241,13 +255,21 @@ export function ensureSessionsInNamedFolder(name: string, sessionKeys: string[],
 }
 
 export function removeSessionFromFolder(sessionKey: string) {
+  removeSessionFromFolderInScope(sessionKey)
+}
+
+export function removeSessionFromFolderInScope(sessionKey: string, profileKey?: string) {
   const current = $sidebarFolders.get()
 
-  if (!current.some(f => f.sessionIds.includes(sessionKey))) {
+  if (!current.some(f => folderVisibleInScope(f, profileKey) && f.sessionIds.includes(sessionKey))) {
     return
   }
 
-  setFolders(current.map(f => ({ ...f, sessionIds: f.sessionIds.filter(id => id !== sessionKey) })))
+  setFolders(
+    current.map(f =>
+      folderVisibleInScope(f, profileKey) ? { ...f, sessionIds: f.sessionIds.filter(id => id !== sessionKey) } : f
+    )
+  )
 }
 
 export function setFolderOpen(id: string, open: boolean) {
@@ -322,6 +344,6 @@ export function folderKeySet(folders: SidebarFolder[]): Set<string> {
   return out
 }
 
-export function folderForKey(folders: SidebarFolder[], key: string): SidebarFolder | undefined {
-  return folders.find(folder => folder.sessionIds.includes(key))
+export function folderForKey(folders: SidebarFolder[], key: string, profileKey?: string): SidebarFolder | undefined {
+  return folders.find(folder => folderVisibleInScope(folder, profileKey) && folder.sessionIds.includes(key))
 }

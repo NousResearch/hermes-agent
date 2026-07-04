@@ -18764,6 +18764,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
+
+                        # Log the warning event with activity context — mirrors
+                        # the structured ERROR log emitted when the timeout
+                        # itself fires (below), so post-mortem analysis doesn't
+                        # depend on having access to the user-facing channel.
+                        # Matches the field shape used by cron.scheduler's
+                        # inactivity logs for consistency across the codebase.
+                        logger.warning(
+                            "Agent inactivity warning: idle for %.0fs "
+                            "(threshold %.0fs, timeout in %.0fs) in session %s "
+                            "| last_activity=%s | iteration=%s/%s | tool=%s",
+                            _idle_secs, _agent_warning,
+                            max(0.0, _agent_timeout - _idle_secs),
+                            session_key,
+                            _act.get("last_activity_desc", "unknown") if _act else "unknown",
+                            _act.get("api_call_count", 0) if _act else 0,
+                            _act.get("max_iterations", 0) if _act else 0,
+                            (_act.get("current_tool") or "none") if _act else "none",
+                        )
+
                         _warn_adapter = self.adapters.get(source.platform)
                         if _warn_adapter:
                             _elapsed_warn = int(_agent_warning // 60) or 1
@@ -18778,7 +18798,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
-                                logger.debug("Inactivity warning send error: %s", _warn_err)
+                                # Upgraded from debug to warning: if user-facing
+                                # delivery fails, the post-mortem log should
+                                # surface it alongside the event itself.
+                                logger.warning(
+                                    "Inactivity warning delivery failed for "
+                                    "session %s: %s",
+                                    session_key, _warn_err,
+                                )
                     if _idle_secs >= _agent_timeout:
                         _inactivity_timeout = True
                         break

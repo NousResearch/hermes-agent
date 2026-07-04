@@ -573,12 +573,33 @@ def build_preloaded_skills_prompt(
     loaded_names: list[str] = []
     missing: list[str] = []
 
+    # Late import to avoid circular dependency (skill_bundles itself imports
+    # _load_skill_payload from this module) and to keep import cost at call time.
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+
     seen: set[str] = set()
     for raw_identifier in skill_identifiers:
         identifier = (raw_identifier or "").strip()
         if not identifier or identifier in seen:
             continue
         seen.add(identifier)
+
+        # Mirror cron/scheduler.py: expand bundle names before falling through to
+        # individual skill load so `--skill my-bundle` works the same as in cron.
+        _bundle_key = resolve_bundle_command_key(identifier.lstrip("/"))
+        if _bundle_key:
+            _bundle_payload = build_bundle_invocation_message(
+                _bundle_key,
+                user_instruction="",
+                task_id=task_id,
+            )
+            if _bundle_payload:
+                _bundle_msg, _bundle_loaded, _bundle_missing = _bundle_payload
+                prompt_parts.append(_bundle_msg)
+                loaded_names.extend(_bundle_loaded)
+            else:
+                missing.append(identifier)
+            continue
 
         loaded = _load_skill_payload(identifier, task_id=task_id)
         if not loaded:

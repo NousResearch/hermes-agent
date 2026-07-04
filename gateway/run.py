@@ -10532,9 +10532,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
+                    # Mirror cron/scheduler.py: try bundle expansion before individual
+                    # skill load so channel_skill_bindings entries that name a bundle
+                    # expand all member skills instead of silently failing.
+                    _bundle_key = resolve_bundle_command_key(_sname.lstrip("/"))
+                    if _bundle_key:
+                        _bundle_payload = build_bundle_invocation_message(
+                            _bundle_key,
+                            user_instruction="",
+                            task_id=_quick_key,
+                        )
+                        if _bundle_payload:
+                            _bundle_msg, _bundle_loaded, _bundle_missing = _bundle_payload
+                            _combined_parts.append(_bundle_msg)
+                            _loaded_names.append(_sname)
+                        else:
+                            logger.warning("[Gateway] Auto-skill bundle '%s' could not load any skills", _sname)
+                        continue
                     _loaded = _load_skill_payload(_sname, task_id=_quick_key)
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded

@@ -393,6 +393,25 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('shows verbose thinking.delta even when normal reasoning display is off', () => {
+    vi.useFakeTimers()
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const streamed = 'verbose-only thinking'
+
+    try {
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: { text: streamed, verbose: true }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(turnController.reasoningText).toBe(streamed)
+      expect(getTurnState().reasoning).toBe(streamed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'

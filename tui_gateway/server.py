@@ -3627,7 +3627,11 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _emit(
+            "thinking.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        ),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta",
             sid,

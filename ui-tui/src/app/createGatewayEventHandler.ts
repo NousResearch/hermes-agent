@@ -447,7 +447,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           scheduleThinkingStatus(value || statusFromBusy())
 
           if (value) {
-            turnController.recordReasoningDelta(value)
+            turnController.recordReasoningDelta(value, Boolean(ev.payload?.verbose))
           }
         }
 

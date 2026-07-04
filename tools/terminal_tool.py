@@ -1215,19 +1215,32 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
+# Backends whose working directory is resolved by a shell other than the
+# Hermes host's own — SSH's remote shell, or a container/sandbox's bash
+# session started by ``BaseEnvironment.init_session()``. ``local`` is the
+# only backend that executes directly on the Hermes host, so it's the only
+# one where local ``expanduser`` is correct.
+_REMOTE_SHELL_BACKENDS = frozenset({"ssh"}) | _CONTAINER_BACKENDS
 
-def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
-    """Return True when *cwd* is a tilde path that the remote SSH shell must
-    expand itself, so the Hermes host/container must NOT ``expanduser`` it.
+
+def _is_remote_shell_tilde_cwd(backend: str, cwd: str) -> bool:
+    """Return True when *cwd* is a tilde path that a non-local backend's own
+    shell must expand, so the Hermes host must NOT ``expanduser`` it.
 
     SSH ``cwd`` is interpreted by the *remote* shell (``cd ~`` / ``cd ~/x``
-    over ``ssh ... bash -c``). Expanding ``~`` locally would rewrite it to the
-    Hermes host HOME (often ``/opt/data`` under Docker) and inject a
-    nonexistent path into the remote session. Only ``~`` / ``~/...`` on the
-    ``ssh`` backend qualify; absolute remote paths still pass through
-    unchanged, and every other backend keeps expanding locally.
+    over ``ssh ... bash -c``). Container/sandbox backends (Docker,
+    Singularity, Modal, Daytona) are the same shape: the working directory is
+    set inside the sandbox's own bash session by
+    ``BaseEnvironment.init_session()`` / ``_quote_cwd_for_cd()``, which already
+    routes ``~`` / ``~/...`` through *that* session's own ``$HOME`` — not the
+    Hermes host's. Expanding ``~`` locally for any of these backends would
+    rewrite it to the Hermes host/container HOME (often ``/opt/data`` under
+    Docker, or ``/root`` when Hermes runs as root) and inject a nonexistent
+    path into the remote/sandboxed session. Only ``~`` / ``~/...`` on a
+    remote-shell backend qualify; absolute remote paths still pass through
+    unchanged, and the ``local`` backend keeps expanding locally.
     """
-    if (backend or "").strip().lower() != "ssh":
+    if (backend or "").strip().lower() not in _REMOTE_SHELL_BACKENDS:
         return False
     return cwd == "~" or cwd.startswith("~/")
 
@@ -1240,8 +1253,15 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     sandbox (e.g. ``/workspace`` or ``/root``). A host path (``/home/user``,
     ``C:\\Users\\me``) or a relative path (``.``, ``src/``) is meaningless to
     ``docker run -w`` and makes the container fail to start (exit 125).
+
+    A literal ``~`` / ``~/...`` is NOT unusable here: it is resolved by the
+    sandbox's own shell at ``cd`` time (see ``_is_remote_shell_tilde_cwd`` and
+    ``BaseEnvironment._quote_cwd_for_cd``), so it must pass through unchanged
+    rather than being rejected as a host/relative path.
     """
     if not cwd:
+        return False
+    if cwd == "~" or cwd.startswith("~/"):
         return False
     if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
         return True
@@ -1302,7 +1322,7 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    if cwd and not _is_remote_shell_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:

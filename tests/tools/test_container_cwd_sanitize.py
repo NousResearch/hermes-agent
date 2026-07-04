@@ -65,6 +65,14 @@ class TestIsUnusableContainerCwd:
             {"docker", "singularity", "modal", "daytona"}
         )
 
+    def test_bare_tilde_is_not_unusable(self):
+        # "~" is resolved by the sandbox's own shell at `cd` time
+        # (BaseEnvironment._quote_cwd_for_cd), not rejected as a relative path.
+        assert tt._is_unusable_container_cwd("~") is False
+
+    def test_tilde_child_path_is_not_unusable(self):
+        assert tt._is_unusable_container_cwd("~/projects") is False
+
 
 class TestOverrideCwdSanitizedAtCallSite:
     """E2E pin: a per-task cwd OVERRIDE that is a host path must NOT reach the
@@ -144,6 +152,13 @@ class TestOverrideCwdSanitizedAtCallSite:
         # RL/benchmark envs set an in-container path; it must pass through.
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
         assert cwd == "/workspace/task42"
+
+    def test_tilde_override_is_preserved_not_replaced(self, monkeypatch):
+        # A literal "~/..." override must reach _create_environment unchanged
+        # (the sandbox's own shell resolves it) instead of being discarded as
+        # an unusable relative path and replaced by config["cwd"].
+        cwd = self._run_and_capture_cwd(monkeypatch, "~/project")
+        assert cwd == "~/project"
 
 
 class TestFileOpsCwdSanitizedAtCallSite:

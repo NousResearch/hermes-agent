@@ -256,6 +256,72 @@ def test_get_env_config_preserves_ssh_tilde_child_cwd(monkeypatch):
     assert config["cwd"] == "~/project"
 
 
+def test_get_env_config_preserves_docker_tilde_cwd(monkeypatch):
+    """Docker cwd '~' is resolved by the container's own shell, not the host."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CWD", "~")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "docker"
+    assert config["cwd"] == "~"
+
+
+def test_get_env_config_preserves_docker_tilde_child_cwd(monkeypatch):
+    """Docker cwd '~/x' must not become the Hermes host's HOME path."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "docker"
+    assert config["cwd"] == "~/project"
+
+
+def test_get_env_config_preserves_singularity_tilde_child_cwd(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "singularity")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "~/project"
+
+
+def test_get_env_config_preserves_modal_tilde_child_cwd(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "modal")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "~/project"
+
+
+def test_get_env_config_preserves_daytona_tilde_child_cwd(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "~/project"
+
+
+def test_get_env_config_local_backend_still_expands_tilde(monkeypatch):
+    """The local backend executes on the Hermes host itself, so local
+    expansion against the host's own HOME is correct there."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/opt/data/project"
+
+
 def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeypatch):
     """Selecting Docker should keep the existing actionable config error."""
     monkeypatch.setenv("TERMINAL_ENV", "docker")

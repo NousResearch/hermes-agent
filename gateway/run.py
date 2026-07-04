@@ -16284,7 +16284,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         In multiplex mode, secondary profiles (e.g. shadow-reviewer) have
         their own adapters in ``self._profile_adapters[profile][platform]``.
-        The old code used ``self._resolve_adapter_for_source(source)`` which only
+        The old code used ``self.adapters.get(source.platform)`` which always returned
         holds the default profile's adapter — so a secondary profile's
         streaming response was sent via the wrong bot.  This helper checks
         ``source.profile`` first and falls back to the default map.

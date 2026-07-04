@@ -98,6 +98,25 @@ class TestCanCarryMarker:
         assert _can_carry_marker({"role": "tool", "content": "result"}, native_anthropic=False) is True
         assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=False) is False
 
+    def test_openrouter_list_carrier_requires_last_part_dict(self):
+        """Carrier predicate must agree with _apply_cache_marker, which only marks
+        the LAST content part. A list whose last element isn't a dict cannot carry
+        a marker and must not consume a breakpoint."""
+        # Last part is a dict -> carrier.
+        assert _can_carry_marker(
+            {"role": "user", "content": [{"type": "text", "text": "a"}]},
+            native_anthropic=False,
+        ) is True
+        # Last part is a non-dict (stray raw string) -> NOT a carrier, even though
+        # an earlier part is a dict. Previously this passed the gate but got no
+        # marker, wasting a breakpoint.
+        assert _can_carry_marker(
+            {"role": "user", "content": [{"type": "text", "text": "a"}, "trailing raw"]},
+            native_anthropic=False,
+        ) is False
+        # Empty list -> not a carrier.
+        assert _can_carry_marker({"role": "user", "content": []}, native_anthropic=False) is False
+
 
 class TestApplyAnthropicCacheControl:
     def test_empty_messages(self):

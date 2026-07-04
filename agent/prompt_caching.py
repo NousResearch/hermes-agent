@@ -65,7 +65,11 @@ def _can_carry_marker(msg: dict, native_anthropic: bool) -> bool:
     if content is None or content == "":
         return False
     if isinstance(content, list):
-        return any(isinstance(part, dict) for part in content)
+        # _apply_cache_marker only marks the LAST content part, so the carrier
+        # predicate must agree: a list whose last element isn't a dict cannot
+        # actually receive a marker and would waste a breakpoint. Mirror the
+        # `content` truthiness + last-element-dict check in _apply_cache_marker.
+        return bool(content) and isinstance(content[-1], dict)
     return isinstance(content, str)
 
 

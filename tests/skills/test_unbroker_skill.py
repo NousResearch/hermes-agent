@@ -957,6 +957,46 @@ def test_next_actions_poll_verification_and_due_rechecks():
         assert any("verification email" in t["reason"] for t in q2["human_digest"])
 
 
+def test_next_actions_reverifies_due_submitted_web_form():
+    # A plain web-form opt-out (no email_verification) lands in `submitted` with a processing-window
+    # recheck. Once that window elapses it must be re-scanned, or it can never reach confirmed_removed.
+    with temp_env():
+        d = _consenting()
+        b = _mini_broker("webform")                      # requires={} -> no email_verification
+        led = {"webform": {"broker_id": "webform", "state": "submitted",
+                           "next_recheck_at": "2000-01-01T00:00:00Z"}}   # window elapsed
+        q = autopilot.next_actions(d, [b], _auto_cfg(), led, env={})
+        assert any(a["type"] == "verify_removal" and a["broker_id"] == "webform"
+                   for a in q["actions"])
+        assert q["fully_done"] is False
+
+
+def test_next_actions_due_submitted_email_verification_not_double_handled():
+    # An email-verification broker's due `submitted` case is polled by section 2; the due-recheck
+    # loop must not also emit a verify_removal for it.
+    with temp_env():
+        d = _consenting()
+        b = _mini_broker("verifier", requires={"email_verification": True})
+        led = {"verifier": {"broker_id": "verifier", "state": "submitted",
+                            "next_recheck_at": "2000-01-01T00:00:00Z"}}
+        env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+        q = autopilot.next_actions(d, [b], _auto_cfg(email_mode="programmatic"), led, env=env)
+        assert any(a["type"] == "poll_verification" for a in q["actions"])
+        assert not any(a["type"] == "verify_removal" and a["broker_id"] == "verifier"
+                       for a in q["actions"])
+
+
+def test_ledger_submitted_can_confirm_removed_after_rescan():
+    # A no-verification submission is re-verified straight from `submitted`; a re-scan that finds the
+    # listing gone records confirmed_removed directly.
+    with temp_env():
+        sid = "sub_test01"
+        ledger.transition(sid, "webform", "found", found=True)
+        ledger.transition(sid, "webform", "submitted")
+        case = ledger.transition(sid, "webform", "confirmed_removed")
+        assert case["state"] == "confirmed_removed"
+
+
 def test_next_actions_blocked_stealth_or_operator_browser():
     with temp_env():
         d = _consenting()

@@ -1353,6 +1353,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".apk": "application/vnd.android.package-archive",
 }
 
 

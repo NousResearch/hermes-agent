@@ -168,8 +168,8 @@ class TextBatchAggregator:
 # Pre-compiled regexes for performance
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
+_RE_BOLD_UNDER = re.compile(r"\b__(?![\\s_])(.+?)(?<![\\s_])__\b", re.DOTALL)
+_RE_ITALIC_UNDER = re.compile(r"\b_(?![\\s_])(.+?)(?<![\\s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
@@ -395,6 +395,84 @@ def convert_table_to_bullets(text: str) -> str:
                 j += 1
             out.append(_render_table_block(table_block))
             i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return '\n'.join(out)
+
+
+# ─── HTML &lt;details&gt; → Plain Text Expansion ──────────────────────────────────
+# Discord does not render HTML collapsible tags natively.  Expand
+# &lt;details&gt;/&lt;summary&gt; blocks inline so the content is always visible.
+# Telegram has its own rich-message path for details; this is the fallback
+# shared by platforms that lack it.
+
+_DETAILS_BLOCK_RE = re.compile(
+    r"<details\b[^>]*>.*?</details>", re.IGNORECASE | re.DOTALL
+)
+_DETAILS_SUMMARY_TAG_RE = re.compile(r"</?summary\b[^>]*>", re.IGNORECASE)
+_DETAILS_TAG_RE = re.compile(r"</?details\b[^>]*>", re.IGNORECASE)
+
+
+def expand_details_blocks(text: str) -> str:
+    """Expand HTML ``&lt;details&gt;&lt;summary&gt;`` collapsible blocks inline.
+
+    Discord does not render HTML collapsible tags natively.  This function
+    strips the tags and, when a ``&lt;summary&gt;`` is present, prepends a visible
+    indicator (📎) so the summary text is still distinguishable from body
+    content.
+
+    Content inside fenced code blocks is left unchanged.
+    """
+    if not text or ("<details" not in text and "</details>" not in text):
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        # Detect the start of a details block (opening tag on this line,
+        # closing tag somewhere ahead)
+        if re.search(r'<details\b', line, re.IGNORECASE):
+            block = line
+            while i + 1 < len(lines) and "</details>" not in lines[i + 1]:
+                i += 1
+                block += '\n' + lines[i]
+            if i + 1 < len(lines):
+                i += 1
+                block += '\n' + lines[i]
+
+            summary_m = re.search(
+                r"<summary\b[^>]*>(.*?)</summary>",
+                block, re.IGNORECASE | re.DOTALL,
+            )
+            summary = summary_m.group(1).strip() if summary_m else ""
+
+            body = _DETAILS_SUMMARY_TAG_RE.sub("", block)
+            body = _DETAILS_TAG_RE.sub("", body)
+            body = body.strip()
+
+            if summary:
+                out.append(f"📎 {summary}")
+            if body:
+                out.append(body)
+            i += 1
             continue
 
         out.append(line)

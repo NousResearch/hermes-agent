@@ -102,7 +102,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, expand_details_blocks
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -3835,12 +3835,14 @@ class DiscordAdapter(BasePlatformAdapter):
     def format_message(self, content: str) -> str:
         """Format message for Discord.
 
-        Converts GFM markdown tables to bullet-list groups since Discord
-        does not render pipe tables natively.
+        Converts GFM markdown tables to bullet-list groups and expands
+        HTML ``<details>`` collapsible blocks inline, since Discord
+        does not render either natively.
         """
         if not content:
             return content
-        return convert_table_to_bullets(content)
+        content = convert_table_to_bullets(content)
+        return expand_details_blocks(content)
 
     async def _run_simple_slash(
         self,

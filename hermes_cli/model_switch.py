@@ -1950,10 +1950,20 @@ def list_authenticated_providers(
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
+            def _model_dedupe_key(value: str) -> str:
+                return str(value or "").replace("\u200b", "").strip().lower()
+
+            def _append_model_once(target: list, model: str, seen: set) -> None:
+                key = _model_dedupe_key(model)
+                if key and key not in seen:
+                    target.append(str(model).replace("\u200b", "").strip())
+                    seen.add(key)
+
             # Build models list from both default_model and full models array
             models_list = []
+            seen_model_keys = set()
             if default_model:
-                models_list.append(default_model)
+                _append_model_once(models_list, default_model, seen_model_keys)
             # Also include the full models list from config.
             # Hermes writes ``models:`` as a dict keyed by model id
             # (see hermes_cli/main.py::_save_custom_provider); older
@@ -1961,12 +1971,10 @@ def list_authenticated_providers(
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    _append_model_once(models_list, m, seen_model_keys)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    _append_model_once(models_list, m, seen_model_keys)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -2006,7 +2014,8 @@ def list_authenticated_providers(
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
-                        models_list = live_models
+                        for _live_model in live_models:
+                            _append_model_once(models_list, _live_model, seen_model_keys)
                 except Exception:
                     pass
 

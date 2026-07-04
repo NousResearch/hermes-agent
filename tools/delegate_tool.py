@@ -31,6 +31,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from agent.credential_pool import credential_pool_matches_provider
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -1813,6 +1814,17 @@ def _run_single_child(
     )
 
     child_pool = getattr(child, "_credential_pool", None)
+    if child_pool is not None and not credential_pool_matches_provider(
+        child_pool,
+        getattr(child, "provider", None),
+        base_url=getattr(child, "base_url", None),
+    ):
+        logger.debug(
+            "Skipping child credential pool for provider mismatch: child=%r pool=%r",
+            getattr(child, "provider", None),
+            getattr(child_pool, "provider", None),
+        )
+        child_pool = None
     leased_cred_id = None
     if child_pool is not None:
         leased_cred_id = child_pool.acquire_lease()
@@ -3036,11 +3048,18 @@ def _resolve_child_credential_pool(
     ``custom:<name>`` pool key derived from the base_url) and only share the
     parent's pool when both resolve to the *same* custom endpoint.
     """
-    if not effective_provider:
-        return getattr(parent_agent, "_credential_pool", None)
-
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
+    if not effective_provider:
+        return (
+            parent_pool
+            if credential_pool_matches_provider(
+                parent_pool,
+                parent_provider,
+                base_url=effective_base_url,
+            )
+            else None
+        )
 
     # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
     # provider string. Two custom runtimes are only interchangeable when they
@@ -3066,6 +3085,11 @@ def _resolve_child_credential_pool(
                 and parent_provider == "custom"
                 and parent_key is not None
                 and parent_key == child_key
+                and credential_pool_matches_provider(
+                    parent_pool,
+                    effective_provider,
+                    base_url=effective_base_url,
+                )
             ):
                 return parent_pool
 
@@ -3080,7 +3104,15 @@ def _resolve_child_credential_pool(
             )
         return None
 
-    if parent_pool is not None and effective_provider == parent_provider:
+    if (
+        parent_pool is not None
+        and effective_provider == parent_provider
+        and credential_pool_matches_provider(
+            parent_pool,
+            effective_provider,
+            base_url=effective_base_url,
+        )
+    ):
         return parent_pool
 
     try:

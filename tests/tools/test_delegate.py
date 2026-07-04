@@ -1853,14 +1853,28 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_rejects_mismatched_parent_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "deepseek"
+        parent._credential_pool = MagicMock()
+        parent._credential_pool.provider = "zai"
+
+        with patch("agent.credential_pool.load_pool", return_value=None) as load_mock:
+            result = _resolve_child_credential_pool("deepseek", parent)
+
+        self.assertIsNone(result)
+        load_mock.assert_called_once_with("deepseek")
+
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         result = _resolve_child_credential_pool(None, parent)
@@ -1906,6 +1920,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         parent.provider = "custom"
         parent.base_url = "https://endpoint-a.example.com/v1"
         parent._credential_pool = MagicMock(name="parent_custom_a_pool")
+        parent._credential_pool.provider = "custom:endpoint-a"
 
         child_pool = MagicMock(name="endpoint_b_pool")
         child_pool.has_credentials.return_value = True
@@ -1934,6 +1949,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         parent.provider = "custom"
         parent.base_url = "https://endpoint-a.example.com/v1"
         parent._credential_pool = MagicMock(name="parent_custom_a_pool")
+        parent._credential_pool.provider = "custom:endpoint-a"
 
         with patch(
             "agent.credential_pool.get_custom_provider_pool_key",
@@ -1944,6 +1960,24 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             )
 
         self.assertIs(result, parent._credential_pool)
+
+    def test_custom_endpoint_rejects_parent_pool_for_different_endpoint(self):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://endpoint-a.example.com/v1"
+        parent._credential_pool = MagicMock()
+        parent._credential_pool.provider = "custom:endpoint-b"
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:endpoint-a",
+        ), patch("agent.credential_pool.load_pool", return_value=None) as load_mock:
+            result = _resolve_child_credential_pool(
+                "custom", parent, "https://endpoint-a.example.com/v1"
+            )
+
+        self.assertIsNone(result)
+        load_mock.assert_called_once_with("custom:endpoint-a")
 
     def test_custom_unregistered_endpoint_returns_none(self):
         """A raw delegation.base_url with no matching custom_providers entry
@@ -1967,6 +2001,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_build_child_agent_assigns_parent_pool_when_shared(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         with patch("run_agent.AIAgent") as MockAgent:
@@ -2048,7 +2083,10 @@ class TestChildCredentialLeasing(unittest.TestCase):
         leased_entry.id = "cred-b"
 
         child = MagicMock()
+        child.provider = "openrouter"
+        child.base_url = "https://openrouter.ai/api/v1"
         child._credential_pool = MagicMock()
+        child._credential_pool.provider = "openrouter"
         child._credential_pool.acquire_lease.return_value = "cred-b"
         child._credential_pool.current.return_value = leased_entry
         child.run_conversation.return_value = {
@@ -2071,11 +2109,75 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
+    def test_run_single_child_skips_mismatched_credential_pool(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.provider = "deepseek"
+        child._credential_pool = MagicMock()
+        child._credential_pool.provider = "zai"
+        child._credential_pool.acquire_lease.return_value = "zai-cred"
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Use delegated model",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_not_called()
+        child._swap_credential.assert_not_called()
+        child._credential_pool.release_lease.assert_not_called()
+
+    def test_run_single_child_skips_custom_pool_for_different_endpoint(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.provider = "custom"
+        child.base_url = "https://endpoint-a.example.com/v1"
+        child._credential_pool = MagicMock()
+        child._credential_pool.provider = "custom:endpoint-b"
+        child._credential_pool.acquire_lease.return_value = "endpoint-b-cred"
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:endpoint-a",
+        ):
+            result = _run_single_child(
+                task_index=0,
+                goal="Use endpoint A",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_not_called()
+        child._swap_credential.assert_not_called()
+        child._credential_pool.release_lease.assert_not_called()
+
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 
         child = MagicMock()
+        child.provider = "openrouter"
+        child.base_url = "https://openrouter.ai/api/v1"
         child._credential_pool = MagicMock()
+        child._credential_pool.provider = "openrouter"
         child._credential_pool.acquire_lease.return_value = "cred-a"
         child._credential_pool.current.return_value = MagicMock(id="cred-a")
         child.run_conversation.side_effect = RuntimeError("boom")

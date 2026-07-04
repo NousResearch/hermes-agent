@@ -76,7 +76,12 @@ class PlatformBackend(Mem0Backend):
         infer: bool = False,
         metadata: dict | None = None,
     ) -> dict:
-        kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
+        # output_format="v1.1" avoids the SDK's per-call DeprecationWarning
+        # (add() defaults to the deprecated "v1.0" and warns otherwise).
+        kwargs: dict[str, Any] = {
+            "user_id": user_id, "agent_id": agent_id, "infer": infer,
+            "output_format": "v1.1",
+        }
         if metadata:
             kwargs["metadata"] = metadata
         return self._client.add(messages, **kwargs)

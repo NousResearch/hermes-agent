@@ -26,7 +26,24 @@ hermes auth add spotify --no-browser
 # → 浏览器重定向到 127.0.0.1:43827/callback，隧道转发到远程监听器，登录完成。
 ```
 
-Hermes 会在 `Waiting for callback on ...` 一行打印实际绑定的端口——从那里复制。Spotify 默认端口为 `43827`。
+`56121` 是 xAI OAuth 使用的端口。Spotify 请将其替换为 `43827`。Hermes 会在 `Waiting for callback on ...` 这一行打印它实际绑定的端口——从那里复制。
+
+## 仅限浏览器的远程环境（Cloud Shell / Codespaces / EC2 Instance Connect） {#browser-only-remote-cloud-shell--codespaces--ec2-instance-connect}
+
+如果你没有常规的 SSH 客户端——例如你在 GCP Cloud Shell、GitHub Codespaces、AWS EC2 Instance Connect、Gitpod 或其他基于浏览器的控制台中运行 Hermes——上述 SSH 隧道不可用。请改用 `--manual-paste`：
+
+```bash
+hermes auth add xai-oauth --manual-paste
+# → Hermes 打印一个授权 URL，在笔记本的浏览器中打开它。
+# → 在浏览器中批准。重定向到 127.0.0.1:56121/callback 会加载失败
+#   ——这是预期行为。
+# → 从失败页面的地址栏复制完整 URL。
+# → 在终端的 "Callback URL:" 提示处粘贴。
+```
+
+同样的标志也适用于集成模型选择器的 `hermes model --manual-paste`。如果不想粘贴完整 URL，也可以只接受裸的 `?code=...&state=...` 查询片段。
+
+Hermes 对两种路径使用**相同的 PKCE verifier、state 和 nonce**，因此上游 OAuth 流程在字节层面完全一致——`--manual-paste` 纯粹是回调跳转的传输方式变更，不会降低安全性。
 
 ## 哪些提供商需要此操作
 

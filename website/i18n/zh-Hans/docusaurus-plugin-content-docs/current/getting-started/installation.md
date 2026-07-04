@@ -18,7 +18,7 @@ description: "在 Linux、macOS、WSL2、原生 Windows 或通过 Termux 在 And
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows（原生，PowerShell）
+### Windows（原生，PowerShell）— 早期 Beta {#windows-native-powershell--early-beta}
 
 原生 Windows 无需 WSL 即可运行 Hermes——CLI、gateway、TUI 和工具均可原生运行。（原生安装与 WSL2 安装可干净共存；唯一仅限 WSL2 的功能见下方功能说明。）遇到 bug 请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
 

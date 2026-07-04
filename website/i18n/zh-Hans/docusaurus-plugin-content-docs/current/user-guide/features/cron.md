@@ -186,7 +186,7 @@ hermes cron edit <job_id> --clear-skills
 - `--remove-skill` 删除指定的已附加 skill
 - `--clear-skills` 删除所有已附加的 skill
 
-## 生命周期操作
+## 生命周期操作 {#lifecycle-actions}
 
 Cron 任务现在拥有比创建/删除更完整的生命周期。
 
@@ -416,7 +416,7 @@ cron:
 
 或设置 `HERMES_CRON_SCRIPT_TIMEOUT` 环境变量。解析顺序为：环境变量 → config.yaml → 默认 120 秒。
 
-## 无 agent 模式（纯脚本任务）
+## 无 agent 模式（纯脚本任务） {#no-agent-mode-script-only-jobs}
 
 对于不需要 LLM 推理的周期性任务——经典的看门狗、磁盘/内存告警、心跳、CI ping——在创建时传入 `no_agent=True`。调度器按计划运行你的脚本，并直接投递其 stdout，完全跳过 agent：
 

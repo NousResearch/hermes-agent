@@ -285,7 +285,7 @@ hermes profile import ./work-2026-03-29.tar.gz
 hermes profile import ./work-2026-03-29.tar.gz --name work-restored
 ```
 
-## 发行版命令
+## 发行版命令 {#distribution-commands}
 
 :::tip
 **初次接触发行版？** 请先阅读 [Profile 发行版用户指南](../user-guide/profile-distributions.md) — 其中通过完整示例介绍了原因、时机和方法。以下章节是在你已知需求时使用的简明 CLI 参考。

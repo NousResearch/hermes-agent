@@ -329,7 +329,7 @@ google-chrome \
 
 通过 CDP 连接后，所有浏览器工具（`browser_navigate`、`browser_click` 等）将在您的实时浏览器实例上运行，而非启动云端会话。
 
-### WSL2 + Windows Chrome：优先使用 MCP 而非 `/browser connect`
+### WSL2 + Windows Chrome：优先使用 MCP 而非 `/browser connect` {#wsl2--windows-chrome-prefer-mcp-over-browser-connect}
 
 若 Hermes 在 WSL2 内运行，但您想控制的 Chrome 窗口在 Windows 宿主机上，`/browser connect` 通常不是最佳方案。
 

@@ -506,7 +506,7 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 **为什么需要新的访问令牌？** 每个 Matrix 访问令牌绑定到特定的设备 ID。使用相同设备 ID 但新的加密密钥会导致其他 Matrix 客户端不信任该设备（它们将身份密钥的变更视为潜在的安全漏洞）。新的访问令牌获得一个没有过期密钥历史的新设备 ID，其他客户端会立即信任它。
 :::
 
-## 代理模式（macOS 上的 E2EE）
+## 代理模式（macOS 上的 E2EE） {#proxy-mode-e2ee-on-macos}
 
 Matrix E2EE 需要 `libolm`，而该库无法在 macOS ARM64（Apple Silicon）上编译。`hermes-agent[matrix]` extra 仅限 Linux。如果你在 macOS 上，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
 

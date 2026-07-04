@@ -215,7 +215,7 @@ Hermes 有四种插件：
 
 Memory provider 和 context engine 是 **provider 插件** — 每种类型同时只能有一个激活。Model provider 也是插件，但可以同时加载多个；用户通过 `--provider` 或 `config.yaml` 一次选择一个。通用插件可以任意组合启用。
 
-## 可插拔接口 — 各场景对应文档
+## 可插拔接口 — 各场景对应文档 {#pluggable-interfaces--where-to-go-for-each}
 
 上表展示了四种插件类别，但在"通用插件"中，`PluginContext` 暴露了多个不同的扩展点 — Hermes 还接受 Python 插件系统之外的扩展（配置驱动的后端、shell hook 命令、外部服务器等）。使用下表找到适合你需求的文档：
 
@@ -324,7 +324,7 @@ context:
 
 在运行中的会话里，`/plugins` 显示当前已加载的插件。
 
-## 注入消息
+## 注入消息 {#injecting-messages}
 
 插件可使用 `ctx.inject_message()` 向活跃对话注入消息：
 

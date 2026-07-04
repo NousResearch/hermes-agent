@@ -220,7 +220,7 @@ hermes model
 
 ---
 
-## 超时设置
+## 超时设置 {#timeouts}
 
 Hermes 会自动检测本地端点（localhost、局域网 IP）并放宽其流式传输超时限制。大多数情况下无需额外配置。
 

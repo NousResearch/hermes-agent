@@ -46,7 +46,7 @@ hermes teams-pipeline maintain-subscriptions
 hermes teams-pipeline maintain-subscriptions --dry-run
 ```
 
-### 自动化订阅续期（生产环境必须配置）
+### 自动化订阅续期（生产环境必须配置） {#automating-subscription-renewal-required-for-production}
 
 **Microsoft Graph 订阅最多 72 小时后过期。** 若无任何续期操作，会议通知将在 3 天后静默停止，流水线看起来像是"故障"。这是所有基于 Graph 的集成中最常见的运维故障模式。
 

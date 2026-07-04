@@ -90,7 +90,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 
 恢复之前的会话时（`hermes -c` 或 `hermes --resume <id>`），横幅与输入提示符之间会出现一个"Previous Conversation"面板，显示对话历史的简洁摘要。详情及配置说明参见[会话——恢复时的对话摘要](sessions.md#conversation-recap-on-resume)。
 
-## 快捷键
+## 快捷键 {#keybindings}
 
 | 按键 | 操作 |
 |-----|--------|
@@ -378,7 +378,7 @@ auxiliary:
 
 压缩触发时，中间轮次会被摘要，同时始终保留前 3 轮和后 20 轮。
 
-## 后台会话
+## 后台会话 {#background-sessions}
 
 在独立的后台会话中运行 prompt，同时继续使用 CLI 进行其他工作：
 

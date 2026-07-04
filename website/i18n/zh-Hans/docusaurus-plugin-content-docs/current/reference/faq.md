@@ -446,7 +446,7 @@ lsof -i :8080
 hermes config show
 ```
 
-#### WSL：网关持续断开连接或 `hermes gateway start` 失败
+#### WSL：网关持续断开连接或 `hermes gateway start` 失败 {#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails}
 
 **原因：** WSL 的 systemd 支持不稳定。许多 WSL2 安装未启用 systemd，即使启用，服务也可能在 WSL 重启或 Windows 空闲关机后无法存活。
 
@@ -614,7 +614,7 @@ hermes chat
 
 ---
 
-## Profiles（配置文件）
+## Profiles（配置文件） {#profiles}
 
 ### Profiles 与直接设置 HERMES_HOME 有何不同？
 

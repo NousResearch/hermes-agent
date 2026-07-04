@@ -126,7 +126,7 @@ Hermes 在 `config.yaml` 中只管理一个 Entra 专属配置项：
 
 Entra 模式下不会将任何密钥写入 `~/.hermes/.env`——`azure-identity` 在进程内缓存令牌（在可用时也会使用操作系统密钥链 / `~/.IdentityService`）。
 
-### 凭据解析顺序
+### 凭据解析顺序 {#credential-resolution-order}
 
 `azure-identity` 的 `DefaultAzureCredential` 在每次令牌请求时按以下链路逐一尝试，在第一个返回令牌的凭据处停止：
 
@@ -169,7 +169,7 @@ hermes         # 使用你的 az login 令牌
 **CI 中的服务主体：**
 - 在 runner 环境中设置 `AZURE_TENANT_ID`、`AZURE_CLIENT_ID`、`AZURE_CLIENT_SECRET`。
 
-#### 主权云（政府云、中国云）
+#### 主权云（政府云、中国云） {#sovereign-clouds-government-china}
 
 导出 `AZURE_AUTHORITY_HOST`（例如 Azure Government 使用 `https://login.microsoftonline.us`，Azure China 使用 `https://login.partner.microsoftonline.cn`）。`azure-identity` 会直接读取该变量。
 

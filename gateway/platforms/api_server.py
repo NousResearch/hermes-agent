@@ -4432,7 +4432,16 @@ class APIServerAdapter(BasePlatformAdapter):
         result: Dict[str, Any],
         final_response: Any,
     ) -> List[Dict[str, Any]]:
-        """Build the stored Responses transcript without duplicating history."""
+        """Build the stored Responses transcript without duplicating history.
+
+        When context compression occurs during a turn the agent returns a
+        compressed full transcript in ``result["messages"]`` (starting with a
+        summary) and sets ``result["_compressed"] = True``.  Because the
+        compressed transcript does not share the input ``conversation_history``
+        prefix, the normal turn-start detection fails and old code would
+        concatenate the uncompressed history on front, bloating the stored
+        context and re-triggering compression on every subsequent request.
+        """
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
@@ -4444,6 +4453,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 result,
             )
             if turn_start:
+                return list(agent_messages)
+
+            # turn_start == 0: agent_messages does not start with prior.
+            # This can happen because compression rewrote the transcript
+            # (summary prefix replaces original history), OR because
+            # agent_messages only carries the current turn without prior.
+            # The ``_compressed`` flag (set by _run_agent after compaction)
+            # distinguishes — skip the concatenation and use the compressed
+            # transcript directly.
+            if result.get("_compressed"):
                 return list(agent_messages)
 
             full_history = prior
@@ -4706,6 +4725,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                    # Signal whether context compression occurred during this turn
+                    # so _build_response_conversation_history can skip the
+                    # prior-concatenation path and store the compressed transcript
+                    # directly.  Rotation mode changes agent.session_id; in-place
+                    # mode sets _last_compaction_in_place (see #38763).
+                    _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+                    _session_rotated = (
+                        isinstance(_eff_sid, str) and isinstance(session_id, str)
+                        and _eff_sid != session_id
+                    )
+                    if _compacted_in_place or _session_rotated:
+                        result["_compressed"] = True
                     return result, usage
                 finally:
                     clear_session_vars(tokens)

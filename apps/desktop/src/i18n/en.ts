@@ -25,7 +25,9 @@ export const en: Translations = {
     docs: 'Docs',
     done: 'Done',
     error: 'Error',
+    expand: 'Expand',
     failed: 'Failed',
+    formatJson: 'Format JSON',
     free: 'Free',
     loading: 'Loading…',
     notSet: 'Not set',
@@ -38,6 +40,7 @@ export const en: Translations = {
     set: 'Set',
     skip: 'Skip',
     update: 'Update',
+    tryHint: term => `Try “${term}”`,
     on: 'On',
     off: 'Off'
   },
@@ -165,8 +168,7 @@ export const en: Translations = {
 
   remoteDisplayBanner: {
     message: reason =>
-      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
-    dismiss: 'Dismiss'
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
 
   titlebar: {
@@ -495,8 +497,6 @@ export const en: Translations = {
       enterValueFirst: 'Enter a value first.',
       couldNotSave: 'Could not save credential.',
       remove: 'Remove',
-      or: 'or',
-      escToCancel: 'esc to cancel',
       getKey: 'Get a key',
       saving: 'Saving'
     },
@@ -631,7 +631,22 @@ export const en: Translations = {
       catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
       catalogInstallFailed: name => `Failed to install ${name}`,
       catalogEnvPrompt: name => `${name} requires credentials`,
-      catalogEnvRequired: 'Fill in the required values before installing.'
+      catalogEnvRequired: 'Fill in the required values before installing.',
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`${tools} tools`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} resources`] : [])].join(', ')} enabled`,
+      statusConnecting: 'Connecting…',
+      statusNeedsAuth: 'Needs authentication',
+      statusError: 'Error',
+      statusOff: 'Off',
+      allServers: 'All servers',
+      authenticatedTitle: 'Authenticated',
+      authenticatedMessage: (server, count) => `${server}: ${count} tools`,
+      waitingForBrowser: 'Waiting for browser…',
+      authenticate: 'Authenticate',
+      unsavedConnect: 'Unsaved — save mcp.json to connect.',
+      enableTool: tool => `Enable ${tool}`,
+      disableTool: tool => `Disable ${tool}`,
+      noOutput: 'No output yet.'
     },
     model: {
       loading: 'Loading model configuration...',
@@ -758,11 +773,12 @@ export const en: Translations = {
 
   skills: {
     tabSkills: 'Skills',
-    tabToolsets: 'Toolsets',
+    tabToolsets: 'Tools',
+    tabMcp: 'MCP',
     tabHub: 'Browse Hub',
     all: 'All',
     searchSkills: 'Search skills...',
-    searchToolsets: 'Search toolsets...',
+    searchToolsets: 'Search tools...',
     refresh: 'Refresh skills',
     refreshing: 'Refreshing skills',
     loading: 'Loading capabilities...',
@@ -784,8 +800,32 @@ export const en: Translations = {
     toolsetDisabled: 'Toolset disabled',
     appliesToNewSessions: name => `${name} applies to new sessions.`,
     failedToUpdate: name => `Failed to update ${name}`,
+    sortMostUsed: 'Most used',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ Most used',
+    sortLeastUsedAsc: '↑ Least used',
+    enableAll: 'Enable all',
+    disableAll: 'Disable all',
+    disableUnused: 'Disable unused',
+    bulkUpdated: count => `Updated ${count} ${count === 1 ? 'item' : 'items'} for new sessions.`,
+    bulkNoChange: 'Nothing to change.',
+    usageCount: count => `used ${count}×`,
+    provenance: {
+      agent: 'Learned',
+      bundled: 'Built-in',
+      hub: 'Hub'
+    },
+    emptyNoneFound: noun => `No ${noun} found`,
+    emptyNothingMatches: query => `Nothing matches “${query}”.`,
+    emptyNoneAvailable: noun => `No ${noun} available yet.`,
+    changesApplyNewSessions: 'Changes apply to new sessions.',
+    skillUpdated: 'Skill updated',
+    edit: 'Edit',
+    archive: 'Archive',
+    skillArchivedTitle: 'Skill archived',
+    skillArchivedMessage: 'Restorable via hermes curator restore.',
     hub: {
-      searchPlaceholder: 'Search the skill hub (official, GitHub, community)...',
+      searchPlaceholder: 'Search the skill hub',
       search: 'Search',
       searching: 'Searching...',
       connectingHubs: 'Connecting to skill hubs...',
@@ -800,6 +840,7 @@ export const en: Translations = {
       install: 'Install',
       installing: 'Installing...',
       uninstall: 'Uninstall',
+      uninstalling: 'Uninstalling...',
       updateAll: 'Update installed',
       updating: 'Updating...',
       preview: 'Preview',
@@ -888,7 +929,6 @@ export const en: Translations = {
     ageHours: hours => `${hours}h ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
-    tokensK: k => `${k}k tok`,
     tokens: value => `${value} tok`
   },
 
@@ -905,7 +945,7 @@ export const en: Translations = {
     appearance: 'Appearance',
     settings: 'Settings',
     changeTheme: 'Change theme',
-    changeColorMode: 'Change color mode...',
+    changeColorMode: 'Change color mode…',
     pets: {
       title: 'Pets',
       placeholder: 'Search pets…',
@@ -952,7 +992,8 @@ export const en: Translations = {
       startOver: 'Start over'
     },
     installTheme: {
-      title: 'Install theme...',
+      title: 'Install theme…',
+      pageTitle: 'Install theme',
       placeholder: 'Search the VS Code Marketplace...',
       loading: 'Searching the Marketplace...',
       error: 'Could not reach the Marketplace.',
@@ -975,7 +1016,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Skills & Tools', detail: 'Enable skills, toolsets, and providers' },
+      skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -1218,9 +1259,9 @@ export const en: Translations = {
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
     switchToProfile: name => `Switch to ${name}`,
-    manageProfiles: 'Manage profiles...',
+    manageProfiles: 'Manage profiles…',
     actionsFor: name => `Actions for ${name}`,
-    color: 'Color...',
+    color: 'Color…',
     colorFor: name => `Color for ${name}`,
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
@@ -1233,6 +1274,8 @@ export const en: Translations = {
     env: 'env',
     defaultBadge: 'Default',
     rename: 'Rename',
+    renameMenu: 'Rename…',
+    editSoul: 'Edit SOUL.md…',
     copySetup: 'Copy setup',
     copying: 'Copying...',
     modelLabel: 'Model',
@@ -1433,7 +1476,7 @@ export const en: Translations = {
   sidebar: {
     nav: {
       'new-session': 'New session',
-      skills: 'Skills & Tools',
+      skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts'
     },

@@ -191,7 +191,10 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
+        # client_max_size makes aiohttp enforce the cap on every read path,
+        # including Transfer-Encoding: chunked bodies that carry no
+        # Content-Length and would otherwise bypass the header check below.
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
@@ -479,9 +482,21 @@ class WebhookAdapter(BasePlatformAdapter):
         # Read body (must be done before any validation)
         try:
             raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
 
         # Validate HMAC signature FIRST (skip only for the explicit local-test
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,

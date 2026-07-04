@@ -725,6 +725,25 @@ def load_cli_config() -> Dict[str, Any]:
 CLI_CONFIG = load_cli_config()
 
 
+def _resolve_mouse_support() -> bool:
+    """Return whether the prompt_toolkit session should enable SGR mouse mode.
+
+    Driven by ``display.mouse_input`` in config.yaml. Defaults to False so the
+    existing selection-copy flow (terminal-native) keeps working out of the
+    box — the cross-terminal SGR mouse mode has known interaction with text
+    selection on a few emulators, so the user has to opt in explicitly.
+
+    Kept as a small helper so tests can monkeypatch ``CLI_CONFIG`` (via
+    ``cli.CLI_CONFIG.setdefault`` / module reload) and re-import the helper
+    in isolation. See #58170.
+    """
+    try:
+        return bool(CLI_CONFIG.get("display", {}).get("mouse_input", False))
+    except Exception:
+        # A malformed user config must NEVER crash TUI startup.
+        return False
+
+
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
@@ -14859,7 +14878,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             key_bindings=kb,
             style=style,
             full_screen=False,
-            mouse_support=False,
+            # Opt-in mouse cursor placement + click-to-expand on expandable
+            # sections. When ``display.mouse_input`` is true, prompt_toolkit
+            # enables SGR mouse mode — Hermes already has cleanup for the SGR
+            # mouse escape sequences on exit (cli.py: ``_SGR_MOUSE_*`` regex
+            # block) so no extra teardown logic is needed. Default is off so
+            # existing terminal pastes / selection-copy flows on iTerm2 etc.
+            # remain identical to today. See #58170.
+            mouse_support=_resolve_mouse_support(),
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
             # Read from display.cli_refresh_interval (default 0 = disabled).
             # When non-zero, prompt_toolkit redraws the UI on this cadence

@@ -195,6 +195,11 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except NotImplementedError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

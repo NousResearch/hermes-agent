@@ -325,6 +325,59 @@ def test_login_non_interactive_provider_returns_404_not_500(gated_app):
     assert "stub" in names
 
 
+def test_password_only_provider_prevents_auto_oauth_redirect_and_gates_login(gated_app):
+    """Regression: when the only session provider is password-only,
+    the auto-SSO redirect must NOT 500 on start_login().
+
+    Previously _auto_sso_response() picked the sole provider and called
+    start_login(), which raised NotImplementedError, surfacing as 500.
+    After the fix the middleware skips auto-redirect and falls through
+    to the /login interstitial, and /auth/login returns 400 instead of 500.
+    """
+    clear_providers()
+    from hermes_cli.dashboard_auth.base import DashboardAuthProvider
+    class PasswordOnlyProvider(DashboardAuthProvider):
+        name = "basic-like"
+        display_name = "Password Only"
+        supports_password = True
+        # supports_session defaults to True, so list_session_providers includes us
+        def start_login(self, *, redirect_uri):
+            raise NotImplementedError("password-only")
+        def complete_login(self, *, code, state, code_verifier, redirect_uri):
+            raise NotImplementedError
+        def verify_session(self, *, access_token):
+            return None
+        def refresh_session(self, *, refresh_token):
+            raise NotImplementedError
+        def revoke_session(self, *, refresh_token):
+            pass
+
+    register_provider(PasswordOnlyProvider())
+
+    try:
+        r = gated_app.get("/", follow_redirects=False)
+        assert r.status_code == 302, f"Expected 302, got {r.status_code}: {r.text}"
+        # Must land on /login, NOT /auth/login?provider=basic-like (which would 500)
+        assert "/login" in r.headers["location"], r.headers["location"]
+        assert "auth/login" not in r.headers["location"], r.headers["location"]
+
+        login = gated_app.get(r.headers["location"], follow_redirects=False)
+        assert login.status_code == 200, login.text
+        # The login interstitial should contain the password form, not an error page
+        assert "Sign in" in login.text or "password" in login.text.lower(), login.text[:200]
+
+        # Direct access to /auth/login?provider=basic-like should 400, not 500
+        auth_login = gated_app.get(
+            "/auth/login?provider=basic-like", follow_redirects=False
+        )
+        assert auth_login.status_code == 400, (
+            f"Expected 400 on start_login for password-only provider, got {auth_login.status_code}: {auth_login.text}"
+        )
+    finally:
+        clear_providers()
+        register_provider(StubAuthProvider())
+
+
 def test_callback_without_pkce_cookie_returns_400(gated_app):
     # No prior /auth/login → no PKCE cookie.
     r = gated_app.get(

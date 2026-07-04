@@ -420,10 +420,41 @@ def _compute_tool_definitions(
                             ", ".join(resolved) if resolved else "none",
                         )
                 else:
-                    resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    # Composite toolsets (e.g. ``coding``, ``safe``,
+                    # ``debugging``) are supersets: ``coding`` includes every
+                    # ``terminal`` + ``file`` tool. Subtracting it whole used
+                    # to strip tools the user had explicitly enabled under the
+                    # narrower ``terminal`` / ``file`` toolsets, leaving the
+                    # model with Tools: 0 (#58281). Mirror #33924's protection
+                    # for hermes-* bundles — subtract only tools exclusive to
+                    # the disabled composite (i.e. tools that no other
+                    # currently-enabled toolset also exposes). Tools shared
+                    # with an enabled toolset are preserved so a minimal
+                    # "Blank Slate" config that disables a composite doesn't
+                    # have its explicit tools gutted.
+                    resolved = set(resolve_toolset(toolset_name))
+                    if tools_to_include:
+                        shared = resolved & tools_to_include
+                        if shared and not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                            _WARNED_DISABLED_BUNDLES.add(toolset_name)
+                            logger.info(
+                                "agent.disabled_toolsets contains composite "
+                                "toolset '%s'; only its tools that aren't "
+                                "shared with a currently-enabled toolset are "
+                                "removed (%d shared tools preserved). To "
+                                "actually disable a shared tool, drop it from "
+                                "your enabled list rather than disabling the "
+                                "covering composite (#58281).",
+                                toolset_name,
+                                len(shared),
+                            )
+                    # Subtract only the exclusive subset; whatever any enabled
+                    # toolset still contributes stays.
+                    exclusive = resolved - tools_to_include
+                    tools_to_include.difference_update(exclusive)
+                    resolved_for_log = sorted(exclusive)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_for_log) if resolved_for_log else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)

@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -18,6 +19,26 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+
+
+def _patch_auto_describe_aux(monkeypatch, description: str):
+    """Patch the profile describer's auxiliary client with a deterministic reply."""
+    from unittest.mock import MagicMock
+
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = json.dumps({"description": description})
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(return_value=response)
+    import agent.auxiliary_client as aux_client
+
+    monkeypatch.setattr(
+        aux_client,
+        "get_text_auxiliary_client",
+        lambda purpose: (client, "test-model"),
+    )
+    monkeypatch.setattr(aux_client, "get_auxiliary_extra_body", lambda: {})
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -2434,3 +2455,50 @@ def test_patch_invalid_profile_name_returns_400_without_writing_metadata(
     if worker_yaml.exists():
         failures.append("worker profile.yaml was written for an invalid profile name")
     assert not failures, "; ".join(failures)
+
+
+def test_auto_describe_default_profile_writes_to_default_home(profile_client, monkeypatch):
+    """POST /profiles/default/describe-auto must use the canonical default root."""
+    client, dirs = profile_client
+    default_home = dirs["default"]
+    worker_dir = dirs["worker"]
+    _patch_auto_describe_aux(monkeypatch, "auto generated default role")
+
+    res = client.post(
+        "/api/plugins/kanban/profiles/default/describe-auto",
+        json={"overwrite": True},
+    )
+
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["ok"] is True
+    assert data["description"] == "auto generated default role"
+    default_yaml = default_home / "profile.yaml"
+    worker_yaml = worker_dir / "profile.yaml"
+    assert default_yaml.exists(), "profile.yaml not written to default profile root"
+    assert not worker_yaml.exists(), (
+        "profile.yaml was incorrectly written to the worker profile directory"
+    )
+
+
+@pytest.mark.parametrize("profile_path", ["%2E%2E", "bad.name"])
+def test_auto_describe_invalid_profile_name_returns_not_ok_without_writing_metadata(
+    profile_client,
+    monkeypatch,
+    profile_path,
+):
+    """Invalid auto-describe path segments must not resolve to profile dirs."""
+    client, dirs = profile_client
+    _patch_auto_describe_aux(monkeypatch, "should not be written")
+
+    res = client.post(
+        f"/api/plugins/kanban/profiles/{profile_path}/describe-auto",
+        json={"overwrite": True},
+    )
+
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["ok"] is False
+    assert "Invalid profile name" in data["reason"]
+    assert not (dirs["default"] / "profile.yaml").exists()
+    assert not (dirs["worker"] / "profile.yaml").exists()

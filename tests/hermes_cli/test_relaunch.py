@@ -70,6 +70,14 @@ class TestExtractInheritedFlags:
         argv = ["-s", "foo", "-s", "bar", "--tui"]
         assert relaunch_mod._extract_inherited_flags(argv) == ["-s", "foo", "-s", "bar", "--tui"]
 
+    def test_preserves_toolsets_with_value(self):
+        argv = ["--toolsets", "web,terminal", "--tui", "sessions", "browse"]
+        assert relaunch_mod._extract_inherited_flags(argv) == [
+            "--toolsets",
+            "web,terminal",
+            "--tui",
+        ]
+
 
 class TestInheritedFlagTable:
     """Sanity-check the argparse-introspected table that drives extraction."""
@@ -80,6 +88,7 @@ class TestInheritedFlagTable:
         for short, long_ in [
             ("-p", "--profile"),
             ("-m", "--model"),
+            ("-t", "--toolsets"),
             ("-s", "--skills"),
         ]:
             assert table[short] == table[long_], f"{short}/{long_} disagree"
@@ -91,7 +100,7 @@ class TestInheritedFlagTable:
 
     def test_value_flags_take_value(self):
         table = dict(relaunch_mod._INHERITED_FLAGS_TABLE)
-        for flag in ["--profile", "--model", "--provider", "--skills"]:
+        for flag in ["--profile", "--model", "--provider", "--toolsets", "--skills"]:
             assert table[flag] is True, f"{flag} should take a value"
 
     def test_excluded_flags_are_not_inherited(self):
@@ -128,6 +137,18 @@ class TestBuildRelaunchArgv:
         assert "sessions" not in argv
         assert "browse" not in argv
 
+    def test_preserves_toolsets_across_relaunch(self, monkeypatch):
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
+        original = ["--toolsets", "web,terminal", "sessions", "browse"]
+        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"], original_argv=original)
+        assert argv == [
+            "/usr/bin/hermes",
+            "--toolsets",
+            "web,terminal",
+            "--resume",
+            "abc",
+        ]
+
     def test_can_disable_preserve(self, monkeypatch):
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
         original = ["--tui", "chat"]
@@ -146,6 +167,7 @@ class TestRelaunch:
             calls.append((path, argv))
             raise SystemExit(0)
 
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "linux")
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
 

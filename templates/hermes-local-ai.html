@@ -1,789 +1,738 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hermes 🤖 Local AI</title>
-    <style>
-      :root {
-        --void: #050505;
-        --gold: #d4af37;
-        --neon: #00ff9d;
-        --ink: #f0ece4;
-        --muted: rgba(240, 236, 228, 0.38);
-        --border: rgba(212, 175, 55, 0.16);
-        --border-hot: rgba(212, 175, 55, 0.5);
-        --bg: #030303;
-        --panel: #090909;
-        --panel-2: #0b0b0b;
-        --glow: rgba(212, 175, 55, 0.08);
-      }
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hermes 🤖 Agentic Entrepreneurship Viewport</title>
+<style>
+  :root {
+    --void: #050505;
+    --gold: #d4af37;
+    --neon: #00ff9d;
+    --ink: #f0ece4;
+    --muted: rgba(240,236,228,0.38);
+    --border: rgba(212,175,55,0.16);
+    --border-hot: rgba(212,175,55,0.5);
+    --bg: #030303;
+    --panel: #090909;
+    --panel-2: #0b0b0b;
+    --glow: rgba(212,175,55,0.08);
+  }
 
-      * { box-sizing: border-box; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--void);
+    color: var(--ink);
+    font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.03;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(212,175,55,0.12) 2px,
+      rgba(212,175,55,0.12) 4px
+    );
+  }
 
-      html, body {
-        margin: 0; padding: 0;
-        background: var(--void);
-        color: var(--ink);
-        font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace;
-        min-height: 100vh;
-        overflow-x: hidden;
-      }
+  .wrap {
+    min-height: 100vh;
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    gap: 1px;
+    background: var(--border);
+  }
+  .statusbar {
+    background: var(--panel);
+    padding: 8px 14px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-hot);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .statusbar .left, .statusbar .right {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .chip {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: var(--panel-2);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .chip.hot {
+    color: var(--gold);
+    border-color: var(--border-hot);
+    box-shadow: 0 0 12px var(--glow);
+  }
+  .chip .live-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--neon);
+    box-shadow: 0 0 0 0 rgba(0,255,157,0.5);
+    animation: pulse 1.8s infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(0,255,157,0.5); }
+    70% { box-shadow: 0 0 0 10px rgba(0,255,157,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,255,157,0); }
+  }
 
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 9999;
-        opacity: 0.03;
-        background: repeating-linear-gradient(
-          0deg,
-          transparent,
-          transparent 2px,
-          rgba(212, 175, 55, 0.12) 2px,
-          rgba(212, 175, 55, 0.12) 4px
-        );
-      }
+  header {
+    background: var(--panel);
+    padding: 14px 16px;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; gap: 12px; align-items: center; }
+  .glyph {
+    width: 40px; height: 40px;
+    border: 1px solid var(--border-hot);
+    display: grid;
+    place-items: center;
+    color: var(--gold);
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    background: var(--panel-2);
+    box-shadow: 0 0 18px var(--glow);
+    font-size: 20px;
+  }
+  .title { color: var(--gold); font-weight: 700; letter-spacing: 0.08em; font-size: 14px; }
+  .sub { color: var(--muted); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pillrow { display:flex; gap:8px; flex-wrap:wrap; margin-top: 6px; }
+  .pill {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    background: var(--panel-2);
+  }
+  .pill.hot {
+    color: var(--gold);
+    border-color: var(--border-hot);
+    box-shadow: 0 0 10px var(--glow);
+  }
 
-      .wrap {
-        min-height: 100vh;
-        display: grid;
-        grid-template-rows: auto auto 1fr auto;
-        gap: 1px;
-        background: var(--border);
-      }
+  .tabbar {
+    background: var(--panel);
+    padding: 10px 14px 0;
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    background: var(--panel-2);
+    color: var(--muted);
+    border: 1px solid transparent;
+    border-bottom: 0;
+    padding: 8px 12px;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    font-family: inherit;
+    position: relative;
+  }
+  .tab[aria-selected="true"] {
+    color: var(--gold);
+    border-color: var(--border-hot);
+    box-shadow: 0 -4px 12px var(--glow);
+  }
+  .tab .badge {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--neon);
+    box-shadow: 0 0 0 0 rgba(0,255,157,0.5);
+    animation: pulse 1.8s infinite;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
 
-      .statusbar {
-        background: var(--panel);
-        padding: 8px 14px;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        border-bottom: 1px solid var(--border-hot);
-        position: sticky;
-        top: 0;
-        z-index: 50;
-      }
-      .statusbar .left, .statusbar .right {
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      .chip {
-        padding: 5px 10px;
-        border: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 11px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        background: var(--panel-2);
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-      .chip.hot {
-        color: var(--gold);
-        border-color: var(--border-hot);
-        box-shadow: 0 0 12px var(--glow);
-      }
-      .chip .live-dot {
-        width: 8px; height: 8px;
-        border-radius: 50%;
-        background: var(--neon);
-        box-shadow: 0 0 0 0 rgba(0, 255, 157, 0.5);
-        animation: pulse 1.8s infinite;
-        flex-shrink: 0;
-      }
-      @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0.5); }
-        70% { box-shadow: 0 0 0 10px rgba(0, 255, 157, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0); }
-      }
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1px;
+    background: var(--border);
+  }
+  @media (min-width: 900px) {
+    .layout { grid-template-columns: 320px 1fr; }
+  }
+  nav, main {
+    background: var(--bg);
+    min-height: 260px;
+  }
+  nav {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .nav-title {
+    color: var(--gold);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+  button.cmd {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--ink);
+    padding: 10px 12px;
+    text-align: left;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+  }
+  button.cmd:hover { border-color: var(--border-hot); color: var(--gold); }
+  button.cmd:active { background: var(--panel-2); }
+  button.cmd .arrow { color: var(--muted); font-size: 10px; }
 
-      header {
-        background: var(--panel);
-        padding: 14px 16px;
-        display: flex;
-        gap: 12px;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px solid var(--border);
-      }
-      .brand {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-      }
-      .glyph {
-        width: 40px; height: 40px;
-        border: 1px solid var(--border-hot);
-        display: grid;
-        place-items: center;
-        color: var(--gold);
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        background: var(--panel-2);
-        box-shadow: 0 0 18px var(--glow);
-        font-size: 20px;
-      }
-      .title { color: var(--gold); font-weight: 700; letter-spacing: 0.08em; }
-      .sub { color: var(--muted); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; }
-      .pillrow { display:flex; gap:8px; flex-wrap:wrap; margin-top: 6px; }
-      .pill {
-        padding: 4px 10px;
-        border: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 10px;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        background: var(--panel-2);
-      }
-      .pill.hot {
-        color: var(--gold);
-        border-color: var(--border-hot);
-        box-shadow: 0 0 10px var(--glow);
-      }
+  main {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .panel {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    padding: 14px;
+  }
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--gold);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 11px;
+    margin-bottom: 10px;
+    align-items: center;
+  }
+  .panel-head .sub { color: var(--muted); text-transform: none; letter-spacing: 0; }
+  .status { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip.result {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    background: var(--panel-2);
+    min-width: 80px;
+  }
+  .chip.result.ok { color:#7ee787; border-color:rgba(126,231,135,0.35); }
+  .chip.result.err { color:#ff7b72; border-color:rgba(255,123,114,0.35); }
 
-      .tabbar {
-        background: var(--panel);
-        padding: 10px 14px 0;
-        display: flex;
-        gap: 2px;
-        border-bottom: 1px solid var(--border);
-        overflow-x: auto;
-      }
-      .tab {
-        background: var(--panel-2);
-        color: var(--muted);
-        border: 1px solid transparent;
-        border-bottom: 0;
-        padding: 8px 12px;
-        font-size: 11px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        cursor: pointer;
-        font-family: inherit;
-        position: relative;
-      }
-      .tab[aria-selected="true"] {
-        color: var(--gold);
-        border-color: var(--border-hot);
-        box-shadow: 0 -4px 12px var(--glow);
-      }
-      .tab .badge {
-        display: inline-block;
-        width: 6px; height: 6px;
-        border-radius: 50%;
-        background: var(--neon);
-        box-shadow: 0 0 0 0 rgba(0,255,157,0.5);
-        animation: pulse 1.8s infinite;
-        margin-left: 8px;
-        vertical-align: middle;
-      }
+  .term {
+    border: 1px solid var(--border-hot);
+    background: var(--panel-2);
+    padding: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .prompt { color: var(--gold); font-weight: 800; white-space: nowrap; }
+  input[type="text"] {
+    background: transparent;
+    border: 0;
+    color: var(--ink);
+    outline: none;
+    font-family: inherit;
+    flex: 1;
+    caret-color: var(--gold);
+  }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .log { color: var(--neon); }
+  .err-log { color: #ff7b72; }
+  kbd {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 2px 6px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  @media (max-width: 640px) {
+    .statusbar { gap: 6px; }
+    .glyph { width: 32px; height: 32px; font-size: 16px; }
+    .title { font-size: 13px; }
+    button.cmd { font-size: 11px; padding: 9px 10px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="statusbar">
+    <div class="left">
+      <div class="chip hot"><span class="live-dot"></span>LIVE</div>
+      <div class="chip" id="chip-surface">Surface: browser</div>
+      <div class="chip" id="chip-model">Model: not loaded</div>
+      <div class="chip" id="chip-backend">Backend: local</div>
+      <div class="chip" id="chip-clock"></div>
+    </div>
+    <div class="right">
+      <div class="chip">$OS <span style="color:var(--neon)">●</span></div>
+    </div>
+  </div>
 
-      .layout {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 1px;
-        background: var(--border);
-      }
-      @media (min-width: 900px) {
-        .layout { grid-template-columns: 320px 1fr; }
-      }
-      nav, main {
-        background: var(--bg);
-        min-height: 260px;
-      }
-      nav {
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .nav-title {
-        color: var(--gold);
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        font-size: 11px;
-      }
-      button.cmd {
-        background: transparent;
-        border: 1px solid var(--border);
-        color: var(--ink);
-        padding: 10px 12px;
-        text-align: left;
-        font-family: inherit;
-        cursor: pointer;
-        transition: border-color .15s, color .15s;
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        font-size: 12px;
-      }
-      button.cmd:hover { border-color: var(--border-hot); color: var(--gold); }
-      button.cmd:active { background: var(--panel-2); }
-      button.cmd .arrow { color: var(--muted); font-size: 10px; }
-
-      main {
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-      }
-      .panel {
-        border: 1px solid var(--border);
-        background: var(--panel);
-        padding: 14px;
-      }
-      .panel-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        color: var(--gold);
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        font-size: 11px;
-        margin-bottom: 10px;
-        align-items: center;
-      }
-      .panel-head .sub { color: var(--muted); }
-
-      .status {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .chip.result {
-        padding: 6px 10px;
-        border: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 11px;
-        background: var(--panel-2);
-        min-width: 80px;
-      }
-      .chip.result.ok {
-        color: #7ee787;
-        border-color: rgba(126, 231, 135, 0.35);
-      }
-      .chip.result.err {
-        color: #ff7b72;
-        border-color: rgba(255, 123, 114, 0.35);
-      }
-
-      .term {
-        border: 1px solid var(--border-hot);
-        background: var(--panel-2);
-        padding: 10px;
-        display: flex;
-        gap: 10px;
-        align-items: center;
-      }
-      .prompt { color: var(--gold); font-weight: 800; white-space: nowrap; }
-      input[type="text"] {
-        background: transparent;
-        border: 0;
-        color: var(--ink);
-        outline: none;
-        font-family: inherit;
-        flex: 1;
-        caret-color: var(--gold);
-      }
-      pre {
-        margin: 0;
-        white-space: pre-wrap;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .log { color: var(--neon); }
-      .err-log { color: #ff7b72; }
-
-      kbd {
-        background: var(--panel-2);
-        border: 1px solid var(--border);
-        color: var(--muted);
-        padding: 2px 6px;
-        font-size: 10px;
-        letter-spacing: 0.08em;
-      }
-
-      @media (max-width: 640px) {
-        .statusbar { gap: 6px; }
-        .glyph { width: 32px; height: 32px; font-size: 16px; }
-        .title { font-size: 13px; }
-        button.cmd { font-size: 11px; padding: 9px 10px; }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <div class="statusbar">
-        <div class="left">
-          <div class="chip hot"><span class="live-dot"></span> LIVE</div>
-          <div class="chip" id="chip-surface">Surface: browser</div>
-          <div class="chip" id="chip-model">Model: not loaded</div>
-          <div class="chip" id="chip-backend">Backend: WebGPU?</div>
-          <div class="chip" id="chip-clock"></div>
+  <header>
+    <div class="brand">
+      <div class="glyph">₳</div>
+      <div>
+        <div class="title">Hermes 🤖 AE Viewport</div>
+        <div class="sub">Agentic entrepreneurship · $OS · Media Desktop · Formation</div>
+        <div class="pillrow">
+          <span class="pill hot">Operator grammar</span>
+          <span class="pill hot">$OS</span>
+          <span class="pill">DAO = logic</span>
+          <span class="pill">DAO LLC = identity</span>
+          <span class="pill">Local-only</span>
+          <span class="pill">Media</span>
         </div>
-        <div class="right">
-          <div class="chip">Code mode <span style="color:var(--neon)">●</span></div>
-        </div>
-      </div>
-
-      <header>
-        <div class="brand">
-          <div class="glyph">🤖</div>
-          <div>
-            <div class="title">Hermes 🤖 Local AI</div>
-            <div class="sub">Viewport computer · agent-addressable · local-first</div>
-            <div class="pillrow">
-              <span class="pill hot">WebLLM</span>
-              <span class="pill hot">WebMCP</span>
-              <span class="pill">DAO = logic</span>
-              <span class="pill">DAO LLC = identity</span>
-              <span class="pill">Local-only</span>
-              <span class="pill">Multisurface</span>
-            </div>
-          </div>
-        </div>
-        <div class="status">
-          <div class="chip" id="chip-cmd"><span id="cmd-label">Ready</span></div>
-        </div>
-      </header>
-
-      <div class="tabbar" role="tablist">
-        <button class="tab" role="tab" aria-selected="true" data-tab="terminal">Terminal</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="stack">Stack <span class="badge"></span></button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="simulation">Simulation</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="apis">APIs</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="blueprint">Blueprint</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="source">Source</button>
-      </div>
-
-      <div class="layout">
-        <nav>
-          <div class="nav-title">Command palette</div>
-          <button class="cmd" data-cmd="help"><span>help</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="status"><span>status</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="probe"><span>🤖 probe</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="panel"><span>🤖 panel</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="sim status"><span>sim status</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="sim contract"><span>sim contract</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="sim run"><span>sim run</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="model load"><span>model load</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="model status"><span>model status</span><span class="arrow">›</span></button>
-          <button class="cmd" data-cmd="tools"><span>mcp://tools</span><span class="arrow">›</span></button>
-          <div class="nav-title" style="margin-top:6px">Shortcuts</div>
-          <div style="color:var(--muted);font-size:11px;line-height:1.6">
-            <div><kbd>Tab</kbd> switch panel</div>
-            <div><kbd>↑</kbd><kbd>↓</kbd> history</div>
-            <div><kbd>Enter</kbd> run</div>
-          </div>
-        </nav>
-
-        <main>
-          <section class="panel" id="panel-terminal" data-panel="terminal">
-            <div class="panel-head">
-              <span>Terminal</span>
-              <span class="sub">DAO = logic · DAO LLC = identity</span>
-            </div>
-            <div class="term">
-              <span class="prompt">>_æ|</span>
-              <input id="term" type="text" autocomplete="off" spellcheck="false" placeholder="type help" />
-            </div>
-            <pre id="history" style="margin-top:10px;max-height:240px;overflow:auto"></pre>
-          </section>
-
-          <section class="panel" id="panel-stack" data-panel="stack" hidden>
-            <div class="panel-head">
-              <span>Stack</span>
-              <span class="sub">01 COMPUTER · 02 PROMPT · 03 EXECUTE · 04 AGENT · 05 TRUST · 06 DAO · 07 RAILS</span>
-            </div>
-            <pre id="stack">01 COMPUTER → viewport computer / local runtime
-02 PROMPT   → cli.llc / private client prompt
-03 EXECUTE  → Hermes conductor / deterministic execution
-04 AGENT    → Hermes / Nous intent router
-05 TRUST    → privateclient.ai / sovereign session
-06 DAO      → daollc.ai / Wyoming DAO LLC
-07 RAILS    → Stripe + Doola
-08 HTML     → machine C2 surface</pre>
-          </section>
-
-          <section class="panel" id="panel-simulation" data-panel="simulation" hidden>
-            <div class="panel-head">
-              <span>Simulation</span>
-              <span class="sub">Hermes local-first simulation</span>
-            </div>
-            <div class="status">
-              <div class="chip result" id="sim-status-chip">status</div>
-              <div class="chip" id="sim-clock"></div>
-            </div>
-            <pre id="sim-log">Press refresh / sim contract / sim run to interact.</pre>
-          </section>
-
-          <section class="panel" id="panel-apis" data-panel="apis" hidden>
-            <div class="panel-head">
-              <span>APIs</span>
-              <span class="sub">Live endpoints on Hermes Reachy</span>
-            </div>
-            <div class="status">
-              <div class="chip result" id="api-health">health</div>
-              <div class="chip result" id="api-reachy">reachy</div>
-              <div class="chip result" id="api-sim">sim</div>
-              <div class="chip result" id="api-local">local-ai</div>
-            </div>
-            <pre id="api-log">Press status/probe/panel to test endpoints.</pre>
-          </section>
-
-          <section class="panel" id="panel-blueprint" data-panel="blueprint" hidden>
-            <div class="panel-head">
-              <span>Blueprint</span>
-              <span class="sub">DAO = governance/logic · DAO LLC = identity</span>
-            </div>
-            <pre id="blueprint">Mission: #opensourceware #250
-Stack: Hermes · DAO · 🤖 · DAO LLC
-Loop: intent → plan → execute → sense → attest → surface
-Rule: no bypass of private client AI for prompts or robot control
-Thesis: #hermiphicationisinevitable · machine C2 is inevitable</pre>
-          </section>
-
-          <section class="panel" id="panel-source" data-panel="source" hidden>
-            <div class="panel-head">
-              <span>Source</span>
-              <span class="sub">Artifacts</span>
-            </div>
-            <pre id="source">C:&#92;&#92;æ&#92;&#92;hermes-fork&#92;&#92;templates&#92;&#92;hermes-local-ai.html
-C:&#92;&#92;æ&#92;&#92;hermes-fork&#92;&#92;apps&#92;&#92;reachy&#92;&#92;app.py
-C:&#92;&#92;æ&#92;&#92;hermes-fork&#92;&#92;apps&#92;&#92;reachy&#92;&#92;sim_bridge.py
-C:&#92;&#92;æ&#92;&#92;hermes-fork&#92;&#92;hermes_cli&#92;&#92;viewport.py
-C:&#92;&#92;æ&#92;&#92;hermes-fork&#92;&#92;blueprints&#92;&#92;hermes-viewport-computer.md</pre>
-          </section>
-        </main>
       </div>
     </div>
+    <div class="status">
+      <div class="chip" id="chip-cmd"><span id="cmd-label">Ready</span></div>
+    </div>
+  </header>
 
-    <script type="module">
-      const output = document.getElementById('history');
-      const term = document.getElementById('term');
-      const chipModel = document.getElementById('chip-model');
-      const chipBackend = document.getElementById('chip-backend');
-      const chipCmd = document.getElementById('cmd-label');
-      const panels = {
-        terminal: document.getElementById('panel-terminal'),
-        stack: document.getElementById('panel-stack'),
-        simulation: document.getElementById('panel-simulation'),
-        apis: document.getElementById('panel-apis'),
-        blueprint: document.getElementById('panel-blueprint'),
-        source: document.getElementById('panel-source'),
-      };
-      const tabs = document.querySelectorAll('.tab');
-      const backends = ['Playwright MCP','Hermes Conductor','Filesystem','Exec','Search'];
-      let surface = 'http://127.0.0.1:7860';
-      let engine = null;
-      let historyArr = [];
-      let historyIdx = -1;
-      let activePanel = 'terminal';
+  <div class="tabbar" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-tab="terminal">Terminal</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="stack">Stack</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="business">Business</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="simulation">Simulation</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="apis">APIs</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="source">Source</button>
+  </div>
 
-      function log(text = '', err = false) {
-        const el = document.createElement('div');
-        el.className = err ? 'err-log' : 'log';
-        el.textContent = text || '';
-        output.insertBefore(el, output.firstChild);
-      }
-      function raw(text = '') {
-        const el = document.createElement('div');
-        el.textContent = text || '';
-        output.insertBefore(el, output.firstChild);
-      }
-      function setCmd(text) { chipCmd.textContent = text || 'Ready'; }
-      function showPanel(name) {
-        activePanel = name;
-        Object.entries(panels).forEach(([k, el]) => {
-          el.hidden = k !== name;
-        });
-        tabs.forEach((t) => {
-          t.setAttribute('aria-selected', t.dataset.tab === name ? 'true' : 'false');
-        });
-      }
-      function clock() {
-        const el = document.getElementById('chip-clock');
-        const simEl = document.getElementById('sim-clock');
-        const now = new Date();
-        const label = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        if (el) el.textContent = label;
-        if (simEl) simEl.textContent = label;
-      }
-      function setLabelChip(text, elId) {
-        const el = document.getElementById(elId);
-        if (!el) return;
-        el.textContent = text;
-      }
+  <div class="layout">
+    <nav>
+      <div class="nav-title">Command palette</div>
+      <button class="cmd" data-cmd="help"><span>help</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="status"><span>status</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="#startabusiness"><span>#startabusiness</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="+ae://media^ffmpeg sim status"><span>+æ://media^ffmpeg sim status</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="mcp://tools filesystem"><span>mcp://tools filesystem</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="mcp://invoke filesystem read /c/Users/yaelm"><span>mcp://invoke filesystem</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="vscode://"><span>vscode://</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="pc://run default"><span>pc://run default</span><span class="arrow">›</span></button>
+      <button class="cmd" data-cmd="dao status"><span>dao status</span><span class="arrow">›</span></button>
+      <div class="nav-title" style="margin-top:6px">Shortcuts</div>
+      <div style="color:var(--muted);font-size:11px;line-height:1.6">
+        <div><kbd>Tab</kbd> switch panel</div>
+        <div><kbd>↑</kbd><kbd>↓</kbd> history</div>
+        <div><kbd>Enter</kbd> run</div>
+      </div>
+    </nav>
 
-      async function apiHealth(label, elId) {
-        try {
-          const res = await fetch(surface + '/health', { method: 'GET' });
-          const el = document.getElementById(elId);
-          if (!el) return;
-          el.className = 'chip result ' + (res.ok ? 'ok' : 'err');
-          el.textContent = label + ' ' + res.status;
-        } catch (e) {
-          const el = document.getElementById(elId);
-          if (!el) return;
-          el.className = 'chip result err';
-          el.textContent = label + ' ERR';
-        }
-      }
+    <main>
+      <section class="panel" id="panel-terminal" data-panel="terminal">
+        <div class="panel-head">
+          <span>Terminal</span>
+          <span class="sub">DAO = logic · DAO LLC = identity</span>
+        </div>
+        <div class="term">
+          <span class="prompt">>_$|</span>
+          <input id="term" type="text" autocomplete="off" spellcheck="false" placeholder="type help" />
+        </div>
+        <pre id="history" style="margin-top:10px;max-height:240px;overflow:auto"></pre>
+      </section>
 
-      async function mcpTools() {
-        try {
-          const res = await fetch(surface + '/mcp/tools', { method: 'GET' });
-          const data = await res.json().catch(() => ({}));
-          if (data && data.tools) {
-            raw('MCP Tools:');
-            data.tools.forEach((t) => raw('- ' + t.name + ': ' + (t.desc || t.name)));
-          } else {
-            raw('MCP tools unavailable.');
-          }
-        } catch (e) {
-          log('Error loading tools: ' + (e.message || e), true);
-        }
-      }
+      <section class="panel" id="panel-stack" data-panel="stack" hidden>
+        <div class="panel-head">
+          <span>Stack</span>
+          <span class="sub">Hermesᴴ · NVIDIAᴺ · Stripe$ · Doolaᴰ · Reachyᴿ · mech-lang</span>
+        </div>
+        <pre id="stack">Hermesᴴ      conductor / harness / routing
+NVIDIAᴺ + Exoᴱˣᵒ  glocal compute / Omniverse
+Stripe$      economics platform / cash register
+Doolaᴰ       formation rail / Wyoming DAO LLC
+Reachyᴿ      embodied operator / physical clerk
+mech-lang.org parse/render/runtime layer
+privateclient.ai closed prompt boundary
+DAO logic surface: proposal / vote / execute
+DAO LLC identity surface: Wyoming registration + charter
+HTML sovereign machine C2 surface
+Operator grammar: c:// · pc:// · H:// · hermes:// · mcp:// · vscode:// · +æ:// · +æ://media^ffmpeg</pre>
+      </section>
 
-      async function mcpInvoke(tool, args = {}) {
-        try {
-          const res = await fetch(surface + '/mcp/invoke', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ tool, args }),
-          });
-          const data = await res.json().catch(() => ({}));
-          raw(data.stdout || data.stderr || JSON.stringify(data));
-        } catch (e) {
-          log('Error invoking tool: ' + (e.message || e), true);
-        }
-      }
+      <section class="panel" id="panel-business" data-panel="business" hidden>
+        <div class="panel-head">
+          <span>Business</span>
+          <span class="sub">#startabusiness → formation → revenue → scale</span>
+        </div>
+        <pre id="business">## Media Desktop Agentic Entrepreneurship
+Purpose: turn intent into formation + revenue without cloud dependency
+Entry: #startabusiness
+XP: $OS + daollc.ai sovereign rails
+Media primitive: +æ://media^ffmpeg
+Outcome: LLC formation → media proof → referrals → #250USA cohort
+Proof: $133.65
+Thesis: #hermiphicationisinevitable · machine C2 is inevitable</pre>
+        <div class="status" style="margin-top:10px">
+          <div class="chip hot">Category: Economic infrastructure</div>
+          <div class="chip">Local-only</div>
+          <div class="chip">No smart contracts</div>
+          <div class="chip">Wyoming DAO LLC compliant</div>
+        </div>
+      </section>
 
-      async function simStatus() {
-        try {
-          const res = await fetch(surface + '/sim/status', { method: 'GET' });
-          const data = await res.json().catch(() => ({}));
-          const latest = data && data.latest ? data.latest : null;
-          const el = document.getElementById('sim-log');
-          if (!el) return;
-          if (!latest) {
-            el.textContent = 'No simulator runs yet.';
-            setLabelChip('sim IDLE', 'sim-status-chip');
-            return;
-          }
-          el.textContent = JSON.stringify(latest, null, 2);
-          setLabelChip('sim ' + (latest.outcome && latest.outcome.status ? latest.outcome.status.toUpperCase() : 'UNKNOWN'), 'sim-status-chip');
-        } catch (e) {
-          const el = document.getElementById('sim-log');
-          if (el) el.textContent = 'sim/status error: ' + (e.message || e);
-          setLabelChip('sim ERR', 'sim-status-chip');
-        }
-      }
+      <section class="panel" id="panel-simulation" data-panel="simulation" hidden>
+        <div class="panel-head">
+          <span>Simulation</span>
+          <span class="sub">Deterministic sim + Omniverse media proof</span>
+        </div>
+        <div class="status">
+          <div class="chip result" id="sim-status-chip">status</div>
+          <div class="chip" id="sim-clock"></div>
+        </div>
+        <pre id="sim-log">Press refresh / sim contract / sim run to interact.</pre>
+      </section>
 
-      async function post(endpoint, payload = {}) {
-        const res = await fetch(surface + endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json().catch(() => ({}));
-        return { status: res.status, data };
-      }
+      <section class="panel" id="panel-apis" data-panel="apis" hidden>
+        <div class="panel-head">
+          <span>APIs</span>
+          <span class="sub">Conductor surfaces + viewport endpoints</span>
+        </div>
+        <div class="status">
+          <div class="chip result" id="api-health">health</div>
+          <div class="chip result" id="api-conductor">conductor</div>
+          <div class="chip result" id="api-sim">sim</div>
+          <div class="chip result" id="api-local">local-ai</div>
+          <label class="chip" style="cursor:pointer"><input id="local-ai-toggle" type="checkbox" /> local-ai surface</label>
+        </div>
+        <pre id="api-log">Press status/probe/panel to test endpoints.</pre>
+      </section>
 
-      async function reachy(endpoint, payload = {}) {
-        return post('/reachy' + endpoint, payload);
-      }
+      <section class="panel" id="panel-source" data-panel="source" hidden>
+        <div class="panel-head">
+          <span>Source</span>
+          <span class="sub">Artifacts</span>
+        </div>
+        <pre id="source">C:\æ\hermes-fork\templates\agentic-entrepreneurship-viewport.html
+C:\æ\hermes-fork\apps\reachy\app.py
+C:\æ\hermes-fork\apps\reachy\sim_bridge.py
+C:\æ\hermes-fork\hermes_cli\conductor.py
+C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
+      </section>
+    </main>
+  </div>
+</div>
 
-      async function sim(endpoint, payload = {}) {
-        return post('/sim' + endpoint, payload);
-      }
+<script type="module">
+  const output = document.getElementById('history');
+  const term = document.getElementById('term');
+  const chipModel = document.getElementById('chip-model');
+  const chipBackend = document.getElementById('chip-backend');
+  const chipCmd = document.getElementById('cmd-label');
+  const panels = {
+    terminal: document.getElementById('panel-terminal'),
+    stack: document.getElementById('panel-stack'),
+    business: document.getElementById('panel-business'),
+    simulation: document.getElementById('panel-simulation'),
+    apis: document.getElementById('panel-apis'),
+    source: document.getElementById('panel-source'),
+  };
+  const tabs = document.querySelectorAll('.tab');
+  let surface = 'http://127.0.0.1:7860';
+  let engine = null;
+  let historyArr = [];
+  let historyIdx = -1;
+  let activePanel = 'terminal';
 
-      async function conductor(cmd, args = []) {
-        const res = await fetch(surface + '/conductor', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ cmd, args }),
-        });
-        const data = await res.json().catch(() => ({}));
-        return { status: res.status, data };
-      }
+  function log(text='', err=false) {
+    const el = document.createElement('div');
+    el.className = err ? 'err-log' : 'log';
+    el.textContent = text || '';
+    output.insertBefore(el, output.firstChild);
+  }
+  function raw(text='') {
+    const el = document.createElement('div');
+    el.textContent = text || '';
+    output.insertBefore(el, output.firstChild);
+  }
+  function setCmd(text) { chipCmd.textContent = text || 'Ready'; }
+  function showPanel(name) {
+    activePanel = name;
+    Object.entries(panels).forEach(([k, el]) => el.hidden = k !== name);
+    tabs.forEach((t) => t.setAttribute('aria-selected', t.dataset.tab === name ? 'true' : 'false'));
+  }
+  function clock() {
+    const el = document.getElementById('chip-clock');
+    const simEl = document.getElementById('sim-clock');
+    if (!el && !simEl) return;
+    const label = new Date().toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    if (el) el.textContent = label;
+    if (simEl) simEl.textContent = label;
+  }
+  function setChip(label, elId) {
+    const el = document.getElementById(elId);
+    if (el) el.textContent = label;
+  }
 
-      async function loadModel() {
-        setCmd('model loading');
-        try {
-          if (typeof window !== 'undefined' && window.WebLLM) {
-            engine = await window.WebLLM.CreateMLCEngine('Hermes-Local', {
-              initProgressCallback: (p) => log('model: ' + (p.text || 'loading...')),
-            });
-            chipModel.textContent = 'Model: Hermes-Local';
-            log('Model loaded via WebLLM.');
-          } else {
-            log('WebLLM not detected. Route inference via Hermes backend.');
-          }
-        } catch (e) {
-          log('Model load failed: ' + (e.message || e), true);
-        }
-        setCmd('Ready');
-      }
+  async function apiHealth(label, elId) {
+    try {
+      const res = await fetch(surface + '/health', { method: 'GET' });
+      const el = document.getElementById(elId);
+      if (!el) return;
+      el.className = 'chip result ' + (res.ok ? 'ok' : 'err');
+      el.textContent = label + ' ' + res.status;
+    } catch (e) {
+      const el = document.getElementById(elId);
+      if (el) { el.className = 'chip result err'; el.textContent = label + ' ERR'; }
+    }
+  }
 
-      async function runCommand(cmd) {
-        const trimmed = String(cmd || '').trim();
-        if (!trimmed) return;
-        historyArr.unshift(trimmed);
-        historyIdx = -1;
-        raw('>_æ| ' + trimmed);
-        setCmd('running');
-        try {
-          if (trimmed === 'help') {
-            raw('Commands: status · probe · panel · sim status · sim contract · sim run · model load · model status · tools');
-            raw('Scheme grammar: c:// · c://cc · H:// · hermes:// · pc:// · pc://run · mcp:// · mcp://tools · mcp://invoke · vscode:// · reachy:// · NOUS:// · llc:// · daollc:// · intent:// · +æ://');
-            raw('Global domain: H:// = global agentic domain for Hermes-agent');
-            raw('Gates: playwright:// routes through MCP /sim status /sim contract /sim run');
-            raw('Tabs: terminal · stack · simulation · apis · blueprint · source');
-            raw('Shortcuts: Tab switch · ↑↓ history · Enter run');
-          } else if (trimmed === 'status') {
-            const { data } = await reachy('/status');
-            raw(JSON.stringify(data, null, 2));
-            await apiHealth('health', 'api-health');
-            await apiHealth('local-ai', 'api-local');
-          } else if (trimmed === 'probe') {
-            const { data } = await reachy('/probe');
-            raw(JSON.stringify(data, null, 2));
-          } else if (trimmed === 'panel') {
-            const { data } = await reachy('/panel');
-            raw(JSON.stringify(data, null, 2));
-          } else if (trimmed === 'tools') {
-            await mcpTools();
-          } else if (trimmed.startsWith('tools ')) {
-            const tool = trimmed.split(' ', 2)[1] || 'filesystem';
-            await mcpInvoke(tool);
-          } else if (trimmed.startsWith('mcp://invoke ')) {
-            const rest = trimmed.split(' ', 2)[1] || '';
-            const parts = rest.trim().split(' ');
-            const tool = parts[0] || 'filesystem';
-            const rawArgs = parts.slice(1).join(' ');
-            let args = {};
-            if (rawArgs) {
-              try { args = JSON.parse(rawArgs); } catch (e) { log('mcp args must be JSON', true); }
-            }
-            await mcpInvoke(tool, args);
-          } else if (trimmed === 'sim status') {
-            await simStatus();
-          } else if (trimmed === 'sim contract') {
-            const { data } = await sim('/contract', { intent: 'viewport', dao_approved: true });
-            raw(JSON.stringify(data, null, 2));
-          } else if (trimmed === 'sim run') {
-            const { data } = await sim('/run', { intent: 'viewport', dao_approved: true });
-            raw(JSON.stringify(data, null, 2));
-            await simStatus();
-          } else if (trimmed === 'model load') {
-            await loadModel();
-          } else if (trimmed === 'model status') {
-            raw(engine ? 'Model: loaded' : 'Model: not loaded');
-          } else if (trimmed.startsWith('c://cc ') || trimmed.startsWith('H://cc ') || trimmed.startsWith('hermes://cc ')) {
-            const { data } = await conductor(trimmed);
-            raw(data.stdout || data.stderr || JSON.stringify(data));
-          } else if (trimmed.startsWith('pc://run ')) {
-            const { data } = await conductor(trimmed);
-            raw(data.stdout || data.stderr || JSON.stringify(data));
-          } else if (
-            trimmed.startsWith('pc://') ||
-            trimmed.startsWith('daollc://') ||
-            trimmed.startsWith('llc://') ||
-            trimmed.startsWith('NOUS://') ||
-            trimmed.startsWith('intent://') ||
-            trimmed.startsWith('H://') ||
-            trimmed.startsWith('hermes://') ||
-            trimmed.startsWith('+æ://') ||
-            trimmed.startsWith('vscode://') ||
-            trimmed.startsWith('reachy://') ||
-            trimmed.startsWith('mcp://')
-          ) {
-            const { data } = await conductor(trimmed);
-            raw(data.stdout || data.stderr || JSON.stringify(data));
-          } else {
-            raw('Unknown command. Try: help');
-          }
-        } catch (e) {
-          log('Error: ' + (e.message || e), true);
-        }
-        setCmd('Ready');
-      }
+  async function reachy(endpoint, payload={}) {
+    const res = await fetch(surface + endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await res.json().catch(()=>({}));
+    return { status: res.status, data };
+  }
 
-      term.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          runCommand(term.value);
-          term.value = '';
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          if (historyArr.length > 0) {
-            historyIdx = Math.min(historyIdx + 1, historyArr.length - 1);
-            term.value = historyArr[historyIdx];
-          }
-          return;
-        }
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          if (historyIdx > 0) {
-            historyIdx -= 1;
-            term.value = historyArr[historyIdx];
-          } else {
-            historyIdx = -1;
-            term.value = '';
-          }
-          return;
-        }
-        if (e.key === 'Tab') {
-          e.preventDefault();
-          const order = ['terminal','stack','simulation','apis','blueprint','source'];
-          const idx = order.indexOf(activePanel);
-          const next = order[(idx + 1) % order.length];
-          showPanel(next);
-          return;
-        }
+  async function conductor(cmd, args=[]) {
+    const res = await fetch(surface + '/conductor', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cmd, args }),
+    });
+    const data = await res.json().catch(()=>({}));
+    return { status: res.status, data };
+  }
+
+  async function simStatus() {
+    try {
+      const res = await fetch(surface + '/sim/status', { method: 'GET' });
+      const data = await res.json().catch(()=>({}));
+      const latest = data && data.latest ? data.latest : null;
+      const el = document.getElementById('sim-log');
+      if (!el) return;
+      if (!latest) {
+        el.textContent = 'No simulator runs yet.';
+        setChip('sim IDLE', 'sim-status-chip');
+        return;
+      }
+      el.textContent = JSON.stringify(latest, null, 2);
+      const state = latest.outcome && latest.outcome.status ? latest.outcome.status.toUpperCase() : 'UNKNOWN';
+      setChip('sim ' + state, 'sim-status-chip');
+    } catch (e) {
+      const el = document.getElementById('sim-log');
+      if (el) el.textContent = 'sim/status error: ' + (e.message || e);
+      setChip('sim ERR', 'sim-status-chip');
+    }
+  }
+
+  async function mcpList() {
+    try {
+      const res = await fetch(surface + '/mcp/tools', { method: 'GET' });
+      const data = await res.json().catch(()=>({}));
+      raw('MCP Tools:');
+      if (data && data.tools && data.tools.length) {
+        data.tools.forEach((t)=> raw('- ' + (t.name||t.id||'tool') + ': ' + (t.description||t.desc||t.name)));
+      } else {
+        raw('No tools returned by this bridge.');
+      }
+    } catch (e) {
+      log('Failed to load MCP tools: ' + (e.message || e), true);
+    }
+  }
+
+  async function mcpInvokeTool(tool, args={}) {
+    try {
+      const res = await fetch(surface + '/mcp/invoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tool, args }),
       });
+      const data = await res.json().catch(()=>({}));
+      raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+    } catch (e) {
+      log('Failed to invoke MCP tool: ' + (e.message || e), true);
+    }
+  }
 
-      document.querySelectorAll('button.cmd').forEach((btn) => {
-        btn.addEventListener('click', () => runCommand(btn.dataset.cmd));
-      });
+  async function chunked(text='') {
+    if (!text) return;
+    raw(text);
+  }
 
-      tabs.forEach((t) => {
-        t.addEventListener('click', () => showPanel(t.dataset.tab));
-      });
-
-      const readiness = { health: false, sim: false, local: false };
-      async function refresh() {
+  async function runCommand(rawCmd) {
+    const trimmed = String(rawCmd || '').trim();
+    if (!trimmed) return;
+    historyArr.unshift(trimmed);
+    historyIdx = -1;
+    raw('>_$| ' + trimmed);
+    setCmd('running');
+    try {
+      if (trimmed === 'help') {
+        raw('Commands: help · status · probe · panel · #startabusiness · +æ://media^ffmpeg · mcp://tools · mcp://invoke · vscode:// · pc://run · dao status');
+        raw('Operator grammar: c:// · c://cc · H:// · hermes:// · pc:// · pc://run · mcp:// · mcp://tools · mcp://invoke · vscode:// · reachy:// · NOUS:// · llc:// · daollc:// · intent:// · +æ:// · +æ://media^ffmpeg');
+        raw('Business mode: $OS = economic infrastructure for agentic entrepreneurship');
+        raw('Media primitive: FFmpeg + HTML = destined pair for agentic multimedia proof');
+        raw('Thesis: #hermiphicationisinevitable · machine C2 is inevitable');
+        raw('Tabs: terminal · stack · business · simulation · apis · source');
+        raw('Shortcuts: Tab switch · ↑↓ history · Enter run');
+      } else if (trimmed === 'status') {
+        const { data } = await reachy('/status');
+        raw(JSON.stringify(data, null, 2));
         await apiHealth('health', 'api-health');
-        await apiHealth('local-ai', 'api-local');
-        const reachyEl = document.getElementById('api-reachy');
-        const simEl = document.getElementById('api-sim');
-        if (reachyEl) reachyEl.textContent = 'reachy';
-        if (simEl) simEl.textContent = 'sim';
+      } else if (trimmed === 'probe') {
+        const { data } = await reachy('/probe');
+        raw(JSON.stringify(data, null, 2));
+      } else if (trimmed === 'panel') {
+        const { data } = await reachy('/panel');
+        raw(JSON.stringify(data, null, 2));
+      } else if (trimmed === '#startabusiness') {
+        raw('> start business');
+        raw('Formation rail: daollc.ai → Wyoming DAO LLC');
+        raw('Revenue: $133.65 proof-of-revenue on record');
+        raw('Campaign: #opensourceware #250');
+      } else if (trimmed === '+æ://media^ffmpeg sim status') {
         await simStatus();
+      } else if (trimmed.startsWith('+æ://media^ffmpeg')) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (trimmed === 'mcp://tools') {
+        await mcpList();
+      } else if (trimmed.startsWith('mcp://tools ')) {
+        const tool = trimmed.split(' ', 2)[1] || 'filesystem';
+        await mcpList();
+      } else if (trimmed.startsWith('mcp://invoke ')) {
+        const rest = trimmed.split(' ', 2)[1] || '';
+        const parts = rest.trim().split(' ');
+        const tool = parts[0] || 'filesystem';
+        const rawArgs = parts.slice(1).join(' ');
+        let args = {};
+        if (rawArgs) {
+          try { args = JSON.parse(rawArgs); } catch (e) { log('mcp args must be JSON', true); }
+        }
+        await mcpInvokeTool(tool, args);
+      } else if (trimmed.startsWith('vscode://')) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (trimmed.startsWith('pc://run ')) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (trimmed === 'dao status') {
+        raw('DAO = logic');
+        raw('DAO LLC = identity');
+        raw('member_id: +æ://private client^glocal');
+        raw('proposer: +æ://operator^glocal');
+      } else if (/^(c:\/\/cc|H:\/\/cc|hermes:\/\/cc)/.test(trimmed)) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (
+        /^(pc:\/\/|c:\/\/|H:\/\/|hermes:\/\/|daollc:\/\/|llc:\/\/|NOUS:\/\/|intent:\/\/|\+æ:\/\/|mcp:\/\/|vscode:\/\/|reachy:\/\/)/.test(trimmed)
+      ) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else {
+        log('Unknown command. Try: help', true);
       }
+    } catch (e) {
+      log('Error: ' + (e.message || e), true);
+    }
+    setCmd('Ready');
+  }
 
-      raw('Hermes 🤖 Local AI ready.');
-      raw('DAO = logic · DAO LLC = identity');
-      raw('Code mode on. HTML is the skill.');
-      raw('#hermiphicationisinevitable · machine C2 is inevitable');
-      raw('Type help · press Tab to switch panels.');
-      setCmd('Ready');
-      refresh();
-      clock();
-      setInterval(clock, 1000);
-      setInterval(refresh, 12000);
-    </script>
-  </body>
+  term.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      runCommand(term.value);
+      term.value = '';
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (historyArr.length === 0) return;
+      historyIdx = Math.min(historyIdx + 1, historyArr.length - 1);
+      term.value = historyArr[historyIdx];
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIdx > 0) { historyIdx -= 1; term.value = historyArr[historyIdx]; }
+      else { historyIdx = -1; term.value = ''; }
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const order = ['terminal','stack','business','simulation','apis','source'];
+      const idx = order.indexOf(activePanel);
+      const next = order[(idx + 1) % order.length];
+      showPanel(next);
+      return;
+    }
+  });
+
+  document.querySelectorAll('button.cmd').forEach((btn) => {
+    btn.addEventListener('click', () => runCommand(btn.dataset.cmd));
+  });
+
+  tabs.forEach((t) => t.addEventListener('click', () => showPanel(t.dataset.tab)));
+
+  async function refresh() {
+    await apiHealth('health', 'api-health');
+    await apiHealth('local-ai', 'api-local');
+    const conductorEl = document.getElementById('api-conductor');
+    if (conductorEl) conductorEl.textContent = 'conductor';
+    const simEl = document.getElementById('api-sim');
+    if (simEl) simEl.textContent = 'sim';
+    await simStatus();
+  }
+
+  raw('Hermes 🤖 Agentic Entrepreneurship Viewport ready.');
+  raw('DAO = logic · DAO LLC = identity');
+  raw('#hermiphicationisinevitable · machine C2 is inevitable · FFmpeg + HTML are destined');
+  raw('Type help · press Tab to switch panels.');
+  setCmd('Ready');
+  refresh();
+  clock();
+  setInterval(clock, 1000);
+  setInterval(refresh, 12000);
+</script>
+</body>
 </html>

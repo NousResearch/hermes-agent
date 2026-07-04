@@ -3,6 +3,7 @@
 
 from agent.prompt_caching import (
     _apply_cache_marker,
+    _can_carry_marker,
     apply_anthropic_cache_control,
 )
 
@@ -17,11 +18,37 @@ class TestApplyCacheMarker:
         _apply_cache_marker(msg, MARKER, native_anthropic=True)
         assert msg["cache_control"] == MARKER
 
-    def test_tool_message_skips_marker_on_openrouter(self):
-        """OpenRouter path: top-level cache_control on role:tool is invalid and causes silent hang."""
-        msg = {"role": "tool", "content": "result"}
+    def test_tool_message_gets_content_part_marker_on_envelope(self):
+        """Envelope layout (OpenRouter): tool message with content gets marker inside content part."""
+        msg = {"role": "tool", "content": "result", "tool_call_id": "call_1"}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        # Content wrapped into list with cache_control on last part
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["type"] == "text"
+        assert msg["content"][0]["text"] == "result"
+        assert msg["content"][0]["cache_control"] == MARKER
+        # tool_call_id untouched, no top-level cache_control
+        assert msg["tool_call_id"] == "call_1"
+        assert "cache_control" not in msg
+
+    def test_empty_tool_message_skips_on_envelope(self):
+        """Envelope layout: empty tool message has no content part to carry marker."""
+        msg = {"role": "tool", "content": ""}
         _apply_cache_marker(msg, MARKER, native_anthropic=False)
         assert "cache_control" not in msg
+        assert msg["content"] == ""
+
+    def test_none_tool_message_skips_on_envelope(self):
+        """Envelope layout: tool message with None content is skipped."""
+        msg = {"role": "tool", "content": None}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert "cache_control" not in msg
+
+    def test_empty_assistant_skips_on_envelope(self):
+        """Envelope layout: empty assistant message gets top-level marker (not tool)."""
+        msg = {"role": "assistant", "content": ""}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert msg["cache_control"] == MARKER
 
     def test_none_content_gets_top_level_marker(self):
         msg = {"role": "assistant", "content": None}
@@ -139,3 +166,24 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+class TestCanCarryMarker:
+    def test_native_always_true(self):
+        assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=True) is True
+        assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=True) is True
+
+    def test_envelope_empty_content_false(self):
+        assert _can_carry_marker({"role": "assistant", "content": ""}, native_anthropic=False) is False
+        assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=False) is False
+        assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=False) is False
+
+    def test_envelope_string_content_true(self):
+        assert _can_carry_marker({"role": "user", "content": "hello"}, native_anthropic=False) is True
+        assert _can_carry_marker({"role": "tool", "content": "result"}, native_anthropic=False) is True
+
+    def test_envelope_list_content_true(self):
+        assert _can_carry_marker({"role": "tool", "content": [{"type": "text", "text": "x"}]}, native_anthropic=False) is True
+
+    def test_envelope_empty_list_false(self):
+        assert _can_carry_marker({"role": "tool", "content": []}, native_anthropic=False) is False
+
+

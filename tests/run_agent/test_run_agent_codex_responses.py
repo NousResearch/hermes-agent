@@ -123,6 +123,25 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_incomplete_response(text: str = ""):
+    content = []
+    if text:
+        content.append(SimpleNamespace(type="output_text", text=text))
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="incomplete",
+                content=content,
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=270_000, output_tokens=1, total_tokens=270_001),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -266,6 +285,38 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     )
     assert agent.provider == "copilot-acp"
     assert agent.api_mode == "chat_completions"
+
+
+def test_custom_provider_gpt5_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://relay.example.com/v1",
+        provider="custom",
+        api_key="relay-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_custom_provider_direct_openai_url_still_uses_responses(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://api.openai.com/v1",
+        provider="custom",
+        api_key="openai-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "codex_responses"
 
 
 def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
@@ -926,7 +977,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
 def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):
     """An xai-oauth agent constructed with a non-singleton credential
     (e.g. a manual pool entry whose tokens belong to a different account
-    than the loopback_pkce singleton, or an explicit ``api_key=`` arg)
+    than the device_code singleton, or an explicit ``api_key=`` arg)
     MUST NOT silently adopt the singleton's tokens on a 401 reactive
     refresh.  Otherwise a 401 mid-conversation would re-route the rest
     of the conversation onto a different account, with no user feedback.
@@ -1354,6 +1405,160 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatch):
+    """Codex max_output_tokens terminal status is a resumable incomplete turn.
+
+    It must not be routed through the generic chat-completions length handler,
+    which returns the user-facing "Response truncated due to output length
+    limit" warning and stops the gateway turn.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_incomplete_response("Partial final answer"),
+        _codex_message_response(" after continuation."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write a long final answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "after continuation."
+    assert "Response truncated due to output length limit" not in str(result)
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "Partial final answer" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+
+
+def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
+    """Long tool-heavy turns should compact before the next API request.
+
+    Initial preflight compression only sees the user's first message. A single
+    turn can then grow by many tool results and leave almost no output budget
+    (the live 271k/272k GPT-5.5 failure). The agent should re-check request
+    pressure before every API call and compact before asking the model to
+    produce the final answer.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: requests.append(api_kwargs) or responses.pop(0),
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "x" * 80_000,
+                }
+            )
+
+    compress_calls = []
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        compress_calls.append(approx_tokens)
+        return [
+            {"role": "user", "content": "[summary of prior tool-heavy work]"},
+        ], "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Summary after compaction."
+    assert len(compress_calls) == 1
+    assert compress_calls[0] >= 15_000
+    assert len(requests) == 2
+
+
+def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, tmp_path):
+    """Mid-turn pre-API compaction must re-baseline the flush cursor.
+
+    In-place compaction (``compression.in_place: True``, the default) inserts
+    the compacted rows into the session DB itself via ``archive_and_compact``
+    WITHOUT stamping them with the intrinsic persisted-marker. The loop must
+    therefore set ``conversation_history`` to those compacted dicts so the next
+    flush skips them by identity. Setting ``conversation_history = None`` here
+    (as the original PR did) makes the flush treat the already-persisted
+    compacted dicts as new and append them a second time — doubling the active
+    context and retriggering compression. This guards that regression with a
+    REAL SessionDB and the REAL archive_and_compact path (no persist stubs).
+    """
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = _build_agent(monkeypatch)
+    # _build_agent stubs _persist_session; restore the real one so the flush
+    # cursor / double-write behaviour is exercised end to end.
+    agent._persist_session = run_agent.AIAgent._persist_session.__get__(agent)
+    agent._cleanup_task_resources = lambda task_id: None
+
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    agent._session_db = SessionDB()
+    agent._ensure_db_session()
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": "x" * 80_000}
+            )
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        # Emulate the real in-place compaction DB side effect: soft-archive the
+        # prior rows and insert the compacted set under the SAME session id,
+        # then reset the flush identity seed — exactly as archive_and_compact +
+        # the in_place branch in conversation_compression.py do.
+        agent._last_compaction_in_place = True
+        compacted = [{"role": "user", "content": "[summary of prior tool-heavy work]"}]
+        agent._session_db.archive_and_compact(agent.session_id, compacted)
+        agent._flushed_db_message_ids = set()
+        return compacted, "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+    assert result["completed"] is True
+
+    # The compacted summary row must appear exactly once in the active
+    # transcript that a resume would reload.
+    active = agent._session_db.get_messages(agent.session_id)
+    summary_rows = [
+        m for m in active
+        if isinstance(m.get("content"), str)
+        and "summary of prior tool-heavy work" in m["content"]
+    ]
+    assert len(summary_rows) == 1, (
+        f"compacted summary row double-persisted: {len(summary_rows)} copies "
+        "(conversation_history flush cursor not re-baselined for in-place compaction)"
+    )
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

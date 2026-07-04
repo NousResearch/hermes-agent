@@ -85,6 +85,25 @@ model:
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -572,6 +591,41 @@ max_concurrent_sessions: null
 group_sessions_per_user: true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
@@ -1022,6 +1076,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 

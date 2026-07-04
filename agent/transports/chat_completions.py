@@ -609,7 +609,11 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         choice = response.choices[0]
         msg = choice.message
-        finish_reason = choice.finish_reason or "stop"
+        # Poolside returns integer finish_reason (e.g. 24) instead of string
+        _fr = choice.finish_reason
+        if isinstance(_fr, int):
+            _fr = str(_fr)
+        finish_reason = _fr or "stop"
 
         tool_calls = None
         if msg.tool_calls:

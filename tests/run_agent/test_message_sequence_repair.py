@@ -597,6 +597,28 @@ def test_repair_noop_on_valid_parallel_format():
     assert len(messages) == original_len
 
 
+def test_repair_deduplicates_duplicate_tool_call_ids():
+    """Only the first tool result for a given tool_call_id should survive."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "session_search", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "first result"},
+        {"role": "tool", "tool_call_id": "call_A", "content": "duplicate replay"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    tool_messages = [m for m in messages if m.get("role") == "tool"]
+    assert tool_messages == [
+        {"role": "tool", "tool_call_id": "call_A", "content": "first result"}
+    ]
+
+
 def test_repair_does_NOT_merge_codex_interim_assistants():
     """Codex Responses interim turns stay separate (encrypted replay state).
 

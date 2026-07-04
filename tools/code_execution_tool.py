@@ -310,9 +310,12 @@ _COMMON_HELPERS = '''\
 # ---------------------------------------------------------------------------
 
 def json_parse(text: str):
-    """Parse JSON tolerant of control characters (strict=False).
+    """Parse JSON tolerant of control characters and UTF-8 BOM (strict=False).
     Use this instead of json.loads() when parsing output from terminal()
-    or web_extract() that may contain raw tabs/newlines in strings."""
+    or web_extract() that may contain raw tabs/newlines in strings,
+    or from tools/files that prepend a UTF-8 BOM (salvage #57870, credit @woxinwuhen713-bit)."""
+    if isinstance(text, str) and text.startswith("﻿"):
+        text = text[1:]
     return json.loads(text, strict=False)
 
 

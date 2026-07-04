@@ -547,3 +547,63 @@ class TestMem0WriteMetadata:
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
         assert adds[-1][2]["metadata"] == {"channel": "discord"}
+
+
+class TestOSSBackendGetAll:
+    """OSSBackend.get_all() must pass top_k to the SDK so the result
+    count is not truncated by the default limit of 20.
+    Salvage of #52973, credit @luxuguang-leo."""
+
+    def _make_backend(self, memory_mock=None):
+        from unittest import mock
+        from plugins.memory.mem0._backend import OSSBackend
+
+        oss_config = {
+            "vector_store": {"provider": "qdrant", "config": {"path": "/tmp"}},
+            "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+        }
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = memory_mock or mock.MagicMock()
+        return backend
+
+    def test_passes_top_k_to_sdk(self):
+        from unittest import mock
+        memory = mock.MagicMock()
+        memory.get_all.return_value = {"results": [], "count": 0}
+        backend = self._make_backend(memory)
+        backend.get_all(filters={"user_id": "u1"})
+        memory.get_all.assert_called_once()
+        assert memory.get_all.call_args.kwargs.get("top_k") == 10000
+
+    def test_count_reflects_total_not_sdk_default(self):
+        from unittest import mock
+        all_memories = [{"id": f"mem-{i}", "memory": f"fact {i}"} for i in range(50)]
+        memory = mock.MagicMock()
+        memory.get_all.return_value = {"results": all_memories, "count": 50}
+        backend = self._make_backend(memory)
+        result = backend.get_all(filters={"user_id": "u1"})
+        assert result["count"] == 50
+        assert len(result["results"]) == 50
+
+    def test_client_side_pagination(self):
+        from unittest import mock
+        all_memories = [{"id": f"mem-{i}", "memory": f"fact {i}"} for i in range(50)]
+        memory = mock.MagicMock()
+        memory.get_all.return_value = {"results": all_memories, "count": 50}
+        backend = self._make_backend(memory)
+        result = backend.get_all(filters={"user_id": "u1"}, page=2, page_size=10)
+        assert result["count"] == 50
+        assert len(result["results"]) == 10
+        assert result["results"][0]["id"] == "mem-10"
+        assert result["results"][-1]["id"] == "mem-19"
+
+    def test_pagination_beyond_total_returns_empty(self):
+        from unittest import mock
+        all_memories = [{"id": f"mem-{i}", "memory": f"fact {i}"} for i in range(5)]
+        memory = mock.MagicMock()
+        memory.get_all.return_value = {"results": all_memories, "count": 5}
+        backend = self._make_backend(memory)
+        result = backend.get_all(filters={"user_id": "u1"}, page=10, page_size=10)
+        assert result["count"] == 5
+        assert result["results"] == []

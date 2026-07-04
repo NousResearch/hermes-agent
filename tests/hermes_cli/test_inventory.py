@@ -321,6 +321,59 @@ def test_include_unconfigured_skips_already_present_slugs():
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
 
 
+def test_include_unconfigured_suppresses_custom_when_named_provider_covers_url():
+    """When model.provider='custom' and a named user provider (from the
+    ``providers:`` config section) already covers the same endpoint URL,
+    the bare 'Custom endpoint' skeleton row must NOT appear in the picker.
+
+    Without this suppression, the picker shows both the named provider
+    (e.g. '9Router') and a redundant 'Custom endpoint' row marked as
+    current — picking from the wrong one can persist a provider value
+    that doesn't resolve correctly at runtime.
+    """
+    named_url = "http://127.0.0.1:20128/v1"
+    rows = [
+        {"slug": "9router", "name": "9Router", "models": ["glm/glm-5.2"],
+         "total_models": 1, "is_current": True, "is_user_defined": True,
+         "source": "user-config", "api_url": named_url},
+    ]
+    ctx = ConfigContext(
+        current_provider="custom",
+        current_model="glm/glm-5.2",
+        current_base_url=named_url,
+        user_providers={"9router": {"base_url": named_url, "api_key": "sk-test", "name": "9Router"}},
+        custom_providers=[],
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, include_unconfigured=True)
+    custom_rows = [r for r in payload["providers"] if r["slug"] == "custom"]
+    assert len(custom_rows) == 0, "Custom endpoint skeleton should be suppressed"
+
+
+def test_include_unconfigured_keeps_custom_when_no_named_provider_matches():
+    """The bare 'Custom endpoint' skeleton must still appear when
+    provider='custom' but NO named user provider covers the same URL —
+    e.g. the user has a named provider for a different endpoint."""
+    custom_url = "http://localhost:8080/v1"
+    other_url = "http://127.0.0.1:20128/v1"
+    rows = [
+        {"slug": "9router", "name": "9Router", "models": ["glm/glm-5.2"],
+         "total_models": 1, "is_current": False, "is_user_defined": True,
+         "source": "user-config", "api_url": other_url},
+    ]
+    ctx = ConfigContext(
+        current_provider="custom",
+        current_model="local-model",
+        current_base_url=custom_url,
+        user_providers={"9router": {"base_url": other_url, "api_key": "sk-test", "name": "9Router"}},
+        custom_providers=[],
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, include_unconfigured=True)
+    custom_rows = [r for r in payload["providers"] if r["slug"] == "custom"]
+    assert len(custom_rows) == 1, "Custom endpoint skeleton should be present (no URL match)"
+
+
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

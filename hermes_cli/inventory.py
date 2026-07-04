@@ -277,6 +277,29 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
+
+    # Suppress the bare "custom" skeleton row when a named user provider
+    # already covers the current endpoint. Without this, the picker shows
+    # both a "Custom endpoint" row and the named provider (e.g. "9Router")
+    # for the same URL, and picking from the wrong one can produce a
+    # provider value that doesn't resolve at runtime.
+    _cur_base_norm = str(ctx.current_base_url or "").strip().rstrip("/").lower()
+    if (
+        "custom" not in seen
+        and _cur_base_norm
+        and any(
+            isinstance(_uc, dict)
+            and str(
+                _uc.get("base_url", "")
+                or _uc.get("url", "")
+                or _uc.get("api", "")
+            ).strip().rstrip("/").lower()
+            == _cur_base_norm
+            for _uc in (ctx.user_providers or {}).values()
+        )
+    ):
+        seen.add("custom")
+
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:

@@ -347,6 +347,7 @@ AUTHOR_MAP = {
     "rod.boev@gmail.com": "rodboev",
     "70290504+dangelo352@users.noreply.github.com": "dangelo352",
     "zhaolei.vc@bytedance.com": "zhaoleibd",
+    "bradhallett@users.noreply.github.com": "bradhallett",
     "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "218078013+kyssta-exe@users.noreply.github.com": "kyssta-exe",  # PR #55657 salvage (read-before-write invariant for background-review skill patches; #55647)

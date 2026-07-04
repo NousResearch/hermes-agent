@@ -9319,6 +9319,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            timeout=300,
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()

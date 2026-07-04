@@ -112,6 +112,18 @@ def build_top_level_parser():
             "auto-bypassed. Intended for scripts / pipes."
         ),
     )
+    parser.add_argument(
+        "--warm",
+        action="store_true",
+        default=False,
+        help=(
+            "Route the query through the Gateway API Server when possible "
+            "(faster — no cold-start module loading). Requires the gateway "
+            "to be running with API_SERVER_KEY configured. Falls back to "
+            "normal cold start if unavailable. Applies to -z/--oneshot "
+            "and chat -q/--query."
+        ),
+    )
     # --model / --provider are accepted at the top level so they can pair
     # with -z without needing the `chat` subcommand.  If neither -z nor a
     # subcommand consumes them, they fall through harmlessly as None.
@@ -259,6 +271,15 @@ def build_top_level_parser():
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
+    )
+    chat_parser.add_argument(
+        "--warm",
+        action="store_true",
+        default=False,
+        help=(
+            "Route through Gateway API Server for faster single queries "
+            "(no cold-start). Falls back to normal path if unavailable."
+        ),
     )
     _inherited_flag(
         chat_parser,

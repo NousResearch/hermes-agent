@@ -17,17 +17,83 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
+
+``--warm`` / ``HERMES_WARM_QUERY``:
+    When set, the oneshot runner first attempts to route the query through
+    the Gateway API Server (``http://127.0.0.1:8642/v1/chat/completions``)
+    which is always hot — no cold-start module loading.  Falls back to the
+    normal cold-start path if the API Server is unavailable or unconfigured.
+    Skips model/provider/toolsets resolution entirely for the warm path.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+import urllib.error
+import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+
+
+def _try_api_server_warm(prompt: str) -> str | None:
+    """Attempt to route *prompt* through the Gateway API Server.
+
+    Checks for ``API_SERVER_KEY`` in the environment (set via ``.env`` or
+    ``config.yaml``).  If present, sends the prompt as a
+    ``POST /v1/chat/completions`` to the running gateway.
+
+    Returns the response text on success, or ``None`` when the API Server
+    is unavailable, unconfigured, or returns an error — the caller should
+    fall through to the normal cold-start path.
+    """
+    api_key = os.getenv("API_SERVER_KEY", "").strip()
+    if not api_key:
+        return None
+
+    host = os.getenv("API_SERVER_HOST", "127.0.0.1").strip()
+    raw_port = os.getenv("API_SERVER_PORT", "8642").strip()
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return None
+
+    url = f"http://{host}:{port}/v1/chat/completions"
+
+    body = json.dumps({
+        "model": "default",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "stream": False,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                choices = data.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "")
+                    if content:
+                        return content
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError):
+        pass
+
+    return None
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -127,6 +193,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    warm: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,9 +204,31 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        warm: When True, attempt the warm-path (API Server) first.  Falls
+            back to the normal cold-start AIAgent path on failure.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
+    # --- Warm path: try the hot API Server first. ---
+    if warm:
+        response = _try_api_server_warm(prompt)
+        if response is not None:
+            real_stdout = sys.stdout
+            real_stdout.write(response)
+            if not response.endswith("\n"):
+                real_stdout.write("\n")
+            real_stdout.flush()
+            return 0
+        # Fall through to the normal cold-start path below.
+        # Write a brief diagnostic to stderr so the user knows why their
+        # --warm flag didn't produce a fast response.
+        sys.stderr.write(
+            "hermes -z: --warm API Server unavailable; falling back to cold start. "
+            "Set API_SERVER_KEY and ensure the gateway is running.\n"
+        )
+
+    # --- Normal cold-start path ---
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to

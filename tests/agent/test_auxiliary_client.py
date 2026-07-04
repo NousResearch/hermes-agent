@@ -659,22 +659,25 @@ class TestBuildCallKwargsMaxTokens:
     # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
 
     @pytest.mark.parametrize(
-        "provider,model,base_url",
+        "provider,model,base_url,expected_key",
         [
-            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4"),
-            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1"),
-            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
-            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4", "max_tokens"),
+            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com", "max_completion_tokens"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1", "max_tokens"),
         ],
     )
-    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url):
+    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url, expected_key):
         """MoA reference/aggregator tasks must honor max_tokens regardless of provider.
 
         The ``reference_max_tokens`` config option (PR #56756) caps advisor output
         to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
         dropped the value for OpenAI-compatible providers (PR #34845), so the cap
         never reached the API.  With the ``task`` parameter threaded through,
-        any task starting with ``moa_`` must include ``max_tokens`` in kwargs.
+        any task starting with ``moa_`` must include the output cap in kwargs.
+
+        Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
+        get the correct parameter name via ``auxiliary_max_tokens_param()``.
         """
         from agent.auxiliary_client import _build_call_kwargs
 
@@ -686,7 +689,7 @@ class TestBuildCallKwargsMaxTokens:
             base_url=base_url,
             task="moa_reference",
         )
-        assert kwargs["max_tokens"] == 800
+        assert kwargs[expected_key] == 800
 
     def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
         """MoA tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""

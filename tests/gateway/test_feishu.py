@@ -504,6 +504,56 @@ class TestAdapterModule(unittest.TestCase):
         self.assertIsNone(settings.ws_ping_interval)
         self.assertIsNone(settings.ws_ping_timeout)
 
+    def test_load_settings_defaults_render_mode_to_auto(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings({})
+
+        self.assertEqual(settings.render_mode, "auto")
+
+    def test_load_settings_accepts_card_render_mode(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        # snake_case and OpenClaw-style camelCase both resolve.
+        self.assertEqual(
+            FeishuAdapter._load_settings({"render_mode": "CARD"}).render_mode, "card"
+        )
+        self.assertEqual(
+            FeishuAdapter._load_settings({"renderMode": "card"}).render_mode, "card"
+        )
+
+    def test_load_settings_falls_back_on_unknown_render_mode(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings({"render_mode": "bogus"})
+
+        self.assertEqual(settings.render_mode, "auto")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_table_defaults_to_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        table = "| Name | Age |\n| --- | --- |\n| Ada | 36 |"
+
+        msg_type, _payload = adapter._build_outbound_payload(table)
+
+        self.assertEqual(msg_type, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_table_uses_post_in_card_mode(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"render_mode": "card"}))
+        table = "| Name | Age |\n| --- | --- |\n| Ada | 36 |"
+
+        msg_type, payload = adapter._build_outbound_payload(table)
+
+        self.assertEqual(msg_type, "post")
+        self.assertIn("Ada", payload)
+
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
         from types import ModuleType

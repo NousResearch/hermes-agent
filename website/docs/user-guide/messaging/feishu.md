@@ -420,6 +420,28 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
+### Markdown Tables (`render_mode`)
+
+Feishu's `md` element does not reliably render GFM markdown tables, so by default
+the adapter downgrades any message containing a table to plain text — the table
+arrives readable (as raw `| col | col |` rows) but never blank.
+
+To opt in to sending tables through the post pipeline instead, set
+`render_mode: card` in the platform's `extra` config:
+
+```yaml
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      render_mode: card   # "auto" (default) or "card"
+```
+
+The OpenClaw-style `renderMode` (camelCase) key is also accepted. In `card`
+mode, table content is routed through Feishu's native `post`/`md` element; if
+Feishu rejects the payload the adapter still falls back to plain text, so a
+message is always delivered.
+
 ## Processing Status Reactions
 
 While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.

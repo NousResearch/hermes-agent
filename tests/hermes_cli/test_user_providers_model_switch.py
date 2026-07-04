@@ -263,6 +263,133 @@ def test_list_authenticated_providers_dict_models_without_default_model(monkeypa
     assert set(user_prov["models"]) == {"alpha", "beta"}
 
 
+def test_list_authenticated_providers_enumerates_model_keyed_provider_entries(monkeypatch):
+    """Some hand-written local-provider configs key endpoint settings by model.
+
+    The desktop picker still needs a provider row even when ``providers.<name>``
+    has no top-level base_url/default_model and instead stores:
+    ``providers.<name>.<model>.base_url``.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    fetch_calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        fetch_calls.append((api_key, base_url))
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    user_providers = {
+        "hounddog_local": {
+            "gemma-4-e4b-it-qat": {
+                "enabled": True,
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "not-required",
+                "context_window": 8192,
+            }
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="hounddog_local",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    user_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("is_user_defined") and p["slug"] == "hounddog_local"
+        ),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["is_current"] is True
+    assert user_prov["api_url"] == "http://127.0.0.1:1234/v1"
+    assert user_prov["models"] == ["gemma-4-e4b-it-qat"]
+    assert user_prov["total_models"] == 1
+    assert fetch_calls == [("not-required", "http://127.0.0.1:1234/v1")]
+
+
+def test_switch_model_resolves_model_keyed_user_provider(monkeypatch):
+    """Selecting a model-keyed providers: row should resolve its endpoint."""
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *a, **k: None,
+    )
+
+    user_providers = {
+        "hounddog_local": {
+            "gemma-4-e4b-it-qat": {
+                "enabled": True,
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "not-required",
+            }
+        }
+    }
+
+    result = switch_model(
+        raw_input="gemma-4-e4b-it-qat",
+        current_provider="openrouter",
+        current_model="old/model",
+        explicit_provider="hounddog_local",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "hounddog_local"
+    assert result.new_model == "gemma-4-e4b-it-qat"
+    assert result.base_url == "http://127.0.0.1:1234/v1"
+    assert result.api_key == "not-required"
+
+
+def test_runtime_provider_resolves_model_keyed_providers_dict(monkeypatch):
+    """Session rebuilds should resolve the same model-keyed providers: config."""
+    config = {
+        "model": {
+            "provider": "hounddog_local",
+            "default": "gemma-4-e4b-it-qat",
+        },
+        "providers": {
+            "hounddog_local": {
+                "gemma-4-e4b-it-qat": {
+                    "enabled": True,
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "api_key": "not-required",
+                    "context_window": 8192,
+                }
+            }
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    runtime = rp.resolve_runtime_provider(
+        requested="hounddog_local",
+        target_model="gemma-4-e4b-it-qat",
+    )
+
+    assert runtime["provider"] == "custom"
+    assert runtime["requested_provider"] == "hounddog_local"
+    assert runtime["base_url"] == "http://127.0.0.1:1234/v1"
+    assert runtime["api_key"] == "not-required"
+    assert runtime["model"] == "gemma-4-e4b-it-qat"
+
+
 def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatch):
     """When ``default_model`` is also a key in the ``models:`` dict, it must
     appear exactly once (list already had this for list-format models)."""

@@ -4499,6 +4499,52 @@ def _normalize_custom_provider_entry(
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
     }
+    model_keyed_entries: Dict[str, Dict[str, Any]] = {}
+    model_keyed_base_url = ""
+    model_keyed_api_key = ""
+    model_keyed_key_env = ""
+    model_keyed_api_mode = ""
+    for raw_model, raw_cfg in entry.items():
+        if raw_model in _KNOWN_KEYS or raw_model in _CAMEL_ALIASES:
+            continue
+        if not isinstance(raw_model, str) or not isinstance(raw_cfg, dict):
+            continue
+        nested_url = (
+            raw_cfg.get("base_url")
+            or raw_cfg.get("url")
+            or raw_cfg.get("api")
+            or ""
+        )
+        if not isinstance(nested_url, str) or not nested_url.strip():
+            continue
+        if (
+            str(raw_cfg.get("enabled", "true")).strip().lower()
+            in {"false", "0", "no"}
+        ):
+            continue
+        model_key = raw_model.strip()
+        if not model_key:
+            continue
+        if not model_keyed_base_url:
+            model_keyed_base_url = nested_url.strip()
+        if (
+            nested_url.strip().rstrip("/").lower()
+            != model_keyed_base_url.rstrip("/").lower()
+        ):
+            continue
+        model_meta: Dict[str, Any] = {}
+        context_length = raw_cfg.get("context_length") or raw_cfg.get("context_window")
+        if isinstance(context_length, int) and context_length > 0:
+            model_meta["context_length"] = context_length
+        model_keyed_entries[model_key] = model_meta
+        if not model_keyed_api_key and isinstance(raw_cfg.get("api_key"), str):
+            model_keyed_api_key = raw_cfg["api_key"].strip()
+        if not model_keyed_key_env and isinstance(raw_cfg.get("key_env"), str):
+            model_keyed_key_env = raw_cfg["key_env"].strip()
+        nested_api_mode = raw_cfg.get("api_mode") or raw_cfg.get("transport")
+        if not model_keyed_api_mode and isinstance(nested_api_mode, str):
+            model_keyed_api_mode = nested_api_mode.strip()
+
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
             logger.warning(
@@ -4507,7 +4553,12 @@ def _normalize_custom_provider_entry(
                 provider_key or "?", camel, snake,
             )
             entry[snake] = entry[camel]
-    unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
+    unknown = (
+        set(entry.keys())
+        - _KNOWN_KEYS
+        - set(_CAMEL_ALIASES.keys())
+        - set(model_keyed_entries.keys())
+    )
     if unknown:
         logger.warning(
             "providers.%s: unknown config keys ignored: %s",
@@ -4539,6 +4590,8 @@ def _normalize_custom_provider_entry(
                     "(no scheme or host) — skipped",
                     provider_key or "?", url_key, candidate,
                 )
+    if not base_url and model_keyed_base_url:
+        base_url = model_keyed_base_url
     if not base_url:
         return None
 
@@ -4563,18 +4616,26 @@ def _normalize_custom_provider_entry(
     api_key = entry.get("api_key")
     if isinstance(api_key, str) and api_key.strip():
         normalized["api_key"] = api_key.strip()
+    elif model_keyed_api_key:
+        normalized["api_key"] = model_keyed_api_key
 
     key_env = entry.get("key_env")
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
+    elif model_keyed_key_env:
+        normalized["key_env"] = model_keyed_key_env
 
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
+    elif model_keyed_api_mode:
+        normalized["api_mode"] = model_keyed_api_mode
 
     model_name = entry.get("model") or entry.get("default_model")
     if isinstance(model_name, str) and model_name.strip():
         normalized["model"] = model_name.strip()
+    elif model_keyed_entries:
+        normalized["model"] = next(iter(model_keyed_entries))
 
     models = entry.get("models")
     if isinstance(models, dict) and models:
@@ -4587,6 +4648,8 @@ def _normalize_custom_provider_entry(
         normalized["models"] = {
             str(m): {} for m in models if isinstance(m, str) and m.strip()
         }
+    elif model_keyed_entries:
+        normalized["models"] = model_keyed_entries
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

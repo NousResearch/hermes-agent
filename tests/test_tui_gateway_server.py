@@ -3514,6 +3514,90 @@ def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(mo
         server._sessions.pop("sid", None)
 
 
+def test_config_set_model_accepts_model_keyed_user_provider(monkeypatch):
+    """Desktop model picker selection should switch model-keyed providers."""
+    config = {
+        "model": {
+            "provider": "hounddog_local",
+            "default": "gemma-4-e4b-it-qat",
+        },
+        "providers": {
+            "hounddog_local": {
+                "gemma-4-e4b-it-qat": {
+                    "enabled": True,
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "api_key": "not-required",
+                }
+            }
+        },
+    }
+    seen = {"build": 0, "wait": 0}
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: config)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.load_config",
+        lambda: config,
+    )
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: seen.__setitem__("build", seen["build"] + 1),
+    )
+    monkeypatch.setattr(
+        server,
+        "_wait_agent",
+        lambda *_args: seen.__setitem__("wait", seen["wait"] + 1),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "gemma-4-e4b-it-qat --provider hounddog_local",
+                },
+            }
+        )
+
+        assert resp["result"]["value"] == "gemma-4-e4b-it-qat"
+        assert seen["build"] == 0
+        assert seen["wait"] == 0
+        assert session["model_override"]["provider"] == "hounddog_local"
+        assert session["model_override"]["model"] == "gemma-4-e4b-it-qat"
+        assert session["model_override"]["base_url"] == "http://127.0.0.1:1234/v1"
+        assert session["model_override"]["api_key"] == "not-required"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     """A /model switch must NOT mutate process-global env vars. The desktop /
     dashboard tui_gateway backend hosts every same-profile session in one
@@ -5863,6 +5947,48 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "error" in resp
     assert resp["error"]["code"] == 5033
     assert "catalog blew up" in resp["error"]["message"]
+
+
+def test_model_options_includes_model_keyed_user_provider(monkeypatch):
+    """Desktop model.options must surface local providers declared per model."""
+    config = {
+        "model": {
+            "provider": "hounddog_local",
+            "default": "gemma-4-e4b-it-qat",
+        },
+        "providers": {
+            "hounddog_local": {
+                "gemma-4-e4b-it-qat": {
+                    "enabled": True,
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "api_key": "not-required",
+                    "context_window": 8192,
+                }
+            }
+        },
+    }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda *_args, **_kwargs: {})
+
+    resp = server._methods["model.options"](88, {"session_id": ""})
+
+    assert "result" in resp, resp
+    provider = next(
+        (
+            row
+            for row in resp["result"]["providers"]
+            if row.get("slug") == "hounddog_local"
+        ),
+        None,
+    )
+    assert provider is not None
+    assert provider["is_current"] is True
+    assert provider["models"] == ["gemma-4-e4b-it-qat"]
+    assert provider["api_url"] == "http://127.0.0.1:1234/v1"
 
 
 # ---------------------------------------------------------------------------

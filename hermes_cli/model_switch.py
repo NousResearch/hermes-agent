@@ -69,6 +69,90 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     )
 
 
+def _norm_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/").lower()
+
+
+def _user_provider_details(cfg: dict) -> dict:
+    """Extract endpoint, credential, and model list from a providers: entry."""
+    if not isinstance(cfg, dict):
+        return {
+            "api_url": "",
+            "api_key": "",
+            "key_env": "",
+            "api_mode": "",
+            "models": [],
+        }
+
+    api_url = (
+        cfg.get("base_url", "")
+        or cfg.get("api", "")
+        or cfg.get("url", "")
+        or ""
+    )
+    api_key = str(cfg.get("api_key", "") or "").strip()
+    key_env = str(cfg.get("key_env", "") or "").strip()
+    api_mode = str(cfg.get("api_mode", "") or cfg.get("transport", "") or "").strip()
+    models: list[str] = []
+
+    default_model = cfg.get("default_model", "") or cfg.get("model", "")
+    if isinstance(default_model, str) and default_model.strip():
+        models.append(default_model.strip())
+
+    cfg_models = cfg.get("models", [])
+    if isinstance(cfg_models, dict):
+        for model in cfg_models:
+            if model and model not in models:
+                models.append(model)
+    elif isinstance(cfg_models, list):
+        for model in cfg_models:
+            if isinstance(model, str) and model and model not in models:
+                models.append(model)
+            elif isinstance(model, dict) and model.get("name") not in models:
+                name = model.get("name")
+                if isinstance(name, str) and name:
+                    models.append(name)
+
+    for model_id, model_cfg in cfg.items():
+        if not isinstance(model_id, str) or not isinstance(model_cfg, dict):
+            continue
+        nested_url = (
+            model_cfg.get("base_url", "")
+            or model_cfg.get("api", "")
+            or model_cfg.get("url", "")
+            or ""
+        )
+        if not nested_url:
+            continue
+        if (
+            str(model_cfg.get("enabled", "true")).strip().lower()
+            in {"false", "0", "no"}
+        ):
+            continue
+        if not api_url:
+            api_url = nested_url
+        if _norm_url(nested_url) != _norm_url(api_url):
+            continue
+        model_name = model_id.strip()
+        if model_name and model_name not in models:
+            models.append(model_name)
+        if not api_key and isinstance(model_cfg.get("api_key"), str):
+            api_key = model_cfg["api_key"].strip()
+        if not key_env and isinstance(model_cfg.get("key_env"), str):
+            key_env = model_cfg["key_env"].strip()
+        nested_api_mode = model_cfg.get("api_mode") or model_cfg.get("transport")
+        if not api_mode and isinstance(nested_api_mode, str):
+            api_mode = nested_api_mode.strip()
+
+    return {
+        "api_url": str(api_url or "").strip(),
+        "api_key": api_key,
+        "key_env": key_env,
+        "api_mode": api_mode,
+        "models": models,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
@@ -1144,11 +1228,12 @@ def switch_model(
         if _user_pdef is not None and _user_pdef.base_url:
             _ucfg = (user_providers or {}).get(explicit_provider.strip().lower()) \
                 or (user_providers or {}).get(target_provider) or {}
-            _ukey = str(_ucfg.get("api_key", "") or "").strip()
+            _udetails = _user_provider_details(_ucfg)
+            _ukey = str(_udetails.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
                 _ukey = os.environ.get(_ukey[2:-1], "").strip()
             if not _ukey:
-                _kenv = str(_ucfg.get("key_env", "") or "").strip()
+                _kenv = str(_udetails.get("key_env", "") or "").strip()
                 if _kenv:
                     _ukey = os.environ.get(_kenv, "").strip()
             try:
@@ -1164,7 +1249,10 @@ def switch_model(
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
-                api_mode = ""
+                api_mode = (
+                    str(_udetails.get("api_mode", "") or "").strip()
+                    or determine_api_mode(target_provider, base_url)
+                )
         elif target_provider == "custom" and current_base_url:
             api_key = current_api_key
             base_url = current_base_url
@@ -1243,16 +1331,9 @@ def switch_model(
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
                 if slug == target_provider:
-                    cfg_models = cfg.get("models", {})
-                    # Direct membership works for dict (keys) and list (strings)
-                    if new_model in cfg_models:
+                    if new_model in _user_provider_details(cfg).get("models", []):
                         override = True
                         break
-                    # Also accept if models is a list of dicts with 'name' field
-                    if isinstance(cfg_models, list):
-                        if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
-                            override = True
-                            break
         # Also check custom_providers list — models declared there should be accepted
         # even if the remote /v1/models endpoint doesn't list them.
         if not override and custom_providers and isinstance(custom_providers, list):
@@ -1946,6 +2027,9 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
+            details = _user_provider_details(ep_cfg)
+            if not api_url:
+                api_url = details["api_url"]
             # ``default_model`` is the legacy key; ``model`` matches what
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
@@ -1967,6 +2051,9 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
+            for m in details["models"]:
+                if m and m not in models_list:
+                    models_list.append(m)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1988,7 +2075,11 @@ def list_authenticated_providers(
             #   still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
+                api_key = details["api_key"]
+            if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
+                if not key_env:
+                    key_env = details["key_env"]
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):

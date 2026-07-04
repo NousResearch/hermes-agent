@@ -596,6 +596,33 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
     key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
+    if not api_url:
+        for model_id, model_cfg in entry.items():
+            if not isinstance(model_id, str) or not isinstance(model_cfg, dict):
+                continue
+            nested_url = (
+                model_cfg.get("base_url", "")
+                or model_cfg.get("api", "")
+                or model_cfg.get("url", "")
+                or ""
+            )
+            if not nested_url:
+                continue
+            if (
+                str(model_cfg.get("enabled", "true")).strip().lower()
+                in {"false", "0", "no"}
+            ):
+                continue
+            api_url = str(nested_url).strip()
+            key_env = str(model_cfg.get("key_env", "") or key_env or "")
+            transport = (
+                model_cfg.get("transport", "")
+                or model_cfg.get("api_mode", "")
+                or transport
+            )
+            break
+    if not api_url:
+        return None
 
     env_vars: List[str] = []
     if key_env:

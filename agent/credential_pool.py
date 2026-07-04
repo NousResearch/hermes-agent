@@ -961,6 +961,21 @@ class CredentialPool:
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
+            # A tokenless anthropic ``claude_code`` entry is a lazy reference
+            # that resolves from ~/.claude/.credentials.json at request time; it
+            # legitimately carries no refresh_token in the pool.  Tombstoning it
+            # here (STATUS_EXHAUSTED, 1h TTL) is wrong: under round_robin the
+            # status persists to the SHARED auth.json and poisons every gateway
+            # and cron until a full restart.  Hydrate from the credentials file
+            # first, and only mark exhausted if that yields nothing usable.
+            if (
+                self.provider == "anthropic"
+                and entry.source == "claude_code"
+                and not entry.refresh_token
+            ):
+                synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                if synced is not entry and synced.refresh_token:
+                    return self._refresh_entry_impl(synced, force=force)
             if force:
                 self._mark_exhausted(entry, None)
             return None

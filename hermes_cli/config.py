@@ -7381,6 +7381,15 @@ def reload_env() -> int:
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
+    # Check active profile secret scope first (multiplex-aware)
+    try:
+        from agent.secret_scope import get_secret as _get_secret
+        val = _get_secret(key)
+        if val is not None:
+            return val
+    except Exception:
+        pass
+
     # Check environment first
     if key in os.environ:
         return os.environ[key]

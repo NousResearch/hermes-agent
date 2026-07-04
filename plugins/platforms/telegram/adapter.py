@@ -8177,7 +8177,13 @@ async def _standalone_send(
     parse-mode fallback). Implements the standalone_sender_fn contract so
     deliver=telegram cron jobs succeed when cron runs separately from the
     gateway."""
-    token = getattr(pconfig, "token", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    token = getattr(pconfig, "token", None)
+    if not token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            token = get_env_value_prefer_dotenv("TELEGRAM_BOT_TOKEN") or ""
+        except Exception:
+            token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     disable_link_previews = bool(
         getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")
     )

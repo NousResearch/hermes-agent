@@ -1233,14 +1233,14 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
-    
+
     # Force-disable port-binding platforms on secondary profiles under multiplex mode.
     # Secondary profiles must never bind their own ports.
     import hermes_constants as _hermes_constants_local
     primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
     active_home = _hermes_constants_local.get_hermes_home().resolve()
     is_secondary_override = active_home != primary_home
-    if is_secondary_override and getattr(config, "multiplex_profiles", False):
+    if is_secondary_override:
         _PORT_BINDING_PLATFORMS = {
             "webhook",
             "api_server",
@@ -1370,7 +1370,7 @@ def _apply_env_overrides_impl(config: GatewayConfig) -> None:
     # Determine default/primary home dynamically
     primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
     active_home = _hermes_constants_local.get_hermes_home().resolve()
-    
+
     # A profile is secondary if its active home is different from the primary home
     is_secondary = active_home != primary_home
 
@@ -1390,13 +1390,13 @@ def _apply_env_overrides_impl(config: GatewayConfig) -> None:
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
         return platform_config
-    
+
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
-    
+
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
     if telegram_reply_mode in {"off", "first", "all"}:

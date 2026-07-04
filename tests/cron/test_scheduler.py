@@ -4467,3 +4467,47 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestCronIncompleteFinalResponse:
+    """Restored 2026-07-04 from an orphaned 2026-06-23 autostash (never committed).
+
+    Covers the cron unfinished-work guardrail (_cron_final_response_incomplete)
+    and the timeout-in-report classification fix (_summarize_cron_failure_for_delivery).
+    """
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "**Health:** 88\u2192[validation pending] \u26a0\ufe0f",
+            "\U0001f51c **Next:** Validate the patch with compare mode, then log or revert based on the delta",
+            "clean up the backup if kept",
+        ],
+    )
+    def test_incomplete_guardrail_language_is_not_success(self, response):
+        from cron.scheduler import _cron_final_response_incomplete
+
+        assert _cron_final_response_incomplete(response)
+
+    def test_completed_report_is_allowed(self):
+        from cron.scheduler import _cron_final_response_incomplete
+
+        response = (
+            "\U0001f527 **System Improvement Agent**\n\n"
+            "**Changes: 1** (of 3 max)\n\n"
+            "**cleanup**\n"
+            "**Change:** removed stale file\n"
+            "**Health:** 88\u219288 (+0)\n\n"
+            "\U0001f4ca **Health: 88 (started at 88)**\n\n"
+            "\U0001f51c **Next:** inspect journal warnings next run"
+        )
+        assert _cron_final_response_incomplete(response) is None
+
+    def test_summarize_cron_failure_does_not_match_timeout_in_report_text(self):
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        job = {"id": "j", "name": "system-improvement-agent"}
+        error = "RuntimeError: investigate dashboard timeout-SIGKILL and gateway warnings"
+        summary = _summarize_cron_failure_for_delivery(job, error)
+        assert "provider timeout" not in summary
+        assert "dashboard timeout-SIGKILL" in summary

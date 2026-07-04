@@ -71,7 +71,15 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+    # Provider timeout wording. "timed out" and httpx ``ReadTimeout`` are
+    # unambiguous. Standalone ``timeout`` is only treated as a provider timeout
+    # when it is not the first half of a compound token such as
+    # ``timeout-SIGKILL`` (which appears in system-improvement reports).
+    if (
+        "readtimeout" in lower
+        or "timed out" in lower
+        or re.search(r"\btimeout\b(?!-)", lower)
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "
@@ -287,6 +295,36 @@ def _is_cron_silence_response(text: str) -> bool:
     if upper.startswith("[SILENT]"):
         return True
     return False
+
+
+_INCOMPLETE_AGENT_RESPONSE_PATTERNS = (
+    "[validation pending]",
+    "validation pending",
+    "validate the patch",
+    "validate the change",
+    "then log or revert",
+    "log or revert based on the delta",
+    "clean up the backup if kept",
+)
+
+
+def _cron_final_response_incomplete(final_response: str) -> str | None:
+    """Return a reason when a cron agent reports unfinished guardrail work.
+
+    Some autonomous jobs can produce a polished final report while admitting
+    that validation, logging, revert, or cleanup is still pending. That is not a
+    successful unattended run: cron must not mark it ``ok`` just because the LLM
+    returned text. Keep this generic and conservative — it only catches explicit
+    unfinished-work language that should never appear in a final report.
+    """
+    text = (final_response or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    for pattern in _INCOMPLETE_AGENT_RESPONSE_PATTERNS:
+        if pattern in lower:
+            return f"agent final response contains unfinished-work marker: {pattern}"
+    return None
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2653,6 +2691,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Per-job override lets long-running agents (e.g. system-improvement-agent)
+        # use a larger budget without changing global defaults.
+        job_max_turns = job.get("max_turns") or job.get("max_iterations")
+        if job_max_turns:
+            try:
+                job_max_turns = int(job_max_turns)
+                if job_max_turns > 0:
+                    max_iterations = job_max_turns
+                    logger.info("Job '%s': using per-job max_turns=%d", job_id, max_iterations)
+            except (ValueError, TypeError):
+                logger.warning("Job '%s': invalid max_turns/max_iterations '%s', ignoring", job_id, job_max_turns)
+        max_iterations = int(max_iterations)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
@@ -3171,6 +3221,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if success and not final_response.strip():
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        # A response that says validation/logging/revert/cleanup is still
+        # pending is not a completed unattended job. Mark it failed so the
+        # operator sees the issue and the job does not get a false green tick.
+        if success:
+            incomplete_reason = _cron_final_response_incomplete(final_response)
+            if incomplete_reason:
+                success = False
+                error = incomplete_reason
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True

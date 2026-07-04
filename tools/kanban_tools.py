@@ -657,6 +657,19 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.EmptyDiffCompletionError as diff_err:
+                # Deterministic empty-diff rejection — same contract as
+                # the hallucinated-cards gate above: audit event already
+                # landed, task state untouched, retry is safe.
+                return tool_error(
+                    f"kanban_complete blocked: worktree "
+                    f"{diff_err.workspace_path or '<unknown>'} has no "
+                    f"committed or uncommitted changes vs its base branch. "
+                    f"Your task is still in-flight (no state change). "
+                    f"Commit your work in the worktree and retry, or if this "
+                    f"task legitimately produced no code changes, retry with "
+                    f'metadata={{"no_diff_expected": true}}.'
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"

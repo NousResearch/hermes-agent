@@ -2681,3 +2681,115 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Empty-diff completion gate (tool surface)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def worktree_worker_env(monkeypatch, tmp_path):
+    """Like worker_env, but the claimed task owns a real, clean git
+    worktree — the exact state the empty-diff gate exists to reject."""
+    import subprocess
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-b", "main", str(repo)],
+        ["git", "-C", str(repo), "config", "user.email", "kanban@example.com"],
+        ["git", "-C", str(repo), "config", "user.name", "Kanban Test"],
+    ):
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"],
+                   check=True, capture_output=True, text=True)
+    worktree = tmp_path / "wt-task"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "wt/task",
+         str(worktree), "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="worktree-worker-test",
+            assignee="test-worker",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/task",
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    return tid, worktree
+
+
+def test_complete_empty_diff_message_advertises_recovery(worktree_worker_env):
+    """The empty-diff rejection must read as retryable — spell out that
+    the task is still in-flight and name both recovery paths (commit the
+    work, or metadata.no_diff_expected). Same doctrine as the phantom-card
+    message (#22923): a tool_error that reads terminal makes workers
+    abandon the run."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid, _ = worktree_worker_env
+    out = json.loads(kt._handle_complete({"summary": "claims work happened"}))
+    err = out.get("error", "")
+    assert err, f"expected an error, got {out!r}"
+    assert "no committed or uncommitted changes" in err
+    assert "still in-flight" in err
+    assert "no_diff_expected" in err
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_empty_diff_retry_after_real_work(worktree_worker_env):
+    from tools import kanban_tools as kt
+
+    tid, worktree = worktree_worker_env
+    rejected = json.loads(kt._handle_complete({"summary": "no work yet"}))
+    assert rejected.get("error")
+
+    (worktree / "notes.md").write_text("real work\n", encoding="utf-8")
+    ok = json.loads(kt._handle_complete({"summary": "did work"}))
+    assert ok.get("ok") is True, ok
+
+
+def test_complete_empty_diff_escape_hatch(worktree_worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid, _ = worktree_worker_env
+    ok = json.loads(kt._handle_complete({
+        "summary": "investigation only, no code changes by design",
+        "metadata": {"no_diff_expected": True},
+    }))
+    assert ok.get("ok") is True, ok
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()

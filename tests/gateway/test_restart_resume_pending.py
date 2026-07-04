@@ -1032,6 +1032,28 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     assert marked == {session_key_real}
 
 
+@pytest.mark.asyncio
+async def test_drain_ignores_only_pending_sentinel_sessions():
+    """A construction sentinel is not an active agent for shutdown drain.
+
+    M43's fake/local seam proved that active-run snapshots must be shape-only
+    and exclude not-yet-started sentinels.  If the live drain loop treats a
+    lone sentinel as active work, shutdown burns the whole drain budget and
+    reports a timeout even though no AIAgent exists to interrupt or resume.
+    """
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner, _adapter = make_restart_runner()
+    runner._running_agents = {"agent:main:telegram:dm:pending": _AGENT_PENDING_SENTINEL}
+
+    with patch("gateway.status.write_runtime_status"):
+        snapshot, timed_out = await runner._drain_active_agents(timeout=0.01)
+
+    assert snapshot == {}
+    assert timed_out is False
+    assert runner._running_agent_count() == 0
+
+
 # ---------------------------------------------------------------------------
 # Gateway startup auto-resume
 # ---------------------------------------------------------------------------

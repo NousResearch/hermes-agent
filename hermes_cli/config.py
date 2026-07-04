@@ -7410,8 +7410,14 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
         return val
     try:
         from agent.secret_scope import get_secret as _get_secret
+        from agent.secret_scope import is_multiplex_active as _is_multiplex_active
 
-        return _get_secret(key)
+        scoped_val = _get_secret(key)
+        if scoped_val:
+            return scoped_val
+        if not _is_multiplex_active():
+            return os.environ.get(key)
+        return None
     except Exception:
         return os.environ.get(key)
 

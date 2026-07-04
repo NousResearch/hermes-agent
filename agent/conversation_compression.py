@@ -717,6 +717,30 @@ def compress_context(
         except Exception:
             pass
 
+    # External context engines can be shared across side channels (subagents,
+    # background review, gateway workers).  Before asking one to write compaction
+    # state, make sure it is bound to the host session whose messages are being
+    # compressed; otherwise DAG/store rows can be attributed to a stale session
+    # and the later compression-boundary carry-over has no matching source.
+    try:
+        _bound_sid = getattr(agent.context_compressor, "current_session_id", None)
+        if not isinstance(_bound_sid, str):
+            _bound_sid = getattr(agent.context_compressor, "_session_id", "")
+        if (
+            isinstance(_bound_sid, str)
+            and _bound_sid
+            and agent.session_id
+            and _bound_sid != agent.session_id
+            and hasattr(agent.context_compressor, "on_session_start")
+        ):
+            agent.context_compressor.on_session_start(
+                agent.session_id,
+                platform=getattr(agent, "platform", None) or "cli",
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+    except Exception as _bind_err:
+        logger.debug("context engine pre-compression rebind skipped: %s", _bind_err)
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:

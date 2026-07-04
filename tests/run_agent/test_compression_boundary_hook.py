@@ -162,6 +162,62 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+    def test_stale_bound_engine_rebinds_before_compress(self):
+        """Compression must write plugin state under the host's active session.
+
+        LCM instances can be rebound by side channels before a foreground
+        compaction fires.  If compress() runs while the engine is still bound to
+        that stale session, DAG nodes are attributed to the wrong session and
+        the subsequent old->new compression-boundary carry-over cannot find the
+        source.  The host owns the active session_id, so it must rebind before
+        invoking compress().
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressor = MagicMock()
+            compressor.current_session_id = "stale-side-channel"
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+
+            def _on_session_start(session_id, **_kwargs):
+                compressor.current_session_id = session_id
+
+            def _compress(*_args, **_kwargs):
+                assert compressor.current_session_id == agent.session_id
+                return [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                    {"role": "user", "content": "tail question"},
+                ]
+
+            compressor.on_session_start.side_effect = _on_session_start
+            compressor.compress.side_effect = _compress
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            rebind_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.args and c.args[0] == original_sid
+                and c.kwargs.get("boundary_reason") != "compression"
+            ]
+            assert rebind_calls, compressor.on_session_start.call_args_list
+
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls
+            assert comp_calls[-1].args[0] == agent.session_id
+            assert comp_calls[-1].kwargs.get("old_session_id") == original_sid
 
     def test_plugin_noop_does_not_rotate_or_emit_boundary(self):
         """A plugin no-op must not create a compression child session.

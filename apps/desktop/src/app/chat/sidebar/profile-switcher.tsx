@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -54,13 +54,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import {
-  $attentionSessionIds,
-  $cronSessions,
-  $messagingSessions,
-  $sessions,
-  sessionPinId
-} from '@/store/session'
+import { $attentionProfileCounts } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -85,6 +79,9 @@ const RAIL_TRANSITION = { duration: 300, easing: SPRING }
 const DRAG_TRANSITION = `transform 200ms ${SPRING}`
 
 const PROFILE_RAIL_SCROLL_FUZZ = 1
+
+const PROFILE_RAIL_COUNT_CLASS =
+  'shrink-0 font-mono text-[0.625rem] font-semibold leading-none text-(--ui-text-primary) tabular-nums'
 
 interface ProfileRailScrollState {
   canScrollLeft: boolean
@@ -123,10 +120,7 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const icons = useStore($profileIcons)
-  const sessions = useStore($sessions)
-  const cronSessions = useStore($cronSessions)
-  const messagingSessions = useStore($messagingSessions)
-  const attentionSessionIds = useStore($attentionSessionIds)
+  const waitingReplyCounts = useStore($attentionProfileCounts)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -210,6 +204,14 @@ export function ProfileRail() {
   const namedProfileSignature = named.map(profile => profile.name).join('\0')
 
   useEffect(() => {
+    if (profiles.length > 0) {
+      return
+    }
+
+    void refreshActiveProfile()
+  }, [profiles.length])
+
+  useEffect(() => {
     const el = scrollRef.current
 
     if (!el) {
@@ -251,23 +253,7 @@ export function ProfileRail() {
     updateScrollState()
   }
 
-  const attentionCounts = useMemo(() => {
-    const ids = new Set(attentionSessionIds)
-    const counts = new Map<string, number>()
-
-    for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
-      if (!ids.has(session.id) && !ids.has(sessionPinId(session))) {
-        continue
-      }
-
-      const profile = normalizeProfileKey(session.profile)
-      counts.set(profile, (counts.get(profile) ?? 0) + 1)
-    }
-
-    return counts
-  }, [attentionSessionIds, cronSessions, messagingSessions, sessions])
-
-  const totalAttentionCount = [...attentionCounts.values()].reduce((sum, count) => sum + count, 0)
+  const totalWaitingReplyCount = Object.values(waitingReplyCounts).reduce((sum, count) => sum + count, 0)
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
@@ -309,12 +295,6 @@ export function ProfileRail() {
     }
   }
 
-  // Re-pull the running profile + list on mount so a profile created elsewhere
-  // shows up; cheap and best-effort.
-  useEffect(() => {
-    void refreshActiveProfile()
-  }, [])
-
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
   // state lives here, so the global keybind bumps a request atom we watch).
   const createRequest = useStore($profileCreateRequest)
@@ -340,7 +320,7 @@ export function ProfileRail() {
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
             active={isAll || onDefault}
-            badgeCount={isAll ? totalAttentionCount : (attentionCounts.get('default') ?? 0)}
+            badgeCount={isAll ? totalWaitingReplyCount : (waitingReplyCounts.default ?? 0)}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
@@ -348,7 +328,7 @@ export function ProfileRail() {
         ) : (
           <ProfilePill
             active={isAll}
-            badgeCount={totalAttentionCount}
+            badgeCount={totalWaitingReplyCount}
             glyph="layers"
             label={p.allProfiles}
             onSelect={() => setShowAllProfiles(true)}
@@ -359,7 +339,7 @@ export function ProfileRail() {
       {!multiProfile && defaultProfile && (
         <ProfilePill
           active
-          badgeCount={attentionCounts.get('default') ?? 0}
+          badgeCount={waitingReplyCounts.default ?? 0}
           glyph="home"
           label={defaultProfile.name}
           onSelect={() => selectProfile(defaultProfile.name)}
@@ -384,6 +364,7 @@ export function ProfileRail() {
         <div className="flex min-w-0 flex-1 items-center gap-0.5">
           {scrollState.hasOverflow && (
             <ProfileRailScrollButton
+              badgeCount={scrollState.canScrollLeft ? totalWaitingReplyCount : 0}
               direction={-1}
               disabled={!scrollState.canScrollLeft}
               onClick={() => scrollProfiles(-1)}
@@ -392,7 +373,7 @@ export function ProfileRail() {
 
           <div
             aria-label="Profile list"
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             ref={scrollRef}
           >
             {multiProfile && (
@@ -407,11 +388,11 @@ export function ProfileRail() {
                 <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
                   {/* relative → the strip is the dragged square's offsetParent, so the
                       clamp modifier bounds drags to the occupied cells (not the +). */}
-                  <div className="relative flex items-center gap-1">
+                  <div className="relative flex items-center gap-1 overflow-visible py-0.5">
                     {named.map(profile => (
                       <ProfileSquare
                         active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                        badgeCount={attentionCounts.get(normalizeProfileKey(profile.name)) ?? 0}
+                        badgeCount={waitingReplyCounts[normalizeProfileKey(profile.name)] ?? 0}
                         color={resolveProfileColor(profile.name, colors)}
                         icon={icons[normalizeProfileKey(profile.name)] ?? null}
                         key={profile.name}
@@ -434,6 +415,7 @@ export function ProfileRail() {
 
           {scrollState.hasOverflow && (
             <ProfileRailScrollButton
+              badgeCount={scrollState.canScrollRight ? totalWaitingReplyCount : 0}
               direction={1}
               disabled={!scrollState.canScrollRight}
               onClick={() => scrollProfiles(1)}
@@ -573,22 +555,26 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
 }
 
 function ProfileRailScrollButton({
+  badgeCount = 0,
   direction,
   disabled,
   onClick
 }: {
+  badgeCount?: number
   direction: 1 | -1
   disabled: boolean
   onClick: () => void
 }) {
   const label = direction === -1 ? 'Scroll profiles left' : 'Scroll profiles right'
+  const ariaLabel = waitingBadgeAriaLabel(label, badgeCount)
 
   return (
     <Tip label={label}>
       <Button
-        aria-label={label}
+        aria-label={ariaLabel}
         className={cn(
-          'shrink-0 bg-transparent text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100',
+          'h-5 shrink-0 bg-transparent text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100',
+          badgeCount > 0 && 'w-auto min-w-7 gap-0.5 px-1',
           disabled && 'opacity-25 hover:bg-transparent hover:text-(--ui-text-tertiary)'
         )}
         disabled={disabled}
@@ -598,6 +584,7 @@ function ProfileRailScrollButton({
         variant="ghost"
       >
         <Codicon name={direction === -1 ? 'chevron-left' : 'chevron-right'} size="0.75rem" />
+        <ProfileAttentionBadge count={badgeCount} />
       </Button>
     </Tip>
   )
@@ -674,7 +661,8 @@ function ProfilePill({ active, badgeCount = 0, glyph, label, onSelect }: Profile
         aria-label={ariaLabel}
         aria-pressed={active}
         className={cn(
-          'relative bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+          'h-5 bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+          badgeCount > 0 && 'w-auto min-w-7 gap-0.5 px-1',
           active && 'bg-(--ui-control-active-background) text-foreground'
         )}
         onClick={onSelect}
@@ -760,6 +748,7 @@ function ProfileSquare({
   const ring = active ? `inset 0 0 0 1.5px ${hue}` : ''
   const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
   const ariaLabel = waitingBadgeAriaLabel(label, badgeCount)
+  const hasBadge = badgeCount > 0
 
   const pickColor = (next: null | string) => {
     onRecolor(next)
@@ -778,7 +767,8 @@ function ProfileSquare({
                   <TooltipTrigger asChild>
                     <button
                       className={cn(
-                        'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                        'inline-flex h-5 shrink-0 cursor-grab touch-none select-none items-center justify-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                        hasBadge ? 'min-w-7 gap-0.5 px-1' : 'size-5',
                         active ? 'opacity-100' : 'opacity-55',
                         isDragging && 'z-10 cursor-grabbing opacity-100'
                       )}
@@ -925,7 +915,8 @@ function ProfileAttentionBadge({ count }: { count: number }) {
   return (
     <span
       aria-hidden="true"
-      className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-amber-400 px-0.5 text-[0.5rem] font-bold leading-none text-black shadow-[0_0_0_1px_var(--ui-sidebar-surface-background)]"
+      className={PROFILE_RAIL_COUNT_CLASS}
+      data-profile-count=""
     >
       {count > 99 ? '99+' : count}
     </span>

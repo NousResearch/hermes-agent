@@ -21,7 +21,15 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $messages,
+  setAwaitingResponse,
+  setBusy,
+  setMessages,
+  setSessionReplyReady
+} from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -589,6 +597,8 @@ export function usePromptActions({
             requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         }
+
+        setSessionReplyReady(storedSessionId, false)
 
         return true
       } catch (err) {

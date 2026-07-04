@@ -58,6 +58,7 @@ interface HarnessHandle {
 
 function Harness({
   busyRef,
+  createBackendSessionForSend,
   onReady,
   onSeedState,
   openMemoryGraph,
@@ -68,6 +69,7 @@ function Harness({
   storedSessionId
 }: {
   busyRef?: MutableRefObject<boolean>
+  createBackendSessionForSend?: (preview?: string | null) => Promise<string | null>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
@@ -97,7 +99,7 @@ function Harness({
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
-    createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
+    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
@@ -1176,13 +1178,60 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls).not.toContain('session.resume')
   })
 
-  it('surfaces "session not found" (no resume) when there is no stored session id', async () => {
-    const calls: string[] = []
+  it('creates a replacement runtime session and retries when a new draft has a stale runtime id', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-replacement-new-draft')
+    let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string) => {
-      calls.push(method)
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
 
       if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('message')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledWith('message')
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'message' })
+    expect(calls[1]?.params).toEqual({ session_id: 'rt-replacement-new-draft', text: 'message' })
+  })
+
+  it('creates a replacement runtime session when the selected stored id is also stale', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-replacement-stale-selected')
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+      }
+
+      if (method === 'session.resume') {
         throw new Error('session not found')
       }
 
@@ -1192,17 +1241,19 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
-        storedSessionId={null}
+        storedSessionId={RUNTIME_SESSION_ID}
       />
     )
 
-    // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
-    // short-circuits — no resume is attempted and the error surfaces normally.
-    expect(await handle!.submitText('message')).toBe(false)
-    expect(calls).not.toContain('session.resume')
+    expect(await handle!.submitText('message')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledWith('message')
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[2]?.params).toEqual({ session_id: 'rt-replacement-stale-selected', text: 'message' })
   })
 })
 

@@ -70,6 +70,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        type=int,
+        help="Per-job ceiling on agent tool-use iterations (steps). The job stops after this many steps instead of the global default (90), bounding a runaway job's cost. Omit to inherit the config/global cap.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -133,6 +139,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        type=int,
+        help="Per-job ceiling on agent tool-use iterations (steps). Pass 0 to clear it back to the config/global default (90).",
     )
 
     # lifecycle actions

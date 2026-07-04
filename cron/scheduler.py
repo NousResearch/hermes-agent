@@ -2250,6 +2250,29 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _resolve_max_iterations(job: dict, cfg: dict) -> int:
+    """Resolve the agent tool-iteration ceiling for one cron job run.
+
+    Precedence:
+      1. A positive per-job ``max_turns`` on the job dict (declared by the job —
+         e.g. a Talent's cron cost policy). This lets a cheap scheduled job run
+         under a tight cap so a runaway loop stops early, WITHOUT lowering the
+         ceiling for the tenant's interactive turns.
+      2. The config-level ``agent.max_turns`` (or legacy top-level ``max_turns``).
+      3. The built-in default, 90.
+
+    A non-positive, boolean, or non-integer per-job value (e.g. from a
+    hand-edited jobs.json) is ignored so it can never silently disable the cap.
+    """
+    job_cap = job.get("max_turns") if isinstance(job, dict) else None
+    if not (isinstance(job_cap, int) and not isinstance(job_cap, bool) and job_cap > 0):
+        job_cap = None
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    return job_cap or agent_cfg.get("max_turns") or cfg.get("max_turns") or 90
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2651,8 +2674,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations: a per-job ``max_turns`` cap wins (declared by the job
+        # itself — e.g. a Talent's cron cost policy), else the config-level
+        # ``agent.max_turns``, else the built-in default. See
+        # _resolve_max_iterations for the precedence and the rationale.
+        max_iterations = _resolve_max_iterations(job, _cfg)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}

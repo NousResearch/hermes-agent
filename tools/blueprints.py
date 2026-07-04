@@ -66,6 +66,7 @@ class BlueprintSpec:
     model: Optional[str] = None
     provider: Optional[str] = None
     enabled_toolsets: Optional[List[str]] = None
+    max_turns: Optional[int] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -128,6 +129,12 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     if toolsets is not None and not isinstance(toolsets, list):
         raise BlueprintError("blueprint.enabled_toolsets must be a list when present")
 
+    max_turns = blueprint.get("max_turns")
+    if max_turns is not None and (
+        not isinstance(max_turns, int) or isinstance(max_turns, bool) or max_turns <= 0
+    ):
+        raise BlueprintError("blueprint.max_turns must be a positive integer when present")
+
     return BlueprintSpec(
         skill_name=name,
         schedule=schedule,
@@ -137,6 +144,7 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
         enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
+        max_turns=max_turns,
         raw=blueprint,
     )
 
@@ -191,6 +199,7 @@ def blueprint_to_job_spec(
         "provider": spec.provider,
         "enabled_toolsets": spec.enabled_toolsets,
         "no_agent": spec.no_agent,
+        "max_turns": spec.max_turns,
     }
 
 

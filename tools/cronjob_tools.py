@@ -598,6 +598,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("max_turns"):
+        result["max_turns"] = job["max_turns"]
     return result
 
 
@@ -667,6 +669,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    max_turns: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -740,6 +743,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                max_turns=max_turns,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -913,6 +917,10 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if max_turns is not None:
+                # Pass through raw; update_job() normalizes (a positive int caps
+                # the job, 0 / negative clears it back to the config/global cap).
+                updates["max_turns"] = max_turns
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -1075,6 +1083,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "max_turns": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional per-job ceiling on agent tool-use iterations (steps) for THIS scheduled job. The job stops after this many iterations instead of the global agent.max_turns default (90), which bounds a runaway job's cost without lowering the ceiling for interactive turns. Size it from the job's expected healthy step count plus margin — a single-message reminder needs only a few, a script-and-report job more. Omit to inherit the config/global cap. On update, pass 0 to clear it back to the default."
+            },
         },
         "required": ["action"]
     }
@@ -1130,6 +1143,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        max_turns=args.get("max_turns"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

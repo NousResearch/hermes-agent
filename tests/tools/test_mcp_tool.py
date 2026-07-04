@@ -185,7 +185,42 @@ class TestSchemaConversion:
 
         assert schema["name"] == "mcp_filesystem_read_file"
         assert schema["description"] == "Read a file"
-        assert "properties" in schema["parameters"]
+        assert schema["parameters"]["type"] == "object"
+        assert "path" in schema["parameters"]["properties"]
+        assert "_mcp_input_schema" not in schema
+
+    def test_arguments_property_is_renamed_to_tool_arguments(self):
+        """A top-level `arguments` parameter collides with the tool-call envelope
+        and is renamed to `tool_arguments` in the model-facing schema.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="call_tool",
+            description="Call an MCP tool",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string"},
+                    "toolset_name": {"type": "string"},
+                    "arguments": {"type": "object", "description": "Nested args"},
+                },
+                "required": ["tool_name", "toolset_name", "arguments"],
+            },
+        )
+        schema = _convert_mcp_schema("unreal-engine", mcp_tool)
+
+        # The public schema renames `arguments` to `tool_arguments`.
+        params = schema["parameters"]
+        assert params["type"] == "object"
+        assert "arguments" not in params["properties"]
+        assert "tool_arguments" in params["properties"]
+        assert "tool_name" in params["properties"]
+        assert "toolset_name" in params["properties"]
+        assert params["required"] == ["tool_name", "toolset_name", "tool_arguments"]
+        # The original native schema is preserved under `_mcp_input_schema`.
+        assert schema["_mcp_input_schema"]["required"] == ["tool_name", "toolset_name", "arguments"]
+
 
     def test_empty_input_schema_gets_default(self):
         from tools.mcp_tool import _convert_mcp_schema
@@ -669,14 +704,74 @@ class TestToolHandler:
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
             with self._patch_mcp_loop():
-                result = json.loads(handler({"name": "world"}))
-            assert result["result"] == "hello world"
-            mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
+                # Handler accepts the original MCP argument names when the
+                # schema does not need a wrapper, and accepts tool_arguments
+                # when the wrapper is applied.
+                result = handler({"path": "/tmp/foo"})
+            parsed = json.loads(result)
+            assert parsed["result"] == "hello world"
+            mock_session.call_tool.assert_called_once_with(
+                "greet", arguments={"path": "/tmp/foo"}
+            )
         finally:
             _servers.pop("test_srv", None)
 
-    def test_mcp_error_result(self):
+    def test_call_tool_handler_preserves_sibling_params(self):
+        """Wrapped `call_tool` schemas pass all params, not just tool_arguments."""
         from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "call_tool", 120)
+            with self._patch_mcp_loop():
+                result = handler({
+                    "tool_name": "InnerTool",
+                    "toolset_name": "Inner.Toolset",
+                    "tool_arguments": {"foo": 1},
+                })
+            parsed = json.loads(result)
+            assert parsed["result"] == "ok"
+            args = mock_session.call_tool.call_args
+            assert args.kwargs["arguments"]["tool_name"] == "InnerTool"
+            assert args.kwargs["arguments"]["toolset_name"] == "Inner.Toolset"
+            assert args.kwargs["arguments"]["arguments"] == {"foo": 1}
+            assert "tool_arguments" not in args.kwargs["arguments"]
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_call_tool_handler_accepts_legacy_arguments(self):
+        """Backward-compatible: native `arguments` still works for wrapped schemas."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "call_tool", 120)
+            with self._patch_mcp_loop():
+                result = handler({
+                    "tool_name": "InnerTool",
+                    "toolset_name": "Inner.Toolset",
+                    "arguments": {"foo": 1},
+                })
+            parsed = json.loads(result)
+            assert parsed["result"] == "ok"
+            args = mock_session.call_tool.call_args
+            assert args.kwargs["arguments"]["tool_name"] == "InnerTool"
+            assert args.kwargs["arguments"]["toolset_name"] == "Inner.Toolset"
+            assert args.kwargs["arguments"]["arguments"] == {"foo": 1}
+        finally:
+            _servers.pop("test_srv", None)
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -2136,8 +2231,9 @@ class TestUtilitySchemas:
         params = gp["schema"]["parameters"]
         assert "name" in params["properties"]
         assert params["properties"]["name"]["type"] == "string"
-        assert "arguments" in params["properties"]
-        assert params["properties"]["arguments"]["type"] == "object"
+        assert "prompt_arguments" in params["properties"]
+        assert params["properties"]["prompt_arguments"]["type"] == "object"
+        assert "arguments" not in params["properties"]
         assert params["required"] == ["name"]
 
     def test_schemas_have_descriptions(self):

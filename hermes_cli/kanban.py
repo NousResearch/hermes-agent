@@ -132,6 +132,17 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _parse_positive_int(value: str) -> int:
+    """Parse a positive integer CLI value."""
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _check_dispatcher_presence() -> tuple[bool, str]:
     """Return ``(running, message)``.
 
@@ -728,7 +739,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Print the worker log for a task (from <kanban-root>/kanban/logs/)",
     )
     p_log.add_argument("task_id")
-    p_log.add_argument("--tail", type=int, default=None,
+    p_log.add_argument("--tail", type=_parse_positive_int, default=None,
                        help="Only print the last N bytes")
 
     # --- runs (per-attempt history for a task) ---

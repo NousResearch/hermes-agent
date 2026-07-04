@@ -875,6 +875,24 @@ def test_cli_log_missing_task(kanban_home):
     assert "no log" in out.lower()
 
 
+def test_cli_log_rejects_non_positive_tail(kanban_home):
+    out = run_slash("log t_beef --tail -1")
+    assert "usage error" in out.lower()
+    assert "--tail" in out
+    assert "positive integer" in out
+
+
+def test_cli_log_accepts_positive_tail(kanban_home):
+    log_dir = kanban_home / "kanban" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "t_beef.log").write_bytes(b"alpha\nomega\n")
+
+    out = run_slash("log t_beef --tail 6")
+
+    assert "omega" in out
+    assert "alpha" not in out
+
+
 def test_cli_gc_reports_counts(kanban_home):
     conn = kb.connect()
     try:

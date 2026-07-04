@@ -8517,18 +8517,25 @@ def read_worker_log(
     try:
         if tail_bytes is None:
             return path.read_text(encoding="utf-8", errors="replace")
+        if tail_bytes <= 0:
+            return ""
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size > tail_bytes:
-                f.seek(size - tail_bytes)
+                start = size - tail_bytes
+                f.seek(start)
                 # Skip a partial line if we tailed mid-line. But if the
                 # window has no newline at all (one giant log line),
                 # readline() would eat everything — in that case don't
                 # skip and return the raw tail.
-                probe = f.tell()
-                partial = f.readline()
-                if not partial.endswith(b"\n") and f.tell() >= size:
-                    f.seek(probe)
+                if start > 0:
+                    f.seek(start - 1)
+                    starts_at_line_boundary = f.read(1) == b"\n"
+                    f.seek(start)
+                    if not starts_at_line_boundary:
+                        partial = f.readline()
+                        if not partial.endswith(b"\n") and f.tell() >= size:
+                            f.seek(start)
             data = f.read()
         return data.decode("utf-8", errors="replace")
     except OSError:

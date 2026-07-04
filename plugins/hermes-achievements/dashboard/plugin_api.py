@@ -9,8 +9,10 @@ import math
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from xml.sax.saxutils import escape as xml_escape
 
 try:
     from hermes_constants import get_hermes_home
@@ -22,12 +24,22 @@ except ImportError:
 
 try:
     from fastapi import APIRouter
+    from fastapi.responses import JSONResponse, PlainTextResponse
 except Exception:  # Allows local unit tests without dashboard dependencies.
     class APIRouter:  # type: ignore
         def get(self, *_args, **_kwargs):
             return lambda fn: fn
         def post(self, *_args, **_kwargs):
             return lambda fn: fn
+
+    class JSONResponse:  # type: ignore
+        def __init__(self, content: Any, **_kwargs: Any) -> None:
+            self.content = content
+
+    class PlainTextResponse:  # type: ignore
+        def __init__(self, content: Any, **kwargs: Any) -> None:
+            self.content = content
+            self.media_type = kwargs.get("media_type")
 
 router = APIRouter()
 
@@ -51,6 +63,7 @@ SUCCESS_RE = re.compile(r"\b(success|passed|built|compiled|done|exit_code[\"']?\
 FILE_RE = re.compile(r"(?:/home/|~/?|\./|/mnt/)[\w./-]+\.(?:py|js|ts|tsx|jsx|css|html|md|json|yaml|yml|svg|sql|sh)")
 
 TIER_NAMES = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
+TIER_ORDER = {name: index for index, name in enumerate(TIER_NAMES, start=1)}
 
 
 def tiers(values: List[int]) -> List[Dict[str, Any]]:
@@ -152,6 +165,10 @@ def snapshot_path() -> Path:
 
 def checkpoint_path() -> Path:
     return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
+
+
+def agent_summary_path() -> Path:
+    return get_hermes_home() / "plugins" / "hermes-achievements" / "agent_summary.json"
 
 
 def load_state() -> Dict[str, Any]:
@@ -856,6 +873,173 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     }
 
 
+def filter_and_sort_achievements(
+    items: List[Dict[str, Any]],
+    state: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Filter achievements by badge state.
+
+    Minimal seam for the filtering/sorting workstream in #18472: the export
+    formatters below only need state filtering today, and the full
+    category/sort/limit query support can extend this same function.
+    """
+    selected = list(items)
+    if state:
+        wanted = str(state).strip().lower()
+        selected = [item for item in selected if str(item.get("state", "")).lower() == wanted]
+    return selected
+
+
+def export_json(data: Dict[str, Any], state: Optional[str] = None) -> str:
+    """Export achievements as structured JSON."""
+    items = filter_and_sort_achievements(data.get("achievements", []), state=state)
+    export = {
+        "generated_at": data.get("generated_at"),
+        "unlocked_count": data.get("unlocked_count", 0),
+        "total_count": data.get("total_count", 0),
+        "achievements": items,
+    }
+    return json.dumps(export, indent=2, default=str)
+
+
+def _scan_date(generated_at: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(generated_at), tz=timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "unknown"
+
+
+def export_markdown(data: Dict[str, Any], state: Optional[str] = None) -> str:
+    """Export achievements as markdown with progress bars and shields.io badges."""
+    items = filter_and_sort_achievements(data.get("achievements", []), state=state or "unlocked")
+    unlocked = data.get("unlocked_count", 0)
+    total = data.get("total_count", 0)
+
+    lines = [
+        "# Hermes Achievements",
+        "",
+        f"**{unlocked}/{total} unlocked** | Last scanned: {_scan_date(data.get('generated_at'))}",
+        "",
+    ]
+
+    categories: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        categories.setdefault(str(item.get("category", "Other")), []).append(item)
+
+    tier_colors = {
+        "Copper": "CD7F32", "Silver": "C0C0C0", "Gold": "FFD700",
+        "Diamond": "B9F2FF", "Olympian": "FF00FF",
+    }
+
+    for cat in sorted(categories):
+        lines.append(f"## {cat}")
+        lines.append("")
+        lines.append("| Achievement | Tier | Progress |")
+        lines.append("|---|---|---|")
+        for item in categories[cat]:
+            name = str(item.get("name", "???")).replace("|", "\\|")
+            tier = str(item.get("tier") or "-")
+            pct = int(item.get("progress_pct", 0) or 0)
+            color = tier_colors.get(tier, "gray")
+            badge = f"![{tier}](https://img.shields.io/badge/{tier}-{pct}%25-{color})"
+            bar_filled = max(0, min(10, pct // 10))
+            bar = "█" * bar_filled + "░" * (10 - bar_filled) + f" {pct}%"
+            lines.append(f"| {name} | {badge} | {bar} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def export_svg(data: Dict[str, Any], state: Optional[str] = None) -> str:
+    """Export achievements as an SVG badge sheet (unlocked badges by default)."""
+    items = filter_and_sort_achievements(data.get("achievements", []), state=state or "unlocked")
+
+    tier_colors = {
+        "Copper": "#B87333", "Silver": "#C0C0C0", "Gold": "#FFD700",
+        "Diamond": "#B9F2FF", "Olympian": "#FF00FF",
+    }
+
+    badge_w, badge_h, pad = 280, 28, 8
+    height = len(items) * (badge_h + pad) + pad
+
+    svg_parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{badge_w}" height="{height}" '
+        f'viewBox="0 0 {badge_w} {height}">',
+        '<style>.badge{rx:4;fill:#1a1a2e;stroke:#333;stroke-width:1}'
+        '.name{fill:#e0e0e0;font-family:monospace;font-size:11px}'
+        '.tier{font-family:monospace;font-size:10px;font-weight:bold}</style>',
+    ]
+
+    for i, item in enumerate(items):
+        y = i * (badge_h + pad) + pad
+        name = xml_escape(str(item.get("name", "???"))[:24])
+        tier = str(item.get("tier") or "-")
+        color = tier_colors.get(tier, "#666")
+        svg_parts.append(
+            f'<rect class="badge" x="0" y="{y}" width="{badge_w}" height="{badge_h}"/>'
+            f'<circle cx="14" cy="{y + badge_h // 2}" r="5" fill="{color}"/>'
+            f'<text class="name" x="24" y="{y + 18}">{name}</text>'
+            f'<text class="tier" x="{badge_w - 60}" y="{y + 18}" fill="{color}">{xml_escape(tier)}</text>'
+        )
+
+    svg_parts.append("</svg>")
+    return "\n".join(svg_parts)
+
+
+def _build_agent_summary(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the compact agent-consumable profile from evaluated data.
+
+    Small enough to inject as context without eating token budget:
+    strengths are the categories with the most unlocks, gaps are the
+    locked categories closest to their next unlock.
+    """
+    items = data.get("achievements", [])
+    aggregate = data.get("aggregate", {})
+
+    cat_unlocks: Dict[str, int] = {}
+    for item in items:
+        if item.get("unlocked"):
+            cat = str(item.get("category", "Other"))
+            cat_unlocks[cat] = cat_unlocks.get(cat, 0) + 1
+    strengths = sorted(cat_unlocks, key=lambda cat: (-cat_unlocks[cat], cat))[:5]
+
+    cat_progress: Dict[str, float] = {}
+    for item in items:
+        if not item.get("unlocked"):
+            cat = str(item.get("category", "Other"))
+            cat_progress[cat] = max(cat_progress.get(cat, 0), float(item.get("progress_pct", 0) or 0))
+    gaps = sorted(cat_progress, key=lambda cat: (-cat_progress[cat], cat))[:3]
+
+    top_tier = None
+    for item in items:
+        tier = item.get("tier")
+        if item.get("unlocked") and tier:
+            if not top_tier or TIER_ORDER.get(tier, 0) > TIER_ORDER.get(top_tier, 0):
+                top_tier = tier
+
+    return {
+        "total_sessions": aggregate.get("session_count", 0),
+        "total_tool_calls": aggregate.get("total_tool_calls", 0),
+        "unlocked_count": data.get("unlocked_count", 0),
+        "total_count": data.get("total_count", 0),
+        "top_categories": strengths,
+        "top_tier": top_tier,
+        "strengths": strengths,
+        "gaps": gaps,
+        "unlocked_ids": [a["id"] for a in items if a.get("unlocked")],
+    }
+
+
+def _write_agent_summary(data: Dict[str, Any]) -> None:
+    """Persist agent_summary.json for context injection. Best-effort."""
+    try:
+        path = agent_summary_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_build_agent_summary(data), indent=2, default=str))
+    except Exception:
+        pass  # Non-critical: the summary is a best-effort context artifact.
+
+
 def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
     """Execute a scan + snapshot update. Called synchronously or from a thread.
 
@@ -907,6 +1091,7 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
             _SNAPSHOT_CACHE = _json_safe(computed)
             _SNAPSHOT_CACHE_AT = int(_SNAPSHOT_CACHE.get("generated_at") or int(time.time()))
             save_snapshot(_SNAPSHOT_CACHE)
+            _write_agent_summary(_SNAPSHOT_CACHE)
             _SCAN_STATUS["state"] = "idle"
         except Exception as exc:
             _SCAN_STATUS["state"] = "failed"
@@ -1008,6 +1193,28 @@ async def achievements():
     return payload
 
 
+@router.get("/achievements/summary")
+async def achievements_summary():
+    """Compact achievement profile for agent context injection.
+
+    Mirrors the agent_summary.json artifact written on each finished scan.
+    """
+    return _build_agent_summary(evaluate_all())
+
+
+@router.get("/export")
+async def export_achievements(format: str = "json", state: Optional[str] = None):
+    data = evaluate_all()
+    fmt = (format or "json").strip().lower()
+    if fmt == "markdown":
+        return PlainTextResponse(export_markdown(data, state=state), media_type="text/markdown")
+    if fmt == "svg":
+        return PlainTextResponse(export_svg(data, state=state), media_type="image/svg+xml")
+    if fmt != "json":
+        return JSONResponse({"error": f"unsupported format: {format}", "supported": ["json", "markdown", "svg"]}, status_code=400)
+    return JSONResponse(json.loads(export_json(data, state=state)))
+
+
 @router.get("/scan-status")
 async def scan_status():
     return _scan_status_payload()
@@ -1056,6 +1263,10 @@ async def reset_state():
         pass
     try:
         checkpoint_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        agent_summary_path().unlink(missing_ok=True)
     except Exception:
         pass
     return {"ok": True}

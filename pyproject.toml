@@ -364,6 +364,13 @@ markers = [
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated.*",
+    "ignore:pkg_resources is deprecated as an API.*:UserWarning",
+    "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('lark_oapi.*:DeprecationWarning",
+    "ignore:websockets\\.InvalidStatusCode is deprecated.*:DeprecationWarning",
+    "ignore:websockets\\.legacy is deprecated.*:DeprecationWarning",
+]
 
 [tool.ty.environment]
 python-version = "3.13"

@@ -270,7 +270,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        const next = new URLSearchParams(searchParams);
+        const next = new URLSearchParams(window.location.search);
+        if (next.get("resume") !== resumeParam) {
+          return;
+        }
         next.set("resume", res.session_id);
         setSearchParams(next, { replace: true });
       })
@@ -281,7 +284,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");

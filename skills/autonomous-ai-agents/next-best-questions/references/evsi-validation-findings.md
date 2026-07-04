@@ -667,6 +667,41 @@ was 88% there; zeroshot +0.394). #30's re-open condition (unanswerable >50% desp
 is moot as registered — #28 didn't win — but the altitude finding is the real successor
 hypothesis: the next lever is GENERATION (ask-the-first-order-question exposure), not judging.
 
+## First-order candidate source (#32) — the generation-altitude test, cost-aware (2026-07-04)
+
+The direct test of the #28 successor hypothesis ("the next lever is GENERATION, not judging"):
+inject one naive "K best clarifying questions" call as round-1 candidates (`--firstorder on`, lens
+`firstorder`), scored by the frozen pipeline. First experiment gated on **cost alongside Δresult**.
+
+**Pre-registered ADOPT rule (quoted verbatim):** *"ADOPT iff: paired nbq-firstorder vs nbq Δpass
+> 0 with wins ≥ 2×losses; unanswerable ≤ 50%; no regression on lens-payoff tasks (json-migrate's
+.bak class); efficiency budget: the firstorder source adds 1 call ≈ ≤400 output tokens/run — adopt
+requires mean added wall ≤ 10% of an nbq run. If ranking demotes the first-order candidates, deliver
+the per-stage autopsy (their P/Δ/stakes vs survivors') — the diagnosis is the product on that
+branch."*
+
+**Gate (objective outcome harness, n=34 = 20 micro + 14 agentic, K=3, all-deepseek,
+`--max-rounds 1`, `--strict-preflight`; 170 cells / 52 min; raw `~/.hermes/outcome_eval_32.json`):**
+per-arm pass vs baseline 0.460 — nbq +0.083 (9W/4L, un 74%, 25.0s/20221tok/38.3c); **nbq-firstorder
++0.132 (7W/3L, un 78%, 29.2s/23944tok/45.4c)**; nbq-firstorder-behavior +0.114 (9W/5L, un 63%,
+29.7s/24892tok/45.1c); **zeroshot +0.274 (15W/1L, p=0.0005, un 31%, 5.9s/154tok/1c)**. P6 anchor
+Spearman(q_value, Δpass)=0.214.
+
+**Verdict: NO ADOPT** — mechanically, on the paired nbq-firstorder-vs-nbq comparison (n=34): Δpass
+**+0.049 > 0** ✓ but **6W/6L/22-tie**, so wins ≥ 2×losses **fails** (broad-win guard); **unanswerable
+77%** ✗ (> 50%); **lens-payoff regression** ✗ (`log-clean` 0.67→0.33 even as `json-migrate`
+0.25→0.75 — net wash); **efficiency +16.8% wall / +18% tokens / +7 calls** ✗ (> 10% ceiling). Any one
+of these is decisive; all four fail.
+
+**Autopsy / diagnosis (the product):** altitude has real signal — the first-order arm's mean beats
+plain nbq (+0.132 vs +0.083 over baseline) — but injecting first-order candidates into the EVSI
+pipeline **does not close the P4 gap**: zeroshot still dominates at ~1/5 the wall and ~1/150 the
+tokens, and the first-order arm's unanswerable rate *rose* (78% vs nbq 74%). The naive questions
+fish more, so the strict simulator resolves fewer — the pipeline's answerability handling, not
+candidate altitude, is the residual gap. This satisfies **#30's re-open condition** (unanswerable
+> 50%), now the successor lever, with the standing constraint that the mechanism must not be
+self-rated. `firstorder` stays built, off-by-default. Cost columns are now standing gate output.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

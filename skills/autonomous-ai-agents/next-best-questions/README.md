@@ -135,15 +135,25 @@ so misfired lenses self-prune. That division of labor is repeatedly validated:
 
 ## 6. Open, honestly
 
-- **Generation altitude** (#28's successor): make generation expose first-order semantic unknowns,
-  gate objectively.
-- **#30 answerability weighting**: re-open only with a mechanism that isn't self-rated (the old
-  multiplier was inert at 0.95 in 15/16 cells).
-- **Prompt distillation**: blocked on fixing the value model — the certified-prompt path stays
-  attractive for latency.
-- **Never tested by us**: utility-weighted lookahead head-to-head; human ground truth behind the
-  realized judge; a discrimination preflight (a judge that answers but judges randomly still
-  passes today's preflight).
+- **Generation altitude** (#28's successor, #32 — NO ADOPT, cost-aware gate 2026-07-04): injecting
+  a naive "K best clarifying questions" call as round-1 candidates (`--firstorder`) moved the mean
+  (+0.132 vs nbq +0.083 over baseline, n=34) — altitude has signal — but did **not** close the P4
+  gap: `zeroshot` still won +0.274 (15W/1L, p=0.0005) at ~1/5 the wall and ~1/150 the tokens.
+  Failed the adopt rule on the broad-win guard (6W/6L paired vs nbq), unanswerable (77%), a
+  lens-payoff regression, AND the efficiency ceiling (+16.8% wall). Built, off-by-default. The
+  remaining gap is **answerability**, not candidate altitude — first-order questions fish *more*.
+  (`references/design-decisions.md` §First-order candidate source (#32).)
+- **#30 answerability weighting** — **now re-opened** (its condition "post-#32 IF unanswerable > 50%"
+  is met: 77%). Re-open only with a mechanism that isn't self-rated (the old multiplier was inert at
+  0.95 in 15/16 cells; the self-rated ceiling already failed once).
+- **Prompt distillation**: unblocked by the #32 no-adopt (the value model is not the gap), but
+  now lower-priority than #30 — re-scope against whichever answerability mechanism lands.
+- **Discrimination preflight (#33 — built, adopted as an opt-in instrument)**: `--strict-preflight`
+  runs 8 forced-choice fixtures per model; `fast` 8/8, `deepseek` 8/8. Closes "a judge that answers
+  but judges randomly still passes." Remaining never-tested: utility-weighted lookahead
+  head-to-head; human ground truth behind the realized judge.
+- **Every gate is now cost-aware** (#32 onward): arms report mean wall/tokens/calls, and a result
+  win that busts the pre-registered efficiency budget is a no-adopt — see the `nbq-improve` loop (§7).
 
 ## 7. The standing improvement protocol
 

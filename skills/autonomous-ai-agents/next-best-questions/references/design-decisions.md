@@ -361,6 +361,58 @@ output, runaway cost).
   read-only bucket entries; adjudicator-`diversity` trigger explicitly cleared (0.65→0.70). See
   findings §"Independent replication (#25)".
 
+## First-order candidate source (#32) — built, off by default, the first COST-AWARE-gated experiment
+
+The #28 successor hypothesis: the residual P4 gap over the naive `zeroshot` arm is **generation
+altitude**, not the value judge — so inject one naive "K best clarifying questions" call's output
+as round-1 candidates (family `First-order semantics`, lens `firstorder`), scored by the frozen
+pipeline. `pipeline.firstorder_questions` (one `raw_chat` + numbered-parse → tagged dicts) merges
+into round 1 when `families["firstorder"] != "off"`; formula untouched. Selector `--firstorder
+on|off` / `INFOGAIN_FIRSTORDER`; default `"off"` (absent-key convention — harness cfgs
+byte-identical). This is also the first experiment gated on **efficiency alongside Δresult**: every
+arm now reports mean wall/tokens/calls, and the adopt rule carries a cost ceiling.
+
+**Gate (2026-07-04, objective outcome harness, n=34 = 20 micro + 14 agentic, K=3, all-deepseek,
+`--max-rounds 1`, `--strict-preflight`; raw `~/.hermes/outcome_eval_32.json`):**
+
+| arm | pass | Δ vs baseline | wins/losses | unanswerable | wall | tokens | calls |
+|---|---|---|---|---|---|---|---|
+| baseline | 0.460 | — | — | — | — | — | — |
+| nbq | 0.543 | +0.083 | 9/4 | 74% | 25.0s | 20221 | 38.3 |
+| nbq-firstorder | 0.592 | +0.132 | 7/3 | 78% | 29.2s | 23944 | 45.4 |
+| nbq-firstorder-behavior | 0.574 | +0.114 | 9/5 | 63% | 29.7s | 24892 | 45.1 |
+| zeroshot | 0.734 | +0.274 | 15/1 (p=0.0005) | 31% | 5.9s | 154 | 1 |
+
+**Verdict: NO ADOPT** — the pre-registered rule requires ALL of: paired nbq-firstorder vs nbq
+Δpass > 0 with wins ≥ 2×losses; unanswerable ≤ 50%; no lens-payoff regression; and mean added
+wall ≤ 10% of an nbq run. Mechanically, on the paired nbq-firstorder-vs-nbq comparison:
+- Δpass **+0.049 > 0** ✓ but **6W/6L/22-tie** — the broad-win guard (wins ≥ 2×losses) **fails**;
+  the mean lift is a few-task effect, not a broad win.
+- **Unanswerable 77% ≫ 50%** ✗ — the naive first-order questions *fish more*, so the strict
+  simulator resolves fewer of them (the P4 failure mode itself, now injected earlier).
+- **Lens-payoff regression** ✗ — `log-clean` (irreversible/keep-newest class) fell 0.67→0.33 even
+  as `json-migrate` rose 0.25→0.75; net wash on the lens tier.
+- **Efficiency +16.8% wall** (+4.2s), +18% tokens, +7 calls ✗ — busts the 10% ceiling.
+
+**Diagnosis (the product of this branch):** generation altitude *does* move the mean (nbq-firstorder
++0.132 vs nbq +0.083 vs baseline), confirming first-order exposure has signal — but injecting it
+into the EVSI pipeline **does not close the P4 gap**: `zeroshot` still dominates decisively
+(+0.274, 15W/1L, p=0.0005) at ~1/5 the wall and ~1/150 the tokens. The pipeline's answerability
+handling is the remaining gap, not candidate altitude: first-order candidates enter but raise the
+unanswerable rate rather than lowering it. This **triggers #30's re-open condition** (answerability
+weighting, previously gated on "post-#32 IF unanswerable > 50%" — now 77%), with the standing caveat
+that the mechanism must NOT be self-rated. Stays built, off-by-default, for re-testing; the cost
+ceiling now travels with every future elicitation/generation gate.
+
+## Discrimination preflight (#33) — instrument adopted (audit A7)
+
+`validate_evsi.discrimination_preflight`: 8 static forced-choice fixtures (one-token semantic flips
++ cosmetic rewording) with correct answers fixed by construction; score < 6/8 → exit 2. Closes the
+gap the old emptiness preflight left open — "a judge that answers but judges randomly still passes."
+Opt-in via `--strict-preflight` (8 calls/model). **Live check (2026-07-04): PASS** — `fast` 8/8,
+`deepseek` 8/8; both eval-duty models discriminate perfectly. No elicitation change, so no outcome
+gate; adopted as a standing (opt-in) instrument.
+
 ## Decided / deferred
 
 - **Decided, keep:** one layer of projected answers (no chain) · within-round semantic consolidation

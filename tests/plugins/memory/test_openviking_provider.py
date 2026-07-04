@@ -109,6 +109,18 @@ def test_openviking_env_writer_strips_embedded_newlines_in_values(tmp_path):
     assert "INJECTED_KEY" not in parsed
 
 
+def test_openviking_env_writer_strips_splitline_separators_and_nul(tmp_path):
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "good\u2028INJECTED_KEY=attacker\x00tail"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=goodINJECTED_KEY=attackertail"]
+
+
 def test_openviking_env_writer_strips_newlines_when_updating_existing_key(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("OPENVIKING_API_KEY=old\n", encoding="utf-8")

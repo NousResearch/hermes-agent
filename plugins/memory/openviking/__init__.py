@@ -946,11 +946,11 @@ def _env_line_safe(value: Any) -> str:
     ``read_text().splitlines()`` round-trip — letting a malformed or pasted
     secret (e.g. an api_key copied with a trailing record) inject an
     arbitrary additional variable into the persisted credentials file. Strip
-    the line terminators (``\r``, ``\n``) and the NUL byte so a value can
-    only ever occupy the single line it is written on.
+    the line separators recognized by ``splitlines()`` and the NUL byte so a
+    value can only ever occupy the single line it is written on.
     """
     text = value if isinstance(value, str) else str(value)
-    return text.replace("\r", "").replace("\n", "").replace("\x00", "")
+    return "".join(text.replace("\x00", "").splitlines())
 
 
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:

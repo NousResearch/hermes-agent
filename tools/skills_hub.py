@@ -527,11 +527,18 @@ class GitHubSource(SkillSource):
         {"repo": "garrytan/gstack", "path": ""},
     ]
 
-    def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
+    def __init__(
+        self,
+        auth: GitHubAuth,
+        extra_taps: Optional[List[Dict]] = None,
+        include_default_taps: bool = True,
+        user_tap_source: bool = False,
+    ):
         self.auth = auth
-        self.taps = list(self.DEFAULT_TAPS)
+        self.taps = list(self.DEFAULT_TAPS) if include_default_taps else []
         if extra_taps:
             self.taps.extend(extra_taps)
+        self.user_tap_source = user_tap_source
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
@@ -3920,12 +3927,28 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
-        GitHubSource(auth=auth, extra_taps=extra_taps),
+        GitHubSource(auth=auth),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
         BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
     ]
+
+    if extra_taps:
+        # User-configured taps are not part of the centralized Hermes index.
+        # Keep them as a separate GitHub source so the "index is available"
+        # optimization can still skip the built-in GitHub taps while searching
+        # the user's own repos. (#14466)
+        github_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
+        sources.insert(
+            github_idx + 1,
+            GitHubSource(
+                auth=auth,
+                extra_taps=extra_taps,
+                include_default_taps=False,
+                user_tap_source=True,
+            ),
+        )
 
     return sources
 
@@ -3988,8 +4011,14 @@ def parallel_search_sources(
         sid = src.source_id()
         if _effective_filter != "all" and sid != _effective_filter and sid != "official":
             continue
-        # Skip external API sources when the index covers them
-        if _index_available and sid in _api_source_ids:
+        # Skip external API sources when the index covers them. User-configured
+        # GitHub taps are local configuration, not index content, so they must
+        # still run under source_filter="all".
+        if (
+            _index_available
+            and sid in _api_source_ids
+            and not getattr(src, "user_tap_source", False)
+        ):
             continue
         active.append(src)
 

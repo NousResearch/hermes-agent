@@ -588,3 +588,122 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+# ===========================================================================
+# telegram.extra.callback_handlers — external callback dispatcher
+# ===========================================================================
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout=b'{"ok": true}', stderr=b''):
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+
+    async def communicate(self):
+        return self._stdout, self._stderr
+
+
+class TestTelegramExternalCallbackHandlers:
+    """Configured callback handlers route callback_data to external scripts."""
+
+    def test_finds_matching_external_callback_handler(self, tmp_path):
+        script = tmp_path / "handler.py"
+        script.write_text("print('ok')\n")
+        adapter = _make_adapter(extra={
+            "callback_handlers": [
+                {"prefix": "other:", "script": str(script)},
+                {"prefix": "cfwpa:", "script": str(script)},
+            ]
+        })
+
+        handler = adapter._external_callback_handler_for("cfwpa:abc123")
+
+        assert handler is not None
+        assert handler["prefix"] == "cfwpa:"
+        assert adapter._external_callback_handler_for("missing:abc123") is None
+
+    @pytest.mark.asyncio
+    async def test_external_callback_invokes_script_and_edits_message(self, tmp_path):
+        script = tmp_path / "handler.py"
+        script.write_text("print('ok')\n")
+        adapter = _make_adapter(extra={
+            "callback_handlers": [{
+                "prefix": "cfwpa:",
+                "script": str(script),
+                "answer_text": "Approving…",
+                "success_text": "Done {commit_short_sha} {job_url} by {user_name}",
+            }]
+        })
+        runner = _AuthRunner(True)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        async def fake_exec(*args, **kwargs):
+            assert args[:6] == (
+                sys.executable,
+                str(script),
+                "cfwpa:abc123",
+                "12345",
+                "98765",
+                "Norbert",
+            )
+            return _FakeProc(
+                stdout=(
+                    b'{"ok": true, "commit_short_sha": "abc1234", '
+                    b'"job_url": "https://example.test/job"}'
+                )
+            )
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            handled = await adapter._handle_external_callback_query(
+                query,
+                "cfwpa:abc123",
+                query_chat_id=98765,
+                query_chat_type="private",
+                query_thread_id=None,
+                query_user_name="Norbert",
+            )
+
+        assert handled is True
+        query.answer.assert_called_with(text="Approving…")
+        query.edit_message_text.assert_called_once()
+        assert "Done abc1234 https://example.test/job by Norbert" in query.edit_message_text.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_external_callback_auth_denied_does_not_invoke_script(self, tmp_path):
+        script = tmp_path / "handler.py"
+        script.write_text("print('ok')\n")
+        adapter = _make_adapter(extra={
+            "callback_handlers": [{
+                "prefix": "cfwpa:",
+                "script": str(script),
+                "unauthorized_text": "Nope.",
+            }]
+        })
+        runner = _AuthRunner(False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec") as create_proc:
+            handled = await adapter._handle_external_callback_query(
+                query,
+                "cfwpa:abc123",
+                query_chat_id=98765,
+                query_chat_type="private",
+                query_thread_id=None,
+                query_user_name="Norbert",
+            )
+
+        assert handled is True
+        create_proc.assert_not_called()
+        query.answer.assert_called_with(text="Nope.")
+        query.edit_message_text.assert_not_called()
+

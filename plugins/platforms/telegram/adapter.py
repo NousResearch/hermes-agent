@@ -4892,6 +4892,120 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    def _external_callback_handler_for(self, data: str) -> Optional[Dict[str, Any]]:
+        handlers = self.config.extra.get("callback_handlers", [])
+        if not isinstance(handlers, list):
+            return None
+        for handler in handlers:
+            if not isinstance(handler, dict):
+                continue
+            prefix = str(handler.get("prefix") or "")
+            if prefix and data.startswith(prefix) and handler.get("script"):
+                return handler
+        return None
+
+    @staticmethod
+    def _format_callback_template(template: str, values: Dict[str, Any]) -> str:
+        class _Missing(dict):
+            def __missing__(self, key: str) -> str:
+                return ""
+
+        return template.format_map(_Missing({k: "" if v is None else v for k, v in values.items()}))
+
+    async def _handle_external_callback_query(
+        self,
+        query: Any,
+        data: str,
+        *,
+        query_chat_id: Any,
+        query_chat_type: Any,
+        query_thread_id: Any,
+        query_user_name: Any,
+    ) -> bool:
+        handler = self._external_callback_handler_for(data)
+        if not handler:
+            return False
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text=str(handler.get("unauthorized_text") or "⛔ You are not authorized to use this button."))
+            return True
+
+        await query.answer(text=str(handler.get("answer_text") or "Working…"))
+        script_path = _Path(str(handler["script"])).expanduser()
+        if not script_path.is_absolute():
+            script_path = _Path.home() / ".hermes" / "scripts" / script_path
+        if not script_path.exists():
+            await query.answer(text="Callback handler is not installed.")
+            return True
+
+        chat_id_text = str(query_chat_id or "")
+        user_name_text = str(query_user_name or "")
+        timeout = int(handler.get("timeout_seconds") or 60)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(script_path),
+                data,
+                caller_id,
+                chat_id_text,
+                user_name_text,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
+            try:
+                payload = json.loads(stdout_text or "{}")
+            except Exception:
+                payload = {"ok": False, "detail": stdout_text or stderr_text or "Callback handler returned invalid output."}
+
+            values: Dict[str, Any] = dict(payload) if isinstance(payload, dict) else {}
+            values.update(
+                callback_data=data,
+                user_id=caller_id,
+                user_name=user_name_text or "authorized user",
+                chat_id=chat_id_text,
+                detail=values.get("detail") or stderr_text or "Callback failed",
+            )
+
+            if proc.returncode == 0 and values.get("ok") is True:
+                success_text = str(handler.get("success_text") or "✅ Callback handled.")
+                text = self._format_callback_template(success_text, values)
+                try:
+                    await query.edit_message_text(
+                        text=text[:4096],
+                        reply_markup=None,
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception:
+                    pass
+                return True
+
+            failure_text = str(handler.get("failure_text") or "❌ Callback failed.\n\n{detail}")
+            try:
+                await query.edit_message_text(
+                    text=self._format_callback_template(failure_text, values)[:4096],
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return True
+        except asyncio.TimeoutError:
+            await query.answer(text=str(handler.get("timeout_text") or "Callback timed out."))
+            return True
+        except Exception as exc:
+            logger.error("[%s] external Telegram callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text=str(handler.get("error_text") or "Callback failed."))
+            return True
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4924,6 +5038,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Configured external callback handlers ---
+        if await self._handle_external_callback_query(
+            query,
+            data,
+            query_chat_id=query_chat_id,
+            query_chat_type=query_chat_type,
+            query_thread_id=query_thread_id,
+            query_user_name=query_user_name,
+        ):
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

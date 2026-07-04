@@ -1,0 +1,27 @@
+Subject: CCPA complaint - {broker_name} failed to honor a deletion request
+
+To: {agency_name}
+File at: {agency_portal}
+
+Complainant:
+  Name:  {full_name}
+  Email: {contact_email}
+
+Business complained about: {broker_name}
+Business opt-out / privacy contact: {broker_contact}
+
+Summary of complaint:
+On {submitted_date} I submitted a request to {broker_name} to delete the personal
+information it holds about me, exercising my rights under the California Consumer
+Privacy Act (Cal. Civ. Code 1798.105 and 1798.120). The statutory response window
+is {window_days} days. As of today, {days_overdue} day(s) have elapsed beyond that
+deadline, {broker_name} has not deleted my personal information, and it has not
+provided a lawful basis for refusing.
+
+Requested action:
+I ask that {agency_name} investigate {broker_name}'s failure to comply with the
+California Consumer Privacy Act within the required {window_days}-day window and
+compel deletion of my personal information.
+
+Signed,
+{full_name}

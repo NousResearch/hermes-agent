@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import brokers as brokers_mod
+import complaint as complaint_mod
+import dossier as dossier_mod
 import ledger as ledger_mod
 
 STATE_LABELS = {
@@ -80,6 +82,19 @@ def render_markdown(subject_id: str) -> str:
     for state in ledger_mod.STATES:
         if counts.get(state):
             lines.append(f"| {STATE_LABELS.get(state, state)} | {counts[state]} |")
+
+    # Requests a broker has ignored past its statutory deadline (CCPA 45d / GDPR 30d).
+    # Only surfaced for CA/EU/UK subjects who can actually invoke that regulator.
+    d = dossier_mod.load(subject_id) or {}
+    overdue_complaints = complaint_mod.overdue_cases(subject_id, d, ledger) if d else []
+    if overdue_complaints:
+        lines += ["", f"## {len(overdue_complaints)} request(s) past the statutory deadline",
+                  "The broker has not confirmed removal within the legal response window. "
+                  "Run `pdd.py complaints <subject>` to draft a regulator complaint for each "
+                  "(draft-only; you file it)."]
+        for r in overdue_complaints:
+            lines.append(f"- **{r['broker_id']}** - {r['days_overdue']} day(s) past the "
+                         f"{r['window_days']}-day {r['regime'].upper()} deadline")
 
     tasks = [c for c in ledger.values() if c.get("state") == "human_task_queued"]
     if tasks:

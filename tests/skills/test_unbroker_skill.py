@@ -37,6 +37,7 @@ import time as _time      # noqa: E402
 import badbool          # noqa: E402
 import brokers          # noqa: E402
 import cdp              # noqa: E402
+import complaint        # noqa: E402
 import config           # noqa: E402
 import crypto           # noqa: E402
 import dossier          # noqa: E402
@@ -1443,6 +1444,164 @@ def test_report_metrics_removal_rate_and_overdue():
         assert m["confirmed_removed"] == 1
         assert m["open_needs_action"] >= 1 and m["in_flight_claimed"] >= 1
         assert m["overdue_rechecks"] >= 1 and 0 < m["removal_rate"] <= 1
+
+
+# ── complaint escalation (broker ignored a request past its statutory deadline) ──
+
+
+def _ca_dossier(sid="sub_ca01"):
+    return {
+        "subject_id": sid,
+        "consent": {"authorized": True, "method": "self"},
+        "identity": {"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+        "residency_jurisdiction": "US-CA",
+        "preferences": {},
+    }
+
+
+def _eu_dossier(sid="sub_eu01"):
+    return {
+        "subject_id": sid,
+        "consent": {"authorized": True, "method": "self"},
+        "identity": {"full_name": "Hans Müller", "emails": ["hans@example.de"]},
+        "residency_jurisdiction": "EU-DE",
+        "preferences": {},
+    }
+
+
+def _age_submitted(sid, broker_id, days_ago):
+    """Put a case into `submitted` and back-date its submission stamp by days_ago."""
+    ledger.transition(sid, broker_id, "found", found=True)
+    ledger.transition(sid, broker_id, "submitted")
+    led = ledger.load(sid)
+    import datetime as _dt
+    stamp = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_ago)) \
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    for h in led[broker_id]["history"]:
+        if h.get("to") == "submitted":
+            h["at"] = stamp
+    ledger.save(sid, led)
+    return stamp
+
+
+def test_complaint_submitted_at_reads_first_submitted_transition():
+    with temp_env():
+        sid = "sub_ca01"
+        _age_submitted(sid, "radaris", days_ago=60)
+        case = ledger.load(sid)["radaris"]
+        assert complaint.submitted_at(case) is not None
+        # a case never submitted has no clock start
+        ledger.transition(sid, "spokeo", "found", found=True)
+        assert complaint.submitted_at(ledger.load(sid)["spokeo"]) is None
+
+
+def test_complaint_overdue_ccpa_past_45_days():
+    with temp_env():
+        d = _ca_dossier()
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=50)     # 50 > 45 → overdue
+        _age_submitted(sid, "spokeo", days_ago=10)       # 10 < 45 → not overdue
+        rows = complaint.overdue_cases(sid, d, ledger.load(sid))
+        ids = {r["broker_id"] for r in rows}
+        assert "radaris" in ids and "spokeo" not in ids
+        row = next(r for r in rows if r["broker_id"] == "radaris")
+        assert row["regime"] == "ccpa" and row["window_days"] == 45
+        assert row["days_overdue"] == 5
+
+
+def test_complaint_overdue_gdpr_uses_30_day_window():
+    with temp_env():
+        d = _eu_dossier()
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=40)      # 40 > 30 → overdue under GDPR
+        rows = complaint.overdue_cases(sid, d, ledger.load(sid))
+        assert len(rows) == 1
+        assert rows[0]["regime"] == "gdpr" and rows[0]["window_days"] == 30
+        assert rows[0]["days_overdue"] == 10
+
+
+def test_complaint_generic_subject_yields_no_complaints():
+    # A non-CA US resident (e.g. Texas) can't truthfully invoke CCPA/GDPR: no
+    # statutory-deadline regulator, so no complaint is generated (honesty gate).
+    with temp_env():
+        d = _ca_dossier("sub_tx01")
+        d["residency_jurisdiction"] = "US-TX"
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=120)
+        assert complaint.overdue_cases(sid, d, ledger.load(sid)) == []
+
+
+def test_complaint_confirmed_removed_is_not_overdue():
+    with temp_env():
+        d = _ca_dossier()
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=90)
+        ledger.transition(sid, "radaris", "awaiting_processing")
+        ledger.transition(sid, "radaris", "confirmed_removed")
+        assert complaint.overdue_cases(sid, d, ledger.load(sid)) == []
+
+
+def test_complaint_rows_sorted_most_overdue_first():
+    with temp_env():
+        d = _ca_dossier()
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=60)      # 15 overdue
+        _age_submitted(sid, "spokeo", days_ago=100)      # 55 overdue
+        rows = complaint.overdue_cases(sid, d, ledger.load(sid))
+        assert [r["broker_id"] for r in rows] == ["spokeo", "radaris"]
+
+
+def test_render_complaint_ccpa_fills_placeholders_and_names_the_law():
+    with temp_env():
+        d = _ca_dossier()
+        row = {"broker_id": "radaris", "regime": "ccpa", "window_days": 45,
+               "submitted_at": "2026-05-01T00:00:00Z", "days_overdue": 20}
+        ctx = complaint.complaint_context(d, {"name": "Radaris"}, row)
+        text = legal.render_complaint("ccpa", ctx)
+        assert "Radaris" in text
+        assert "Jane Q. Public" in text
+        assert "45" in text and "20" in text
+        assert "California Consumer Privacy Act" in text
+        assert "{" not in text          # every placeholder resolved
+
+
+def test_render_complaint_gdpr_names_article_17():
+    with temp_env():
+        d = _eu_dossier()
+        row = {"broker_id": "radaris", "regime": "gdpr", "window_days": 30,
+               "submitted_at": "2026-05-01T00:00:00Z", "days_overdue": 8}
+        ctx = complaint.complaint_context(d, {"name": "Radaris"}, row)
+        text = legal.render_complaint("gdpr", ctx)
+        assert "Hans Müller" in text
+        assert "General Data Protection Regulation" in text or "GDPR" in text
+        assert "{" not in text
+
+
+def test_cli_complaints_returns_drafts_and_flags_draft_only():
+    with temp_env():
+        d = _ca_dossier()
+        # persist the dossier the CLI will load
+        dossier.save(d)
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=50)
+        out = _run(["complaints", sid])
+        assert out["overdue_count"] == 1
+        c = out["complaints"][0]
+        assert c["broker_id"] == "radaris" and c["regime"] == "ccpa"
+        assert "draft" in c and "Radaris" in c["draft"]
+        assert "agency" in c and "portal" in c
+        # never auto-files: the note must make the draft-only contract explicit
+        assert "draft" in out["note"].lower() and "yourself" in out["note"].lower()
+
+
+def test_cli_complaints_none_overdue_is_empty():
+    with temp_env():
+        d = _ca_dossier()
+        dossier.save(d)
+        sid = d["subject_id"]
+        _age_submitted(sid, "radaris", days_ago=10)      # within window
+        out = _run(["complaints", sid])
+        assert out["overdue_count"] == 0 and out["complaints"] == []
 
 
 if __name__ == "__main__":

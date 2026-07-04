@@ -202,6 +202,55 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
 
 
+def test_noop_compression_does_not_rotate_session(tmp_path: Path) -> None:
+    """A compressor that returns the original transcript must not fork a child."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NOOP_TEST"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    agent.context_compressor.compress.side_effect = None
+    agent.context_compressor.compress.return_value = messages
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    assert db.get_session(parent_sid)["end_reason"] is None
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
+def test_same_count_compression_still_rotates_when_content_changes(tmp_path: Path) -> None:
+    """Same message count can still be real progress via token-only shrinking."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "TOKEN_ONLY_TEST"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [
+        {"role": "user", "content": "x" * 4000},
+        {"role": "assistant", "content": "y" * 4000},
+        {"role": "user", "content": "z" * 4000},
+    ]
+    shrunk = [
+        {"role": "user", "content": "summary"},
+        {"role": "assistant", "content": "recent reply"},
+        {"role": "user", "content": "tail"},
+    ]
+    agent.context_compressor.compress.side_effect = None
+    agent.context_compressor.compress.return_value = shrunk
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert len(compressed) == len(messages)
+    assert compressed == shrunk
+    assert agent.session_id != parent_sid
+    assert _count_children(db, parent_sid) == 1
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
     """The owning compression call must keep its lease alive while it runs."""
     real_try_acquire = SessionDB.try_acquire_compression_lock

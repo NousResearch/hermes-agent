@@ -617,6 +617,25 @@ def compress_context(
         finally:
             _release_lock()
 
+    # A compressor can report success while returning the original transcript
+    # unchanged when it finds no compressible window. Rotating in that case
+    # persists the same oversized context under a fresh child session, so the
+    # next turn's preflight check repeats the same no-op indefinitely.
+    if compressed is messages or compressed == messages:
+        try:
+            logger.info(
+                "compression skipped: compressor returned unchanged transcript "
+                "for session=%s messages=%d",
+                agent.session_id or "none",
+                _pre_msg_count,
+            )
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+        finally:
+            _release_lock()
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:

@@ -1039,6 +1039,7 @@ def create_profile_router_mcp_server(
         ProfileRouterTokenStore,
         PROFILE_ROUTER_CRON_SCOPE,
         PROFILE_ROUTER_MESSAGING_SCOPE,
+        PROFILE_ROUTER_OWNER_SCOPE,
         PROFILE_ROUTER_TERMINAL_SCOPE,
         PROFILE_ROUTER_WRITE_SCOPE,
         VIKING_PROFILE_ROUTER_SCOPE,
@@ -1133,23 +1134,29 @@ def create_profile_router_mcp_server(
 
     def _call_tool(
         tool_name: str,
-        required_scope: str,
+        required_scope,
         fn,
         *,
         audit_profile_ref: str | None = None,
         audit_workspace_id: str | None = None,
         **kwargs,
     ) -> str:
+        required_scopes = (
+            (required_scope,)
+            if isinstance(required_scope, str)
+            else tuple(required_scope or ())
+        )
         try:
             if http_auth:
-                require_current_access_token_scope(required_scope)
+                for scope in required_scopes:
+                    require_current_access_token_scope(scope)
             result = fn(**kwargs)
         except ProfileRouterAuthError as exc:
             result = _auth_error_result(tool_name, exc)
         try:
             _audit_tool_result(
                 tool_name=tool_name,
-                scope=required_scope,
+                scope=",".join(required_scopes),
                 result=result,
                 audit_profile_ref=audit_profile_ref,
                 audit_workspace_id=audit_workspace_id,
@@ -1720,7 +1727,7 @@ def create_profile_router_mcp_server(
     @mcp.tool()
     def workspace_production_action_run(workspace_id: str, action_name: str, context_token: str | None = None, args: dict | None = None) -> str:
         """Private direct execution for one explicit production action group."""
-        return _call_tool("workspace_production_action_run", PROFILE_ROUTER_TERMINAL_SCOPE, _workspace_production_action_run, audit_workspace_id=workspace_id, workspace_id=workspace_id, action_name=action_name, context_token=context_token, args=args)
+        return _call_tool("workspace_production_action_run", (PROFILE_ROUTER_TERMINAL_SCOPE, PROFILE_ROUTER_OWNER_SCOPE), _workspace_production_action_run, audit_workspace_id=workspace_id, workspace_id=workspace_id, action_name=action_name, context_token=context_token, args=args)
 
     @mcp.tool()
     def server_alias_list(profile_ref: str) -> str:
@@ -1755,12 +1762,12 @@ def create_profile_router_mcp_server(
     @mcp.tool()
     def server_command_run(profile_ref: str, alias: str, command_name: str) -> str:
         """Private direct named server command group through an explicit alias."""
-        return _call_tool("server_command_run", PROFILE_ROUTER_TERMINAL_SCOPE, _server_command_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command_name=command_name)
+        return _call_tool("server_command_run", (PROFILE_ROUTER_TERMINAL_SCOPE, PROFILE_ROUTER_OWNER_SCOPE), _server_command_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command_name=command_name)
 
     @mcp.tool()
     def server_shell_run(profile_ref: str, alias: str, command: str, timeout_seconds: int | None = 60, max_output_chars: int | None = 40000) -> str:
         """Private direct owner-mode raw server shell command through an explicit alias."""
-        return _call_tool("server_shell_run", PROFILE_ROUTER_TERMINAL_SCOPE, _server_shell_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command=command, timeout_seconds=timeout_seconds, max_output_chars=max_output_chars)
+        return _call_tool("server_shell_run", (PROFILE_ROUTER_TERMINAL_SCOPE, PROFILE_ROUTER_OWNER_SCOPE), _server_shell_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command=command, timeout_seconds=timeout_seconds, max_output_chars=max_output_chars)
 
     @mcp.tool()
     def workspace_web_fetch(workspace_id: str, url: str, context_token: str | None = None, method: str = "GET") -> str:

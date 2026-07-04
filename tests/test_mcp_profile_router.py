@@ -125,6 +125,7 @@ from mcp_profile_router_auth import (
     DEFAULT_PROFILE_ROUTER_SCOPES,
     PROFILE_ROUTER_CRON_SCOPE,
     PROFILE_ROUTER_MESSAGING_SCOPE,
+    PROFILE_ROUTER_OWNER_SCOPE,
     PROFILE_ROUTER_TERMINAL_SCOPE,
     PROFILE_ROUTER_WRITE_SCOPE,
     ProfileRouterAuditLogger,
@@ -5129,3 +5130,72 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert "git_branch" in tools
     assert "cron_list" in tools
     assert "cron_create_script_only" in tools
+
+
+def test_profile_router_tokens_are_case_sensitive(tmp_path):
+    store = ProfileRouterTokenStore(tmp_path / "tokens.json")
+    created = store.create_token(scopes=["context:read"], name="ctx-only")
+
+    assert store.verify_token(created["token"]) is not None
+    assert store.verify_token(created["token"].upper()) is None
+
+
+def test_http_owner_mode_tools_require_owner_scope_before_dispatch(monkeypatch, tmp_path):
+    import mcp_serve
+    import mcp_profile_router_auth
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+    checked_scopes = []
+
+    def fake_require_scope(scope):
+        checked_scopes.append(scope)
+        if scope == PROFILE_ROUTER_OWNER_SCOPE:
+            raise mcp_profile_router_auth.ProfileRouterAuthError(
+                "insufficient_scope",
+                "profile-router token requires owner scope",
+            )
+        return {"token_id": "tok_ownerless", "token_hash_prefix": "sha256:ownerless"}
+
+    def must_not_dispatch(*args, **kwargs):
+        raise AssertionError("owner-gated tool dispatched without owner scope")
+
+    monkeypatch.setattr(
+        mcp_profile_router_auth,
+        "require_current_access_token_scope",
+        fake_require_scope,
+    )
+    monkeypatch.setattr(mcp_profile_router, "workspace_production_action_run", must_not_dispatch)
+    monkeypatch.setattr(mcp_profile_router, "server_command_run", must_not_dispatch)
+    monkeypatch.setattr(mcp_profile_router, "server_shell_run", must_not_dispatch)
+
+    server = mcp_serve.create_profile_router_mcp_server(
+        http_auth=True,
+        token_store_path=str(tmp_path / "tokens.json"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+    )
+    tools = server._tool_manager._tools
+
+    cases = (
+        (
+            "workspace_production_action_run",
+            {"workspace_id": "ws_1", "action_name": "deploy", "context_token": "ctx"},
+        ),
+        (
+            "server_command_run",
+            {"profile_ref": "local:main-bot", "alias": "prod", "command_name": "deploy"},
+        ),
+        (
+            "server_shell_run",
+            {"profile_ref": "local:main-bot", "alias": "prod", "command": "uptime"},
+        ),
+    )
+
+    for name, kwargs in cases:
+        checked_scopes.clear()
+        payload = json.loads(tools[name].fn(**kwargs))
+
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "insufficient_scope"
+        assert checked_scopes == [PROFILE_ROUTER_TERMINAL_SCOPE, PROFILE_ROUTER_OWNER_SCOPE]

@@ -348,6 +348,43 @@ class TestUninstall:
 
         assert uninstall_entry("nonexistent") is False
 
+    def test_uninstall_removes_clone_with_readonly_git_files(self):
+        """A catalog MCP is ``git clone``\\ d, so its ``.git`` holds read-only
+        pack files. Uninstall must still wipe the clone — bare
+        ``shutil.rmtree`` raises PermissionError on read-only entries on Windows.
+        """
+        import os
+        import stat
+
+        from hermes_cli.mcp_catalog import _install_root, uninstall_entry
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {"command": "demo"}
+        save_config(cfg)
+
+        clone = _install_root() / "demo"
+        git_dir = clone / ".git"
+        git_dir.mkdir(parents=True)
+        pack = git_dir / "pack-readonly.idx"
+        pack.write_text("x")
+        os.chmod(pack, stat.S_IREAD)  # git marks pack files read-only
+
+        try:
+            assert uninstall_entry("demo") is True
+            assert not clone.exists()
+            assert "demo" not in load_config().get("mcp_servers", {})
+        finally:
+            # If the delete failed (e.g. the mutation run), restore write bits
+            # so pytest's tmp_path teardown can still clean up on Windows.
+            if clone.exists():
+                for root, _dirs, files in os.walk(clone):
+                    for fn in files:
+                        try:
+                            os.chmod(os.path.join(root, fn), stat.S_IWRITE)
+                        except OSError:
+                            pass
+
 
 # ---------------------------------------------------------------------------
 # Picker (non-TTY paths only — interactive curses is integration-tested)

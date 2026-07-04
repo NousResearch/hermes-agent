@@ -23,8 +23,10 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -356,6 +358,40 @@ def _install_root() -> Path:
     return root
 
 
+def _rmtree_windows_safe(path: Path) -> None:
+    """``shutil.rmtree`` that tolerates read-only entries.
+
+    Catalog MCPs are ``git clone``\\ d, so the tree contains a ``.git`` with
+    read-only pack files. On Windows ``shutil.rmtree`` raises ``PermissionError``
+    on read-only entries instead of deleting them, so ``mcp uninstall`` (and the
+    pre-clone wipe on re-install) fails with WinError 5. Clear the read-only bit
+    on the failing entry and its parent, then retry — mirroring
+    ``hermes_cli.profiles._rmtree_with_retry``.
+    """
+    def _onexc(func, p, exc):
+        # onexc(func, path, exc) on 3.12+, onerror(func, path, exc_info) on 3.11.
+        if isinstance(exc, tuple):
+            exc = exc[1]
+        if not isinstance(exc, PermissionError):
+            raise exc
+        try:
+            os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+        parent = os.path.dirname(p)
+        if parent:
+            try:
+                os.chmod(parent, os.stat(parent).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+        func(p)
+
+    try:
+        shutil.rmtree(path, onexc=_onexc)
+    except TypeError:  # Python 3.11 uses the older onerror= kwarg
+        shutil.rmtree(path, onerror=_onexc)
+
+
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
@@ -386,7 +422,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         # Fresh checkout each install — manifest version is the source of truth,
         # so wipe + re-clone for determinism.
         print(color(f"  Removing existing install at {dest}", Colors.DIM))
-        shutil.rmtree(dest)
+        _rmtree_windows_safe(dest)
 
     print(color(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN))
 
@@ -406,7 +442,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             # Branch/tag form failed (unlikely for valid manifests; possible if
             # the ref was deleted upstream). Fall through to the full-clone path.
             if dest.exists():
-                shutil.rmtree(dest)
+                _rmtree_windows_safe(dest)
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
@@ -772,7 +808,7 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            _rmtree_windows_safe(clone)
             removed = True
 
     return removed

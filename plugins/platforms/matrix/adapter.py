@@ -2866,7 +2866,11 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to,
         )
 
-        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+        should_batch = self._text_batch_delay_seconds > 0 and (
+            msg_type == MessageType.TEXT
+            or (msg_type == MessageType.COMMAND and len(body) >= self._SPLIT_THRESHOLD)
+        )
+        if should_batch:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)

@@ -406,7 +406,19 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    # Skill commands (e.g. /arxiv) are resolved through a separate registry
+    # and must also bypass the active-session queue, matching how
+    # _resolve_matrix_bang_command already checks both registries.
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        return f"/{command_name.lstrip('/')}" in (get_skill_commands() or {})
+    except Exception:  # pragma: no cover — defensive
+        return False
 
 
 def _resolve_config_gates() -> set[str]:

@@ -35,6 +35,7 @@ interface SubmitPromptDeps {
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   requestGateway: GatewayRequest
+  resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
     sessionId: string,
@@ -57,6 +58,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     copy,
     createBackendSessionForSend,
     requestGateway,
+    resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
     updateSessionState
@@ -215,7 +217,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          const storedSessionId = selectedStoredSessionIdRef.current
+
+          if (storedSessionId && resumeStoredSession) {
+            await Promise.resolve(resumeStoredSession(storedSessionId))
+            sessionId = activeSessionIdRef.current
+          }
+
+          if (!sessionId) {
+            sessionId = await createBackendSessionForSend(visibleText)
+          }
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -339,6 +350,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       copy,
       createBackendSessionForSend,
       requestGateway,
+      resumeStoredSession,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
       updateSessionState

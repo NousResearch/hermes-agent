@@ -1190,6 +1190,78 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('message')).toBe(false)
     expect(calls).not.toContain('session.resume')
   })
+
+  it('re-resumes the selected stored session before creating a new session when the runtime id is missing', async () => {
+    const calls: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      if (method === 'prompt.submit') {
+        return {} as never
+      }
+      return {} as never
+    })
+    const resumeStoredSession = vi.fn(async (storedSessionId: string) => {
+      expect(storedSessionId).toBe(STORED_SESSION_ID)
+      activeSessionIdRef.current = RECOVERED_SESSION_ID
+    })
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    function MissingRuntimeHarness({ onReady }: { onReady: (handle: HarnessHandle) => void }) {
+      const busyRef: MutableRefObject<boolean> = { current: false }
+      const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+      const stateRef = useRef({
+        messages: [],
+        busy: false,
+        awaitingResponse: false,
+        interrupted: false
+      } as never)
+
+      const actions = usePromptActions({
+        activeSessionId: null,
+        activeSessionIdRef,
+        branchCurrentSession: async () => true,
+        busyRef,
+        createBackendSessionForSend: vi.fn(async () => {
+          throw new Error('should not create a new session')
+        }),
+        handleSkinCommand: () => '',
+        openMemoryGraph: () => undefined,
+        refreshSessions: async () => undefined,
+        requestGateway,
+        resumeStoredSession,
+        selectedStoredSessionIdRef,
+        startFreshSessionDraft: () => undefined,
+        sttEnabled: false,
+        updateSessionState: (_sessionId, updater) => {
+          const next = updater(stateRef.current) as unknown as Record<string, unknown>
+          stateRef.current = next as never
+          return next as never
+        }
+      })
+
+      useEffect(() => {
+        onReady({
+          cancelRun: actions.cancelRun,
+          restoreToMessage: actions.restoreToMessage,
+          steerPrompt: actions.steerPrompt,
+          submitText: actions.submitText
+        })
+      }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
+
+      return null
+    }
+
+    let handle: HarnessHandle | null = null
+    render(<MissingRuntimeHarness onReady={h => (handle = h)} />)
+
+    expect(await handle!.submitText('resume instead of create')).toBe(true)
+    expect(resumeStoredSession).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual(['prompt.submit'])
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RECOVERED_SESSION_ID,
+      text: 'resume instead of create'
+    })
+  })
 })
 
 describe('usePromptActions eager attachment upload (drop-time)', () => {

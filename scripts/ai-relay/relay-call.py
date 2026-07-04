@@ -252,9 +252,13 @@ def write_ledger(cwd: Path, row: dict):
 def run_once(spec, prompt, cwd, model):
     cmd = [a.replace("{prompt}",prompt).replace("{cwd}",str(cwd)).replace("{model}",model or "") for a in spec["cmd"]]
     workdir = str(cwd) if spec.get("run_in_cwd") else None
+    env = os.environ.copy()
+    if cmd and Path(cmd[0]).name == "claude":
+        # ตัด token org ที่ใช้ไม่ได้ เพื่อให้ claude ใช้ login ของเครื่องแทน (จับ path เต็มด้วย)
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     try:
         p = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=1800,
-                           stdin=subprocess.DEVNULL)  # ปิด stdin · กัน codex exec ค้างรออ่าน input
+                           stdin=subprocess.DEVNULL, env=env)  # ปิด stdin · กัน codex exec ค้างรออ่าน input
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
         return 127, "", "command not found"

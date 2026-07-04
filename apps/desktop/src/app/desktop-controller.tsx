@@ -90,6 +90,7 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useReconnectReconciliation } from './gateway/hooks/use-reconnect-reconciliation'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -399,19 +400,21 @@ export function DesktopController() {
     loadMoreSessionsForProfile,
     refreshCronJobs,
     refreshMessagingSessions,
-    refreshSessions
+    refreshSessions,
+    scheduleSessionsRefresh
   } = useSessionListActions({ profileScope })
 
   // Another window mutated the shared session list (e.g. a chat started in the
   // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
-  // only real windows bother.
+  // only real windows bother. Coalesced: a burst of completions in another
+  // window collapses to one refresh here.
   useEffect(() => {
     if (isSecondaryWindow()) {
       return
     }
 
-    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
-  }, [refreshSessions])
+    return onSessionsChanged(() => scheduleSessionsRefresh())
+  }, [scheduleSessionsRefresh])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -588,7 +591,7 @@ export function DesktopController() {
     hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
-    refreshSessions,
+    scheduleSessionsRefresh,
     sessionStateByRuntimeIdRef,
     updateSessionState
   })
@@ -878,6 +881,11 @@ export function DesktopController() {
     return $attentionSessionIds.listen(sync)
   }, [])
 
+  const reconcileBusySessions = useReconnectReconciliation({
+    sessionStateByRuntimeIdRef,
+    updateSessionState
+  })
+
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
     onConnectionReady: c => {
@@ -886,6 +894,7 @@ export function DesktopController() {
     onGatewayReady: g => {
       gatewayRef.current = g
     },
+    reconcileBusySessions,
     refreshHermesConfig,
     refreshSessions
   })

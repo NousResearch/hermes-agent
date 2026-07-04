@@ -1,4 +1,9 @@
-import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  GatewayReauthRequiredError,
+  isGatewayAuthShapedError,
+  isGatewayReauthRequired,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
 
 const oauthConn = { authMode: 'oauth' as const, wsUrl: 'ws://host/api/ws?ticket=stale' }
@@ -37,6 +42,47 @@ describe('resolveGatewayWsUrl', () => {
       expect(result).toBe('threw')
       expect(result).not.toBe(oauthConn.wsUrl)
     })
+
+    it('rethrows a transport timeout as-is instead of misreporting an expired session', async () => {
+      const cause = new Error('Timed out connecting to Hermes backend after 8000ms')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn).catch(e => e)
+      expect(error).toBe(cause)
+      expect(isGatewayReauthRequired(error)).toBe(false)
+    })
+
+    it('rethrows connection-refused / unreachable-host mint failures as retryable', async () => {
+      const cause = new Error('net::ERR_CONNECTION_REFUSED')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBe(cause)
+    })
+
+    it('maps a 401-status mint failure to a reauth error', async () => {
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(new Error('401: {"detail":"session cookie expired"}'))
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBeInstanceOf(
+        GatewayReauthRequiredError
+      )
+    })
+
+    it('maps an error carrying statusCode 403 to a reauth error', async () => {
+      const cause = Object.assign(new Error('Forbidden'), { statusCode: 403 })
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBeInstanceOf(
+        GatewayReauthRequiredError
+      )
+    })
+
+    it('maps an IPC-flattened main-process reauth message to a reauth error', async () => {
+      const cause = new Error(
+        "Error invoking remote method 'hermes:gateway:ws-url': Error: " +
+          'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+      )
+
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBeInstanceOf(
+        GatewayReauthRequiredError
+      )
+    })
   })
 
   describe('token / local mode', () => {
@@ -73,5 +119,30 @@ describe('isGatewayReauthRequired', () => {
     expect(isGatewayReauthRequired(new Error('connection closed'))).toBe(false)
     expect(isGatewayReauthRequired(null)).toBe(false)
     expect(isGatewayReauthRequired('string')).toBe(false)
+  })
+})
+
+describe('isGatewayAuthShapedError', () => {
+  it('accepts explicit reauth markers, auth status codes, and canonical reauth phrasings', () => {
+    expect(isGatewayAuthShapedError(new GatewayReauthRequiredError('x'))).toBe(true)
+    expect(isGatewayAuthShapedError({ needsOauthLogin: true })).toBe(true)
+    expect(isGatewayAuthShapedError(Object.assign(new Error('nope'), { statusCode: 401 }))).toBe(true)
+    expect(isGatewayAuthShapedError(new Error('403: forbidden'))).toBe(true)
+    expect(isGatewayAuthShapedError(new Error('Your remote gateway session has expired. Sign in again.'))).toBe(true)
+    expect(isGatewayAuthShapedError(new Error('Remote Hermes gateway uses OAuth, but you are not signed in.'))).toBe(
+      true
+    )
+  })
+
+  it('rejects transport failures', () => {
+    expect(isGatewayAuthShapedError(new Error('Timed out connecting to Hermes backend after 15000ms'))).toBe(false)
+    expect(isGatewayAuthShapedError(new Error('net::ERR_CONNECTION_REFUSED'))).toBe(false)
+    expect(isGatewayAuthShapedError(new Error('Could not connect to Hermes gateway'))).toBe(false)
+    expect(isGatewayAuthShapedError(null)).toBe(false)
+  })
+
+  it('does not false-positive on incidental digit runs containing 401/403', () => {
+    expect(isGatewayAuthShapedError(new Error('backend pid 84012 exited'))).toBe(false)
+    expect(isGatewayAuthShapedError(new Error('http://host:64013 unreachable'))).toBe(false)
   })
 })

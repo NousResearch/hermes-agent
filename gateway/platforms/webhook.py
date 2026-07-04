@@ -121,6 +121,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
+        # Routes already warned about legacy V1 body-only signatures
+        # (once-per-route so a busy sender doesn't spam the log).
+        self._v1_signature_warned: set[str] = set()
 
         # Delivery info keyed by session chat_id.
         #
@@ -913,14 +916,17 @@ class WebhookAdapter(BasePlatformAdapter):
             expected = hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            logger.warning(
-                "[webhook] Route '%s' uses legacy body-only HMAC (no "
-                "timestamp), which is vulnerable to replay attacks. Add "
-                "an 'X-Webhook-Timestamp' header and switch to "
-                "'X-Webhook-Signature-V2' (HMAC-SHA256 of "
-                "'<timestamp>.<body>').",
-                request.match_info.get("route_name", ""),
-            )
+            route_name = request.match_info.get("route_name", "")
+            if route_name not in self._v1_signature_warned:
+                self._v1_signature_warned.add(route_name)
+                logger.warning(
+                    "[webhook] Route '%s' uses legacy body-only HMAC (no "
+                    "timestamp), which is vulnerable to replay attacks. Add "
+                    "an 'X-Webhook-Timestamp' header and switch to "
+                    "'X-Webhook-Signature-V2' (HMAC-SHA256 of "
+                    "'<timestamp>.<body>').",
+                    route_name,
+                )
             return hmac.compare_digest(generic_sig, expected)
 
         # No recognised signature header but secret is configured → reject

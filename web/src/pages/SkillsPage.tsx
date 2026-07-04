@@ -28,6 +28,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -42,7 +43,9 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -260,6 +263,26 @@ export default function SkillsPage() {
     },
     [selectedProfile, showToast],
   );
+
+  const skillDelete = useConfirmDelete({
+    onDelete: useCallback(
+      async (skillName: string) => {
+        try {
+          await api.deleteSkill(skillName, selectedProfile || undefined);
+          setSkills((prev) => prev.filter((skill) => skill.name !== skillName));
+          showToast(`${skillName} deleted`, "success");
+        } catch (e) {
+          showToast(`Delete failed: ${e}`, "error");
+          throw e;
+        }
+      },
+      [selectedProfile, showToast],
+    ),
+  });
+
+  const pendingDeleteSkill = skillDelete.pendingId
+    ? skills.find((skill) => skill.name === skillDelete.pendingId)
+    : null;
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -497,6 +520,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.requestDelete(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -559,6 +583,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.requestDelete(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -670,6 +695,18 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      <DeleteConfirmDialog
+        open={skillDelete.isOpen}
+        onCancel={skillDelete.cancel}
+        onConfirm={skillDelete.confirm}
+        title="Delete skill"
+        description={
+          pendingDeleteSkill
+            ? `Delete "${pendingDeleteSkill.name}"? This removes its skill directory and cannot be undone.`
+            : "Delete this skill? This removes its skill directory and cannot be undone."
+        }
+        loading={skillDelete.isDeleting}
+      />
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -738,6 +775,7 @@ function SkillRow({
   toggling,
   onToggle,
   onEdit,
+  onDelete,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -773,6 +811,16 @@ function SkillRow({
       >
         <Pencil />
       </Button>
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+        title="Delete skill"
+        aria-label={`Delete ${skill.name}`}
+        onClick={onDelete}
+      >
+        <Trash2 />
+      </Button>
     </div>
   );
 }
@@ -805,6 +853,7 @@ interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
   onEdit: () => void;
+  onDelete: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }

@@ -11535,6 +11535,11 @@ class SkillContentUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+class SkillDelete(BaseModel):
+    profile: Optional[str] = None
+    absorbed_into: Optional[str] = ""
+
+
 def _clear_skills_prompt_cache() -> None:
     """Best-effort: invalidate the skills system-prompt snapshot after a write.
 
@@ -11595,6 +11600,35 @@ async def update_skill_content(body: SkillContentUpdate):
         result = _edit_skill(body.name, body.content)
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
+        status = 404 if "not found" in str(err).lower() else 400
+        raise HTTPException(status_code=status, detail=err)
+    _clear_skills_prompt_cache()
+    return result
+
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str, body: Optional[SkillDelete] = None, profile: Optional[str] = None):
+    """Delete a skill from the dashboard using the validated skill_manage path.
+
+    Default ``absorbed_into`` to the explicit-prune value (``""``), not the
+    legacy undeclared value, so dashboard deletes carry the same lifecycle
+    intent as ``skill_manage(action='delete', absorbed_into='')``.
+    """
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    from tools.skill_manager_tool import _delete_skill
+
+    effective_profile = (body.profile if body else None) or profile
+    absorbed_into = body.absorbed_into if body else ""
+    with _profile_scope(effective_profile):
+        result = _delete_skill(name, absorbed_into=absorbed_into)
+        if result.get("success"):
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            if name in disabled:
+                disabled.discard(name)
+                save_disabled_skills(config, disabled)
+    if not result.get("success"):
+        err = result.get("error", "Failed to delete skill.")
         status = 404 if "not found" in str(err).lower() else 400
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()

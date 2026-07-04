@@ -708,6 +708,7 @@ class AIAgent:
         - Reasoning tokens
         - Estimated cost tracking
         - Context compressor internal counters
+        - Context Governor task-state ledger
         
         The method safely handles optional attributes (e.g., context compressor)
         using ``hasattr`` checks.
@@ -734,6 +735,14 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Context Governor reset
+        _cg = getattr(self, "_context_governor", None)
+        if _cg is not None:
+            try:
+                _cg.on_session_reset()
+            except Exception as exc:
+                logger.debug("Context Governor on_session_reset failed: %s", exc)
 
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
@@ -3295,6 +3304,15 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        # Notify Context Governor of session end
+        if getattr(self, "_context_governor", None) is not None:
+            try:
+                self._context_governor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
@@ -3315,6 +3333,15 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
+        # Notify Context Governor of session end for rotation boundary too
+        if getattr(self, "_context_governor", None) is not None:
+            try:
+                self._context_governor.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )

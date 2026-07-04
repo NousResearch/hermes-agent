@@ -6487,6 +6487,46 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             f"{toolsets_info}{provider_info}"
         )
 
+    def _handle_context_command(self, cmd: str) -> None:
+        """
+        Show the Context Governor state: task ledger, recent raw tool calls,
+        and summarized window. Supports /context, /ledger, and /ctx.
+        Subcommands:
+          show   - display current ledger and recent tool context (default)
+          clear  - drop recent raw calls and summaries (keep ledger)
+          reset  - wipe everything, including the ledger
+        """
+        from agent.context_governor import get_context_governor
+        g = get_context_governor()
+        parts = cmd.strip().split(None, 1)
+        sub = (parts[1] if len(parts) > 1 else "").strip().lower() or "show"
+
+        try:
+            if sub == "clear":
+                g.raw_tool_calls = []
+                g.summarized_window = []
+                g.telemetry.inc("context_governor_command_invocations_total")
+                self._console_print("  Cleared raw tool calls and summaries. Ledger preserved.")
+                return
+            if sub == "reset":
+                g.on_session_reset()
+                self._console_print("  Reset Context Governor: ledger, raw calls, and summaries cleared.")
+                return
+            if sub not in {"show", "display", ""}:
+                self._console_print(f"  Unknown subcommand '{sub}'. Use: show, clear, reset.")
+                return
+
+            g.telemetry.inc("context_governor_command_invocations_total")
+            ctx = g.get_context_for_model()
+            if not ctx.strip():
+                self._console_print("  Context Governor state is empty. Start a task or run some tools.")
+                return
+            self._console_print("  [bold]Context Governor state[/bold]")
+            for line in ctx.splitlines():
+                self._console_print(f"  {line}")
+        except Exception as e:
+            self._console_print(f"  Context Governor unavailable: {e}")
+
     def _show_session_status(self):
         """Show gateway-style status for the current CLI session."""
         session_meta = {}
@@ -6874,10 +6914,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 preview = "(no text response)"
                 suffix = ""
-            _cli_visible_print(f"    {preview}{suffix}")
+            print(f"    {preview}{suffix}")
 
         flush_tool_summary()
-        _cli_visible_print()
+        print()
     
     def _notify_session_boundary(self, event_type: str) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
@@ -8582,8 +8622,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_memory_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
-        elif canonical == "status":
-            self._show_session_status()
+        elif canonical in {"status", "context", "ledger", "ctx"}:
+            if canonical == "status":
+                self._show_session_status()
+            else:
+                self._handle_context_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

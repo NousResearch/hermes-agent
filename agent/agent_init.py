@@ -1482,6 +1482,40 @@ def init_agent(
             _aux_context_config = None
     agent._aux_compression_context_length_config = _aux_context_config
 
+    # Read Context Governor config
+    try:
+        _cg_cfg = cfg_get(_agent_cfg, "context_governor", default={})
+    except Exception:
+        _cg_cfg = {}
+    if isinstance(_cg_cfg, dict):
+        agent._context_governor_raw_tool_window = int(_cg_cfg.get("raw_tool_window", 5))
+        agent._context_governor_summary_window = int(_cg_cfg.get("summary_window", 3))
+        agent._context_governor_max_state_summary_words = int(_cg_cfg.get("max_state_summary_words", 700))
+        agent._context_governor_max_raw_log_lines = int(_cg_cfg.get("max_raw_log_lines", 200))
+        agent._context_governor_verification_required = str(_cg_cfg.get("verification_required", True)).lower() in {"true", "1", "yes"}
+    else:
+        agent._context_governor_raw_tool_window = 5
+        agent._context_governor_summary_window = 3
+        agent._context_governor_max_state_summary_words = 700
+        agent._context_governor_max_raw_log_lines = 200
+        agent._context_governor_verification_required = True
+
+    # Bind the session lifecycle hooks to the global Context Governor.
+    # The governor is a per-process singleton that survives compaction boundaries
+    # and is reset on /new or /reset via reset_session_state.
+    try:
+        from agent.context_governor import get_context_governor
+        _cg = get_context_governor()
+        if _cg_cfg and isinstance(_cg_cfg, dict):
+            _cg.raw_tool_window = agent._context_governor_raw_tool_window
+            _cg.summary_window = agent._context_governor_summary_window
+            _cg.max_state_summary_words = agent._context_governor_max_state_summary_words
+            _cg.max_raw_log_lines = agent._context_governor_max_raw_log_lines
+            _cg.verification_required = agent._context_governor_verification_required
+        agent._context_governor = _cg
+    except Exception:
+        agent._context_governor = None
+
     # Read explicit model output-token override from config when the
     # caller did not pass one directly.
     _model_cfg = _agent_cfg.get("model", {})
@@ -1817,6 +1851,26 @@ def init_agent(
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
+
+    # Notify Context Governor of session start
+    if getattr(agent, "_context_governor", None) is not None:
+        try:
+            agent._context_governor.on_session_start(
+                agent.session_id or "",
+                hermes_home=str(get_hermes_home()),
+                platform=agent.platform or "cli",
+                model=agent.model,
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+            _cg_loaded = bool(agent._context_governor.ledger.objective)
+            _ra().logger.info(
+                "Context Governor active (raw_window=%d, summary_window=%d, persisted_ledger=%s)",
+                agent._context_governor.raw_tool_window,
+                agent._context_governor.summary_window,
+                _cg_loaded,
+            )
+        except Exception as _cg_err:
+            _ra().logger.debug("Context Governor on_session_start: %s", _cg_err)
 
     agent._subdirectory_hints = SubdirectoryHintTracker(
         working_dir=os.getenv("TERMINAL_CWD") or None,

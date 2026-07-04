@@ -735,10 +735,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
-    compression_failure_cooldown_until REAL,
-    compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    context_governor_state TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2075,6 +2074,27 @@ class SessionDB:
                 (model_config_json, model, session_id),
             )
         self._execute_write(_do)
+
+    def update_context_governor_state(self, session_id: str, state_json: str) -> None:
+        """Persist Context Governor state for the session."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET context_governor_state = ? WHERE id = ?",
+                (state_json, session_id),
+            )
+        self._execute_write(_do)
+
+    def get_context_governor_state(self, session_id: str) -> Optional[str]:
+        """Load persisted Context Governor state for the session."""
+        try:
+            cursor = self._conn.execute(
+                "SELECT context_governor_state FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""

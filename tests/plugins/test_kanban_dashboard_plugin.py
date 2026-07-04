@@ -2409,3 +2409,28 @@ def test_patch_unknown_profile_returns_404(profile_client):
         json={"description": "whatever"},
     )
     assert res.status_code == 404
+
+
+@pytest.mark.parametrize("profile_path", ["%2E%2E", "bad.name"])
+def test_patch_invalid_profile_name_returns_400_without_writing_metadata(
+    profile_client,
+    profile_path,
+):
+    """Invalid profile path segments must not resolve to profile dirs."""
+    client, dirs = profile_client
+    default_yaml = dirs["default"] / "profile.yaml"
+    worker_yaml = dirs["worker"] / "profile.yaml"
+
+    res = client.patch(
+        f"/api/plugins/kanban/profiles/{profile_path}",
+        json={"description": "pwn"},
+    )
+
+    failures = []
+    if res.status_code != 400:
+        failures.append(f"expected HTTP 400, got {res.status_code}: {res.text}")
+    if default_yaml.exists():
+        failures.append("default profile.yaml was written for an invalid profile name")
+    if worker_yaml.exists():
+        failures.append("worker profile.yaml was written for an invalid profile name")
+    assert not failures, "; ".join(failures)

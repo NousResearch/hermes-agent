@@ -1,6 +1,7 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import asyncio
+import logging
 import os
 import json
 import shutil
@@ -6289,6 +6290,56 @@ class TestPtyWebSocket:
         assert sub_a2.sent == [frame]
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
+
+    def test_pub_broadcast_drops_closed_subscribers_without_warning(self, caplog):
+        """Closed browser sockets are expected dashboard churn, not warning noise."""
+        import asyncio
+        from hermes_cli import web_server as ws_mod
+
+        class _OpenSub:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        class _ClosedSub:
+            async def send_text(self, payload: str) -> None:
+                raise RuntimeError(
+                    'Cannot call "send" once a close message has been sent'
+                )
+
+        app = ws_mod.app
+
+        async def _run():
+            open_sub = _OpenSub()
+            closed_sub = _ClosedSub()
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            async with event_lock:
+                event_channels.setdefault("closed-broadcast-test", set()).update(
+                    {open_sub, closed_sub}
+                )
+            try:
+                await ws_mod._broadcast_event(app, "closed-broadcast-test", "frame")
+                async with event_lock:
+                    remaining = set(event_channels.get("closed-broadcast-test", set()))
+            finally:
+                async with event_lock:
+                    event_channels.pop("closed-broadcast-test", None)
+            return open_sub, closed_sub, remaining
+
+        with caplog.at_level(logging.DEBUG, logger="hermes_cli.web_server"):
+            open_sub, closed_sub, remaining = asyncio.run(_run())
+
+        assert open_sub.sent == ["frame"]
+        assert closed_sub not in remaining
+        assert open_sub in remaining
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+            and "broadcast send failed" in record.message
+        ]
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect

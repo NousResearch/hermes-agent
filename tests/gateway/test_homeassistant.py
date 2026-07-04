@@ -446,6 +446,53 @@ class TestConfigIntegration:
         config = load_gateway_config()
         assert Platform.HOMEASSISTANT not in config.platforms
 
+    def test_explicit_top_level_enabled_false_wins_over_env_token(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "homeassistant:\n"
+            "  enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HASS_TOKEN", "env-token")
+        monkeypatch.setenv("HASS_URL", "http://10.0.0.5:8123")
+
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+
+        ha = config.platforms[Platform.HOMEASSISTANT]
+        assert ha.enabled is False
+        assert ha.token == "env-token"
+        assert ha.extra["url"] == "http://10.0.0.5:8123"
+
+    def test_explicit_platforms_enabled_false_wins_over_env_token(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  homeassistant:\n"
+            "    enabled: false\n"
+            "    extra:\n"
+            "      watch_entities:\n"
+            "        - sensor.example\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HASS_TOKEN", "env-token")
+        monkeypatch.setenv("HASS_URL", "http://10.0.0.5:8123")
+
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+
+        ha = config.platforms[Platform.HOMEASSISTANT]
+        assert ha.enabled is False
+        assert ha.token == "env-token"
+        assert ha.extra["url"] == "http://10.0.0.5:8123"
+        assert ha.extra["watch_entities"] == ["sensor.example"]
+
     def test_config_roundtrip_preserves_extra(self):
         config = GatewayConfig(
             platforms={

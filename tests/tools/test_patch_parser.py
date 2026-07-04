@@ -401,6 +401,37 @@ class TestValidationPhase:
         assert result.success is True
         assert set(written.keys()) == {"a.py", "b.py"}
 
+    def test_add_onto_existing_file_fails_and_preserves_contents(self):
+        """An Add targeting a path that already exists must fail validation and
+        leave the original bytes untouched (no silent overwrite)."""
+        patch = """\
+*** Begin Patch
+*** Add File: exists.py
++brand new
++content
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        original = "def keep_me():\n    return 1\n"
+        written = {}
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                if path == "exists.py":
+                    return SimpleNamespace(content=original, error=None)
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
+            def write_file(self, path, content):
+                written[path] = content
+                return SimpleNamespace(error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert written == {}, f"No file should have been written, got: {list(written.keys())}"
+        assert "already exists" in result.error
+        assert "validation failed" in result.error.lower()
+
 
 class TestApplyDelete:
     """Tests for _apply_delete producing a real unified diff."""
@@ -550,6 +581,9 @@ class TestV4ALspDiagnosticsPropagation:
         )
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
@@ -602,6 +636,9 @@ class TestV4ALspDiagnosticsPropagation:
         ops = self._build_ops_writing("foo.py", "x = 1\n")
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
                 return SimpleNamespace(error=None)
@@ -635,6 +672,9 @@ class TestV4ALspDiagnosticsPropagation:
         }
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
 

@@ -323,7 +323,17 @@ def _validate_operations(
                     f"{op.new_path}: destination already exists — move would overwrite"
                 )
 
-        # ADD: parent directory creation handled by write_file; no pre-check needed.
+        elif op.operation == OperationType.ADD:
+            # An Add must create a new file. If the target already exists,
+            # write_file would clobber it with only the patch's '+' lines and
+            # report success, silently destroying the original contents. Reject
+            # it here so the two-phase contract holds (no files modified on a
+            # validation failure), mirroring the MOVE destination guard above.
+            existing = file_ops.read_file_raw(op.file_path)
+            if not existing.error:
+                errors.append(
+                    f"{op.file_path}: file already exists — use Update File, not Add File"
+                )
 
     return errors
 
@@ -469,7 +479,14 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[s
                 content_lines.append(line.content)
     
     content = '\n'.join(content_lines)
-    
+
+    # Validation already confirmed the path is free; re-check here to close the
+    # race between validate and apply so a concurrently-created file is never
+    # overwritten (the apply phase only fails closed, it never clobbers).
+    existing = file_ops.read_file_raw(op.file_path)
+    if not existing.error:
+        return False, f"{op.file_path}: file already exists — use Update File, not Add File", None
+
     result = file_ops.write_file(op.file_path, content)
     if result.error:
         return False, result.error, None

@@ -8178,7 +8178,187 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         pass
 
 
-def _refresh_active_lazy_features() -> None:
+# Import probes for venv corruption after a failed lazy ``uv pip install``.
+# Metadata can look fine while ``.py`` files were removed mid-install (#57828).
+_LAZY_REFRESH_IMPORT_PROBES: tuple[tuple[str, str], ...] = (
+    ("yaml", "SafeDumper"),
+    ("dotenv", "load_dotenv"),
+    ("click", "Command"),
+    ("certifi", "contents"),
+    ("rich", "print"),
+    ("cryptography", "__version__"),
+    ("jwt", "encode"),
+)
+
+_LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = {
+    "yaml": "PyYAML",
+    "dotenv": "python-dotenv",
+    "click": "click",
+    "certifi": "certifi",
+    "rich": "rich",
+    "cryptography": "cryptography",
+    "jwt": "PyJWT",
+}
+
+
+def _run_package_only_install(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Run a package-only pip/uv install without quarantining entry-point shims.
+
+    ``pip install --upgrade pip`` and ``--force-reinstall <pkg>`` do not
+    rewrite ``hermes.exe``. The editable-install quarantine path would rename
+    shims without uv recreating them on Windows (#57828).
+    """
+    _run_install_with_heartbeat(cmd, env=env)
+
+
+def _lazy_refresh_repair_specs(packages: list[str]) -> list[str]:
+    """Map repair package names to their declared pin specs in pyproject.toml."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return packages
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return packages
+
+    try:
+        with open(pyproject, "rb") as f:
+            raw_deps = tomllib.load(f).get("project", {}).get("dependencies", []) or []
+    except Exception as exc:
+        logger.debug("lazy refresh repair spec lookup failed: %s", exc)
+        return packages
+
+    name_to_spec: dict[str, str] = {}
+    try:
+        from packaging.requirements import Requirement  # type: ignore
+
+        for spec in raw_deps:
+            try:
+                req = Requirement(spec)
+                name_to_spec[req.name.lower()] = spec.split(";", 1)[0].strip()
+            except Exception:
+                continue
+    except Exception:
+        for spec in raw_deps:
+            head = spec.split(";", 1)[0].strip()
+            bare = head
+            for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+                if op in bare:
+                    bare = bare.split(op, 1)[0]
+                    break
+            key = bare.strip().split("[", 1)[0].strip().lower()
+            if key:
+                name_to_spec[key] = head
+
+    return [name_to_spec.get(pkg.lower(), pkg) for pkg in packages]
+
+
+def _upgrade_pip_before_lazy_refresh(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Upgrade pip before lazy-backend refreshes.
+
+    Older pip (e.g. 24.0 on Python 3.11) can fail setuptools-backed source
+    builds during lazy installs and leave a partially-written venv (#57828).
+    Never raises.
+    """
+    try:
+        _run_package_only_install(
+            install_cmd_prefix + ["install", "--upgrade", "pip"],
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.debug("pip upgrade before lazy refresh failed: %s", exc)
+
+
+def _detect_broken_lazy_refresh_imports(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Return pip distribution names whose import probes fail."""
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return []
+
+    probe_lines = "\n".join(
+        f"    ({mod!r}, {attr!r})," for mod, attr in _LAZY_REFRESH_IMPORT_PROBES
+    )
+    check_script = (
+        "import sys\n"
+        "probes = [\n"
+        f"{probe_lines}\n"
+        "]\n"
+        "broken = []\n"
+        "for mod, attr in probes:\n"
+        "    try:\n"
+        "        imported = __import__(mod)\n"
+        "        if not hasattr(imported, attr):\n"
+        "            broken.append(mod)\n"
+        "    except Exception:\n"
+        "        broken.append(mod)\n"
+        "print('\\n'.join(broken))\n"
+    )
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", check_script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except Exception as exc:
+        logger.debug("lazy refresh import probe failed: %s", exc)
+        return []
+
+    broken_modules = [
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    ]
+    packages: list[str] = []
+    seen: set[str] = set()
+    for mod in broken_modules:
+        pkg = _LAZY_REFRESH_REPAIR_PACKAGES.get(mod)
+        if pkg and pkg not in seen:
+            seen.add(pkg)
+            packages.append(pkg)
+    return packages
+
+
+def _repair_broken_lazy_refresh_imports(
+    install_cmd_prefix: list[str],
+    packages: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Force-reinstall ``packages`` and re-probe imports. Never raises."""
+    if not packages:
+        return True
+
+    specs = _lazy_refresh_repair_specs(packages)
+    try:
+        _run_package_only_install(
+            install_cmd_prefix + ["install", "--force-reinstall", *specs],
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.warning("lazy refresh venv repair failed: %s", exc)
+        return False
+
+    return not _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
+
+
+def _refresh_active_lazy_features(
+    install_cmd_prefix: list[str] | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
     """Refresh lazy-installed backends after a code update.
 
     When pyproject.toml's ``[all]`` extra was slimmed down (May 2026), most
@@ -8192,22 +8372,27 @@ def _refresh_active_lazy_features() -> None:
     activated and reinstalls them under the current pins. Features the
     user never enabled stay quiet — no churn for cold backends.
 
+    Returns True when the venv is safe to use (refresh succeeded, or no
+    active lazy backends, or post-failure import repair succeeded). Returns
+    False when a failed lazy install left broken core imports that automatic
+    repair could not fix (#57828).
+
     Never raises. A failure here must not block the rest of the update.
     """
     try:
         from tools import lazy_deps
     except Exception as exc:
         logger.debug("Lazy refresh skipped (import failed): %s", exc)
-        return
+        return True
 
     try:
         active = lazy_deps.active_features()
     except Exception as exc:
         logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
-        return
+        return True
 
     if not active:
-        return
+        return True
 
     print()
     print(f"→ Refreshing {len(active)} active lazy backend(s)...")
@@ -8218,7 +8403,7 @@ def _refresh_active_lazy_features() -> None:
         # refresh_active_features is documented as never-raise, but defend
         # the update flow against future regressions.
         print(f"  ⚠ Lazy refresh failed unexpectedly: {exc}")
-        return
+        results = {}
 
     refreshed = [f for f, s in results.items() if s == "refreshed"]
     current = [f for f, s in results.items() if s == "current"]
@@ -8242,8 +8427,37 @@ def _refresh_active_lazy_features() -> None:
             if len(reason) > 200:
                 reason = reason[:200] + "..."
             print(f"  ⚠ {feature} failed to refresh: {reason}")
-        print("  Backends keep their previously-installed version; rerun")
-        print("  `hermes update` once the upstream issue is resolved.")
+
+        if install_cmd_prefix is None:
+            print("  ⚠ Lazy refresh failed; rerun `hermes update` once resolved.")
+            return False
+
+        broken = _detect_broken_lazy_refresh_imports(
+            install_cmd_prefix, env=env
+        )
+        if broken:
+            print("  → Detected corrupted venv packages; repairing...")
+            if _repair_broken_lazy_refresh_imports(
+                install_cmd_prefix, broken, env=env
+            ):
+                print("  ✓ Venv repair succeeded")
+                print("  Lazy backend(s) keep their previous version until refresh succeeds.")
+                return True
+
+            manual = " ".join(
+                repr(p) for p in broken
+            )
+            print("  ⚠ Venv repair incomplete. Run manually, then `hermes update`:")
+            print(
+                f"    {' '.join(install_cmd_prefix)} install --force-reinstall {manual}"
+            )
+            return False
+
+        print("  Lazy backend(s) keep their previous version; core venv looks intact.")
+        print("  Rerun `hermes update` once the upstream issue is resolved.")
+        return True
+
+    return True
 
 
 def _install_python_dependencies_with_optional_fallback(
@@ -10746,13 +10960,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
-        # Core Python deps installed AND verified (the fallback helper runs
-        # _verify_core_dependencies_installed). Clear the interrupted-install
-        # breadcrumb now — the remaining steps (lazy refresh, node deps, web
-        # UI, desktop rebuild) are non-core and can't brick the venv.
-        _clear_update_incomplete_marker()
+        install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
+        lazy_env = uv_env if uv_bin else None
 
-        _refresh_active_lazy_features()
+        # Upgrade pip before lazy refreshes — stale pip can fail source builds
+        # and leave partially-written packages (#57828).
+        _upgrade_pip_before_lazy_refresh(install_prefix, env=lazy_env)
+
+        # Lazy refresh can corrupt the venv when a backend install fails.
+        # Keep the interrupted-install marker until refresh + repair succeed.
+        lazy_ok = _refresh_active_lazy_features(install_prefix, env=lazy_env)
+        if lazy_ok:
+            _clear_update_incomplete_marker()
+        else:
+            print(
+                "  ⚠ Update incomplete — run `hermes` again to finish venv recovery."
+            )
 
         node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")

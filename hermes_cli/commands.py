@@ -204,7 +204,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("evolution", "Autonomous evaluation and self-improvement engine",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "define-task", "list-tasks", "history", "variants", "enable", "disable", "run", "benchmark")),
+               subcommands=("status", "define-task", "list-tasks", "history", "variants", "enable", "disable", "run", "benchmark", "export")),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("init", "boards", "create", "list", "ls", "show", "assign",

@@ -78,6 +78,14 @@ from agent.evolution.improvement_proposer import ImprovementProposal, Improvemen
 from agent.evolution.regression_gate import GateResult, GateVerdict, RegressionGate
 from agent.evolution.harness_variants import HarnessVariant, VariantManager
 from agent.evolution.auxiliary_llm import EvolutionLLMClient, get_evolution_llm
+from agent.evolution.atropos_export import (
+    ATROPOS_FORMAT_VERSION,
+    export_run,
+    export_all_runs,
+    export_benchmark_dataset,
+    export_run_to_jsonl,
+    get_export_stats,
+)
 
 __all__ = [
     # Config
@@ -128,4 +136,11 @@ __all__ = [
     # Auxiliary LLM
     "EvolutionLLMClient",
     "get_evolution_llm",
+    # Atropos Export
+    "ATROPOS_FORMAT_VERSION",
+    "export_run",
+    "export_all_runs",
+    "export_benchmark_dataset",
+    "export_run_to_jsonl",
+    "get_export_stats",
 ]

@@ -21,6 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
+from agent.evolution.atropos_export import ATROPOS_FORMAT_VERSION
+
 
 def _fmt_ts(ts: Optional[str]) -> str:
     if not ts:
@@ -382,6 +385,63 @@ def _cmd_benchmark(args) -> int:
     return 0 if total_passed == len(tasks) else 1
 
 
+# ── export ──────────────────────────────────────────────────────────────
+
+
+def _cmd_export(args) -> int:
+    """Export evolution runs as Atropos-compatible training data."""
+    try:
+        from agent.evolution.atropos_export import (
+            export_run_to_jsonl,
+            export_all_runs,
+            get_export_stats,
+        )
+    except Exception as e:
+        print(f"Error loading export module: {e}")
+        return 1
+
+    # Show stats first
+    stats = get_export_stats(days=args.days or 30)
+    print(f"Training Data Available (last {stats['period_days']} days):")
+    print(f"  Total runs:       {stats['total_runs']}")
+    print(f"  Succeeded:        {stats['succeeded']}")
+    print(f"  Failed:           {stats['failed']}")
+    print(f"  Exhausted:        {stats['exhausted']}")
+    print(f"  Total iterations: {stats['total_iterations']}")
+    print(f"  Proposals applied:{stats['total_proposals']}")
+    print(f"  Est. records:     {stats['estimated_training_records']}")
+    if stats['by_domain']:
+        print(f"  By domain:")
+        for domain, count in sorted(stats['by_domain'].items()):
+            print(f"    {domain}: {count}")
+    print()
+
+    if not stats['total_runs']:
+        print("No evolution runs to export. Run tasks first: hermes evolution run <task>")
+        return 0
+
+    # Export specific run or all
+    if args.run_id:
+        path = export_run_to_jsonl(args.run_id, output_dir=args.output)
+        print(f"Exported run → {path}")
+    elif args.all:
+        output = args.output or Path(
+            get_hermes_home() / "evolution" / "exports" / "training_data.jsonl"
+        )
+        records = export_all_runs(
+            days=args.days or 30,
+            status_filter=args.status.split(",") if args.status else None,
+            domain_filter=args.domain,
+            output_path=output,
+        )
+        print(f"Exported {len(records)} training records → {output}")
+        print(f"Format: Atropos-compatible ShareGPT (v{ATROPOS_FORMAT_VERSION})")
+    else:
+        print("Specify --run-id <id> for one run, or --all for all runs.")
+
+    return 0
+
+
 # ── Parser setup ────────────────────────────────────────────────────────
 
 
@@ -438,3 +498,13 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     p_bench.add_argument("task", nargs="?", help="Optional specific task to benchmark")
     p_bench.add_argument("--cwd", "-C", help="Working directory for evaluation")
     p_bench.set_defaults(func=_cmd_benchmark)
+
+    # export
+    p_export = evo_subs.add_parser("export", help="Export evolution runs as Atropos-compatible training data")
+    p_export.add_argument("--run-id", help="Export a specific run by ID")
+    p_export.add_argument("--all", action="store_true", help="Export all recent runs")
+    p_export.add_argument("--days", type=int, default=30, help="Time window in days (default: 30)")
+    p_export.add_argument("--status", help="Filter by status (comma-separated: succeeded,failed,exhausted)")
+    p_export.add_argument("--domain", help="Filter by task domain")
+    p_export.add_argument("--output", "-o", type=Path, help="Output file path (default: ~/.hermes/evolution/exports/)")
+    p_export.set_defaults(func=_cmd_export)

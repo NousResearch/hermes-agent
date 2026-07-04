@@ -31,7 +31,7 @@ import { slug } from '@/lib/sanitize'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, refreshProfiles } from '@/store/profile'
+import { $profileColors, $profiles as $cachedProfiles, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -62,8 +62,16 @@ interface ProfilesViewProps {
 export function ProfilesView({ onClose }: ProfilesViewProps) {
   const { t } = useI18n()
   const p = t.profiles
-  const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [selectedName, setSelectedName] = useState<null | string>(null)
+  const cachedProfiles = useStore($cachedProfiles)
+
+  const [profiles, setProfiles] = useState<null | ProfileInfo[]>(() =>
+    cachedProfiles.length > 0 ? cachedProfiles : null
+  )
+
+  const [selectedName, setSelectedName] = useState<null | string>(() =>
+    cachedProfiles.find(p => p.is_default)?.name ?? cachedProfiles[0]?.name ?? null
+  )
+
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
@@ -82,9 +90,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         return list.find(p => p.is_default)?.name ?? list[0]?.name ?? null
       })
     } catch (err) {
-      notifyError(err, p.failedLoad)
+      setProfiles(current => current ?? (cachedProfiles.length > 0 ? cachedProfiles : null))
+
+      if (cachedProfiles.length === 0) {
+        notifyError(err, p.failedLoad)
+      }
     }
-  }, [p])
+  }, [cachedProfiles, p])
 
   useRefreshHotkey(refresh)
 

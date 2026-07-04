@@ -4,7 +4,16 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import {
+  persistBoolean,
+  persistString,
+  persistStringArray,
+  persistStringRecord,
+  storedBoolean,
+  storedString,
+  storedStringArray,
+  storedStringRecord
+} from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -22,13 +31,6 @@ const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 const REPLY_READY_SESSION_IDS_KEY = 'hermes.desktop.replyReadySessionIds'
 const REPLY_READY_SESSION_PROFILES_KEY = 'hermes.desktop.replyReadySessionProfiles'
-
-try {
-  localStorage.removeItem(REPLY_READY_SESSION_IDS_KEY)
-  localStorage.removeItem(REPLY_READY_SESSION_PROFILES_KEY)
-} catch {
-  // Non-browser test/import contexts do not expose localStorage.
-}
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -237,8 +239,10 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
-export const $replyReadySessionIds = atom<string[]>([])
-export const $replyReadySessionProfiles = atom<Record<string, string>>({})
+export const $replyReadySessionIds = atom<string[]>(storedStringArray(REPLY_READY_SESSION_IDS_KEY))
+export const $replyReadySessionProfiles = atom<Record<string, string>>(
+  storedStringRecord(REPLY_READY_SESSION_PROFILES_KEY)
+)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -515,6 +519,9 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
 
     return present ? current.filter(x => x !== id) : current
   })
+
+$replyReadySessionIds.subscribe(value => persistStringArray(REPLY_READY_SESSION_IDS_KEY, [...value]))
+$replyReadySessionProfiles.subscribe(value => persistStringRecord(REPLY_READY_SESSION_PROFILES_KEY, value))
 
 export function setSessionReplyReady(
   sessionId: string | null | undefined,

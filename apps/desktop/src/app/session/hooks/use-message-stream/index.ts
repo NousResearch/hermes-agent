@@ -21,6 +21,8 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $sessions, setSessionReplyReady } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -463,6 +465,15 @@ export function useMessageStream({
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
       })
+
+      const replyReadyId = completedState.storedSessionId ?? sessionId
+      const replyReadyProfile =
+        $sessions
+          .get()
+          .find(session => session.id === replyReadyId || session._lineage_root_id === replyReadyId || session.id === sessionId)
+          ?.profile ?? $activeGatewayProfile.get()
+
+      setSessionReplyReady(replyReadyId, true, replyReadyProfile)
     },
     [hydrateFromStoredSession, refreshSessions, updateSessionState]
   )

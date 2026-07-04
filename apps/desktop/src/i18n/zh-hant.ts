@@ -1741,6 +1741,7 @@ export const zhHant = defineLocale({
       restart: '正在重新啟動 Hermes…',
       done: '更新完成',
       manual: '從終端機更新',
+      dirty: '請先提交或暫存變更',
       guiSkew: '請更新桌面應用程式',
       error: '更新已暫停'
     },
@@ -1764,6 +1765,8 @@ export const zhHant = defineLocale({
     manualTitle: '從終端機更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
     manualPickedUp: '下次啟動 Hermes 時會使用新版本。',
+    dirtyTitle: '請先提交或暫存變更',
+    dirtyBody: 'Hermes 已暫停更新，因為此原始碼檢出中有本機變更。請先提交或暫存它們，避免已可用的功能在重新建置時被隱藏或替換。',
     guiSkewTitle: '請更新桌面應用程式',
     guiSkewBody:
       '後端已更新，但此桌面應用程式套件未變更。請更新或重新安裝 Hermes 桌面應用程式（你的 AppImage / .deb / .rpm）以保持一致。',

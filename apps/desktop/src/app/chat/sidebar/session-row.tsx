@@ -13,7 +13,13 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds, sessionPinId } from '@/store/session'
+import {
+  $attentionSessionIds,
+  $replyReadySessionIds,
+  clearSessionNotifications,
+  sessionHasVisibleNotification,
+  sessionPinId
+} from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -77,7 +83,10 @@ export function SidebarSessionRow({
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const attentionIds = useStore($attentionSessionIds)
+  const replyReadyIds = useStore($replyReadySessionIds)
+  const needsInput = sessionHasVisibleNotification(session, attentionIds, [])
+  const replyReady = sessionHasVisibleNotification(session, [], replyReadyIds)
 
   const handleDragStart = (event: React.DragEvent<HTMLElement>) => {
     // Reorder drags belong to dnd-kit (the grab handle) — cancel the native
@@ -174,11 +183,13 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
+              clearSessionNotifications(session)
               void openSessionInNewWindow(session.id)
 
               return
             }
 
+            clearSessionNotifications(session)
             onResume()
           }}
           onDragStart={handleDragStart}
@@ -196,11 +207,17 @@ export function SidebarSessionRow({
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 isWorking={isWorking}
                 needsInput={needsInput}
+                replyReady={replyReady}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
+              <SessionRowLeadDot
+                branchStem={branchStem}
+                isWorking={isWorking}
+                needsInput={needsInput}
+                replyReady={replyReady}
+              />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -228,11 +245,13 @@ function SessionRowLeadDot({
   branchStem,
   isWorking,
   needsInput = false,
+  replyReady = false,
   className
 }: {
   branchStem?: string
   isWorking: boolean
   needsInput?: boolean
+  replyReady?: boolean
   className?: string
 }) {
   return (
@@ -242,7 +261,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} replyReady={replyReady} />
     </span>
   )
 }
@@ -250,10 +269,12 @@ function SessionRowLeadDot({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  replyReady = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  replyReady?: boolean
   className?: string
 }) {
   const { t } = useI18n()
@@ -271,6 +292,22 @@ function SidebarRowDot({
         role="status"
         title={r.waitingForAnswer}
       />
+    )
+  }
+
+  if (replyReady) {
+    return (
+      <span
+        aria-label={r.waitingForAnswer}
+        className={cn(
+          'font-mono text-[0.625rem] font-semibold leading-none text-(--ui-text-primary) tabular-nums',
+          className
+        )}
+        role="status"
+        title={r.waitingForAnswer}
+      >
+        1
+      </span>
     )
   }
 

@@ -62,16 +62,18 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'dirty' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+      : apply.stage === 'dirty'
+        ? 'dirty'
+        : apply.stage === 'guiSkew'
+          ? 'guiSkew'
+          : apply.applying || apply.stage === 'restart'
+            ? 'applying'
+            : apply.stage === 'error'
+              ? 'error'
+              : 'idle'
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -82,7 +84,11 @@ export function UpdatesOverlay() {
 
     if (
       !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+      (apply.stage === 'error' ||
+        apply.stage === 'restart' ||
+        apply.stage === 'manual' ||
+        apply.stage === 'dirty' ||
+        apply.stage === 'guiSkew')
     ) {
       resetUpdateApplyState()
     }
@@ -101,7 +107,13 @@ export function UpdatesOverlay() {
           <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
         )}
 
-        {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+        {phase === 'dirty' && (
+          <DirtyView message={apply.message} onDone={() => handleClose(false)} />
+        )}
+
+        {phase === 'guiSkew' && (
+          <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />
+        )}
 
         {phase === 'error' && (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
@@ -348,6 +360,28 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
         <DialogTitle className="text-center text-xl">{u.guiSkewTitle}</DialogTitle>
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || u.guiSkewBody}
+        </DialogDescription>
+      </div>
+
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+        {u.done}
+      </Button>
+    </div>
+  )
+}
+
+function DirtyView({ message, onDone }: { message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+
+        <DialogTitle className="text-center text-xl">{u.dirtyTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose whitespace-pre-line text-center text-sm leading-5 text-muted-foreground">
+          {message || u.dirtyBody}
         </DialogDescription>
       </div>
 

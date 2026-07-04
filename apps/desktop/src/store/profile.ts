@@ -5,9 +5,11 @@ import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
+  persistString,
   persistStringArray,
   persistStringRecord,
   storedBoolean,
+  storedString,
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
@@ -32,7 +34,60 @@ export const $activeProfile = atom<string>('default')
 
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
-export const $profiles = atom<ProfileInfo[]>([])
+const PROFILES_CACHE_STORAGE_KEY = 'hermes.desktop.profiles.cache.v1'
+
+function profileInfoFromCache(value: unknown): ProfileInfo | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const item = value as Partial<ProfileInfo>
+
+  if (typeof item.name !== 'string' || !item.name.trim() || typeof item.path !== 'string') {
+    return null
+  }
+
+  return {
+    has_env: Boolean(item.has_env),
+    is_default: Boolean(item.is_default),
+    model: typeof item.model === 'string' ? item.model : null,
+    name: item.name,
+    path: item.path,
+    provider: typeof item.provider === 'string' ? item.provider : null,
+    skill_count: typeof item.skill_count === 'number' && Number.isFinite(item.skill_count) ? item.skill_count : 0
+  }
+}
+
+function storedProfiles(): ProfileInfo[] {
+  try {
+    const raw = storedString(PROFILES_CACHE_STORAGE_KEY)
+
+    if (!raw) {
+      return []
+    }
+
+    const parsed = JSON.parse(raw)
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.map(profileInfoFromCache).filter((profile): profile is ProfileInfo => profile !== null)
+  } catch {
+    return []
+  }
+}
+
+function persistProfiles(profiles: ProfileInfo[]): void {
+  persistString(PROFILES_CACHE_STORAGE_KEY, profiles.length > 0 ? JSON.stringify(profiles) : null)
+}
+
+export const $profiles = atom<ProfileInfo[]>(storedProfiles())
+
+function setProfiles(profiles: ProfileInfo[]): void {
+  $profiles.set(profiles)
+  persistProfiles(profiles)
+}
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
@@ -40,7 +95,7 @@ export function setActiveProfile(name: string): void {
 
 export async function refreshProfiles(): Promise<ProfileInfo[]> {
   const { profiles } = await getProfiles()
-  $profiles.set(profiles)
+  setProfiles(profiles)
 
   return profiles
 }

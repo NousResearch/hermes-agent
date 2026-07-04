@@ -71,6 +71,8 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+const PROFILE_LIST_REQUEST_TIMEOUT_MS = STARTUP_REQUEST_TIMEOUT_MS
+const BOOT_AGGREGATE_REQUEST_TIMEOUT_MS = STARTUP_REQUEST_TIMEOUT_MS
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -750,7 +752,7 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
 export function getCronJobs(): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
     path: '/api/cron/jobs',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -815,7 +817,7 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: PROFILE_LIST_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -873,7 +875,7 @@ export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<Mod
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
     path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 

@@ -2019,6 +2019,7 @@ export const zh: Translations = {
       restart: '正在重启 Hermes…',
       done: '更新完成',
       manual: '从终端更新',
+      dirty: '请先提交或暂存更改',
       guiSkew: '请更新桌面应用',
       error: '更新已暂停'
     },
@@ -2042,6 +2043,8 @@ export const zh: Translations = {
     manualTitle: '从终端更新',
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
     manualPickedUp: '下次启动 Hermes 时会使用新版本。',
+    dirtyTitle: '请先提交或暂存更改',
+    dirtyBody: 'Hermes 已暂停更新，因为此源码检出中有本地更改。请先提交或暂存它们，避免已可用的功能在重新构建时被隐藏或替换。',
     guiSkewTitle: '请更新桌面应用',
     guiSkewBody:
       '后端已更新，但此桌面应用包未更改。请更新或重新安装 Hermes 桌面应用（你的 AppImage / .deb / .rpm）以保持一致。',

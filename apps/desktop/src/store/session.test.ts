@@ -4,16 +4,24 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
+  $attentionProfileCounts,
   $attentionSessionIds,
   $connection,
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
+  $sessions,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionReplyReady,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
+  setSessionReplyReady,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
@@ -38,6 +46,15 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
 })
 
 describe('setSessionAttention', () => {
+  afterEach(() => {
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+  })
+
   it('adds and removes a session id without duplicating it', () => {
     $attentionSessionIds.set([])
 
@@ -62,6 +79,117 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+
+  it('derives stable waiting counts by profile without exposing full session arrays to the rail', () => {
+    $sessions.set([
+      session({ id: 's1', profile: 'film-maker', title: 'Waiting one' }),
+      session({ id: 's2', profile: 'film-maker', title: 'Waiting two' }),
+      session({ id: 's3', profile: 'default', title: 'Idle default' })
+    ])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['s1'])
+    $replyReadySessionIds.set(['s2'])
+    $replyReadySessionProfiles.set({})
+
+    const first = $attentionProfileCounts.get()
+
+    expect(first).toEqual({ 'film-maker': 2 })
+
+    $sessions.set([
+      session({ id: 's1', profile: 'film-maker', title: 'Waiting one renamed' }),
+      session({ id: 's2', profile: 'film-maker', title: 'Waiting two renamed' }),
+      session({ id: 's3', profile: 'default', title: 'Idle default renamed' })
+    ])
+
+    expect($attentionProfileCounts.get()).toBe(first)
+  })
+
+  it('counts persisted reply-ready profile hints before that profile is loaded', () => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set(['fresh-session'])
+    $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('uses the stored profile as a fallback for loaded reply-ready rows', () => {
+    $sessions.set([session({ id: 'fresh-session', profile: undefined })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set(['fresh-session'])
+    $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+})
+
+describe('setSessionReplyReady', () => {
+  afterEach(() => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $workingSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
+      void id
+    }
+  })
+
+  it('tracks finished sessions waiting for the next user reply', () => {
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    setSessionReplyReady('s1', true, 'film-maker')
+    setSessionReplyReady('s1', true, 'film-maker')
+    expect($replyReadySessionIds.get()).toEqual(['s1'])
+    expect($replyReadySessionProfiles.get()).toEqual({ s1: 'film-maker' })
+
+    setSessionReplyReady('s2', true, 'default')
+    expect($replyReadySessionIds.get()).toEqual(['s1', 's2'])
+
+    setSessionReplyReady('s1', false)
+    expect($replyReadySessionIds.get()).toEqual(['s2'])
+    expect($replyReadySessionProfiles.get()).toEqual({ s2: 'default' })
+
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+  })
+
+  it('marks a finished background turn as waiting under its profile hint', () => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $workingSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    setSessionWorking('bg-session', true, 'film-maker')
+    setSessionWorking('bg-session', false)
+
+    expect($replyReadySessionIds.get()).toEqual(['bg-session'])
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('clears reply-ready markers by live id, stored id, or lineage root', () => {
+    $sessions.set([session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'film-maker' })
+
+    clearSessionReplyReady('tip-2')
+
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({})
   })
 })
 

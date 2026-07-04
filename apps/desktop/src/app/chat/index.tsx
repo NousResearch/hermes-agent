@@ -172,6 +172,7 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  runtimeKey: string
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
@@ -196,6 +197,7 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
+  runtimeKey,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
   const storeMessages = useStore($messages)
@@ -248,7 +250,7 @@ function ChatRuntimeBoundary({
     onEdit,
     onCancel: async () => onCancel(),
     onReload
-  })
+  }, { resetKey: runtimeKey })
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }
@@ -445,6 +447,7 @@ export function ChatView({
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
+        runtimeKey={threadKey}
         suppressMessages={routeSessionMismatch}
       >
         <div

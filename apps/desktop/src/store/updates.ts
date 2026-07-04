@@ -350,6 +350,18 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
       return result
     }
 
+    if (result?.dirty || result?.error === 'dirty-working-tree') {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'dirty',
+        message: result.message ?? translateNow('updates.dirtyBody'),
+        error: result.error ?? 'dirty-working-tree'
+      })
+
+      return result
+    }
+
     // A detached relauncher took over (macOS bundle swap / Linux re-exec): the
     // app is about to quit and reopen, so hold the "Restarting…" view until it
     // does. Every other resolved outcome MUST land on a terminal, closeable

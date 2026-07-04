@@ -1793,6 +1793,7 @@ export const ja = defineLocale({
       restart: 'Hermes を再起動中…',
       done: '更新が完了しました',
       manual: 'ターミナルから更新',
+      dirty: '変更をコミットまたは stash してください',
       guiSkew: 'デスクトップアプリを更新してください',
       error: '更新が一時停止中'
     },
@@ -1818,6 +1819,9 @@ export const ja = defineLocale({
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',
     manualPickedUp: 'Hermes は次回起動時に新しいバージョンを読み込みます。',
+    dirtyTitle: '先に変更をコミットまたは stash してください',
+    dirtyBody:
+      'このソースチェックアウトにローカル変更があるため、Hermes は更新を一時停止しました。動作している機能が再ビルドで隠れたり置き換えられたりしないよう、先にコミットまたは stash してください。',
     guiSkewTitle: 'デスクトップアプリを更新してください',
     guiSkewBody:
       'バックエンドは更新されましたが、このデスクトップアプリのパッケージは変更されていません。一致させるために Hermes デスクトップアプリ（AppImage / .deb / .rpm）を更新または再インストールしてください。',

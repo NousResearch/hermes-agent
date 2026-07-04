@@ -297,6 +297,7 @@ export interface DesktopUpdateApplyOptions {
 export interface DesktopUpdateApplyResult {
   ok: boolean
   branch?: string
+  dirty?: boolean
   error?: string
   message?: string
   /** True when no staged updater exists (CLI install) and the user should run
@@ -338,6 +339,10 @@ export type DesktopUpdateStage =
   | 'restart'
   | 'done'
   | 'manual'
+  /** Source checkout has local changes; update is paused until the user commits
+   *  or stashes them so the rebuild cannot hide working features. Terminal,
+   *  closeable. */
+  | 'dirty'
   /** Backend updated but the running GUI package (AppImage/.deb/.rpm) was NOT
    *  changed — the user must update/reinstall the desktop app. Terminal,
    *  closeable; never claims the GUI was updated. (#45205) */

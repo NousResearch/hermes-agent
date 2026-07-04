@@ -86,6 +86,7 @@ const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
+const { dirtyUpdateResult, isDirtyStatus } = require('./update-dirty.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -2038,6 +2039,16 @@ let updateInFlight = false
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
 
+async function dirtyUpdateGuard(updateRoot) {
+  if (!directoryExists(path.join(updateRoot, '.git'))) return null
+
+  const dirty = await runGit(['status', '--porcelain'], { cwd: updateRoot })
+  if (dirty.code !== 0) return null
+  if (!isDirtyStatus(dirty.stdout)) return null
+
+  return dirtyUpdateResult(updateRoot)
+}
+
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -2226,6 +2237,13 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
+    const updateRoot = resolveUpdateRoot()
+    const dirtyResult = await dirtyUpdateGuard(updateRoot)
+    if (dirtyResult) {
+      rememberLog(`[updates] blocked update from dirty checkout at ${updateRoot}`)
+      return dirtyResult
+    }
+
     const updater = resolveUpdaterBinary()
     if (!updater && !IS_WINDOWS) {
       // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
@@ -2246,7 +2264,6 @@ async function applyUpdates(opts = {}) {
       // silently switch a bb/gui (or any non-main) install off-branch. Mirror
       // the GUI button's contract: append --branch <current> for non-main
       // checkouts, keep it bare for main so the card stays clean.
-      const updateRoot = resolveUpdateRoot()
       let command = 'hermes update'
       try {
         const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
@@ -2271,7 +2288,6 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
@@ -2462,6 +2478,12 @@ function shellQuote(value) {
 // restart to load the new GUI" if the swap can't be performed.
 async function applyUpdatesPosixInApp() {
   const updateRoot = resolveUpdateRoot()
+  const dirtyResult = await dirtyUpdateGuard(updateRoot)
+  if (dirtyResult) {
+    rememberLog(`[updates] blocked POSIX in-app update from dirty checkout at ${updateRoot}`)
+    return dirtyResult
+  }
+
   const hermes = resolveHermesCliBinary(updateRoot)
   if (!hermes) {
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
@@ -3344,7 +3366,7 @@ function fetchJson(url, token, options = {}) {
 
     req.on('error', reject)
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      req.destroy(new Error(`Timed out connecting to Hermes backend at ${parsed.pathname} after ${timeoutMs}ms`))
     })
     if (body) req.write(body)
     req.end()

@@ -1844,6 +1844,7 @@ export const en: Translations = {
       restart: 'Restarting Hermes…',
       done: 'Update complete',
       manual: 'Update from your terminal',
+      dirty: 'Commit or stash changes',
       guiSkew: 'Update the desktop app',
       error: 'Update paused'
     },
@@ -1867,6 +1868,9 @@ export const en: Translations = {
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',
+    dirtyTitle: 'Commit or stash changes first',
+    dirtyBody:
+      'Hermes paused the update because this source checkout has local changes. Commit or stash them first so working features are not hidden or replaced by the rebuild.',
     guiSkewTitle: 'Update the desktop app',
     guiSkewBody:
       'The backend was updated, but this desktop app package wasn’t changed. Update or reinstall the Hermes desktop app (your AppImage / .deb / .rpm) to match.',

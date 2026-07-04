@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $messages,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
+  $sessions,
+  setSessions
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -145,6 +153,8 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
     vi.restoreAllMocks()
   })
 
@@ -228,6 +238,28 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+
+  it('clears reply-ready markers stored under the session lineage when the user replies', async () => {
+    setSessions(() => [sessionInfo({ id: RUNTIME_SESSION_ID, _lineage_root_id: 'root-1' })])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'default' })
+
+    const requestGateway = vi.fn(async () => ({} as never))
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('replying now')).toBe(true)
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
   })
 })
 

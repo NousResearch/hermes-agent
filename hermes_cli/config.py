@@ -1367,6 +1367,10 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.5
+                                      # autoraise banner. Set False to keep the
+                                      # 85% threshold autoraise but suppress the
+                                      # user-facing notice in CLI/gateway output.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

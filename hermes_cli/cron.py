@@ -116,7 +116,28 @@ def cron_list(show_all: bool = False):
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
-        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        # Coerce legacy / hand-edited nullable schedule fields safely.  The
+        # inline form `job.get("schedule", {}).get("value", "?")` crashed on
+        # legacy entries whose `schedule` was a bare string such as
+        # "55 23 * * *" with AttributeError: 'str' object has no attribute 'get'.
+        # Mirrors cron/jobs.py:_schedule_display_for_job.
+        _sched = job.get("schedule_display")
+        if _sched:
+            schedule = str(_sched).strip()
+        else:
+            _sched = job.get("schedule")
+            if isinstance(_sched, dict):
+                for _k in ("display", "value", "expr", "run_at"):
+                    _v = _sched.get(_k)
+                    if _v:
+                        schedule = str(_v).strip()
+                        break
+                else:
+                    schedule = "?"
+            elif _sched is not None:
+                schedule = str(_sched).strip()
+            else:
+                schedule = "?"
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 

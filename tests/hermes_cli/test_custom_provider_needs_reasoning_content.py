@@ -12,6 +12,7 @@ from hermes_cli.config import (
 
 
 def test_normalize_entry_reads_needs_reasoning_content():
+    """needs_reasoning_content: true survives config normalization."""
     normalized = _normalize_custom_provider_entry({
         "name": "local-llamacpp",
         "base_url": "http://localhost:8080/v1",
@@ -21,6 +22,7 @@ def test_normalize_entry_reads_needs_reasoning_content():
 
 
 def test_normalize_entry_omits_field_when_not_set_in_yaml():
+    """No key in YAML means no key in the normalized entry (not False)."""
     normalized = _normalize_custom_provider_entry({
         "name": "local-llamacpp",
         "base_url": "http://localhost:8080/v1",
@@ -40,6 +42,7 @@ def test_normalize_entry_ignores_non_boolean_values():
 
 
 def test_lookup_matches_provider_by_base_url():
+    """The runtime lookup helper finds the flag by matching base_url."""
     providers = [{
         "name": "local-llamacpp",
         "base_url": "http://localhost:8080/v1",
@@ -51,6 +54,7 @@ def test_lookup_matches_provider_by_base_url():
 
 
 def test_lookup_returns_false_for_a_different_provider():
+    """A base_url with no matching entry defaults to False, not an error."""
     providers = [{
         "name": "local-llamacpp",
         "base_url": "http://localhost:8080/v1",

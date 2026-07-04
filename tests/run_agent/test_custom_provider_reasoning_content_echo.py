@@ -41,6 +41,7 @@ def _tool_call_turn() -> dict:
 
 
 def test_reasoning_content_preserved_when_provider_opts_in(monkeypatch) -> None:
+    """needs_reasoning_content: true keeps reasoning_content on replay."""
     _stub_custom_providers(monkeypatch, [
         {
             "name": "local-llamacpp",
@@ -55,6 +56,7 @@ def test_reasoning_content_preserved_when_provider_opts_in(monkeypatch) -> None:
 
 
 def test_reasoning_content_stripped_when_provider_does_not_opt_in(monkeypatch) -> None:
+    """No flag set — reasoning_content is dropped, like any other custom provider."""
     _stub_custom_providers(monkeypatch, [
         {"name": "local-llamacpp", "base_url": "http://localhost:8080/v1"},
     ])
@@ -65,6 +67,7 @@ def test_reasoning_content_stripped_when_provider_does_not_opt_in(monkeypatch) -
 
 
 def test_reasoning_content_stripped_for_unmatched_base_url(monkeypatch) -> None:
+    """The flag on a different provider entry must not leak onto this one."""
     _stub_custom_providers(monkeypatch, [
         {
             "name": "other",

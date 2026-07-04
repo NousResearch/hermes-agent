@@ -6,9 +6,28 @@ import pytest
 
 from hermes_cli.prompt_size import (
     _SKILLS_BLOCK_RE,
+    build_full_prompt_text,
+    cmd_prompt_dump,
+    cmd_prompt_size,
     compute_prompt_breakdown,
     render_breakdown,
 )
+
+
+class _Args:
+    """Minimal argparse-like namespace for driving cmd_prompt_size."""
+
+    def __init__(self, platform="cli", json=False):
+        self.platform = platform
+        self.json = json
+
+
+class _DumpArgs:
+    """Minimal argparse-like namespace for driving cmd_prompt_dump."""
+
+    def __init__(self, platform="cli", json=False):
+        self.platform = platform
+        self.json = json
 
 
 def _seed_memory(hermes_home, memory_text="", user_text=""):
@@ -116,3 +135,38 @@ def test_json_serializable(isolated_home):
     data = compute_prompt_breakdown("cli")
     # Round-trips cleanly for ``--json`` output.
     assert json.loads(json.dumps(data)) == json.loads(json.dumps(data))
+
+
+def test_build_full_prompt_text_non_empty_with_marker(isolated_home):
+    """prompt-dump builds the full assembled prompt with a stable-tier marker."""
+    prompt = build_full_prompt_text("cli")
+    assert prompt.strip()
+    # Stable identity tier always opens with the Hermes Agent identity line.
+    assert "You are Hermes Agent" in prompt
+
+
+def test_cmd_dump_prints_full_prompt(isolated_home, capsys):
+    """`prompt-dump` prints the raw prompt (no size table/banner)."""
+    cmd_prompt_dump(_DumpArgs())
+    out = capsys.readouterr().out
+    assert "You are Hermes Agent" in out
+    # Size-report labels must NOT appear in dump mode.
+    assert "System prompt total" not in out
+    assert "Tool schemas" not in out
+
+
+def test_cmd_dump_json_emits_prompt_key(isolated_home, capsys):
+    """`prompt-dump --json` wraps the prompt in a {"prompt": ...} object."""
+    cmd_prompt_dump(_DumpArgs(json=True))
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert "prompt" in payload
+    assert "You are Hermes Agent" in payload["prompt"]
+
+
+def test_cmd_prompt_size_unchanged_prints_size_report(isolated_home, capsys):
+    """prompt-size still prints the size breakdown, never the raw prompt."""
+    cmd_prompt_size(_Args())
+    out = capsys.readouterr().out
+    assert "System prompt total" in out
+    assert "You are Hermes Agent" not in out

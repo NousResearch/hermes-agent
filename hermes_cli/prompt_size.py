@@ -109,6 +109,41 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     }
 
 
+def build_full_prompt_text(platform: str = "cli") -> str:
+    """Return the full assembled system prompt string for a fresh session.
+
+    Builds the exact same prompt the size report measures (same platform /
+    model / HERMES_HOME basis, joined tiers) but returns the text instead of
+    a byte breakdown. Used by ``hermes prompt-dump`` (pi ``--dump-prompt``
+    parity). Runs offline — no network call.
+    """
+    from agent.system_prompt import build_system_prompt
+
+    agent = _build_inspection_agent(platform)
+    return build_system_prompt(agent)
+
+
+def cmd_prompt_dump(args: Any) -> None:
+    """Entry point for ``hermes prompt-dump``.
+
+    Dumps the full assembled system prompt to stdout (pi ``--dump-prompt``
+    parity). With ``--json`` emits ``{"prompt": "..."}`` so the output stays
+    machine-readable; otherwise prints the raw prompt (no banner/table) so it
+    can be piped or redirected. Runs offline — no network call.
+    """
+    platform = getattr(args, "platform", "cli") or "cli"
+    as_json = getattr(args, "json", False)
+    try:
+        prompt = build_full_prompt_text(platform)
+    except Exception as e:
+        print(f"Could not build system prompt: {e}")
+        return
+    if as_json:
+        print(json.dumps({"prompt": prompt}, ensure_ascii=False, indent=2))
+    else:
+        print(prompt)
+
+
 def _fmt_kb(n: int) -> str:
     return f"{n / 1024:.1f} KB"
 

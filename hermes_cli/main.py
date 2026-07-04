@@ -12130,6 +12130,13 @@ def cmd_prompt_size(args):
     _impl(args)
 
 
+def cmd_prompt_dump(args):
+    """Print the full assembled system prompt (pi --dump-prompt parity)."""
+    from hermes_cli.prompt_size import cmd_prompt_dump as _impl
+
+    _impl(args)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -13790,6 +13797,31 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # prompt-dump command
+    # =========================================================================
+    prompt_dump_parser = subparsers.add_parser(
+        "prompt-dump",
+        help="Print the full assembled system prompt text (offline)",
+        description=(
+            "Dump the full assembled system prompt for a fresh session to "
+            "stdout \u2014 identity, guidance, skills index, memory, profile, and "
+            "context tiers, joined as sent to the model. Runs offline (no API "
+            "call). pi --dump-prompt parity."
+        ),
+    )
+    prompt_dump_parser.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
+    )
+    prompt_dump_parser.add_argument(
+        "--json",
+        action="store_true",
+        help='Emit as JSON: {"prompt": "..."}',
+    )
+    prompt_dump_parser.set_defaults(func=cmd_prompt_dump)
 
     # =========================================================================
     # Parse and execute

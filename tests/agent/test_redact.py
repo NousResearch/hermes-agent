@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +66,22 @@ class TestKnownPrefixes:
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
+
+
+class TestMaskSecretDisplay:
+    def test_mask_secret_printable_value_unchanged(self):
+        assert mask_secret("abcd0123456789zzzz") == "abcd...zzzz"
+
+    def test_mask_secret_strips_control_chars_before_masking_prefix(self):
+        result = mask_secret("ab\ncd0123456789zzzz")
+        assert result == "abcd...zzzz"
+        assert "\n" not in result
+
+    def test_mask_secret_strips_c1_and_del_controls_before_masking_suffix(self):
+        result = mask_secret("abcd0123456789zz\x85q\x7f")
+        assert result == "abcd...9zzq"
+        assert "\x85" not in result
+        assert "\x7f" not in result
 
 
 class TestEnvAssignments:

@@ -338,9 +338,17 @@ def mask_secret(
     """
     if not value:
         return empty
+    value = "".join(ch for ch in value if not _is_display_control_char(ch))
+    if not value:
+        return empty
     if len(value) < floor:
         return placeholder
     return f"{value[:head]}...{value[-tail:]}"
+
+
+def _is_display_control_char(ch: str) -> bool:
+    codepoint = ord(ch)
+    return codepoint < 32 or codepoint == 127 or 128 <= codepoint <= 159
 
 
 def _mask_token(token: str) -> str:

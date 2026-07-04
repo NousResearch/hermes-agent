@@ -1044,3 +1044,89 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+def _img_part(b64="iVBORw0KGgo="):
+    return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+
+
+def _screenshot_tool_msg(call_id, b64="iVBORw0KGgo="):
+    """A computer_use tool-result message in OpenAI format with an image part."""
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "name": "computer_use",
+        "content": [
+            {"type": "text", "text": "screen capture summary"},
+            _img_part(b64),
+        ],
+    }
+
+
+class TestChatCompletionsScreenshotEviction:
+    """Always-on screenshot eviction on the OpenAI/chat_completions path.
+
+    Mirrors the Anthropic adapter's _evict_old_screenshots so a screenshot-heavy
+    computer_use session on an OpenAI-format provider (e.g. gpt-5.5 via Codex)
+    can't balloon context with stale base64 images.
+    """
+
+    def _build_session(self, n_screenshots):
+        msgs = [{"role": "user", "content": "start"}]
+        for i in range(n_screenshots):
+            msgs.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": f"c{i}", "type": "function",
+                                "function": {"name": "computer_use", "arguments": "{}"}}],
+            })
+            msgs.append(_screenshot_tool_msg(f"c{i}"))
+        msgs.append({"role": "assistant", "content": "done"})
+        return msgs
+
+    def _count_images(self, msgs):
+        n = 0
+        for m in msgs:
+            c = m.get("content")
+            if isinstance(c, list):
+                n += sum(1 for p in c if isinstance(p, dict) and p.get("type") == "image_url")
+        return n
+
+    def test_keeps_only_most_recent_three(self, transport):
+        msgs = self._build_session(5)
+        out = transport.convert_messages(msgs)
+        # 5 screenshots in -> only the most recent 3 keep their image
+        assert self._count_images(out) == 3
+
+    def test_old_screenshots_replaced_with_placeholder(self, transport):
+        msgs = self._build_session(5)
+        out = transport.convert_messages(msgs)
+        placeholder_msgs = [
+            m for m in out
+            if isinstance(m.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "text"
+                    and "screenshot removed" in p.get("text", "")
+                    for p in m["content"])
+        ]
+        assert len(placeholder_msgs) == 2  # the 2 oldest
+
+    def test_under_limit_is_untouched_and_not_copied(self, transport):
+        msgs = self._build_session(3)  # exactly the keep limit
+        out = transport.convert_messages(msgs)
+        assert out is msgs  # no copy, no eviction
+        assert self._count_images(out) == 3
+
+    def test_does_not_mutate_original(self, transport):
+        msgs = self._build_session(5)
+        before = self._count_images(msgs)
+        transport.convert_messages(msgs)
+        # Canonical history must be untouched — only the outbound copy is pruned.
+        assert self._count_images(msgs) == before == 5
+
+    def test_eviction_runs_even_when_sanitizing(self, transport):
+        # Mix in a codex field so the sanitize path (deepcopy branch) is taken,
+        # and confirm eviction still happens on that branch.
+        msgs = self._build_session(5)
+        msgs[1]["codex_reasoning_items"] = [{"id": "rs_1"}]
+        out = transport.convert_messages(msgs)
+        assert "codex_reasoning_items" not in out[1]
+        assert self._count_images(out) == 3

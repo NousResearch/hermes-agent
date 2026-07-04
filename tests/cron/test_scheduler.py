@@ -2637,6 +2637,15 @@ class TestBuildJobPromptSilentHint:
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
 
+    def test_deliverable_only_guidance_present(self):
+        """Cron hint keeps verification/process chatter out of delivered output."""
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "DELIVERABLE ONLY" in result
+        assert "only the user-facing deliverable" in result
+        assert "verification summaries" in result
+        assert "tool execution explanations" in result
+
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""
         job = {"prompt": "My custom prompt"}

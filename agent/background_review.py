@@ -645,6 +645,27 @@ def _run_review_in_thread(
             # Match parent's toolset config so ``tools[]`` is byte-identical
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
+            #
+            # Override seam: deployments under a provider tool-count cap can
+            # pin the review fork's toolsets via config instead of inheriting
+            # the parent's full set. Inheriting can exceed e.g. xAI's hard
+            # 200-tool limit (the request 400s with "N tools provided, maximum
+            # is 200") once enough MCP servers are enabled, and since the
+            # whitelist below restricts dispatch to memory/skills anyway, a
+            # narrower request set is lossless. Default (key absent): inherit
+            # the parent — byte-identical behavior, no change for Anthropic.
+            _review_cfg: dict = {}
+            try:
+                from hermes_cli.config import load_config
+                _review_cfg = (load_config() or {}).get("background_review") or {}
+            except Exception:
+                _review_cfg = {}
+            _review_enabled_toolsets = _review_cfg.get("enabled_toolsets")
+            if _review_enabled_toolsets is None:
+                _review_enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+            _review_disabled_toolsets = _review_cfg.get("disabled_toolsets")
+            if _review_disabled_toolsets is None:
+                _review_disabled_toolsets = getattr(agent, "disabled_toolsets", None)
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,
@@ -656,8 +677,8 @@ def _run_review_in_thread(
                 api_key=_rt.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                enabled_toolsets=_review_enabled_toolsets,
+                disabled_toolsets=_review_disabled_toolsets,
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"

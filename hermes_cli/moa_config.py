@@ -210,6 +210,39 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def resolve_active_moa_preset(config: Any = None) -> dict[str, Any] | None:
+    """Return the active MoA preset for normal turns, or None when MoA is off.
+
+    Normal turns should only run MoA reference fanout when the active runtime is
+    actually configured to use the MoA virtual provider. This preserves one-shot
+    `/moa` behavior while also allowing persistent MoA sessions selected via the
+    model/provider config.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+    if not isinstance(config, dict):
+        return None
+    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    base_url = str(model_cfg.get("base_url") or "").strip().lower()
+    if provider != "moa" and not base_url.startswith("moa://"):
+        return None
+    moa_raw = config.get("moa") or {}
+    moa_cfg = normalize_moa_config(moa_raw)
+    active_name = str(moa_cfg.get("active_preset") or moa_cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
+    presets = moa_cfg.get("presets") if isinstance(moa_cfg.get("presets"), dict) else {}
+    preset = presets.get(active_name)
+    if not isinstance(preset, dict):
+        return None
+    if not preset.get("enabled", True):
+        return None
+    return deepcopy(preset)
+
+
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 

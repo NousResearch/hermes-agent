@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
+import functools
 
 
 class Mem0Backend(ABC):
@@ -103,7 +104,20 @@ class OSSBackend(Mem0Backend):
         if "path" in vs_config:
             vs_config["path"] = os.path.expanduser(vs_config["path"])
 
-        embedder_config = oss_config.get("embedder", {}).get("config", {})
+        embedder_block = oss_config.get("embedder", {})
+        embedder_config = embedder_block.get("config", embedder_block) if isinstance(embedder_block, dict) else {}
+        llm_block = oss_config.get("llm", {})
+
+        # When using OpenRouter as the OpenAI-compatible endpoint, inject the
+        # required HTTP-Referer and X-Title headers into the OpenAI client.
+        _or_urls = [
+            embedder_config.get("openai_base_url", ""),
+            llm_block.get("config", llm_block).get("openai_base_url", "")
+            if isinstance(llm_block, dict) else "",
+        ]
+        if any("openrouter" in u.lower() for u in _or_urls if u):
+            _patch_openrouter_headers()
+
         dims = embedder_config.get("embedding_dims")
         if not dims:
             from ._oss_providers import KNOWN_DIMS
@@ -117,10 +131,25 @@ class OSSBackend(Mem0Backend):
 
         vector_store["config"] = vs_config
 
+        # Wrap flat config dicts under the "config" key so Memory.from_config
+        # correctly passes model/api_key/openai_base_url to mem0's LLM and
+        # embedder factories.  Passing a flat dict directly causes
+        # LlmConfig(**flat_dict) / EmbedderConfig(**flat_dict) to silently
+        # drop keys that aren't pydantic fields ("model", "openai_base_url",
+        # "api_key"), leaving config={} and forcing the embedder/LLM to
+        # fall back to environment defaults (e.g. OPENAI_BASE_URL).
+        llm_block = oss_config.get("llm", {})
+        embedder_block = oss_config.get("embedder", {})
         config = {
             "vector_store": vector_store,
-            "llm": oss_config["llm"],
-            "embedder": oss_config["embedder"],
+            "llm": {
+                "provider": llm_block.get("provider", "openai"),
+                "config": llm_block.get("config", llm_block),
+            },
+            "embedder": {
+                "provider": embedder_block.get("provider", "openai"),
+                "config": embedder_block.get("config", embedder_block),
+            },
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)
@@ -241,3 +270,40 @@ class OSSBackend(Mem0Backend):
                 client.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter header injection
+# ---------------------------------------------------------------------------
+
+def _patch_openrouter_headers() -> None:
+    """Monkey-patch openai.OpenAI.__init__ to inject OpenRouter headers.
+
+    OpenRouter requires ``HTTP-Referer`` and ``X-Title`` headers on every
+    request, but mem0's OpenAIEmbedding and OpenAILLM create their OpenAI
+    clients without passing ``default_headers``.  This detects when the
+    base URL contains "openrouter" and injects the headers transparently.
+
+    Idempotent — safe to call multiple times.
+    """
+    try:
+        from openai import OpenAI as _Client
+    except ImportError:
+        return
+    if getattr(_patch_openrouter_headers, "__patched", False):
+        return
+    _orig = _Client.__init__
+
+    @functools.wraps(_orig)
+    def _patched(self, *args, **kwargs):
+        if "default_headers" not in kwargs or not kwargs["default_headers"]:
+            base_url = kwargs.get("base_url", "")
+            if isinstance(base_url, str) and "openrouter" in base_url.lower():
+                kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                    "X-Title": "Hermes Agent",
+                }
+        return _orig(self, *args, **kwargs)
+
+    _Client.__init__ = _patched
+    _patch_openrouter_headers.__patched = True

@@ -4519,12 +4519,13 @@ def interactive_setup() -> None:
 
         print_info("🔒 Security: Restrict who can use your bot")
         print_info("   Matrix user IDs look like @username:server")
-        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)")
         if allowed_users:
             save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
             print_success("Matrix allowlist configured")
         else:
-            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+            print_warning("⚠️  No Matrix allowlist set - unpaired users will be denied by default.")
+            print_info("   Set MATRIX_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open access.")
 
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
         print_info("   Room IDs look like !abc123:server (shown in Element room settings)")

@@ -7574,6 +7574,7 @@ def interactive_setup() -> None:
         print_header,
         print_info,
         print_success,
+        print_warning,
     )
 
     print_header("Discord")
@@ -7582,7 +7583,7 @@ def interactive_setup() -> None:
         print_info("Discord: already configured")
         if not prompt_yes_no("Reconfigure Discord?", False):
             if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+                print_warning("⚠️  Discord has no user allowlist - unpaired users are denied by default.")
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
@@ -7608,14 +7609,15 @@ def interactive_setup() -> None:
     print_info("   You can also use Discord usernames (resolved on gateway start).")
     print()
     allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+        "Allowed user IDs or usernames (comma-separated, leave empty to deny everyone except paired users)"
     )
     if allowed_users:
         cleaned_ids = _clean_discord_user_ids(allowed_users)
         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
         print_success("Discord allowlist configured")
     else:
-        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+        print_warning("⚠️  No Discord allowlist set - unpaired users will be denied by default.")
+        print_info("   Set DISCORD_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open access.")
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")

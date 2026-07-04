@@ -103,6 +103,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from agent.process_bootstrap import build_keepalive_http_client
+from agent.secret_scope import get_secret, UnscopedSecretError
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -3977,8 +3978,21 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
         return explicit
     key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
-        return os.getenv(key_env, "").strip() or None
+        return _resolve_custom_provider_key(key_env) or None
     return None
+
+
+def _resolve_custom_provider_key(key_env: str) -> str:
+    """Resolve a custom provider API key via secret scope, falling back to os.environ.
+
+    In multiplex mode without an active profile scope, get_secret() raises
+    UnscopedSecretError. At startup/prewarm, no scope exists yet, so we fall
+    back to os.environ (which systemd injected from EnvironmentFile).
+    """
+    try:
+        return (get_secret(key_env, "") or "").strip()
+    except UnscopedSecretError:
+        return os.getenv(key_env, "").strip()
 
 
 def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
@@ -4711,7 +4725,7 @@ def resolve_provider_client(
             custom_key = custom_entry.get("api_key", "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
-                custom_key = os.getenv(custom_key_env, "").strip()
+                custom_key = _resolve_custom_provider_key(custom_key_env)
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

@@ -170,6 +170,116 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
         assert "Unknown command" not in result
 
 
+@pytest.mark.asyncio
+async def test_plugin_command_without_hook_not_flagged_as_unknown(monkeypatch):
+    """Plugin commands must use the same known-command predicate as hooks.
+
+    The unknown-command guard used to consult only the static
+    GATEWAY_KNOWN_COMMANDS set, so plugin slash commands could be recognized
+    for hooks and then rejected later in the skill fallback block.
+    """
+    import gateway.run as gateway_run
+    from hermes_cli import plugins as plugins_mod
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command leaked to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "get_plugin_commands",
+        lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/metricas dias:7"))
+
+    assert result == "metrics dias:7"
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_skill_command_wrapper_dispatches_named_skill(monkeypatch):
+    """Discord's native /skill wrapper can reach the text dispatcher on some
+    clients; when it does, route /skill <name> through the skill loader instead
+    of returning the unknown-command notice."""
+    import agent.skill_commands as skill_commands_mod
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(return_value={"final_response": "agent ok"})
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "get_skill_commands",
+        lambda: {
+            "/alpha": {
+                "name": "alpha",
+                "description": "First skill",
+                "skill_dir": "/tmp/alpha",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "build_skill_invocation_message",
+        lambda cmd_key, user_instruction="", task_id=None, runtime_note="": (
+            f"loaded {cmd_key}: {user_instruction}"
+        ),
+    )
+
+    result = await runner._handle_message(_make_event("/skill alpha extra args"))
+
+    assert result == "agent ok"
+    runner._run_agent.assert_awaited_once()
+    assert runner._run_agent.await_args.kwargs["message"] == "loaded /alpha: extra args"
+
+
+@pytest.mark.asyncio
+async def test_skill_list_alias_returns_available_skills(monkeypatch):
+    """Discord reports mention /skill_list; keep that alias out of the
+    unknown-command path and return a compact catalog hint."""
+    import agent.skill_commands as skill_commands_mod
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("skill_list leaked to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "get_skill_commands",
+        lambda: {
+            "/alpha": {"name": "alpha", "description": "First skill"},
+            "/beta": {"name": "beta", "description": "Second skill"},
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/skill_list"))
+
+    assert result is not None
+    assert "Available skills:" in result
+    assert "alpha" in result
+    assert "beta" in result
+    assert "Unknown command" not in result
+    runner._run_agent.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------

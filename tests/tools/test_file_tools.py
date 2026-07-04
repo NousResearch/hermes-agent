@@ -8,8 +8,10 @@ import json
 import logging
 from unittest.mock import MagicMock, patch
 
+from tools.file_operations import ReadResult
 from tools.file_tools import (
     PATCH_SCHEMA,
+    READ_FILE_SCHEMA,
 )
 
 
@@ -56,6 +58,21 @@ class TestReadFileHandler:
         mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 1)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_raw_mode_reads_plain_content_without_line_numbers(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.read_file_raw.return_value = ReadResult(content="alpha\nbeta\n", file_size=11)
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+
+        result = json.loads(read_file_tool("/tmp/test.txt", raw=True))
+        assert result["content"] == "alpha\nbeta\n"
+        assert result["total_lines"] == 2
+        assert result["raw"] is True
+        mock_ops.read_file_raw.assert_called_once_with("/tmp/test.txt")
+        mock_ops.read_file.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -63,6 +80,10 @@ class TestReadFileHandler:
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert "error" in result
         assert "terminal not available" in result["error"]
+
+    def test_schema_exposes_raw_flag(self):
+        assert "raw" in READ_FILE_SCHEMA["parameters"]["properties"]
+        assert READ_FILE_SCHEMA["parameters"]["properties"]["raw"]["default"] is False
 
 
 class TestWriteFileHandler:

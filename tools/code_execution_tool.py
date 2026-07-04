@@ -235,9 +235,9 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 500",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        "path: str, offset: int = 1, limit: int = 500, raw: bool = False",
+        '"""Read a file. Default mode returns 1-indexed line-numbered content; raw=True returns plain text for round-trip writes."""',
+        '{"path": path, "offset": offset, "limit": limit, "raw": raw}',
     ),
     "write_file": (
         "write_file",

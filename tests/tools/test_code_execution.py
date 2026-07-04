@@ -92,6 +92,14 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def web_search(", src)
         self.assertNotIn("def read_file(", src)
 
+    def test_read_file_stub_supports_raw_mode(self):
+        src = generate_hermes_tools_module(["read_file"])
+        self.assertIn(
+            "def read_file(path: str, offset: int = 1, limit: int = 500, raw: bool = False):",
+            src,
+        )
+        self.assertIn('"raw": raw', src)
+
     def test_empty_list_generates_nothing(self):
         src = generate_hermes_tools_module([])
         self.assertNotIn("def terminal(", src)
@@ -282,6 +290,41 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
+
+    def test_raw_read_content_round_trips_into_write_file(self):
+        """Regression for #46465: execute_code must be able to request plain
+        text from read_file and pass that exact content into write_file."""
+        code = """
+from hermes_tools import read_file, write_file
+
+payload = read_file("notes.txt", raw=True)
+write_file("copy.txt", payload["content"])
+print("done")
+"""
+        seen = {}
+
+        def dispatcher(function_name, function_args, task_id=None, user_task=None):
+            if function_name == "read_file":
+                seen["read_args"] = function_args
+                return json.dumps({"content": "alpha\nbeta\n", "total_lines": 2})
+            if function_name == "write_file":
+                seen["write_args"] = function_args
+                return json.dumps({"status": "ok", "path": function_args.get("path", "")})
+            return _mock_handle_function_call(
+                function_name, function_args, task_id=task_id, user_task=user_task
+            )
+
+        with patch("model_tools.handle_function_call", side_effect=dispatcher):
+            result = execute_code(
+                code=code,
+                task_id="test-raw-read-write",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+
+        payload = json.loads(result)
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(seen["read_args"]["raw"], True)
+        self.assertEqual(seen["write_args"]["content"], "alpha\nbeta\n")
 
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""

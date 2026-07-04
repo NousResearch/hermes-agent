@@ -1126,10 +1126,17 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers."""
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    raw: bool = False,
+    task_id: str = "default",
+) -> str:
+    """Read a file with pagination and line numbers by default."""
     try:
-        offset, limit = normalize_read_pagination(offset, limit)
+        if not raw:
+            offset, limit = normalize_read_pagination(offset, limit)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
@@ -1218,7 +1225,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, "raw") if raw else (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -1275,8 +1282,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        if raw:
+            result = file_ops.read_file_raw(path)
+            if result.content and not result.total_lines:
+                result.total_lines = len(result.content.splitlines())
+        else:
+            result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+        if raw:
+            result_dict["raw"] = True
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1309,7 +1323,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
-        if (file_size and file_size > _LARGE_FILE_HINT_BYTES
+        if (not raw
+                and file_size and file_size > _LARGE_FILE_HINT_BYTES
                 and limit > 200
                 and result_dict.get("truncated")):
             result_dict.setdefault("_hint", (
@@ -1319,7 +1334,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             ))
 
         # ── Track for consecutive-loop detection ──────────────────────
-        read_key = ("read", path, offset, limit)
+        read_key = ("read_raw", path) if raw else ("read", path, offset, limit)
         with _read_tracker_lock:
             # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
             # old tracker state from pre-dedup-guard sessions).
@@ -1935,13 +1950,14 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Set raw=true only when you need plain text without line prefixes for round-trip writes or exact content copying. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "raw": {"type": "boolean", "description": "Return plain file text without line numbers or pagination. Intended for exact content round-trips such as feeding the result into write_file.", "default": False},
         },
         "required": ["path"]
     }
@@ -2038,7 +2054,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        raw=bool(args.get("raw", False)),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

@@ -3029,6 +3029,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_error: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
+        effective_session_id = session_id
 
         def _persist_response_snapshot(
             response_env: Dict[str, Any],
@@ -3044,7 +3045,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -3329,6 +3330,8 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                if isinstance(result, dict) and result.get("session_id"):
+                    effective_session_id = result["session_id"]
                 # If the agent produced a final_response but no text
                 # deltas were streamed (e.g. some providers only emit
                 # the full response at the end), emit a single fallback
@@ -3752,6 +3755,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
+        effective_session_id = result.get("session_id") or session_id
 
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
@@ -3792,14 +3796,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -4162,6 +4166,9 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_messages = result.get("messages") if isinstance(result, dict) else None
 
         if isinstance(agent_messages, list) and agent_messages:
+            if APIServerAdapter._response_messages_have_compressed_summary(agent_messages):
+                return list(agent_messages)
+
             turn_start = APIServerAdapter._response_messages_turn_start_index(
                 conversation_history,
                 user_message,
@@ -4181,6 +4188,19 @@ class APIServerAdapter(BasePlatformAdapter):
         return full_history
 
     @staticmethod
+    def _response_messages_have_compressed_summary(messages: List[Dict[str, Any]]) -> bool:
+        """Return True when result["messages"] is an authoritative compacted transcript."""
+        try:
+            from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+        except Exception:
+            COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+
+        for msg in messages:
+            if isinstance(msg, dict) and bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)):
+                return True
+        return False
+
+    @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
@@ -4198,6 +4218,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return len(expected_prefix)
         if prior and agent_messages[:len(prior)] == prior:
             return len(prior)
+        if APIServerAdapter._response_messages_have_compressed_summary(agent_messages):
+            for idx in range(len(agent_messages) - 1, -1, -1):
+                if agent_messages[idx] == current_user:
+                    return idx + 1
         return 0
 
     @classmethod

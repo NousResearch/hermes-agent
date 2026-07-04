@@ -2007,6 +2007,161 @@ class TestResponsesEndpoint:
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_stores_compressed_transcript_without_old_history(self, adapter):
+        """Compression replaces the stored Responses history instead of appending it."""
+        prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"old.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_old",
+                "content": '{"content":"old"}',
+            },
+            {"role": "assistant", "content": "old"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+        compressed_history = [
+            {
+                "role": "user",
+                "content": "[compressed summary of earlier file-reading work]",
+                "_compressed_summary": True,
+            },
+            {"role": "user", "content": "Read new file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_new",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"new.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_new",
+                "content": '{"content":"new"}',
+            },
+            {"role": "assistant", "content": "new"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "new",
+                        "messages": list(compressed_history),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Read new file",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        stored_history = adapter._response_store.get(data["id"])["conversation_history"]
+        assert stored_history == compressed_history
+        assert prior_history[0] not in stored_history
+
+        output_json = json.dumps(data["output"])
+        assert "call_new" in output_json
+        assert "new.txt" in output_json
+        assert "call_old" not in output_json
+        assert "old.txt" not in output_json
+
+    @pytest.mark.asyncio
+    async def test_compressed_response_chains_from_rotated_session(self, adapter):
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": [{"role": "assistant", "content": "old"}],
+                "session_id": "session-before-compression",
+            },
+        )
+        compressed_history = [
+            {
+                "role": "user",
+                "content": "[compressed summary]",
+                "_compressed_summary": True,
+            },
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "done"},
+        ]
+        usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as run:
+                run.return_value = (
+                    {
+                        "final_response": "done",
+                        "messages": compressed_history,
+                        "session_id": "session-after-compression",
+                    },
+                    usage,
+                )
+                first = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "continue",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                first_data = await first.json()
+
+            assert first.headers["X-Hermes-Session-Id"] == "session-after-compression"
+            stored = adapter._response_store.get(first_data["id"])
+            assert stored["session_id"] == "session-after-compression"
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as chained:
+                chained.return_value = (
+                    {
+                        "final_response": "again",
+                        "messages": [{"role": "assistant", "content": "again"}],
+                    },
+                    usage,
+                )
+                second = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "again",
+                        "previous_response_id": first_data["id"],
+                    },
+                )
+
+            assert second.status == 200
+            assert chained.call_args.kwargs["session_id"] == "session-after-compression"
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""
         prior_history = [
@@ -2547,6 +2702,86 @@ class TestResponsesStreaming:
         assert stored_history == expected_history
         assert stored_history.count(prior_history[0]) == 1
         assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
+
+    @pytest.mark.asyncio
+    async def test_streamed_compression_snapshot_chains_from_rotated_session(self, adapter):
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": [{"role": "assistant", "content": "old"}],
+                "session_id": "session-before-compression",
+            },
+        )
+        compressed_history = [
+            {
+                "role": "user",
+                "content": "[compressed summary]",
+                "_compressed_summary": True,
+            },
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "streamed"},
+        ]
+        usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+        async def rotated_run(**kwargs):
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("streamed")
+            return (
+                {
+                    "final_response": "streamed",
+                    "messages": compressed_history,
+                    "session_id": "session-after-compression",
+                },
+                usage,
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=rotated_run):
+                streamed = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "continue",
+                        "previous_response_id": "resp_prev",
+                        "stream": True,
+                    },
+                )
+                body = await streamed.text()
+
+            completed = None
+            for line in body.splitlines():
+                if not line.startswith("data: "):
+                    continue
+                payload = json.loads(line[len("data: "):])
+                if payload.get("type") == "response.completed":
+                    completed = payload["response"]
+                    break
+
+            assert completed is not None
+            stored = adapter._response_store.get(completed["id"])
+            assert stored["session_id"] == "session-after-compression"
+            assert stored["conversation_history"] == compressed_history
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as chained:
+                chained.return_value = (
+                    {
+                        "final_response": "again",
+                        "messages": [{"role": "assistant", "content": "again"}],
+                    },
+                    usage,
+                )
+                follow_up = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "again",
+                        "previous_response_id": completed["id"],
+                    },
+                )
+
+            assert follow_up.status == 200
+            assert chained.call_args.kwargs["session_id"] == "session-after-compression"
 
     @pytest.mark.asyncio
     async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):

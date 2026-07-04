@@ -3021,6 +3021,10 @@ def select_provider_and_model(args=None):
         else:
             ordered.append((key, label, []))
 
+    if default_idx:
+        ordered.insert(0, ordered.pop(default_idx))
+        default_idx = 0
+
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
@@ -3045,11 +3049,14 @@ def select_provider_and_model(args=None):
     # if the active provider lives in this group. The descriptive text lives on
     # the group row itself, so member rows show only their short label here.
     if selected_members:
+        member_entries = list(selected_members)
         member_default = 0
-        if active in selected_members:
-            member_default = selected_members.index(active)
+        if active in member_entries:
+            active_member_idx = member_entries.index(active)
+            if active_member_idx:
+                member_entries.insert(0, member_entries.pop(active_member_idx))
         member_labels = [
-            provider_labels.get(m, m) for m in selected_members
+            provider_labels.get(m, m) for m in member_entries
         ]
         group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
         member_idx = _prompt_provider_choice(
@@ -3060,7 +3067,7 @@ def select_provider_and_model(args=None):
         if member_idx is None:
             print("No change.")
             return
-        selected_provider = selected_members[member_idx]
+        selected_provider = member_entries[member_idx]
     else:
         selected_provider = selected_key
 

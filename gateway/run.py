@@ -1833,6 +1833,39 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _resolve_configured_max_tokens(runtime_max_output_tokens=None) -> Optional[int]:
+    """Resolve the global output-token cap for gateway-created agents.
+
+    Priority: ``HERMES_MAX_TOKENS`` env > ``model.max_tokens`` (config.yaml)
+    > the resolved provider's ``max_output_tokens`` (``providers:`` /
+    ``custom_providers:`` block). Returns None when nothing is configured —
+    the transport then falls back to the provider *profile* default, which
+    for the ``custom`` profile is a generous 65536 floor. Every agent-creation
+    path must route through this resolution; paths that dropped it handed
+    custom-endpoint sessions that 65536 floor regardless of the operator's
+    configured cap.
+    """
+    max_tokens = None
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            max_tokens = int(_env_mt)
+        except (ValueError, TypeError):
+            max_tokens = None
+    else:
+        from hermes_cli.runtime_provider import _get_model_config
+
+        model_cfg = _get_model_config()
+        if isinstance(model_cfg, dict):
+            mt = model_cfg.get("max_tokens")
+            if isinstance(mt, int):
+                max_tokens = mt
+    if max_tokens is None:
+        if isinstance(runtime_max_output_tokens, int) and runtime_max_output_tokens > 0:
+            max_tokens = runtime_max_output_tokens
+    return max_tokens
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -1849,7 +1882,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
-        _get_model_config,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
@@ -1871,25 +1903,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    model_cfg = _get_model_config()
-    max_tokens = None
-    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-    if _env_mt:
-        try:
-            max_tokens = int(_env_mt)
-        except (ValueError, TypeError):
-            max_tokens = None
-    elif isinstance(model_cfg, dict):
-        mt = model_cfg.get("max_tokens")
-        if isinstance(mt, int):
-            max_tokens = mt
-    # Fall back to a per-provider output cap (custom_providers max_output_tokens)
-    # only when the documented global model.max_tokens isn't set, so the global
-    # key always wins.
-    if max_tokens is None:
-        _runtime_mot = runtime.get("max_output_tokens")
-        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
-            max_tokens = _runtime_mot
+    max_tokens = _resolve_configured_max_tokens(runtime.get("max_output_tokens"))
 
     return {
         "api_key": runtime.get("api_key"),
@@ -1921,6 +1935,9 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        # Without this, channel-override and /model-rehydrated sessions drop
+        # the configured output cap and fall to the custom-profile 65536 floor.
+        "max_tokens": _resolve_configured_max_tokens(runtime.get("max_output_tokens")),
     }
 
 
@@ -3766,7 +3783,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
-                "max_tokens": override.get("max_tokens"),
+                # /model overrides don't carry a per-provider cap; fall back to
+                # the global env/config cap so the switch doesn't silently
+                # revert the session to the custom-profile 65536 floor.
+                "max_tokens": (
+                    override.get("max_tokens")
+                    if override.get("max_tokens") is not None
+                    else _resolve_configured_max_tokens(None)
+                ),
                 "credential_pool": override.get("credential_pool"),
             }
             if override_runtime.get("api_key"):
@@ -15827,6 +15851,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["max_tokens"] = runtime.get("max_tokens")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -15856,7 +15881,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "credential_pool",
+            "max_tokens",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val

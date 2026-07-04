@@ -45,6 +45,20 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # Output-token cap sent as max_tokens on every request (both CLI and
+  # gateway). Resolution priority:
+  #   HERMES_MAX_TOKENS env > model.max_tokens (this key)
+  #   > max_output_tokens on the matched providers:/custom_providers: entry
+  #   > the provider profile default.
+  # NOTE: when none of these are set, custom/local endpoints (ollama, vllm,
+  # llamacpp aliases) fall back to the `custom` profile default of 65536 —
+  # a deliberately generous floor (avoids Ollama's num_predict=128
+  # truncation) that also RESERVES 65536 tokens of the model's context
+  # window for output. On a backend with a hard context limit that shrinks
+  # usable input by 64K; set this (or the provider-level max_output_tokens)
+  # to what you actually need, e.g.:
+  # max_tokens: 32768
+
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"

@@ -127,6 +127,28 @@ class CLIAgentSetupMixin:
         self.api_key = api_key
         self.base_url = base_url
 
+        # Per-provider output cap fallback — mirrors the gateway
+        # (_resolve_runtime_agent_kwargs). The documented global keys
+        # (HERMES_MAX_TOKENS env / model.max_tokens in config) still win:
+        # __init__ resolved self.max_tokens from them, and a non-None value
+        # not sourced here is never overwritten. Without this fallback a CLI
+        # session ignores the provider block's max_output_tokens entirely and
+        # the transport falls to the provider-profile default — 65536 for the
+        # `custom` profile — silently over-reserving output on custom
+        # endpoints. Provider-sourced caps are re-resolved on every
+        # credential refresh so a mid-session provider switch picks up the
+        # new provider's cap (or clears back to the profile default).
+        if getattr(self, "max_tokens", None) is None or getattr(
+            self, "_max_tokens_from_provider", False
+        ):
+            _runtime_mot = runtime.get("max_output_tokens")
+            if isinstance(_runtime_mot, int) and _runtime_mot > 0:
+                self.max_tokens = _runtime_mot
+                self._max_tokens_from_provider = True
+            elif getattr(self, "_max_tokens_from_provider", False):
+                self.max_tokens = None
+                self._max_tokens_from_provider = False
+
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
         # `hermes chat --model <provider-name>` sends the provider name
@@ -189,6 +211,11 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            # Background agents read the cap from this dict; omitting it sent
+            # them to the provider-profile default (65536 for custom).
+            # getattr like credential_pool above — callers/stubs predating the
+            # cap don't define the attribute.
+            "max_tokens": getattr(self, "max_tokens", None),
         }
         route = {
             "model": self.model,

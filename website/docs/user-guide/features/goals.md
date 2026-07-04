@@ -209,19 +209,19 @@ Hermes: Creating /tmp/note_1.txt now.
 
   ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
 
-Hermes: [Continuing toward your standing goal]
+Hermes: [Automated goal continuation — Hermes is pursuing your standing goal, not a message you sent]
   💻 echo "2" > /tmp/note_2.txt   (0.1s)
   Created /tmp/note_2.txt. Two more to go.
 
   ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
 
-Hermes: [Continuing toward your standing goal]
+Hermes: [Automated goal continuation — Hermes is pursuing your standing goal, not a message you sent]
   💻 echo "3" > /tmp/note_3.txt   (0.1s)
   Created /tmp/note_3.txt.
 
   ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
 
-Hermes: [Continuing toward your standing goal]
+Hermes: [Automated goal continuation — Hermes is pursuing your standing goal, not a message you sent]
   💻 echo "4" > /tmp/note_4.txt   (0.1s)
   All four files have been created: /tmp/note_1.txt through /tmp/note_4.txt, each containing its number.
 

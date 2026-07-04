@@ -4279,6 +4279,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return depth
 
     @staticmethod
+    def _queue_notice(depth: int) -> str:
+        """User-facing queue notice for an interrupted turn with pending follow-ups."""
+        return (
+            "Queued for the next turn."
+            if depth <= 1
+            else f"Queued for the next turn. ({depth} queued)"
+        )
+
+    @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
 
@@ -4287,7 +4296,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         suppressing them.
         """
         text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        try:
+            from hermes_cli.goals import CONTINUATION_MARKER
+            return str(text).startswith(f"{CONTINUATION_MARKER}\nGoal:")
+        except Exception:
+            return False
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session.
@@ -8998,9 +9011,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
-                if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                return self._queue_notice(depth)
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -11109,6 +11120,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            if not response and agent_result.get("interrupted"):
+                _queue_adapter = self.adapters.get(source.platform)
+                _queued_depth = self._queue_depth(_quick_key, adapter=_queue_adapter)
+                if _queued_depth > 0:
+                    response = self._queue_notice(_queued_depth)
+                    logger.info(
+                        "Session %s interrupted with queued follow-up(s) pending (chat=%s depth=%d); "
+                        "returning queue notice instead of silence.",
+                        _quick_key or "?",
+                        getattr(source, "chat_id", "?"),
+                        _queued_depth,
+                    )
             try:
                 from gateway.response_filters import is_intentional_silence_agent_result
                 _intentional_silence = is_intentional_silence_agent_result(
@@ -19025,7 +19048,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
-                    return result_holder[0] or {"final_response": response, "messages": history}
+
+                    queued_depth = self._queue_depth(session_key, adapter=adapter)
+                    queued_notice = self._queue_notice(queued_depth)
+                    fallback_result = result_holder[0] or {"final_response": response, "messages": history}
+                    if fallback_result.get("final_response"):
+                        return fallback_result
+                    logger.info(
+                        "Interrupt depth cap queued follow-up for session %s (chat=%s depth=%d); "
+                        "returning queue notice instead of silence.",
+                        session_key or "?",
+                        getattr(source, "chat_id", "?"),
+                        queued_depth,
+                    )
+                    fallback_result["final_response"] = queued_notice
+                    return fallback_result
 
                 was_interrupted = result.get("interrupted")
                 if not was_interrupted:

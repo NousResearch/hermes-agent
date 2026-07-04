@@ -8,7 +8,12 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
+from hermes_cli.goals import (
+    CONTINUATION_MARKER,
+    CONTINUATION_PROMPT_TEMPLATE,
+    CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+    CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+)
 
 
 class FakeAdapter:
@@ -143,5 +148,27 @@ def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
     removed = runner._clear_goal_pending_continuations(session_key, adapter)
 
     assert removed == 2
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_TEMPLATE.format(goal="x")
+    )
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal="x", contract_block="- one"
+        )
+    )
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal="x", subgoals_block="- one"
+        )
+    )
+    assert CONTINUATION_MARKER in CONTINUATION_PROMPT_TEMPLATE
     assert adapter._pending_messages.get(session_key) is None
     assert runner._queued_events[session_key] == [normal_event]
+
+
+def test_queue_notice_formats_depth_consistently():
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    assert runner._queue_notice(0) == "Queued for the next turn."
+    assert runner._queue_notice(1) == "Queued for the next turn."
+    assert runner._queue_notice(2) == "Queued for the next turn. (2 queued)"

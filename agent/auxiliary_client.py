@@ -4357,6 +4357,49 @@ def resolve_provider_client(
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:
         # falling through to Codex with no model is a stale-constant trap).
+        #
+        # When main_runtime carries a concrete base_url + api_key for a
+        # named custom provider (custom:<name>), use it directly instead of
+        # re-resolving from the bare "custom" provider name.  Re-resolution
+        # loses the provider name and falls back to OpenRouter or a wrong
+        # API-key provider — the main agent already solved this, we just
+        # need to reuse its answer. (#45472)
+        if main_runtime:
+            main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
+            main_key = str(main_runtime.get("api_key") or "").strip()
+            if main_base and main_key:
+                final_model = _normalize_resolved_model(
+                    model or main_runtime.get("model") or "gpt-4o-mini",
+                    provider,
+                )
+                extra = {}
+                _clean_base, _dq = _extract_url_query_params(main_base)
+                if _dq:
+                    extra["default_query"] = _dq
+                if base_url_host_matches(main_base, "api.kimi.com"):
+                    extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+                elif base_url_host_matches(main_base, "api.githubcopilot.com"):
+                    from hermes_cli.copilot_auth import copilot_request_headers
+                    extra["default_headers"] = copilot_request_headers(
+                        is_agent_turn=True, is_vision=is_vision
+                    )
+                elif base_url_host_matches(main_base, "integrate.api.nvidia.com"):
+                    extra["default_headers"] = build_nvidia_nim_headers(main_base)
+                else:
+                    try:
+                        from providers import get_provider_profile as _gpf_main
+                        _ph_main = _gpf_main(provider)
+                        if _ph_main and _ph_main.default_headers:
+                            extra["default_headers"] = dict(_ph_main.default_headers)
+                    except Exception:
+                        pass
+                _merged_main = _apply_user_default_headers(extra.get("default_headers"))
+                if _merged_main:
+                    extra["default_headers"] = _merged_main
+                client = OpenAI(api_key=main_key, base_url=_clean_base, **extra)
+                client = _wrap_if_needed(client, final_model, main_base, main_key)
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
         for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):
             client, default = try_fn()
             if client is not None:

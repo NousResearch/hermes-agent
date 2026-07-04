@@ -12,6 +12,7 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 
 import pytest
 
@@ -205,6 +206,51 @@ class TestEnsure:
         )
         with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
             ld.ensure("test.cache", prompt=False)
+
+
+class TestInstallEnvironment:
+    def test_matrix_encryption_sets_cmake_policy_on_windows(self, monkeypatch):
+        captured_envs = []
+
+        monkeypatch.setattr(ld.sys, "platform", "win32")
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+        monkeypatch.setattr(
+            "tools.environments.local.hermes_subprocess_env",
+            lambda inherit_credentials=False: {"BASE_ENV": "1"},
+        )
+
+        def fake_run(cmd, **kwargs):
+            captured_envs.append(kwargs.get("env") or {})
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+
+        result = ld._venv_pip_install(ld.LAZY_DEPS["platform.matrix"])
+
+        assert result.success is True
+        assert captured_envs[0]["CMAKE_POLICY_VERSION_MINIMUM"] == "3.5"
+        assert captured_envs[0]["VIRTUAL_ENV"]
+
+    def test_non_matrix_install_does_not_set_cmake_policy_on_windows(self, monkeypatch):
+        captured_envs = []
+
+        monkeypatch.setattr(ld.sys, "platform", "win32")
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+        monkeypatch.setattr(
+            "tools.environments.local.hermes_subprocess_env",
+            lambda inherit_credentials=False: {},
+        )
+
+        def fake_run(cmd, **kwargs):
+            captured_envs.append(kwargs.get("env") or {})
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+
+        result = ld._venv_pip_install(ld.LAZY_DEPS["platform.slack"])
+
+        assert result.success is True
+        assert "CMAKE_POLICY_VERSION_MINIMUM" not in captured_envs[0]
 
 
 # ---------------------------------------------------------------------------

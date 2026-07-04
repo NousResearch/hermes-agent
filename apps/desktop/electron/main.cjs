@@ -4821,16 +4821,38 @@ function guardConfigYamlProductBlocks(reason) {
     const fixed = []
 
     const managed = resolveManagedConfig()
+    const endpoints = resolveApexEndpoints(process.env)
+    const relayEntryLines =
+      `- api_key: ${managed.key}\n` +
+      `  base_url: ${managed.baseUrl}\n` +
+      `  model: ${endpoints.modelDisplay}\n` +
+      `  name: ${MANAGED_PROVIDER_NAME}\n`
+
     if (managed.key && managed.baseUrl && !/^custom_providers:/m.test(raw)) {
-      const endpoints = resolveApexEndpoints(process.env)
-      raw =
-        raw.replace(/\n*$/, '\n') +
-        'custom_providers:\n' +
-        `- api_key: ${managed.key}\n` +
-        `  base_url: ${managed.baseUrl}\n` +
-        `  model: ${endpoints.modelDisplay}\n` +
-        `  name: ${MANAGED_PROVIDER_NAME}\n`
+      raw = raw.replace(/\n*$/, '\n') + 'custom_providers:\n' + relayEntryLines
       fixed.push('custom_providers')
+    } else if (
+      managed.key &&
+      managed.baseUrl &&
+      // Header present but NO list entry under it (a wiper once left the bare
+      // header behind — the earlier existence check sailed right past it).
+      /^custom_providers:[ \t]*\n(?![ \t]|- )/m.test(raw)
+    ) {
+      raw = raw.replace(/^custom_providers:[ \t]*\n/m, 'custom_providers:\n' + relayEntryLines)
+      fixed.push('custom_providers(empty-header)')
+    }
+
+    // A /moa toggle has been observed persisting itself as the GLOBAL default
+    // (model.provider: moa + base_url: moa://local) — every new chat then
+    // opens on MoA (slow + expensive), violating selective routing, and the
+    // relay URL is clobbered. MoA is per-session only on managed installs:
+    // heal the model block back to the relay default.
+    if (managed.key && managed.baseUrl && /^model:[\s\S]*?^\s{2}provider:\s*moa\s*$/m.test(raw)) {
+      raw = raw
+        .replace(/^(\s{2}provider:\s*)moa\s*$/m, `$1custom`)
+        .replace(/^(\s{2}base_url:\s*)moa:\/\/local\s*$/m, `$1${managed.baseUrl}`)
+        .replace(/^(\s{2}default:\s*)\S.*$/m, `$1${endpoints.modelDisplay}`)
+      fixed.push('model(moa-global)')
     }
 
     if (!/^skills:/m.test(raw)) {

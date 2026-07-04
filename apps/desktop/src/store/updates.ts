@@ -70,6 +70,7 @@ export const resetUpdateApplyState = () => {
 }
 
 const UPDATE_TOAST_ID = 'desktop-update-available'
+const STALE_BUILD_TOAST_ID = 'desktop-stale-build'
 // Time-based snooze instead of per-sha dismissal: this repo lands ~100 commits
 // a day, so a "don't show this exact sha again" guard re-popped the toast on
 // every new commit. We instead suppress the toast for a cooldown window that
@@ -160,6 +161,28 @@ export function reportBackendContract(contract: number | undefined): void {
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
+  }
+
+  // Stale build: source is up-to-date (or was just updated) but the packaged
+  // app.asar was built at a different commit.  Surface even when behind === 0
+  // because the user may have just run `hermes update` (git pull + deps) but
+  // skipped the desktop rebuild step.
+  if (status.staleBuild && !$updateApply.get().applying) {
+    notify({
+      action: {
+        label: translateNow('notifications.updateHermes'),
+        onClick: () => {
+          dismissNotification(STALE_BUILD_TOAST_ID)
+          openUpdateOverlayFor('client')
+        }
+      },
+      durationMs: 0,
+      id: STALE_BUILD_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.staleBuildMessage'),
+      onDismiss: () => dismissNotification(STALE_BUILD_TOAST_ID),
+      title: translateNow('notifications.staleBuildTitle')
+    })
   }
 
   if ((status.behind ?? 0) <= 0) {

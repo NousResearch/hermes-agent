@@ -1924,6 +1924,7 @@ async function checkUpdates() {
       targetSha,
       commits: [],
       dirty: dirtyStr.length > 0,
+      staleBuild: Boolean(IS_PACKAGED && INSTALL_STAMP?.commit && currentSha && INSTALL_STAMP.commit.slice(0, 40) !== currentSha.slice(0, 40)),
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
     }
@@ -1981,6 +1982,7 @@ async function checkUpdates() {
     targetSha,
     commits,
     dirty: dirtyStr.length > 0,
+    staleBuild: Boolean(IS_PACKAGED && INSTALL_STAMP?.commit && currentSha && INSTALL_STAMP.commit.slice(0, 40) !== currentSha.slice(0, 40)),
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
   }

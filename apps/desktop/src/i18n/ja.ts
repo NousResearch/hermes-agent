@@ -123,6 +123,8 @@ export const ja = defineLocale({
     updateHermes: 'Hermes を更新',
     updateReadyTitle: '更新の準備ができました',
     updateReadyMessage: count => `${count} 件の新しい変更が利用可能です。`,
+    staleBuildTitle: 'デスクトップビルドが古くなっています',
+    staleBuildMessage: 'デスクトップアプリのビルド時のコミットが現在のソースと異なります。hermes desktop --build-only を実行してリビルドしてください。',
     seeWhatsNew: '新機能を見る',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT には ELEVENLABS_API_KEY が必要です。',
@@ -1998,6 +2000,7 @@ export const ja = defineLocale({
       update: '更新',
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `${branch} より ${count} コミット遅れています`,
+      buildStale: 'ビルドが古くなっています — リビルドが必要です',
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `バックエンド v${version}`,
       clientLabel: version => `クライアント v${version}`,

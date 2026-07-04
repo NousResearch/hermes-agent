@@ -284,6 +284,9 @@ export interface DesktopUpdateStatus {
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
+  /** True when the packaged app was built at a different commit than the
+   *  current source HEAD — the app.asar is stale and needs a rebuild. */
+  staleBuild?: boolean
   fetchedAt?: number
 }
 

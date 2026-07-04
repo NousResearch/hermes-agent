@@ -164,6 +164,8 @@ export interface Translations {
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
+    staleBuildTitle: string
+    staleBuildMessage: string
     seeWhatsNew: string
     errors: {
       elevenLabsNeedsKey: string
@@ -1661,6 +1663,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      buildStale: string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

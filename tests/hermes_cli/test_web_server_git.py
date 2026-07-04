@@ -160,6 +160,28 @@ def test_commit_without_staged_changes_does_not_auto_stage_env(client, repo):
     assert secret.exists()
 
 
+def test_commit_rejects_env_rename_to_safe_destination(client, repo):
+    tracked_secret = repo / ".env"
+    tracked_secret.write_text("OPENAI_API_KEY=sk-secret\n")
+    _git(repo, "add", ".env")
+    _git(repo, "commit", "-qm", "track env")
+    _git(repo, "mv", ".env", "safe.txt")
+
+    response = client.post(
+        "/api/git/review/commit",
+        json={"path": str(repo), "message": "commit all", "push": False},
+    )
+
+    assert response.status_code == 403
+    committed_safe = subprocess.run(
+        ["git", "show", "HEAD:safe.txt"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert committed_safe.returncode != 0
+
+
 def test_commit_with_nothing_staged_commits_all_changes(client, repo):
     assert client.post(
         "/api/git/review/commit", json={"path": str(repo), "message": "commit all", "push": False}

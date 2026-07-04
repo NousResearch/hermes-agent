@@ -93,6 +93,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
+    "vertex": [
+        "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-2.5-pro", "google/gemini-2.5-flash",
+    ],
     "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
@@ -272,8 +277,35 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
             sys.exit(1)
 
 
+def is_noninteractive() -> bool:
+    """True when no human is available to answer a prompt.
+
+    The dashboard/desktop spawn CLI actions with ``stdin=DEVNULL`` and
+    ``HERMES_NONINTERACTIVE=1`` (see ``hermes_cli/web_server.py``). In that
+    context an ``input()`` raises ``EOFError`` immediately, so a prompt that
+    aborts on EOF kills the spawned action — this is what made the desktop
+    "restart gateway" fail when the Windows gateway service was not yet
+    installed (the start path asks "Install it now?" with no one to answer).
+    Honour the explicit env flag here so callers fall back to their default.
+    """
+    return os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default.
+
+    Non-interactive callers (``HERMES_NONINTERACTIVE=1`` or a closed/redirected
+    stdin) have no one to answer, so fall back to ``default`` instead of
+    aborting the whole process.
+    """
+    if is_noninteractive():
+        return default
+
     default_str = "Y/n" if default else "y/N"
 
     while True:
@@ -283,9 +315,15 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
                 .strip()
                 .lower()
             )
-        except (KeyboardInterrupt, EOFError):
+        except KeyboardInterrupt:
             print()
             sys.exit(1)
+        except EOFError:
+            # No stdin to read (closed/redirected, e.g. a spawned action with
+            # stdin=DEVNULL). Accept the default rather than exit so the caller
+            # can proceed unattended instead of failing the whole command.
+            print()
+            return default
 
         if not value:
             return default
@@ -375,11 +413,6 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
-    if get_env_value("OPENROUTER_API_KEY"):
-        tool_status.append(("Mixture of Agents", True, None))
-    else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
@@ -848,7 +881,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 
 
 def _run_xai_oauth_login_from_setup() -> bool:
-    """Run the xAI Grok OAuth loopback login from inside the setup wizard.
+    """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
@@ -859,7 +892,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
             _is_remote_session,
             _save_xai_oauth_tokens,
             _update_config_for_provider,
-            _xai_oauth_loopback_login,
+            _xai_oauth_device_code_login,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -869,12 +902,13 @@ def _run_xai_oauth_login_from_setup() -> bool:
     print()
     print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     try:
-        creds = _xai_oauth_loopback_login(open_browser=open_browser)
+        creds = _xai_oauth_device_code_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
             creds["tokens"],
             discovery=creds.get("discovery"),
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
+            auth_mode="oauth_device_code",
         )
         _update_config_for_provider(
             "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)
@@ -1503,10 +1537,11 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
@@ -2143,8 +2178,8 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
-                if supports_systemd:
-                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
+                if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
+                    print_info("  Or as a boot-time service: hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
             from hermes_constants import is_container

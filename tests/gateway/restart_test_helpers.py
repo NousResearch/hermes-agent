@@ -73,6 +73,7 @@ def make_restart_runner(
     runner._detached_restart_helper_started = False
     runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._load_restart_drain_timeout = lambda: runner._restart_drain_timeout
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
     runner._update_prompt_pending = {}

@@ -1202,6 +1202,196 @@ class TestSignalSendResultValidation:
 # stop_typing() delegates to _stop_typing_indicator (#4647)
 # ---------------------------------------------------------------------------
 
+class TestSignalRecentChatHistory:
+    @pytest.mark.asyncio
+    async def test_inbound_group_message_is_retained_for_recent_history(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+
+        async def fake_handle(_event):
+            return None
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1712345678000,
+                "dataMessage": {
+                    "message": "recent group context",
+                    "groupInfo": {"groupId": "group-123", "groupName": "Test Sports"},
+                },
+            }
+        })
+
+        assert adapter.get_recent_chat_messages("group:group-123", n=5) == [{
+            "ts": 1712345678000,
+            "sender": "+155****1111",
+            "name": "Tester",
+            "text": "recent group context",
+            "from_self": False,
+        }]
+
+    @pytest.mark.asyncio
+    async def test_send_retains_outbound_message_in_recent_history(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert adapter.get_recent_chat_messages("+155****4567", n=5) == [{
+            "ts": 1712345678000,
+            "sender": adapter.account,
+            "name": "me",
+            "text": "hello",
+            "from_self": True,
+        }]
+
+    @pytest.mark.asyncio
+    async def test_inbound_dm_message_is_retained_under_sender_chat_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        async def fake_handle(_event):
+            return None
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15559876543",
+                "sourceUuid": "uuid-dm-sender",
+                "sourceName": "Alice",
+                "timestamp": 1712300000000,
+                "dataMessage": {
+                    "message": "hello from DM",
+                },
+            }
+        })
+
+        assert adapter.get_recent_chat_messages("+15559876543", n=5) == [{
+            "ts": 1712300000000,
+            "sender": "+15559876543",
+            "name": "Alice",
+            "text": "hello from DM",
+            "from_self": False,
+        }]
+        # Groups must not bleed into DM slot
+        assert adapter.get_recent_chat_messages("group:anything", n=5) == []
+
+    @pytest.mark.asyncio
+    async def test_get_recent_chat_messages_caps_at_n(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc_fn, _ = _stub_rpc({"timestamp": 1000})
+        adapter._rpc = mock_rpc_fn
+        adapter._stop_typing_indicator = AsyncMock()
+
+        for i in range(5):
+            adapter._rpc = _stub_rpc({"timestamp": 1000 + i})[0]
+            await adapter.send(chat_id="+155****0001", content=f"msg {i}")
+
+        results = adapter.get_recent_chat_messages("+155****0001", n=3)
+        assert len(results) == 3
+        assert results[-1]["text"] == "msg 4"
+        assert results[0]["text"] == "msg 2"
+
+    def test_empty_text_is_not_stored_in_chat_history(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        adapter._append_to_chat_history(
+            chat_id="group:grp1",
+            ts_ms=1712345678000,
+            sender="+15551234567",
+            name="Bob",
+            text="",
+        )
+
+        assert adapter.get_recent_chat_messages("group:grp1", n=10) == []
+
+    def test_get_recent_chat_messages_n_zero_returns_empty(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._append_to_chat_history(
+            chat_id="+155****0001",
+            ts_ms=1712345678000,
+            sender="+155****0001",
+            name="Carol",
+            text="something",
+        )
+
+        assert adapter.get_recent_chat_messages("+155****0001", n=0) == []
+
+    def test_chat_history_prunes_oldest_chats_when_global_cap_exceeded(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_chat_history_chats = 3
+
+        for i in range(4):
+            adapter._append_to_chat_history(
+                chat_id=f"group:grp{i}",
+                ts_ms=1712345678000 + i,
+                sender=f"+155****00{i}",
+                name=f"User {i}",
+                text=f"msg {i}",
+            )
+
+        assert adapter.get_recent_chat_messages("group:grp0", n=5) == []
+        assert adapter.get_recent_chat_messages("group:grp1", n=5) == [{
+            "ts": 1712345678001,
+            "sender": "+155****001",
+            "name": "User 1",
+            "text": "msg 1",
+            "from_self": False,
+        }]
+        assert adapter.get_recent_chat_messages("group:grp2", n=5) == [{
+            "ts": 1712345678002,
+            "sender": "+155****002",
+            "name": "User 2",
+            "text": "msg 2",
+            "from_self": False,
+        }]
+        assert adapter.get_recent_chat_messages("group:grp3", n=5) == [{
+            "ts": 1712345678003,
+            "sender": "+155****003",
+            "name": "User 3",
+            "text": "msg 3",
+            "from_self": False,
+        }]
+
+    def test_chat_history_read_promotes_chat_for_lru_eviction(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_chat_history_chats = 3
+
+        for i in range(3):
+            adapter._append_to_chat_history(
+                chat_id=f"group:grp{i}",
+                ts_ms=1712345678000 + i,
+                sender=f"+155****00{i}",
+                name=f"User {i}",
+                text=f"msg {i}",
+            )
+
+        assert adapter.get_recent_chat_messages("group:grp0", n=5)[0]["text"] == "msg 0"
+
+        adapter._append_to_chat_history(
+            chat_id="group:grp3",
+            ts_ms=1712345678003,
+            sender="+155****003",
+            name="User 3",
+            text="msg 3",
+        )
+
+        assert adapter.get_recent_chat_messages("group:grp1", n=5) == []
+        assert adapter.get_recent_chat_messages("group:grp0", n=5) == [{
+            "ts": 1712345678000,
+            "sender": "+155****000",
+            "name": "User 0",
+            "text": "msg 0",
+            "from_self": False,
+        }]
+
+
 class TestSignalStopTyping:
     """Signal must expose a public stop_typing() so base adapter's
     _keep_typing finally block can clean up platform-level typing tasks."""
@@ -1592,11 +1782,17 @@ class TestSignalQuoteExtraction:
         adapter._remember_sent_message_timestamp(4)
         assert list(adapter._sent_message_timestamps.keys()) == ["2", "3", "4"]
         assert "1" not in adapter._sent_message_timestamps
-        # Re-seeing an existing ts promotes it so it survives the next eviction.
-        adapter._remember_sent_message_timestamp(2)  # 2 -> most recent
-        adapter._remember_sent_message_timestamp(5)  # evicts oldest (now 3)
-        assert list(adapter._sent_message_timestamps.keys()) == ["4", "2", "5"]
-        assert "3" not in adapter._sent_message_timestamps
+
+    def test_sent_message_timestamps_reinsertion_promotes_entry(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_sent_message_timestamps = 2
+
+        for ts in ("1", "2", "1", "3"):
+            adapter._remember_sent_message_timestamp(ts)
+
+        assert list(adapter._sent_message_timestamps.keys()) == ["1", "3"]
+        assert "2" not in adapter._sent_message_timestamps
+
 
     @pytest.mark.asyncio
     async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):

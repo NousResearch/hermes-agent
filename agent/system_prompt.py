@@ -528,9 +528,251 @@ def format_tools_for_system_message(agent: Any) -> str:
     return json.dumps(formatted_tools, ensure_ascii=False)
 
 
+def build_system_prompt_breakdown(agent: Any, system_message: Optional[str] = None) -> list[tuple[str, str]]:
+    """Return labeled (label, text) pairs for each system-prompt component.
+
+    Mirrors the assembly logic of :func:`build_system_prompt_parts` but keeps
+    each segment individually labeled instead of merging them into three
+    coarse tiers.  Used by the ``/tokens`` slash command to show a per-component
+    token breakdown.
+
+    Returns a list of ``(label, text)`` tuples in prompt order.
+    """
+    _r = _ra()
+    parts: list[tuple[str, str]] = []
+
+    # ── Identity ──────────────────────────────────────────────────
+    _soul_loaded = False
+    if agent.load_soul_identity or not agent.skip_context_files:
+        _soul_content = _r.load_soul_md()
+        if _soul_content:
+            parts.append(("Identity (SOUL.md)", _soul_content))
+            _soul_loaded = True
+    if not _soul_loaded:
+        parts.append(("Identity (default)", DEFAULT_AGENT_IDENTITY))
+
+    parts.append(("Hermes Help Guidance", HERMES_AGENT_HELP_GUIDANCE))
+
+    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        parts.append(("Task Completion Guidance", TASK_COMPLETION_GUIDANCE))
+
+    # ── Tool-aware behavioral guidance ────────────────────────────
+    tool_guidance = []
+    if "memory" in agent.valid_tool_names:
+        tool_guidance.append(MEMORY_GUIDANCE)
+    if "session_search" in agent.valid_tool_names:
+        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+    if "skill_manage" in agent.valid_tool_names:
+        tool_guidance.append(SKILLS_GUIDANCE)
+    _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
+    if _kanban_guidance:
+        tool_guidance.append(_kanban_guidance)
+    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
+        tool_guidance.append(KANBAN_GUIDANCE)
+    if tool_guidance:
+        parts.append(("Tool Behavioral Guidance", " ".join(tool_guidance)))
+
+    if agent.valid_tool_names:
+        parts.append(("Steer Channel Note", STEER_CHANNEL_NOTE))
+
+    if "computer_use" in agent.valid_tool_names:
+        from agent.prompt_builder import COMPUTER_USE_GUIDANCE
+        parts.append(("Computer Use Guidance", COMPUTER_USE_GUIDANCE))
+
+    nous_sub = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+    if nous_sub:
+        parts.append(("Nous Subscription Prompt", nous_sub))
+
+    # ── Tool-use enforcement ──────────────────────────────────────
+    if agent.valid_tool_names:
+        _enforce = agent._tool_use_enforcement
+        _inject = False
+        if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
+            _inject = True
+        elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
+            _inject = False
+        elif isinstance(_enforce, list):
+            model_lower = (agent.model or "").lower()
+            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+        else:
+            model_lower = (agent.model or "").lower()
+            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+        if _inject:
+            parts.append(("Tool-Use Enforcement", TOOL_USE_ENFORCEMENT_GUIDANCE))
+            _model_lower = (agent.model or "").lower()
+            if "gemini" in _model_lower or "gemma" in _model_lower:
+                parts.append(("Google Model Guidance", GOOGLE_MODEL_OPERATIONAL_GUIDANCE))
+            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+                parts.append(("OpenAI/xAI Model Guidance", OPENAI_MODEL_EXECUTION_GUIDANCE))
+
+    # ── Skills index ──────────────────────────────────────────────
+    has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+    if has_skills_tools:
+        avail_toolsets = {
+            toolset
+            for toolset in (
+                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+            )
+            if toolset
+        }
+        _compact_cats = frozenset()
+        try:
+            from agent.coding_context import coding_compact_skill_categories
+            _compact_cats = coding_compact_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _compact_cats = frozenset()
+        skills_prompt = _r.build_skills_system_prompt(
+            available_tools=agent.valid_tool_names,
+            available_toolsets=avail_toolsets,
+            compact_categories=_compact_cats or None,
+        )
+    else:
+        skills_prompt = ""
+    if skills_prompt:
+        parts.append(("Skills Index", skills_prompt))
+
+    # ── Model identity (Alibaba workaround) ───────────────────────
+    if agent.provider == "alibaba":
+        _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
+        parts.append(("Model Identity (Alibaba)", (
+            f"You are powered by the model named {_model_short}. "
+            f"The exact model ID is {agent.model}. "
+            f"When asked what model you are, always answer based on this information, "
+            f"not on any model name returned by the API."
+        )))
+
+    # ── Environment hints ─────────────────────────────────────────
+    _env_hints = _r.build_environment_hints()
+    if _env_hints:
+        parts.append(("Environment Hints", _env_hints))
+
+    # ── Coding context ────────────────────────────────────────────
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+            for block in coding_system_blocks(
+                platform=agent.platform,
+                cwd=resolve_context_cwd(),
+                model=agent.model,
+            ):
+                parts.append(("Coding Context", block))
+        except Exception:
+            pass
+
+    # ── Python toolchain probe ────────────────────────────────────
+    if getattr(agent, "_environment_probe", True):
+        try:
+            from tools.env_probe import get_environment_probe_line
+            _probe_line = get_environment_probe_line()
+            if _probe_line:
+                parts.append(("Python Toolchain Probe", _probe_line))
+        except Exception:
+            pass
+
+    # ── Active profile hint ───────────────────────────────────────
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        active_profile = _resolve_active_profile_name()
+    except Exception:
+        active_profile = "default"
+    if active_profile == "default":
+        parts.append(("Active Profile Hint", (
+            "Active Hermes profile: default. Other profiles (if any) live "
+            "under ~/.hermes/profiles/<name>/. Each profile has its own "
+            "skills/, plugins/, cron/, and memories/ that affect a different "
+            "session than this one. Do not modify another profile's "
+            "skills/plugins/cron/memories unless the user explicitly directs "
+            "you to."
+        )))
+    else:
+        parts.append(("Active Profile Hint", (
+            f"Active Hermes profile: {active_profile}. This session reads "
+            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
+            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
+            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"different session run from a different shell. Do NOT modify "
+            f"another profile's skills/plugins/cron/memories unless the user "
+            f"explicitly directs you to."
+        )))
+
+    # ── Platform hint ─────────────────────────────────────────────
+    platform_key = (agent.platform or "").lower().strip()
+    if platform_key in PLATFORM_HINTS:
+        parts.append(("Platform Hint", PLATFORM_HINTS[platform_key]))
+    elif platform_key:
+        try:
+            from gateway.platform_registry import platform_registry
+            _entry = platform_registry.get(platform_key)
+            if _entry and _entry.platform_hint:
+                parts.append(("Platform Hint", _entry.platform_hint))
+        except Exception:
+            pass
+
+    # ── Context files ─────────────────────────────────────────────
+    if system_message is not None:
+        parts.append(("Caller System Message", system_message))
+
+    if not agent.skip_context_files:
+        context_files_prompt = _r.build_context_files_prompt(
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded)
+        if context_files_prompt:
+            parts.append(("Context Files", context_files_prompt))
+
+    # ── Memory ────────────────────────────────────────────────────
+    if agent._memory_store:
+        if agent._memory_enabled:
+            mem_block = agent._memory_store.format_for_system_prompt("memory")
+            if mem_block:
+                parts.append(("Memory (MEMORY.md)", mem_block))
+        if agent._user_profile_enabled:
+            user_block = agent._memory_store.format_for_system_prompt("user")
+            if user_block:
+                parts.append(("User Profile (USER.md)", user_block))
+
+    # ── External memory provider ──────────────────────────────────
+    if agent._memory_manager:
+        try:
+            _ext_mem_block = agent._memory_manager.build_system_prompt()
+            if _ext_mem_block:
+                parts.append(("External Memory Provider", _ext_mem_block))
+        except Exception:
+            pass
+
+    # ── Timestamp ─────────────────────────────────────────────────
+    from hermes_time import now as _hermes_now
+    now = _hermes_now()
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    if agent.pass_session_id and agent.session_id:
+        timestamp_line += f"\nSession ID: {agent.session_id}"
+    if agent.model:
+        timestamp_line += f"\nModel: {agent.model}"
+    if agent.provider:
+        timestamp_line += f"\nProvider: {agent.provider}"
+    parts.append(("Timestamp / Session Info", timestamp_line))
+
+    return parts
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count for a string.
+
+    Uses tiktoken (cl100k_base) when available, falls back to chars/4.
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "build_system_prompt_breakdown",
+    "estimate_tokens",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
 ]

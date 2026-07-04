@@ -4037,6 +4037,75 @@ class GatewaySlashCommandsMixin:
             return "\n".join(parts)
         return t("gateway.usage.no_data")
 
+    async def _handle_tokens_command(self, event: MessageEvent) -> str:
+        """Handle /tokens command -- show system prompt token breakdown."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Try running agent first (mid-turn), then cached agent
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            return t("gateway.usage.no_agent", icon="(._.)") if False else "(._.) No active agent -- send a message first."
+
+        from agent.system_prompt import build_system_prompt_breakdown, estimate_tokens
+
+        try:
+            components = build_system_prompt_breakdown(agent)
+        except Exception as e:
+            return f"(._.) Could not build breakdown: {e}"
+
+        rows = []
+        for label, text in components:
+            tokens = estimate_tokens(text)
+            rows.append((label, tokens))
+
+        prompt_total = sum(t_ for _, t_ in rows)
+
+        # Tool schemas
+        tool_schema_tokens = 0
+        if agent.tools:
+            import json as _json
+            tool_json = _json.dumps(agent.tools, ensure_ascii=False)
+            tool_schema_tokens = estimate_tokens(tool_json)
+
+        grand_total = prompt_total + tool_schema_tokens
+
+        ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 128000
+        pct = (grand_total / ctx_len * 100) if ctx_len else 0
+
+        lines = []
+        lines.append("🔍 System Prompt Token Breakdown")
+        lines.append("─" * 50)
+
+        col_w = 35
+        lines.append(f"{'Component':<{col_w}}{'Tokens':>10}{'%':>8}")
+        lines.append("─" * (col_w + 18))
+
+        for label, tokens in sorted(rows, key=lambda x: -x[1]):
+            p = (tokens / prompt_total * 100) if prompt_total else 0
+            lines.append(f"{label:<{col_w}}{tokens:>10,}{p:>7.1f}%")
+
+        lines.append("─" * (col_w + 18))
+        lines.append(f"{'System Prompt Total':<{col_w}}{prompt_total:>10,}")
+        lines.append(f"{'Tool Schemas':<{col_w}}{tool_schema_tokens:>10,}")
+        lines.append("─" * (col_w + 18))
+        lines.append(f"{'Grand Total':<{col_w}}{grand_total:>10,}")
+        lines.append("─" * (col_w + 18))
+        lines.append(f"{'Context window:':<{col_w}}{ctx_len:>10,}")
+        lines.append(f"{'Used:':<{col_w}}{pct:>9.1f}%")
+
+        return "\n".join(lines)
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()

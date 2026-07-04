@@ -8604,6 +8604,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "tokens":
+            self._show_token_breakdown()
         elif canonical == "credits":
             self._show_credits()
         elif canonical == "billing":
@@ -9597,6 +9599,76 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in lines:
             print(f"  {line}")
         return True
+
+    def _show_token_breakdown(self):
+        """`/tokens` — per-component token breakdown of the system prompt.
+
+        Shows how many tokens each part of the system prompt consumes
+        (identity, skills, memory, tools, etc.) so users can see exactly
+        where their context budget goes.  Works in CLI, TUI, and gateway.
+        """
+        if not self.agent:
+            print("  (._.) No active agent -- send a message first.")
+            return
+
+        from agent.system_prompt import build_system_prompt_breakdown, estimate_tokens
+
+        agent = self.agent
+
+        # Build the labeled breakdown
+        try:
+            components = build_system_prompt_breakdown(agent)
+        except Exception as e:
+            print(f"  (._.) Could not build breakdown: {e}")
+            return
+
+        # Count tokens per component
+        rows = []
+        for label, text in components:
+            tokens = estimate_tokens(text)
+            rows.append((label, tokens))
+
+        prompt_total = sum(t for _, t in rows)
+
+        # Tool schemas
+        tool_schema_tokens = 0
+        if agent.tools:
+            import json as _json
+            tool_json = _json.dumps(agent.tools, ensure_ascii=False)
+            tool_schema_tokens = estimate_tokens(tool_json)
+
+        grand_total = prompt_total + tool_schema_tokens
+
+        # Context window
+        ctx_len = getattr(agent.context_compressor, "context_length", 0) or 128000
+        pct = (grand_total / ctx_len * 100) if ctx_len else 0
+
+        # Format output
+        print()
+        print("  🔍 System Prompt Token Breakdown")
+        print(f"  {'─' * 50}")
+
+        # Sort by size descending for readability
+        max_label = max((len(l) for l, _ in rows), default=10)
+        max_label = max(max_label, len("Component"))
+        col_w = max(max_label + 2, 22)
+
+        print(f"  {'Component':<{col_w}}{'Tokens':>10}{'%':>8}")
+        print(f"  {'─' * (col_w + 18)}")
+
+        for label, tokens in sorted(rows, key=lambda x: -x[1]):
+            p = (tokens / prompt_total * 100) if prompt_total else 0
+            print(f"  {label:<{col_w}}{tokens:>10,}{p:>7.1f}%")
+
+        print(f"  {'─' * (col_w + 18)}")
+        print(f"  {'System Prompt Total':<{col_w}}{prompt_total:>10,}")
+        print(f"  {'Tool Schemas':<{col_w}}{tool_schema_tokens:>10,}")
+        print(f"  {'─' * (col_w + 18)}")
+        print(f"  {'Grand Total':<{col_w}}{grand_total:>10,}")
+        print(f"  {'─' * (col_w + 18)}")
+        print(f"  {'Context window:':<{col_w}}{ctx_len:>10,}")
+        print(f"  {'Used:':<{col_w}}{pct:>9.1f}%")
+        print()
 
     def _show_credits(self):
         """`/credits` — focused Nous credit balance + top-up handoff.

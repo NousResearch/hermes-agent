@@ -281,13 +281,17 @@ class SessionResetPolicy:
     - "daily": Reset at a specific hour each day
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
+    - "always": Start a fresh session for every new user turn
     - "none": Never auto-reset (context managed only by compression)
     """
-    mode: str = "both"  # "daily", "idle", "both", or "none"
+    mode: str = "both"  # "daily", "idle", "both", "always", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+    post_task_new_button: bool = False  # Offer an inline "New" button after completed turns
+    post_task_new_button_text: str = "Готово. Новая тема?"
+    post_task_new_button_label: str = "New"
     # A background process this many hours old (or older) no longer blocks
     # session idle/daily reset. A forgotten preview server should not keep a
     # session alive forever (#29177). The process is NOT killed — only ignored
@@ -302,6 +306,9 @@ class SessionResetPolicy:
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+            "post_task_new_button": self.post_task_new_button,
+            "post_task_new_button_text": self.post_task_new_button_text,
+            "post_task_new_button_label": self.post_task_new_button_label,
             "bg_process_max_age_hours": self.bg_process_max_age_hours,
         }
     
@@ -313,6 +320,9 @@ class SessionResetPolicy:
         idle_minutes = data.get("idle_minutes")
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
+        post_task_new_button = data.get("post_task_new_button")
+        post_task_new_button_text = data.get("post_task_new_button_text")
+        post_task_new_button_label = data.get("post_task_new_button_label")
         bg_max_age = data.get("bg_process_max_age_hours")
         return cls(
             mode=mode if mode is not None else "both",
@@ -320,6 +330,17 @@ class SessionResetPolicy:
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            post_task_new_button=_coerce_bool(post_task_new_button, False),
+            post_task_new_button_text=(
+                str(post_task_new_button_text)
+                if post_task_new_button_text not in (None, "")
+                else "Готово. Новая тема?"
+            ),
+            post_task_new_button_label=(
+                str(post_task_new_button_label)
+                if post_task_new_button_label not in (None, "")
+                else "New"
+            ),
             bg_process_max_age_hours=bg_max_age if bg_max_age is not None else 24,
         )
 
@@ -581,6 +602,7 @@ class GatewayConfig:
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
     reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
     reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
+    reset_by_profile: Dict[str, SessionResetPolicy] = field(default_factory=dict)
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
@@ -696,13 +718,18 @@ class GatewayConfig:
     def get_reset_policy(
         self, 
         platform: Optional[Platform] = None,
-        session_type: Optional[str] = None
+        session_type: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> SessionResetPolicy:
         """
         Get the appropriate reset policy for a session.
         
-        Priority: platform override > type override > default
+        Priority: profile override > platform override > type override > default
         """
+        if profile:
+            profile_key = str(profile).strip()
+            if profile_key in self.reset_by_profile:
+                return self.reset_by_profile[profile_key]
         # Platform-specific override takes precedence
         if platform and platform in self.reset_by_platform:
             return self.reset_by_platform[platform]
@@ -724,6 +751,9 @@ class GatewayConfig:
             },
             "reset_by_platform": {
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
+            },
+            "reset_by_profile": {
+                k: v.to_dict() for k, v in self.reset_by_profile.items()
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
@@ -763,6 +793,12 @@ class GatewayConfig:
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
             except ValueError:
                 pass
+
+        reset_by_profile = {}
+        for profile_name, policy_data in data.get("reset_by_profile", {}).items():
+            profile_key = str(profile_name or "").strip()
+            if profile_key and isinstance(policy_data, dict):
+                reset_by_profile[profile_key] = SessionResetPolicy.from_dict(policy_data)
         
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:
@@ -822,6 +858,7 @@ class GatewayConfig:
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
+            reset_by_profile=reset_by_profile,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
@@ -918,7 +955,22 @@ def load_gateway_config() -> GatewayConfig:
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
-                gw_data["default_reset_policy"] = sr
+                reset_by_profile = (
+                    sr.get("by_profile")
+                    or sr.get("profiles")
+                    or sr.get("reset_by_profile")
+                )
+                if isinstance(reset_by_profile, dict):
+                    gw_data["reset_by_profile"] = reset_by_profile
+                gw_data["default_reset_policy"] = {
+                    k: v
+                    for k, v in sr.items()
+                    if k not in {"by_profile", "profiles", "reset_by_profile"}
+                }
+
+            top_level_reset_by_profile = yaml_cfg.get("reset_by_profile")
+            if isinstance(top_level_reset_by_profile, dict):
+                gw_data["reset_by_profile"] = top_level_reset_by_profile
 
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:

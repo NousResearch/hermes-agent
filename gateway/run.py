@@ -8878,6 +8878,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        if source is not None and not getattr(source, "profile", None):
+            try:
+                routed_profile = self._load_source_profile(source)
+                if routed_profile:
+                    source.profile = routed_profile
+            except Exception:
+                logger.debug("profile-by-thread resolution failed", exc_info=True)
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -10221,6 +10228,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            self._register_post_task_new_button(
+                source=source,
+                session_key=_quick_key,
+                run_generation=_run_generation,
+                agent_result=_agent_result,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10268,6 +10281,114 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
+
+    def _post_task_new_button_policy(self, source: SessionSource, agent_result: Any):
+        """Return the reset policy when this completed turn should show New."""
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return None
+        if not _should_clear_resume_pending_after_turn(agent_result):
+            return None
+        final_response = ""
+        response_previewed = False
+        if isinstance(agent_result, dict):
+            final_response = str(agent_result.get("final_response") or "")
+            response_previewed = bool(agent_result.get("response_previewed"))
+        if not final_response.strip() and not response_previewed:
+            return None
+        try:
+            policy = self.session_store.config.get_reset_policy(
+                platform=source.platform,
+                session_type=getattr(source, "chat_type", "dm"),
+                profile=getattr(source, "profile", None),
+            )
+        except Exception:
+            return None
+        if not getattr(policy, "post_task_new_button", False):
+            return None
+        return policy
+
+    async def _send_post_task_new_button_now(
+        self,
+        *,
+        source: SessionSource,
+        agent_result: Any,
+        reply_to_message_id: Optional[str] = None,
+    ) -> bool:
+        """Send the post-task New button immediately (used after streaming)."""
+        policy = self._post_task_new_button_policy(source, agent_result)
+        if policy is None:
+            return False
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return False
+        send_new_session_button = getattr(adapter, "send_new_session_button", None)
+        if not callable(send_new_session_button):
+            return False
+        prompt_text = str(
+            getattr(policy, "post_task_new_button_text", "")
+            or "Готово. Новая тема?"
+        )
+        button_label = str(
+            getattr(policy, "post_task_new_button_label", "")
+            or "New"
+        )
+        metadata = self._thread_metadata_for_source(source, reply_to_message_id)
+        result = send_new_session_button(
+            source.chat_id,
+            text=prompt_text,
+            button_label=button_label,
+            metadata=metadata,
+        )
+        if inspect.isawaitable(result):
+            await result
+        return True
+
+    def _register_post_task_new_button(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        run_generation: int,
+        agent_result: Any,
+    ) -> None:
+        """Offer a no-typing Telegram `New` affordance after completed turns."""
+        policy = self._post_task_new_button_policy(source, agent_result)
+        if policy is None:
+            return
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        send_new_session_button = getattr(adapter, "send_new_session_button", None)
+        if not callable(send_new_session_button):
+            return
+        if not hasattr(adapter, "register_post_delivery_callback"):
+            return
+        source_snapshot = dataclasses.replace(source)
+        prompt_text = str(
+            getattr(policy, "post_task_new_button_text", "")
+            or "Готово. Новая тема?"
+        )
+        button_label = str(
+            getattr(policy, "post_task_new_button_label", "")
+            or "New"
+        )
+
+        async def _send_new_button() -> None:
+            metadata = self._thread_metadata_for_source(source_snapshot)
+            result = send_new_session_button(
+                source_snapshot.chat_id,
+                text=prompt_text,
+                button_label=button_label,
+                metadata=metadata,
+            )
+            if inspect.isawaitable(result):
+                await result
+
+        adapter.register_post_delivery_callback(
+            session_key,
+            _send_new_button,
+            generation=run_generation,
+        )
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.
@@ -10875,6 +10996,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+            elif reset_reason == "always":
+                context_note = "[System note: This profile starts each user turn in a fresh session. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
             context_prompt = context_note + "\n\n" + context_prompt
@@ -10887,6 +11010,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 policy = self.session_store.config.get_reset_policy(
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
+                    profile=getattr(source, 'profile', None),
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
@@ -10904,6 +11028,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             reason_text = "previous session was stopped or interrupted"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
+                        elif reset_reason == "always":
+                            reason_text = "fresh-session policy"
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60
@@ -12048,6 +12174,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                await self._send_post_task_new_button_now(
+                    source=source,
+                    agent_result=agent_result,
+                    reply_to_message_id=self._reply_anchor_for_event(event),
+                )
                 return None
 
             return response

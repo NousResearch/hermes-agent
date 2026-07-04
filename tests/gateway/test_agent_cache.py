@@ -883,7 +883,8 @@ class TestAgentCacheBoundedGrowth:
 
         Uses a real SessionStore + GatewayConfig (no mocks) so the predicate
         is exercised against actual get_reset_policy() output: True for finite
-        policies (idle/daily/both), False only for mode='none'.
+        time-based policies (idle/daily/both), False for mode='none' and the
+        turn-boundary-only mode='always'.
         """
         from datetime import datetime
         from unittest.mock import patch as _patch
@@ -910,9 +911,12 @@ class TestAgentCacheBoundedGrowth:
 
         config = GatewayConfig()
         # Give Telegram a 'none' policy via the per-platform override; leave the
-        # default policy finite ('both') for the Discord case.
+        # default policy finite ('both') for the Discord case; cover 'always' via
+        # a profile override because it is a turn-boundary policy, not a watcher
+        # expiry policy.
         config.default_reset_policy = SessionResetPolicy(mode="both")
         config.reset_by_platform[Platform.TELEGRAM] = SessionResetPolicy(mode="none")
+        config.reset_by_profile["admin"] = SessionResetPolicy(mode="always")
 
         with _patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -920,6 +924,10 @@ class TestAgentCacheBoundedGrowth:
 
         # mode='none' → never finalized by the watcher.
         assert store.is_session_finalizable(_entry_for(Platform.TELEGRAM)) is False
+        admin_entry = _entry_for(Platform.DISCORD)
+        assert admin_entry.origin is not None
+        admin_entry.origin.profile = "admin"
+        assert store.is_session_finalizable(admin_entry) is False
         # default 'both' → finite, will eventually expire.
         assert store.is_session_finalizable(_entry_for(Platform.DISCORD)) is True
 

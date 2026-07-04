@@ -4665,6 +4665,48 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_new_session_button(
+        self,
+        chat_id: str,
+        *,
+        text: str = "Готово. Новая тема?",
+        button_label: str = "New",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a one-tap New-session affordance after a completed turn."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(button_label or "New", callback_data="ns:new")]
+            ])
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                None,
+                metadata,
+                reply_to_mode=self._reply_to_mode,
+            )
+            kwargs: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "text": text or "Готово. Новая тема?",
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            }
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_new_session_button failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -5383,6 +5425,99 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return False
 
+    def _source_from_callback_query(self, query) -> Any:
+        """Build a SessionSource from an inline-button click."""
+        from gateway.session import SessionSource
+
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        caller = getattr(query, "from_user", None)
+        chat_id = str(getattr(message, "chat_id", "") or getattr(chat, "id", "") or "")
+        raw_chat_type = getattr(chat, "type", "dm")
+        chat_type_value = getattr(raw_chat_type, "value", raw_chat_type)
+        chat_type = str(chat_type_value or "dm").lower()
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            thread_id_raw = getattr(message, "message_thread_id", None)
+            is_topic_message = bool(getattr(message, "is_topic_message", False))
+            is_forum_group = getattr(chat, "is_forum", False) is True
+            chat_type = "forum" if thread_id_raw is not None and (is_topic_message or is_forum_group) else "group"
+
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if thread_id_raw is not None and chat_type in {"forum", "dm"}:
+            thread_id = str(thread_id_raw)
+
+        user_name = (
+            getattr(caller, "username", None)
+            or getattr(caller, "full_name", None)
+            or getattr(caller, "first_name", None)
+        )
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=str(getattr(caller, "id", "") or "") or None,
+            user_name=str(user_name).strip() if user_name else None,
+            thread_id=thread_id,
+        )
+
+    async def _handle_new_session_callback(self, query, *, query_chat_id=None, query_chat_type=None, query_thread_id=None, query_user_name=None) -> None:
+        """Handle the post-task New button without requiring typed /new."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to answer this prompt.")
+            return
+
+        handler = getattr(self, "_message_handler", None)
+        runner = getattr(handler, "__self__", None)
+        reset_handler = getattr(runner, "_handle_reset_command", None)
+        callback_handler = reset_handler if callable(reset_handler) else handler
+        if not callable(callback_handler):
+            await query.answer(text="Reset unavailable.", show_alert=True)
+            return
+
+        source = self._source_from_callback_query(query)
+        event = MessageEvent(
+            text="/new",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=getattr(query, "message", None),
+            message_id=str(getattr(getattr(query, "message", None), "message_id", "") or "") or None,
+        )
+
+        try:
+            result = callback_handler(event)
+            if inspect.isawaitable(result):
+                result = await result
+            text, ttl = self._unwrap_ephemeral(result)
+            display_text = text or "✨ New session started!"
+            await query.answer(text="✓ New session")
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(display_text),
+                    parse_mode=getattr(ParseMode, "MARKDOWN_V2", None),
+                    reply_markup=None,
+                )
+            except Exception:
+                logger.debug("[%s] new-session callback edit failed", self.name, exc_info=True)
+            if ttl and getattr(query, "message", None):
+                self._schedule_ephemeral_delete(
+                    chat_id=str(getattr(query.message, "chat_id", "")),
+                    message_id=str(getattr(query.message, "message_id", "")),
+                    ttl_seconds=ttl,
+                )
+        except Exception as exc:
+            logger.error("[%s] new-session callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="❌ New session failed.", show_alert=True)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5397,6 +5532,17 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Post-task New-session callback (ns:new) ---
+        if data == "ns:new":
+            await self._handle_new_session_callback(
+                query,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):

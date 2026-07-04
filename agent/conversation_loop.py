@@ -549,7 +549,7 @@ def run_conversation(
     """
     if moa_config is None:
         try:
-            from hermes_cli.moa_config import decode_moa_turn
+            from hermes_cli.moa_config import decode_moa_turn, resolve_active_moa_preset
 
             _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
             if _decoded_moa_config is not None:
@@ -557,6 +557,10 @@ def run_conversation(
                 moa_config = _decoded_moa_config
                 if persist_user_message is None:
                     persist_user_message = _decoded_message
+            else:
+                _active_moa_config = resolve_active_moa_preset(None)
+                if _active_moa_config is not None:
+                    moa_config = _active_moa_config
         except Exception:
             pass
 

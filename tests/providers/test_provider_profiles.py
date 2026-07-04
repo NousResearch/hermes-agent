@@ -464,6 +464,16 @@ class TestQwenProfile:
         assert isinstance(result[1]["content"], list)
         assert result[1]["content"][0]["text"] == "hello"
 
+    def test_prepare_messages_preserves_tool_message_strings(self):
+        p = get_provider_profile("qwen-oauth")
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\": true}"},
+        ]
+        result = p.prepare_messages(msgs)
+        assert result[0]["content"] == [{"type": "text", "text": ""}]
+        assert result[1]["content"] == "{\"ok\": true}"
+
     def test_metadata_top_level(self):
         p = get_provider_profile("qwen-oauth")
         meta = {"sessionId": "s123", "promptId": "p456"}

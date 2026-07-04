@@ -202,6 +202,36 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
 
+  it('escapes unknown html-shaped prose tags so markdown rendering cannot swallow the tail', () => {
+    const input =
+      'The proxy emits <tool_call> before parameters, <observation status="ok"> after results, and <think> in reasoning prose.'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('&lt;tool_call&gt; before parameters')
+    expect(output).toContain('&lt;observation status="ok"&gt; after results')
+    expect(output).toContain('&lt;think&gt; in reasoning prose.')
+  })
+
+  it('keeps known html tags and markdown autolinks intact while escaping unknown tags', () => {
+    const input = 'Use <kbd>Esc</kbd>, open <https://example.com/path>, then inspect <parameters>.'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('<kbd>Esc</kbd>')
+    expect(output).toContain('<https://example.com/path>')
+    expect(output).toContain('&lt;parameters&gt;.')
+  })
+
+  it('does not escape unknown html-shaped tokens inside inline code', () => {
+    const input = 'Render `<tool_call>` literally, but escape <tool_call> in prose.'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`<tool_call>`')
+    expect(output).toContain('&lt;tool_call&gt; in prose')
+  })
+
   it('handles a fenced block larger than V8 spread-argument limit', () => {
     // A single huge code block (e.g. a logged minified bundle) used to throw
     // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.

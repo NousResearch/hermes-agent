@@ -21,6 +21,20 @@ const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 
+const HTML_TAG_NAME_RE = /^\/?([a-z][a-z0-9_-]*)(?=[\s/>]|$)/i
+const MARKDOWN_AUTOLINK_RE = /^(?:https?:\/\/|mailto:|[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)/i
+
+const KNOWN_HTML_TAGS = new Set(
+  [
+    'a abbr address area article aside audio b base bdi bdo blockquote br button canvas caption cite code col colgroup',
+    'data datalist dd del details dfn dialog div dl dt em figcaption figure footer h1 h2 h3 h4 h5 h6 head header hr html',
+    'i img ins kbd label li main mark nav ol p picture pre q rp rt ruby s samp section small source span strong sub summary',
+    'sup table tbody td tfoot th thead time tr track u ul var video wbr'
+  ]
+    .join(' ')
+    .split(' ')
+)
+
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
  * leading/trailing horizontal whitespace) — i.e. an unambiguous close fence
@@ -138,6 +152,69 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function escapeUnknownHtmlTags(text: string): string {
+  let out = ''
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor)
+
+    if (start === -1) {
+      out += text.slice(cursor)
+
+      break
+    }
+
+    out += text.slice(cursor, start)
+
+    const rest = text.slice(start + 1)
+
+    if (
+      rest.startsWith('!--') ||
+      rest.startsWith('!DOCTYPE') ||
+      rest.startsWith('![CDATA[') ||
+      rest.startsWith('?') ||
+      MARKDOWN_AUTOLINK_RE.test(rest)
+    ) {
+      out += '<'
+      cursor = start + 1
+
+      continue
+    }
+
+    const tagMatch = rest.match(HTML_TAG_NAME_RE)
+
+    if (!tagMatch) {
+      out += '<'
+      cursor = start + 1
+
+      continue
+    }
+
+    const end = text.indexOf('>', start + 1)
+
+    if (end === -1) {
+      out += '&lt;'
+      cursor = start + 1
+
+      continue
+    }
+
+    const tagName = (tagMatch[1] || '').toLowerCase()
+    const rawTag = text.slice(start, end + 1)
+
+    if (KNOWN_HTML_TAGS.has(tagName)) {
+      out += rawTag
+    } else {
+      out += `&lt;${text.slice(start + 1, end)}&gt;`
+    }
+
+    cursor = end + 1
+  }
+
+  return out
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
@@ -145,7 +222,9 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            escapeUnknownHtmlTags(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')

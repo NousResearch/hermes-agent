@@ -3953,7 +3953,16 @@ function registerPowerResumeListeners() {
 }
 
 function getAppIconPath() {
-  return APP_ICON_PATHS.find(fileExists)
+  const found = APP_ICON_PATHS.find(fileExists)
+  if (!found) return null
+  // nativeImage.createFromPath() cannot read from inside asar archives,
+  // so read the file as a buffer (fs works transparently through asar)
+  // and create the NativeImage from the buffer instead.
+  try {
+    return nativeImage.createFromBuffer(fs.readFileSync(found))
+  } catch {
+    return null
+  }
 }
 
 function sendOpenUpdatesRequested() {

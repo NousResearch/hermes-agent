@@ -278,7 +278,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
@@ -1690,7 +1690,6 @@ class QQAdapter(BasePlatformAdapter):
             )
 
             if self._is_voice_content_type(ct, filename):
-                # Voice: use QQ's asr_refer_text first, then voice_wav_url, then STT.
                 asr_refer = (
                     str(att.get("asr_refer_text", "")).strip()
                     if isinstance(att.get("asr_refer_text"), str)
@@ -1847,7 +1846,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Returns the transcript text, or None on failure.
         """
-        # 1. Use QQ's built-in ASR text if available
+        # 1. Prefer QQ's built-in ASR if available — free and no extra API call
         if asr_refer_text:
             logger.debug(
                 "[%s] STT: using QQ asr_refer_text: %r", self._log_tag, asr_refer_text[:100]
@@ -2203,12 +2202,7 @@ class QQAdapter(BasePlatformAdapter):
         return None
 
     async def _call_stt(self, wav_path: str) -> Optional[str]:
-        """Call an OpenAI-compatible STT API to transcribe a wav file.
-
-        Uses the provider configured in ``channels.qqbot.stt`` config,
-        falling back to QQ's built-in ``asr_refer_text`` if not configured.
-        Returns None if STT is not configured or the call fails.
-        """
+        """Call an OpenAI-compatible STT API endpoint."""
         stt_cfg = self._resolve_stt_config()
         if not stt_cfg:
             logger.warning(

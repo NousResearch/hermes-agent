@@ -15,10 +15,62 @@ import logging
 import os
 import html as _html
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_abandoned_task(task: asyncio.Task) -> None:
+    """Observe a detached task's terminal exception to avoid noisy loop logs."""
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
+
+
+async def _await_with_thread_deadline(awaitable, timeout: float):
+    """Await with a wall-clock deadline that does not depend on loop timers.
+
+    ``asyncio.wait_for`` schedules its timeout on the event loop and then waits
+    for cancellation to propagate.  PTB/httpcore initialization can sit inside
+    cancellation-shielded anyio scopes, so a timed-out initialize() may never
+    hand control back to the retry ladder under some supervisors.  This helper
+    lets a daemon ``threading.Timer`` wake the loop and, on timeout, abandons
+    the shielded task instead of awaiting cancellation completion.
+    """
+    task = asyncio.ensure_future(awaitable)
+    loop = asyncio.get_running_loop()
+    deadline = loop.create_future()
+
+    def _mark_expired() -> None:
+        if not deadline.done():
+            deadline.set_result(None)
+
+    def _expire_from_thread() -> None:
+        loop.call_soon_threadsafe(_mark_expired)
+
+    timer = threading.Timer(max(timeout, 0.0), _expire_from_thread)
+    timer.daemon = True
+    timer.start()
+    try:
+        done, _ = await asyncio.wait(
+            {task, deadline},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            if not deadline.done():
+                deadline.cancel()
+            return await task
+
+        task.cancel()
+        task.add_done_callback(_consume_abandoned_task)
+        raise asyncio.TimeoutError()
+    finally:
+        timer.cancel()
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -2925,7 +2977,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
                     )
-                    await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
+                    await _await_with_thread_deadline(
+                        self._app.initialize(),
+                        timeout=_init_timeout,
+                    )
                     break
                 except asyncio.TimeoutError:
                     if _attempt < _max_connect - 1:

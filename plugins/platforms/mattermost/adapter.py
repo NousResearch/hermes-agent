@@ -1150,12 +1150,13 @@ def interactive_setup() -> None:
     print_info("   To find your user ID: click your avatar → Profile")
     print_info("   or use the API: GET /api/v4/users/me")
     print()
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty to choose access mode)")
     if allowed_users:
         save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Mattermost allowlist configured")
     else:
-        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+        from hermes_cli.setup import _configure_open_access_or_pairing
+        _configure_open_access_or_pairing("MATTERMOST_ALLOW_ALL_USERS")
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")

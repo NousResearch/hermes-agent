@@ -7608,14 +7608,15 @@ def interactive_setup() -> None:
     print_info("   You can also use Discord usernames (resolved on gateway start).")
     print()
     allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+        "Allowed user IDs or usernames (comma-separated, leave empty to choose access mode)"
     )
     if allowed_users:
         cleaned_ids = _clean_discord_user_ids(allowed_users)
         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
         print_success("Discord allowlist configured")
     else:
-        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+        from hermes_cli.setup import _configure_open_access_or_pairing
+        _configure_open_access_or_pairing("DISCORD_ALLOW_ALL_USERS")
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")

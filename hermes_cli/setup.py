@@ -1725,6 +1725,39 @@ def _prompt_telegram_bot_token() -> str | None:
         return token
 
 
+def _configure_open_access_or_pairing(allow_all_env: str) -> None:
+    """Resolve unauthorized-user handling when the operator left the allowlist empty.
+
+    An empty allowlist is NOT open access on its own. The gateway default-denies
+    unknown senders — an allowlist is required for every network-exposed adapter
+    (SECURITY.md §2.6) — and runtime auth only treats a sender as authorized when
+    an explicit allow-all flag is set (gateway/authz_mixin.py). Without this
+    opt-in the bot silently stays in deny / DM-pairing mode, contradicting the
+    "leave empty for open access" prompt these wizards used to show.
+
+    Mirror the modern hermes_cli.gateway._configure_platform() flow: offer an
+    explicit choice and enable open access only when the operator picks it —
+    never as a silent fail-open default.
+    """
+    access_idx = prompt_choice(
+        "How should unauthorized users be handled?",
+        [
+            "Enable open access (anyone can message the bot)",
+            "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+            "Skip for now (bot will deny all users until configured)",
+        ],
+        default=1,
+    )
+    if access_idx == 0:
+        save_env_value(allow_all_env, "true")
+        print_warning("Open access enabled — anyone can use your bot!")
+    elif access_idx == 1:
+        print_success("DM pairing mode — users will receive a code to request access.")
+        print_info("   Approve with: hermes pairing approve <platform> <code>")
+    else:
+        print_info("   Skipped — configure later with 'hermes gateway setup'")
+
+
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
@@ -1800,11 +1833,11 @@ def _setup_telegram():
             allowed_users = ",".join(ids)
         else:
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to choose access mode)"
             )
     else:
         allowed_users = prompt(
-            "Allowed user IDs (comma-separated, leave empty for open access)"
+            "Allowed user IDs (comma-separated, leave empty to choose access mode)"
         )
 
     if allowed_users:
@@ -1812,7 +1845,7 @@ def _setup_telegram():
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users)
         print_success("Telegram allowlist configured - only listed users can use the bot")
     else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+        _configure_open_access_or_pairing("TELEGRAM_ALLOW_ALL_USERS")
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")
@@ -1878,12 +1911,12 @@ def _setup_bluebubbles():
     print_info("🔒 Security: Restrict who can message your bot")
     print_info("   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)")
     print()
-    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty for open access)")
+    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty to choose access mode)")
     if allowed_users:
         save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("BlueBubbles allowlist configured")
     else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+        _configure_open_access_or_pairing("BLUEBUBBLES_ALLOW_ALL_USERS")
 
     print()
     print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")

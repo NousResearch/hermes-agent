@@ -1024,10 +1024,18 @@ def run_conversation(
             agent._last_content_with_tools = None
             agent._last_content_tools_all_housekeeping = False
             agent._mute_post_response = False
-            # Compression creates a new durable session boundary; write all
-            # compacted messages on the next persistence flush and rebuild
-            # the API-message copy from the compressed history.
-            conversation_history = None
+            # Re-baseline the flush cursor for the compaction mode that just
+            # ran. Legacy session-rotation returns None (the child session has
+            # not seen the compacted transcript, so the next flush writes it
+            # whole); in-place compaction returns list(messages) because the
+            # compacted rows are already persisted under the same session id —
+            # leaving None there would re-append them, doubling the active
+            # context and retriggering compression. Mirrors the post-response
+            # and preflight compaction sites; see
+            # conversation_history_after_compression().
+            conversation_history = conversation_history_after_compression(
+                agent, messages
+            )
             api_call_count -= 1
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()

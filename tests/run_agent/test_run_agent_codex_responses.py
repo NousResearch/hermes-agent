@@ -1488,6 +1488,79 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
     assert len(requests) == 2
 
 
+def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, tmp_path):
+    """Mid-turn pre-API compaction must re-baseline the flush cursor.
+
+    In-place compaction (``compression.in_place: True``, the default) inserts
+    the compacted rows into the session DB itself via ``archive_and_compact``
+    WITHOUT stamping them with the intrinsic persisted-marker. The loop must
+    therefore set ``conversation_history`` to those compacted dicts so the next
+    flush skips them by identity. Setting ``conversation_history = None`` here
+    (as the original PR did) makes the flush treat the already-persisted
+    compacted dicts as new and append them a second time — doubling the active
+    context and retriggering compression. This guards that regression with a
+    REAL SessionDB and the REAL archive_and_compact path (no persist stubs).
+    """
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = _build_agent(monkeypatch)
+    # _build_agent stubs _persist_session; restore the real one so the flush
+    # cursor / double-write behaviour is exercised end to end.
+    agent._persist_session = run_agent.AIAgent._persist_session.__get__(agent)
+    agent._cleanup_task_resources = lambda task_id: None
+
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    agent._session_db = SessionDB()
+    agent._ensure_db_session()
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": "x" * 80_000}
+            )
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        # Emulate the real in-place compaction DB side effect: soft-archive the
+        # prior rows and insert the compacted set under the SAME session id,
+        # then reset the flush identity seed — exactly as archive_and_compact +
+        # the in_place branch in conversation_compression.py do.
+        agent._last_compaction_in_place = True
+        compacted = [{"role": "user", "content": "[summary of prior tool-heavy work]"}]
+        agent._session_db.archive_and_compact(agent.session_id, compacted)
+        agent._flushed_db_message_ids = set()
+        return compacted, "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+    assert result["completed"] is True
+
+    # The compacted summary row must appear exactly once in the active
+    # transcript that a resume would reload.
+    active = agent._session_db.get_messages(agent.session_id)
+    summary_rows = [
+        m for m in active
+        if isinstance(m.get("content"), str)
+        and "summary of prior tool-heavy work" in m["content"]
+    ]
+    assert len(summary_rows) == 1, (
+        f"compacted summary row double-persisted: {len(summary_rows)} copies "
+        "(conversation_history flush cursor not re-baselined for in-place compaction)"
+    )
+
+
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response

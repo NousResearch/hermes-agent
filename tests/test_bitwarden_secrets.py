@@ -564,6 +564,37 @@ def test_apply_override_existing(monkeypatch, tmp_path):
     assert os.environ["OPENAI_API_KEY"] == "fresh"
 
 
+def test_apply_preserve_existing_wins_over_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "profile-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "stale")
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": "FEISHU_APP_SECRET", "value": "shared-secret"},
+        {"key": "OPENAI_API_KEY", "value": "fresh"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True,
+        project_id="p",
+        override_existing=True,
+        preserve_existing=["FEISHU_APP_SECRET"],
+        auto_install=False,
+    )
+
+    assert result.ok
+    assert os.environ["FEISHU_APP_SECRET"] == "profile-secret"
+    assert os.environ["OPENAI_API_KEY"] == "fresh"
+    assert "FEISHU_APP_SECRET" in result.skipped
+    assert "OPENAI_API_KEY" in result.applied
+
+
 def test_apply_never_overrides_bootstrap_token(monkeypatch, tmp_path):
     """Even with override_existing=True, the access-token var is preserved."""
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.original")
@@ -632,6 +663,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         "    access_token_env: 'BWS_ACCESS_TOKEN'\n"
         "    cache_ttl_seconds: 0\n"
         "    override_existing: false\n"
+        "    preserve_existing:\n"
+        "      - FEISHU_APP_SECRET\n"
         "    auto_install: false\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -643,6 +676,7 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         called["n"] += 1
         assert kwargs["enabled"] is True
         assert kwargs["project_id"] == "proj-1"
+        assert kwargs["preserve_existing"] == ["FEISHU_APP_SECRET"]
         os.environ["MY_BSM_KEY"] = "from-bsm"
         return bw.FetchResult(
             secrets={"MY_BSM_KEY": "from-bsm"},

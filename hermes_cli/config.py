@@ -3039,6 +3039,11 @@ DEFAULT_CONFIG = {
             # if .env had the final say, rotating in Bitwarden wouldn't
             # take effect until you also cleared the matching .env line.
             "override_existing": True,
+            # Env var names that keep their existing .env / shell value even
+            # when override_existing is true. Useful for per-profile platform
+            # secrets that intentionally differ across profiles while other
+            # provider keys still rotate centrally through Bitwarden.
+            "preserve_existing": [],
             # When True, the bws binary is auto-downloaded into
             # ~/.hermes/bin/ on first use.  When False you must install
             # bws yourself and have it on PATH.

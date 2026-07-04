@@ -44,7 +44,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -598,6 +598,7 @@ def apply_bitwarden_secrets(
     auto_install: bool = True,
     server_url: str = "",
     home_path: Optional[Path] = None,
+    preserve_existing: Optional[Iterable[str]] = None,
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
 
@@ -609,8 +610,12 @@ def apply_bitwarden_secrets(
     (e.g. ``https://vault.bitwarden.eu`` for EU Cloud).  Empty string
     means use ``bws``'s default (US Cloud).
 
-    Parameters mirror the ``secrets.bitwarden.*`` config keys so the
-    caller can just splat the dict in.
+    ``preserve_existing`` is a narrow escape hatch for profile-local secrets
+    that must not be replaced by a shared BSM project even when
+    ``override_existing`` is true.
+
+    Parameters mirror the ``secrets.bitwarden.*`` config keys so the caller can
+    pass config values through directly.
     """
     result = FetchResult()
 
@@ -657,11 +662,18 @@ def apply_bitwarden_secrets(
     result.secrets = secrets
     result.warnings.extend(warnings)
 
+    preserve_existing_keys = {
+        name.strip() for name in (preserve_existing or ()) if isinstance(name, str)
+    }
+
     for key, value in secrets.items():
         if key == access_token_env:
             # Don't let BSM clobber the very token we used to fetch
             # itself — that would be a footgun if someone stored the
             # token as a BSM secret too.
+            result.skipped.append(key)
+            continue
+        if key in preserve_existing_keys and os.environ.get(key):
             result.skipped.append(key)
             continue
         if not override_existing and os.environ.get(key):

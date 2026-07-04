@@ -321,6 +321,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
         project_id=bw_cfg.get("project_id", ""),
         override_existing=bool(bw_cfg.get("override_existing", False)),
+        preserve_existing=bw_cfg.get("preserve_existing", []),
         cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
         auto_install=bool(bw_cfg.get("auto_install", True)),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),

@@ -87,6 +87,7 @@ secrets:
     server_url: ""
     cache_ttl_seconds: 300
     override_existing: true
+    preserve_existing: []
     auto_install: true
 ```
 
@@ -98,6 +99,7 @@ secrets:
 | `server_url` | `""` | Bitwarden 区域或自托管端点。为空时使用 `bws` 默认值（US Cloud，`https://vault.bitwarden.com`）。欧盟云设为 `https://vault.bitwarden.eu`，自托管则填写自己的 URL。以 `BWS_SERVER_URL` 形式传递给 `bws` 子进程。 |
 | `cache_ttl_seconds` | `300` | 进程内拉取结果的复用时长。设为 `0` 可禁用缓存。缓存按进程隔离；新的 `hermes` 调用从头开始。 |
 | `override_existing` | `true` | 为 true 时，Bitwarden 的值会覆盖环境中已有的任何值（使 Web 应用中的轮换真正生效）。如果希望本地 `.env` / shell 导出优先，设为 `false`。 |
+| `preserve_existing` | `[]` | 即使 `override_existing` 为 true，也保留现有 `.env` / shell 值的环境变量名列表。适合各 profile 必须不同的平台密钥，例如 `FEISHU_APP_SECRET`，同时其他共享密钥仍由 Bitwarden 统一轮换。 |
 | `auto_install` | `true` | 为 true 时，首次使用时自动将 `bws` 下载到 `~/.hermes/bin/`。 |
 
 ## 故障模式

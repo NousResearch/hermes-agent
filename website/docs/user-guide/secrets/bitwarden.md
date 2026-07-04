@@ -87,6 +87,7 @@ secrets:
     server_url: ""
     cache_ttl_seconds: 300
     override_existing: true
+    preserve_existing: []
     auto_install: true
 ```
 
@@ -98,6 +99,7 @@ secrets:
 | `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. |
 | `cache_ttl_seconds` | `300` | How long an in-process fetch result is reused. Set to `0` to disable caching. Cache is per-process; new `hermes` invocations start fresh. |
 | `override_existing` | `true` | When true, Bitwarden values overwrite anything already in env (so rotation in the web app actually takes effect). Flip to `false` if you want `.env` / shell exports to win locally. |
+| `preserve_existing` | `[]` | Env var names that keep their existing `.env` / shell value even when `override_existing` is true. Use this for per-profile platform secrets, for example `FEISHU_APP_SECRET`, while other shared keys still rotate through Bitwarden. |
 | `auto_install` | `true` | When true, `bws` is auto-downloaded into `~/.hermes/bin/` on first use. |
 
 ## Failure modes

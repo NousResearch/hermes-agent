@@ -2628,7 +2628,9 @@ def _apply_model_switch(
         _force_refresh,
         is_session,
     ) = parsed_flags
-    persist_global = resolve_persist_behavior(is_global_flag, is_session)
+    persist_global = resolve_persist_behavior(
+        is_global_flag, is_session, explicit_provider
+    )
     if not model_input:
         raise ValueError("model value required")
 

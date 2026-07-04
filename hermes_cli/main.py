@@ -303,6 +303,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.hse import build_hse_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -4215,6 +4216,13 @@ def cmd_cron(args):
     from hermes_cli.cron import cron_command
 
     cron_command(args)
+
+
+def cmd_hse(args):
+    """Hermes Self-Evolution operating-copy bridge."""
+    from hermes_cli.hse import hse_command
+
+    return hse_command(args)
 
 
 def cmd_webhook(args):
@@ -12662,6 +12670,11 @@ def main():
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
+
+    # =========================================================================
+    # HSE/evolve command  (parser built in hermes_cli/subcommands/hse.py)
+    # =========================================================================
+    build_hse_parser(subparsers, cmd_hse=cmd_hse)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

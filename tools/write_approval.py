@@ -92,15 +92,51 @@ def write_approval_enabled(subsystem: str) -> bool:
 def _normalize_enabled(value: Any) -> bool:
     """Coerce a config value to a bool. Default (unknown) is False (gate off).
 
-    Accepts real bools and the usual truthy/falsey strings. YAML 1.1 parses
-    bare ``on``/``off``/``yes``/``no`` as bools already, so the string branch
+    Accepts real bools, dicts (``{"enabled": True}`` — the new config-v33
+    shape), and the usual truthy/falsey strings. YAML 1.1 parses bare
+    ``on``/``off``/``yes``/``no`` as bools already, so the string branch
     is mostly for hand-edited configs.
     """
     if isinstance(value, bool):
         return value
+    if isinstance(value, dict):
+        return _normalize_enabled(value.get("enabled", False))
     if isinstance(value, str):
         return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
     return False
+
+
+def should_gate_skill(name: str) -> bool:
+    """Check whether a specific skill name should be subject to the approval gate.
+
+    When the gate is off (``skills.write_approval.enabled: false``) this always
+    returns False — writes flow freely.
+
+    When the gate is on, the ``only`` / ``exclude`` lists refine the decision:
+
+    * ``only`` non-empty   — gate ONLY skills whose name is in this list
+    * ``exclude`` non-empty — gate ALL skills EXCEPT those in this list
+    * neither set (default) — gate every skill write (the pre-v33 behaviour)
+
+    ``only`` takes precedence when both are set (the more restrictive wins).
+    """
+    if not write_approval_enabled(SKILLS):
+        return False
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        raw = cfg_get(cfg, SKILLS, CONFIG_KEY, default={})
+    except Exception:
+        return True  # gate on, no override → gate everything
+    if not isinstance(raw, dict):
+        return True  # gate on, no override → gate everything
+    only_list = raw.get("only", [])
+    exclude_list = raw.get("exclude", [])
+    if only_list:
+        return name in only_list
+    if exclude_list:
+        return name not in exclude_list
+    return True  # gate on, no only/exclude → gate everything
 
 
 # ---------------------------------------------------------------------------

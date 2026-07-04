@@ -141,6 +141,37 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+def test_bare_tilde_cwd_resolves_to_root_before_container_creation(monkeypatch):
+    """``docker run -w`` receives *cwd* as a literal daemon argument — dockerd
+    never expands "~" — so it must be resolved to an absolute path before the
+    container is created, unlike Singularity/Modal/Daytona which resolve "~"
+    via their own sandbox shell in ``BaseEnvironment.init_session()``.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="~")
+
+    assert env.cwd == "/root"
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert run_args[run_args.index("-w") + 1] == "/root"
+
+
+def test_tilde_child_cwd_resolves_relative_to_root(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="~/project")
+
+    assert env.cwd == "/root/project"
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert run_args[run_args.index("-w") + 1] == "/root/project"
+
+
 def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     """Host cwd should not be mounted unless the caller explicitly opts in."""
     project_dir = tmp_path / "my-project"

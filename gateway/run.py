@@ -1477,15 +1477,16 @@ if _config_path.exists():
                     # Only bridge explicit absolute paths from config.yaml.
                     if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
                         continue
-                    # Expand shell tilde in local/container cwd so subprocess.Popen
-                    # never receives a literal "~/" which the kernel rejects.
-                    # SSH cwd is interpreted by the remote shell, so preserve
-                    # "~" / "~/..." for the SSH backend instead of expanding it
+                    # Expand shell tilde in local cwd so subprocess.Popen never
+                    # receives a literal "~/" which the kernel rejects. SSH and
+                    # container/sandbox backends (docker/singularity/modal/
+                    # daytona) resolve cwd in their OWN shell, so preserve
+                    # "~" / "~/..." for those backends instead of expanding it
                     # to the Hermes host/container HOME (often /opt/data). Shared
                     # predicate with terminal_tool so the two sites can't drift.
                     if _cfg_key == "cwd" and isinstance(_val, str):
-                        from tools.terminal_tool import _is_ssh_remote_tilde_cwd
-                        if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
+                        from tools.terminal_tool import _is_remote_shell_tilde_cwd
+                        if not _is_remote_shell_tilde_cwd(_terminal_backend, _val.strip()):
                             _val = os.path.expanduser(_val)
                     if isinstance(_val, (list, dict)):
                         os.environ[_env_var] = json.dumps(_val)

@@ -12,7 +12,7 @@ asserting the expected env var outcomes.
 import os
 import json
 
-from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+from tools.terminal_tool import _is_remote_shell_tilde_cwd
 
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
@@ -50,12 +50,13 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
                 if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
-                # Expand shell tilde for local/container backends so subprocess.Popen
-                # never receives a literal "~/" which the kernel rejects. SSH cwd is
-                # interpreted by the remote shell, so preserve "~" / "~/..." there.
-                # Uses the same production predicate as gateway/run.py.
+                # Expand shell tilde for the local backend so subprocess.Popen
+                # never receives a literal "~/" which the kernel rejects. SSH and
+                # container/sandbox backends resolve cwd in their OWN shell, so
+                # preserve "~" / "~/..." there. Uses the same production
+                # predicate as gateway/run.py.
                 if cfg_key == "cwd" and isinstance(val, str):
-                    if not _is_ssh_remote_tilde_cwd(terminal_backend, val.strip()):
+                    if not _is_remote_shell_tilde_cwd(terminal_backend, val.strip()):
                         val = os.path.expanduser(val)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
@@ -283,3 +284,39 @@ class TestTildeExpansion:
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/host/project"})
         assert result["TERMINAL_ENV"] == "ssh"
         assert "TERMINAL_CWD" not in result
+
+    def test_docker_terminal_cwd_tilde_preserved_for_container_shell(self, monkeypatch):
+        """Docker cwd '~/x' must survive until the container's own shell
+        resolves it — it must not become the Hermes host/container HOME
+        (often /opt/data under Docker)."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "docker", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_ENV"] == "docker"
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_singularity_terminal_cwd_tilde_preserved_for_container_shell(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "singularity", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_modal_terminal_cwd_tilde_preserved_for_container_shell(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "modal", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_daytona_terminal_cwd_tilde_preserved_for_container_shell(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "daytona", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_local_terminal_cwd_tilde_still_expanded(self, monkeypatch):
+        """The local backend executes on the Hermes host itself, so local
+        expansion against the host's own HOME remains correct there."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "local", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "/opt/data/work"

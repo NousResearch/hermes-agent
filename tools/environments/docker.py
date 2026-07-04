@@ -597,8 +597,19 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
     ):
+        # ``docker run -w`` receives *cwd* as a literal daemon argument, not a
+        # shell command — dockerd never expands "~", so a bare "~" or a
+        # "~/..." path must be resolved to an absolute path here, before the
+        # container is created (unlike Singularity/Modal/Daytona, which have
+        # no creation-time working-dir flag and resolve "~" via the sandbox's
+        # own shell in ``BaseEnvironment.init_session()``). This mirrors the
+        # container's default HOME for the common (root) case; it does not
+        # account for ``run_as_host_user``, matching the bare "~" handling
+        # this already had before "~/..." support was added.
         if cwd == "~":
             cwd = "/root"
+        elif cwd.startswith("~/"):
+            cwd = "/root/" + cwd[2:]
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes

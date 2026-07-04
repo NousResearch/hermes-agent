@@ -4124,11 +4124,11 @@ def complete_task(
                 metadata=metadata,
             )
         # Carry the handoff summary in the event payload so gateway
-        # notifiers and dashboard WS consumers can render it without a
-        # second SQL round-trip. First line only, 400 char cap — the
-        # full summary stays on the run row.
+        # notifiers and dashboard WS consumers can render structured
+        # multi-line handoffs without a second SQL round-trip. The
+        # notifier applies platform-specific length limits before send.
         ev_summary = (summary if summary is not None else result) or ""
-        ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        ev_summary = ev_summary.strip() if ev_summary else ""
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,

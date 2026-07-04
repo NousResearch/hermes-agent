@@ -78,6 +78,31 @@ def _format_blocked_notification(
     return f"{prefix}: {clean_reason}"
 
 
+def _format_completed_notification(
+    *,
+    task_id: str,
+    title: str,
+    tag: str = "",
+    payload_summary: str = "",
+    task_result: str = "",
+    platform_limit: int = 4000,
+) -> str:
+    prefix = f"✔ {tag}Kanban {task_id} done — {title}"
+    handoff = str(payload_summary or task_result or "").strip()
+    if not handoff:
+        return prefix
+    marker = "... [truncated]"
+    try:
+        limit = int(platform_limit or 4000)
+    except (TypeError, ValueError):
+        limit = 4000
+    max_handoff = max(200, limit - len(prefix) - 1)
+    if len(handoff) > max_handoff:
+        keep = max(0, max_handoff - len(marker))
+        handoff = handoff[:keep].rstrip() + marker
+    return f"{prefix}\n{handoff}"
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -350,41 +375,23 @@ class GatewayKanbanWatchersMixin:
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                h = payload_summary.strip()
-                                prefix = (
-                                    f"✔ {tag}Kanban {sub['task_id']} done"
-                                    f" — {title}\n"
+                            try:
+                                platform_limit = int(
+                                    getattr(adapter, "MAX_MESSAGE_LENGTH", 4000)
+                                    or 4000
                                 )
-                                try:
-                                    platform_limit = int(
-                                        getattr(adapter, "MAX_MESSAGE_LENGTH", 4000)
-                                        or 4000
-                                    )
-                                except (TypeError, ValueError):
-                                    platform_limit = 4000
-                                marker = "... [truncated]"
-                                max_handoff = max(200, platform_limit - len(prefix))
-                                if len(h) > max_handoff:
-                                    keep = max(0, max_handoff - len(marker))
-                                    h = h[:keep].rstrip() + marker
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                            except (TypeError, ValueError):
+                                platform_limit = 4000
+                            msg = _format_completed_notification(
+                                task_id=sub["task_id"],
+                                title=title,
+                                tag=tag,
+                                payload_summary=payload_summary or "",
+                                task_result=(task.result if task and task.result else ""),
+                                platform_limit=platform_limit,
                             )
                         elif kind == "blocked":
                             reason = ""
@@ -609,15 +616,18 @@ class GatewayKanbanWatchersMixin:
         from pathlib import Path as _Path
 
         candidates: list[str] = []
+        missing_explicit: list[str] = []
         seen: set[str] = set()
 
-        def _add(path: str) -> None:
+        def _add(path: str, *, explicit: bool = False) -> None:
             if not path:
                 return
             expanded = os.path.expanduser(path)
             if expanded in seen:
                 return
             if not os.path.isfile(expanded):
+                if explicit:
+                    missing_explicit.append(expanded)
                 return
             seen.add(expanded)
             candidates.append(expanded)
@@ -628,7 +638,7 @@ class GatewayKanbanWatchersMixin:
             if isinstance(raw, (list, tuple)):
                 for item in raw:
                     if isinstance(item, str):
-                        _add(item)
+                        _add(item, explicit=True)
 
             # 2. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
@@ -643,6 +653,18 @@ class GatewayKanbanWatchersMixin:
             paths, _ = adapter.extract_local_files(result_text)
             for p in paths:
                 _add(p)
+
+        if missing_explicit:
+            preview = "\n".join(f"- {path}" for path in missing_explicit[:5])
+            extra = ""
+            if len(missing_explicit) > 5:
+                extra = f"\n- ... and {len(missing_explicit) - 5} more"
+            await adapter.send(
+                chat_id,
+                "⚠ Kanban artifact missing; could not upload referenced file(s):\n"
+                f"{preview}{extra}",
+                metadata=metadata,
+            )
 
         if not candidates:
             return

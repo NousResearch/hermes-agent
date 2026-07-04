@@ -2076,8 +2076,7 @@ def test_completed_event_payload_carries_summary(kanban_home):
         events = kb.list_events(conn, tid)
         comp = [e for e in events if e.kind == "completed"]
         assert len(comp) == 1
-        # First-line-only, within the 400-char cap, preserved verbatim.
-        assert comp[0].payload["summary"] == "handoff line 1"
+        assert comp[0].payload["summary"] == "handoff line 1\nextra"
     finally:
         conn.close()
 

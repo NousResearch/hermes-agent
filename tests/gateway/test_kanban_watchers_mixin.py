@@ -7,9 +7,15 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import inspect
+from unittest.mock import AsyncMock
 
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin, _format_blocked_notification
+from gateway.kanban_watchers import (
+    GatewayKanbanWatchersMixin,
+    _format_blocked_notification,
+    _format_completed_notification,
+)
 
 KANBAN_METHODS = [
     "_kanban_notifier_watcher",
@@ -86,3 +92,99 @@ def test_blocked_notification_uses_platform_budget_instead_of_160_char_cutoff():
 
     assert msg.endswith("directly.")
     assert "`external_capability_unavailable`" in msg
+
+
+def test_completed_notification_surfaces_multiline_publish_result_in_chat():
+    result = """本次已發佈清單
+
+1
+• 社團名稱: 餐飲美食交流.經營管理.二手中古.新舊餐飲設備買賣.頂讓.
+• 成員數: 58.4K
+• 類型: Public
+• 狀態: 已送出 / 已分享
+
+Facebook 畫面驗證
+
+顯示：
+Your listing has been shared to 餐飲美食交流.經營管理.二手中古.新舊餐飲設備買賣.頂讓.
+
+這次沒有做的事
+
+- 沒有建立新的 Marketplace 商品
+- 沒有 Join group
+- 沒有 Promote / 付款
+- 沒有私訊、留言
+"""
+
+    msg = _format_completed_notification(
+        task_id="t_publish",
+        title="ClawOps: Facebook 發佈",
+        tag="@clawops-browser ",
+        payload_summary="",
+        task_result=result,
+        platform_limit=4096,
+    )
+
+    assert "本次已發佈清單" in msg
+    assert "餐飲美食交流.經營管理" in msg
+    assert "Facebook 畫面驗證" in msg
+    assert "Your listing has been shared" in msg
+    assert "沒有建立新的 Marketplace 商品" in msg
+
+
+async def _deliver_artifacts(adapter, tmp_path, artifacts):
+    runner = SimpleNamespace()
+    await GatewayKanbanWatchersMixin._deliver_kanban_artifacts(
+        runner,
+        adapter=adapter,
+        chat_id="chat-1",
+        metadata={},
+        event_payload={"artifacts": artifacts},
+        task=None,
+    )
+
+
+def test_kanban_artifact_delivery_warns_when_explicit_artifact_missing(tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = SimpleNamespace(
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(),
+        send_document=AsyncMock(),
+        send_multiple_images=AsyncMock(),
+    )
+    missing = str(tmp_path / "missing_report.md")
+
+    import asyncio
+
+    asyncio.run(_deliver_artifacts(adapter, tmp_path, [missing]))
+
+    adapter.send.assert_awaited_once()
+    warning = adapter.send.await_args.args[1]
+    assert "artifact missing" in warning
+    assert missing in warning
+    adapter.send_document.assert_not_awaited()
+
+
+def test_kanban_artifact_delivery_uploads_existing_markdown(tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+
+    report = tmp_path / "report.md"
+    report.write_text("# report\n", encoding="utf-8")
+    adapter = SimpleNamespace(
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(),
+        send_document=AsyncMock(),
+        send_multiple_images=AsyncMock(),
+    )
+
+    import asyncio
+
+    asyncio.run(_deliver_artifacts(adapter, tmp_path, [str(report)]))
+
+    adapter.send.assert_not_awaited()
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(report),
+        metadata={},
+    )

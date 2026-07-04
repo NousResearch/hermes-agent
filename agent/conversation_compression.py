@@ -391,6 +391,27 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
     return None
 
 
+def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
+    """Preserve a real user turn when a compressor returns assistant/tool-only context."""
+    if any(isinstance(msg, dict) and msg.get("role") == "user" for msg in compressed):
+        return
+    for msg in reversed(original_messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        restored = dict(msg)
+        restored.pop("_db_persisted", None)
+        compressed.append(restored)
+        return
+    compressed.append({
+        "role": "user",
+        "content": (
+            "Continue from the compressed conversation context above. "
+            "This marker exists because the compacted transcript contained "
+            "no preserved user turn."
+        ),
+    })
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -647,6 +668,7 @@ def compress_context(
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
+        _ensure_compressed_has_user_turn(messages, compressed)
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)

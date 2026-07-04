@@ -1459,7 +1459,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, _load_auth_store
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
@@ -1490,6 +1490,22 @@ def list_authenticated_providers(
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
+
+    _auth_store_loaded = False
+    _auth_store_snapshot: dict = {}
+
+    def _auth_store_for_listing() -> dict:
+        """Return one auth-store snapshot for this picker listing call."""
+        nonlocal _auth_store_loaded, _auth_store_snapshot
+        if not _auth_store_loaded:
+            try:
+                store = _load_auth_store()
+                _auth_store_snapshot = store if isinstance(store, dict) else {}
+            except Exception as exc:
+                logger.debug("Auth store check failed for model picker: %s", exc)
+                _auth_store_snapshot = {}
+            _auth_store_loaded = True
+        return _auth_store_snapshot
 
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
@@ -1642,13 +1658,9 @@ def list_authenticated_providers(
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
-            except Exception:
-                pass
+            store = _auth_store_for_listing()
+            if store and store.get("credential_pool", {}).get(hermes_id):
+                has_creds = True
         if not has_creds:
             continue
 
@@ -1686,7 +1698,7 @@ def list_authenticated_providers(
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
-    from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+    _auth_registry = PROVIDER_REGISTRY
 
     # Build reverse mapping: models.dev ID → Hermes provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
@@ -1721,14 +1733,10 @@ def list_authenticated_providers(
         # support OAuth (e.g. anthropic supports both API key and Claude Code
         # OAuth via external credential files).
         if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                providers_store = store.get("providers", {})
-                if store and (pid in providers_store or hermes_slug in providers_store):
-                    has_creds = True
-            except Exception as exc:
-                logger.debug("Auth store check failed for %s: %s", pid, exc)
+            store = _auth_store_for_listing()
+            providers_store = store.get("providers", {}) if store else {}
+            if store and (pid in providers_store or hermes_slug in providers_store):
+                has_creds = True
         # Fallback: check the credential pool with full auto-seeding.
         # This catches credentials that exist in external stores (e.g.
         # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
@@ -1866,14 +1874,10 @@ def list_authenticated_providers(
             _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
         if not _cp_has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                _cp_store = _load_auth_store()
-                _cp_providers_store = _cp_store.get("providers", {})
-                if _cp_store and _cp.slug in _cp_providers_store:
-                    _cp_has_creds = True
-            except Exception:
-                pass
+            _cp_store = _auth_store_for_listing()
+            _cp_providers_store = _cp_store.get("providers", {}) if _cp_store else {}
+            if _cp_store and _cp.slug in _cp_providers_store:
+                _cp_has_creds = True
         if not _cp_has_creds:
             try:
                 from agent.credential_pool import load_pool

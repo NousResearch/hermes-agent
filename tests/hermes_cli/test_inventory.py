@@ -767,3 +767,35 @@ def test_list_authenticated_providers_refresh_busts_cache():
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
 
+
+def test_list_authenticated_providers_reuses_auth_store_snapshot(monkeypatch):
+    """One picker listing should not reread auth.json for every provider row."""
+    from hermes_cli import model_switch
+
+    calls = 0
+
+    def _load_store_once():
+        nonlocal calls
+        calls += 1
+        return {"providers": {}, "credential_pool": {}}
+
+    class _EmptyPool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", _load_store_once)
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda _provider: _EmptyPool())
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openrouter": {"env": ["HERMES_TEST_OPENROUTER_KEY"]},
+            "anthropic": {"env": ["HERMES_TEST_ANTHROPIC_KEY"]},
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
+    monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda: [])
+
+    model_switch.list_authenticated_providers(max_models=0)
+
+    assert calls == 1
+

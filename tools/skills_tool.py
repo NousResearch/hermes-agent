@@ -612,7 +612,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -620,11 +620,14 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan local dir first, then external dirs, then project-local dir
     dirs_to_scan = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())
+    project_skills = get_project_skills_dir()
+    if project_skills:
+        dirs_to_scan.append(project_skills)
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -982,11 +985,16 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
+
         # Build list of all skill directories to search
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
         all_dirs.extend(get_external_skills_dirs())
+        project_skills = get_project_skills_dir()
+        if project_skills:
+            all_dirs.append(project_skills)
 
         if not all_dirs:
             return json.dumps(

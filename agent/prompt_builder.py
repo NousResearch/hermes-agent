@@ -102,6 +102,52 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     return None
 
 
+# Cache: (cwd_resolved, Optional[Path]) — lives for the process lifetime
+# because a project directory doesn't move during a Hermes session.
+_project_dir_cache: Optional[tuple] = None
+
+
+def _find_hermes_project_dir(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``.hermes/`` project directory.
+
+    Walk *cwd* and its parents up to (and including) the git repository
+    root, returning the first ``.hermes/`` directory found.  Returns
+    ``None`` if no such directory exists.
+
+    This is independent of ``_find_hermes_md`` — a project can have
+    ``.hermes.md``, ``.hermes/``, both, or neither.
+    """
+    stop_at = _find_git_root(cwd)
+    current = cwd.resolve()
+
+    for directory in [current, *current.parents]:
+        candidate = directory / ".hermes"
+        if candidate.is_dir():
+            return candidate
+        # Stop walking at the git root (or filesystem root).
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _get_cached_hermes_project_dir(cwd: Optional[Path] = None) -> Optional[Path]:
+    """Cached wrapper around ``_find_hermes_project_dir``.
+
+    The cache is invalidated when *cwd* changes (e.g. the user does
+    ``cd`` inside a running session via the terminal tool) — at that
+    point a new project directory may apply.
+    """
+    global _project_dir_cache
+    if cwd is None:
+        cwd = Path.cwd()
+    cwd_resolved = str(cwd.resolve())
+    if _project_dir_cache is not None and _project_dir_cache[0] == cwd_resolved:
+        return _project_dir_cache[1]
+    result = _find_hermes_project_dir(cwd)
+    _project_dir_cache = (cwd_resolved, result)
+    return result
+
+
 def _strip_yaml_frontmatter(content: str) -> str:
     """Remove optional YAML frontmatter (``---`` delimited) from *content*.
 

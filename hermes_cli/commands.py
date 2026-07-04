@@ -255,6 +255,55 @@ COMMAND_REGISTRY: list[CommandDef] = [
 ]
 
 
+def _register_project_commands() -> None:
+    """Append project-local ``.hermes/commands/*.md`` to ``COMMAND_REGISTRY``.
+
+    Project commands that collide with a built-in command name are skipped
+    unless the frontmatter declares ``override: true``.  This ensures a
+    malicious project repo cannot shadow a security-sensitive command
+    (e.g. ``/yolo``) without the user's explicit opt-in.
+
+    Called once at module import time.  All exceptions are caught so a
+    broken project-commands setup never prevents Hermes from starting.
+    """
+    try:
+        from hermes_cli.project_commands import load_project_commands
+    except ImportError:
+        return
+
+    try:
+        raw_commands = load_project_commands()
+    except Exception:
+        return  # don't let a bad .hermes/commands/ file crash startup
+
+    if not raw_commands:
+        return
+
+    builtin_names = {cmd.name for cmd in COMMAND_REGISTRY}
+
+    for cmd in raw_commands:
+        if cmd.name in builtin_names and not cmd.override:
+            continue
+
+        # Build args_hint from arg definitions
+        hint_parts = []
+        for a in cmd.args:
+            name = a.get("name", "")
+            if name:
+                hint_parts.append(f"<{name}>")
+        args_hint = " ".join(hint_parts) if hint_parts else ""
+
+        COMMAND_REGISTRY.append(CommandDef(
+            name=cmd.name,
+            description=cmd.description,
+            category=cmd.category,
+            args_hint=args_hint,
+        ))
+
+
+_register_project_commands()
+
+
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
 # ---------------------------------------------------------------------------

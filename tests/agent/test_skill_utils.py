@@ -333,3 +333,98 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+# ── Project-local skills (.hermes/skills/) ─────────────────────────────
+
+
+class TestProjectSkillsDir:
+    """Tests for get_project_skills_dir() and get_all_skills_dirs()."""
+
+    def test_no_hermes_dir_returns_none(self, monkeypatch):
+        """Without a .hermes/ directory, get_project_skills_dir returns None."""
+        from agent.skill_utils import _external_dirs_cache_clear as _clear
+        _clear()
+        monkeypatch.setattr(
+            "agent.skill_utils.get_project_skills_dir",
+            lambda: None,
+        )
+        from agent.skill_utils import get_project_skills_dir, get_all_skills_dirs
+
+        assert get_project_skills_dir() is None
+        # get_all_skills_dirs should NOT include any project dir
+        dirs = get_all_skills_dirs()
+        # The project dir (None) is not appended
+        assert all(d is not None for d in dirs)
+
+    def test_hermes_dir_without_skills_subdir(self, monkeypatch, tmp_path):
+        """.hermes/ exists but .hermes/skills/ doesn't — returns None."""
+        from agent.skill_utils import _external_dirs_cache_clear as _clear
+        _clear()
+        project_dir = tmp_path / ".hermes"
+        project_dir.mkdir()
+        # no skills/ subdir
+
+        monkeypatch.setattr(
+            "agent.prompt_builder._get_cached_hermes_project_dir",
+            lambda cwd=None: project_dir,
+        )
+        from agent.skill_utils import get_project_skills_dir
+
+        assert get_project_skills_dir() is None
+
+    def test_hermes_skills_dir_exists(self, monkeypatch, tmp_path):
+        """.hermes/skills/ exists — returns the path."""
+        from agent.skill_utils import _external_dirs_cache_clear as _clear
+        _clear()
+        project_dir = tmp_path / ".hermes"
+        skills_dir = project_dir / "skills"
+        skills_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "agent.prompt_builder._get_cached_hermes_project_dir",
+            lambda cwd=None: project_dir,
+        )
+        from agent.skill_utils import get_project_skills_dir
+
+        result = get_project_skills_dir()
+        assert result == skills_dir
+
+    def test_get_all_skills_dirs_includes_project(self, monkeypatch, tmp_path):
+        """get_all_skills_dirs() appends project skills dir when it exists."""
+        from agent.skill_utils import _external_dirs_cache_clear as _clear
+        _clear()
+        project_dir = tmp_path / ".hermes"
+        skills_dir = project_dir / "skills"
+        skills_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "agent.prompt_builder._get_cached_hermes_project_dir",
+            lambda cwd=None: project_dir,
+        )
+        import agent.skill_utils as su
+        su._external_dirs_cache_clear()
+
+        dirs = su.get_all_skills_dirs()
+        # Project skills dir should be last
+        assert dirs[-1] == skills_dir
+
+    def test_import_error_fallback(self, monkeypatch):
+        """If prompt_builder import fails, returns None gracefully."""
+        from agent.skill_utils import _external_dirs_cache_clear as _clear
+        _clear()
+        import builtins
+        _orig_import = builtins.__import__
+
+        def _block_import(name, *args, **kwargs):
+            if name == "agent.prompt_builder":
+                raise ImportError("blocked")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _block_import)
+        # Reload skill_utils to pick up the patched import
+        import importlib
+        import agent.skill_utils
+        importlib.reload(agent.skill_utils)
+
+        assert agent.skill_utils.get_project_skills_dir() is None

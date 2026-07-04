@@ -3570,6 +3570,41 @@ def get_skill_bundles() -> dict:
     return _skill_bundles
 
 
+def _get_project_cmd_names() -> set:
+    """Return project-local command names for dispatch matching."""
+    try:
+        from hermes_cli.project_commands import load_project_commands
+        return {c.name for c in load_project_commands()}
+    except ImportError:
+        return set()
+
+
+def _parse_project_cmd_args(
+    user_args: str, arg_defs: list,
+) -> dict:
+    """Parse positional command arguments into a dict.
+
+    Each positional word is assigned to the corresponding arg definition
+    in order.  Extra words are appended to the last arg's value with a
+    space separator (greedy last-arg semantics).
+    """
+    if not user_args.strip():
+        return {}
+    words = user_args.strip().split()
+    result: dict = {}
+    for i, arg_def in enumerate(arg_defs):
+        name = arg_def.get("name", "")
+        if i < len(words):
+            result[name] = words[i]
+        else:
+            break
+    # Greedy: append remaining words to the last defined arg
+    if len(words) > len(arg_defs) and arg_defs:
+        last_name = arg_defs[-1].get("name", "")
+        result[last_name] = " ".join(words[len(arg_defs) - 1:])
+    return result
+
+
 def build_bundle_invocation_message(*args, **kwargs):
     from agent.skill_bundles import build_bundle_invocation_message as _impl
 
@@ -8888,6 +8923,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ChatConsole().print(
                         f"[bold red]Failed to load bundle for {base_cmd}[/]"
                     )
+            # Project-local slash commands (``.hermes/commands/*.md``).
+            # Checked before skill commands so a project can define a
+            # command that overrides a skill of the same name.
+            elif base_cmd.lstrip("/") in _get_project_cmd_names():
+                try:
+                    from hermes_cli.project_commands import (
+                        resolve_project_command,
+                        render_command,
+                    )
+                    project_cmd = resolve_project_command(base_cmd.lstrip("/"))
+                    if project_cmd:
+                        user_args = cmd_original[len(base_cmd):].strip()
+                        parsed = _parse_project_cmd_args(user_args, project_cmd.args)
+                        msg = render_command(project_cmd, parsed)
+                        if msg and hasattr(self, '_pending_input'):
+                            self._pending_input.put(msg)
+                except Exception:
+                    pass
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()

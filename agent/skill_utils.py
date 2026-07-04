@@ -496,14 +496,39 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_project_skills_dir() -> Optional[Path]:
+    """Return the project-local ``.hermes/skills/`` directory, or ``None``.
+
+    Uses the cached project-dir discovery from prompt_builder so we don't
+    re-walk the filesystem on every call.  Returns ``None`` when there is
+    no ``.hermes/`` directory above cwd.
+    """
+    try:
+        from agent.prompt_builder import _get_cached_hermes_project_dir
+    except ImportError:
+        return None
+    project_dir = _get_cached_hermes_project_dir()
+    if project_dir:
+        skills_dir = project_dir / "skills"
+        if skills_dir.is_dir():
+            return skills_dir
+    return None
+
+
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local ``~/.hermes/skills/`` first, then external
+    and project-local ``.hermes/skills/``.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
+    Project-local skills (from ``.hermes/skills/``) come last so user-global and
+    external dirs take precedence on name collisions.
     """
     dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
+    project = get_project_skills_dir()
+    if project:
+        dirs.append(project)
     return dirs
 
 

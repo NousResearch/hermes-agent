@@ -215,6 +215,7 @@ hermes skills uninstall <skill-name>
 | [**code-wiki**](/docs/user-guide/skills/optional/software-development/software-development-code-wiki) | Generate wiki docs + Mermaid diagrams for any codebase. |
 | [**rest-graphql-debug**](/docs/user-guide/skills/optional/software-development/software-development-rest-graphql-debug) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). |
+| [**swarm-moa-approach**](/docs/user-guide/skills/optional/software-development/software-development-swarm-moa-approach) | Use when planning or reviewing complex agentic work with a MoA-backed swarm checkpoint: run a bounded Mixture-of-Agents planning/review pass, then execute with normal Hermes delegation, Kanban, worktrees, and parent-owned verification. |
 
 ## web-development
 

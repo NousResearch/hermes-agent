@@ -111,6 +111,20 @@ def _config_cdp_url() -> str:
     return ""
 
 
+def _configured_browser_provider() -> tuple[str, bool]:
+    """Return (normalized provider key, was_explicitly_configured)."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        browser_cfg = read_raw_config().get("browser", {})
+    except Exception:
+        return "", False
+    if not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg:
+        return "", False
+    provider = str(browser_cfg.get("cloud_provider", "") or "").strip().lower()
+    return provider, True
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
@@ -126,6 +140,9 @@ def is_camofox_mode() -> bool:
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False
     if _config_cdp_url():
+        return False
+    configured_provider, explicit = _configured_browser_provider()
+    if explicit and configured_provider != "camofox":
         return False
     return bool(get_camofox_url())
 

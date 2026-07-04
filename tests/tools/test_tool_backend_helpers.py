@@ -27,6 +27,7 @@ from tools.tool_backend_helpers import (
     prefers_gateway,
     resolve_modal_backend_state,
     resolve_openai_audio_api_key,
+    sync_cloakbrowser_enabled_flag,
 )
 
 
@@ -154,6 +155,23 @@ class TestNormalizeBrowserCloudProvider:
         result = normalize_browser_cloud_provider(42)
         assert isinstance(result, str)
         assert result == "42"
+
+
+class TestSyncCloakBrowserEnabledFlag:
+    def test_enables_only_for_cloakbrowser_provider(self):
+        cfg = {"cloud_provider": "cloakbrowser", "cloakbrowser": {"enabled": False}}
+
+        result = sync_cloakbrowser_enabled_flag(cfg)
+
+        assert result is cfg
+        assert cfg["cloakbrowser"]["enabled"] is True
+
+    def test_clears_stale_enabled_flag_for_other_provider(self):
+        cfg = {"cloud_provider": "browser-use", "cloakbrowser": {"enabled": True}}
+
+        sync_cloakbrowser_enabled_flag(cfg)
+
+        assert cfg["cloakbrowser"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,13 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.config import load_config, read_raw_config
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
@@ -18,6 +20,7 @@ from hermes_cli.tools_config import (
     _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
+    _save_tools_config,
     _toolset_has_keys,
     _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
@@ -764,6 +767,439 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     assert config["browser"]["cloud_provider"] == "local"
 
 
+
+def test_browser_picker_includes_cloakbrowser_row():
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    assert cloak_provider["name"] == "CloakBrowser"
+    assert cloak_provider["badge"] == "free · local"
+    assert "Anti-detection" in cloak_provider["tag"]
+    assert cloak_provider["env_vars"] == []
+    assert cloak_provider["post_setup"] == "cloakbrowser"
+
+
+
+def test_cloakbrowser_provider_writes_browser_config(monkeypatch):
+    config = {
+        "browser": {
+            "cloakbrowser": {
+                "proxy": "http://proxy.example:8080",
+                "user_data_dir": "/tmp/cloak-profile",
+            }
+        }
+    }
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    prompt_choices = iter([1, 1, 1])
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: next(prompt_choices),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda *args, **kwargs: pytest.fail("removed CloakBrowser prompts should not run"),
+    )
+    _configure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["use_gateway"] is False
+    assert config["browser"]["cloakbrowser"] == {
+        "enabled": True,
+        "headless": True,
+        "humanize": False,
+        "proxy": "http://proxy.example:8080",
+        "stealth_args": False,
+        "user_data_dir": "/tmp/cloak-profile",
+    }
+
+
+
+def test_cloakbrowser_provider_default_prompts_write_defaults(monkeypatch):
+    config = {}
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    prompt_choices = iter([0, 0, 0])
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: next(prompt_choices),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda *args, **kwargs: pytest.fail("removed CloakBrowser prompts should not run"),
+    )
+    _configure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloakbrowser"] == {
+        "enabled": True,
+        "inactivity_timeout": 3600,
+        "headless": False,
+        "humanize": True,
+        "proxy": "",
+        "stealth_args": True,
+        "user_data_dir": "${HERMES_HOME}/cloakbrowser_profile",
+    }
+
+
+
+def test_cloakbrowser_default_keys_persist_on_save(tmp_path):
+    cloakbrowser_defaults = {
+        "enabled": True,
+        "inactivity_timeout": 3600,
+        "headless": False,
+        "humanize": True,
+        "proxy": "",
+        "geoip": False,
+        "stealth_args": True,
+        "locale": "",
+        "timezone": "",
+        "color_scheme": "",
+        "user_agent": "",
+        "extra_args": [],
+        "user_data_dir": "${HERMES_HOME}/cloakbrowser_profile",
+    }
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "cloakbrowser": dict(cloakbrowser_defaults),
+        }
+    }
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        _save_tools_config(config)
+        raw = read_raw_config()
+
+    assert raw["browser"]["cloud_provider"] == "cloakbrowser"
+    assert raw["browser"]["cloakbrowser"] == cloakbrowser_defaults
+
+
+def test_cloakbrowser_default_keys_survive_provider_switch_and_later_save(tmp_path):
+    cloakbrowser_defaults = {
+        "enabled": True,
+        "inactivity_timeout": 3600,
+        "headless": False,
+        "humanize": True,
+        "proxy": "",
+        "geoip": False,
+        "stealth_args": True,
+        "locale": "",
+        "timezone": "",
+        "color_scheme": "",
+        "user_agent": "",
+        "extra_args": [],
+        "user_data_dir": "${HERMES_HOME}/cloakbrowser_profile",
+    }
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "cloakbrowser": dict(cloakbrowser_defaults),
+        }
+    }
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        _save_tools_config(config)
+        config["browser"]["cloud_provider"] = "browserbase"
+        _save_tools_config(config)
+        raw = read_raw_config()
+
+    assert raw["browser"]["cloud_provider"] == "browserbase"
+    assert raw["browser"]["cloakbrowser"] == cloakbrowser_defaults
+
+
+def test_cloakbrowser_default_user_data_dir_expands_from_hermes_home(tmp_path):
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        loaded = load_config()
+
+    assert loaded["browser"]["cloakbrowser"]["user_data_dir"] == str(
+        tmp_path / "cloakbrowser_profile"
+    )
+
+
+
+def test_cloakbrowser_provider_conflict_clear_cdp_url(monkeypatch):
+    config = {"browser": {"cdp_url": "http://localhost:9222"}}
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    prompt_choices = iter([0, 1, 0, 1, 0])
+    prompt_values = iter(["", "", "", ""])
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: next(prompt_choices),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda question, **kwargs: next(prompt_values),
+    )
+
+    _configure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["cdp_url"] == ""
+    assert config["browser"]["cloakbrowser"]["headless"] is True
+
+
+
+def test_cloakbrowser_provider_conflict_keep_cdp_url(monkeypatch):
+    config = {"browser": {"cdp_url": "http://localhost:9222"}}
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    called = []
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: called.append(key))
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: 1 if "Resolve the browser.cdp_url conflict" in question else pytest.fail("settings prompts should not run after keeping browser.cdp_url"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda question, **kwargs: pytest.fail("settings prompts should not run after keeping browser.cdp_url"),
+    )
+
+    _configure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["cdp_url"] == "http://localhost:9222"
+    assert config["browser"]["cloakbrowser"] == {"enabled": True}
+    assert called == ["cloakbrowser"]
+
+
+
+def test_reconfigure_cloakbrowser_conflict_keep_cdp_url_skips_native_setup(monkeypatch):
+    config = {
+        "browser": {
+            "cloud_provider": "local",
+            "use_gateway": False,
+            "cdp_url": "http://localhost:9222",
+        }
+    }
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    called = []
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: called.append(key))
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: 1 if "Resolve the browser.cdp_url conflict" in question else pytest.fail("settings prompts should not run after keeping browser.cdp_url"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda question, **kwargs: pytest.fail("settings prompts should not run after keeping browser.cdp_url"),
+    )
+
+    _reconfigure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["cdp_url"] == "http://localhost:9222"
+    assert config["browser"]["cloakbrowser"] == {"enabled": True}
+    assert called == ["cloakbrowser"]
+
+
+
+
+
+
+def test_cloakbrowser_provider_conflict_keep_browser_cdp_url_env(monkeypatch):
+    config = {"browser": {"cdp_url": "http://localhost:9222"}}
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+    called = []
+    prompts = []
+
+    def fake_prompt_choice(question, choices, default=0):
+        prompts.append((question, choices, default))
+        if "Resolve the BROWSER_CDP_URL conflict" in question:
+            return 0
+        pytest.fail("settings prompts should not run after keeping BROWSER_CDP_URL")
+
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://localhost:9333")
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: called.append(key))
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        fake_prompt_choice,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda question, **kwargs: pytest.fail("settings prompts should not run after keeping BROWSER_CDP_URL"),
+    )
+
+    _configure_provider(cloak_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["cdp_url"] == "http://localhost:9222"
+    assert config["browser"]["cloakbrowser"] == {"enabled": True}
+    assert called == ["cloakbrowser"]
+    question, choices, default = prompts[0]
+    assert "Resolve the BROWSER_CDP_URL conflict" in question
+    assert choices == [
+        "Keep BROWSER_CDP_URL and keep using direct CDP attach",
+        "Cancel and go back",
+    ]
+    assert default == 0
+
+
+def test_reconfigure_cloakbrowser_conflict_cancel_keeps_existing_config(monkeypatch):
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "use_gateway": False,
+            "cdp_url": "http://localhost:9222",
+            "cloakbrowser": {
+                "enabled": True,
+                "headless": True,
+                "humanize": False,
+                "proxy": "http://proxy.example:8080",
+                "geoip": True,
+                "locale": "en-US",
+                "timezone": "America/New_York",
+                "stealth_args": False,
+                "user_data_dir": "/tmp/cloak-profile",
+            },
+        }
+    }
+    original = {
+        "browser": {
+            "cloud_provider": config["browser"]["cloud_provider"],
+            "use_gateway": config["browser"]["use_gateway"],
+            "cdp_url": config["browser"]["cdp_url"],
+            "cloakbrowser": dict(config["browser"]["cloakbrowser"]),
+        }
+    }
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: pytest.fail("post-setup should not run on cancel"))
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda question, choices, default=0: 2,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda question, **kwargs: pytest.fail("settings prompts should not run on cancel"),
+    )
+
+    _reconfigure_provider(cloak_provider, config)
+
+    assert config == original
+
+
+
+def test_reconfigure_cloakbrowser_uses_existing_values_as_prompt_defaults(monkeypatch):
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "use_gateway": False,
+            "cloakbrowser": {
+                "enabled": True,
+                "headless": True,
+                "humanize": False,
+                "proxy": "http://proxy.example:8080",
+                "geoip": True,
+                "locale": "en-US",
+                "timezone": "America/New_York",
+                "stealth_args": False,
+                "user_data_dir": "/tmp/cloak-profile",
+            },
+        }
+    }
+    cloak_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "cloakbrowser"
+    )
+
+    seen_defaults = []
+    seen_prompts = []
+    seen_prompt_defaults = {}
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+
+    def fake_prompt_choice(question, choices, default=0):
+        seen_defaults.append(default)
+        return default
+
+    def fake_prompt(question, **kwargs):
+        seen_prompts.append(question)
+        seen_prompt_defaults[question] = kwargs.get("default")
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.tools_config._prompt", fake_prompt)
+    _reconfigure_provider(cloak_provider, config)
+
+    assert seen_defaults == [1, 1, 1]
+    assert seen_prompt_defaults == {}
+    assert seen_prompts == []
+    assert config["browser"]["cloakbrowser"] == {
+        "enabled": True,
+        "headless": True,
+        "humanize": False,
+        "proxy": "http://proxy.example:8080",
+        "geoip": True,
+        "locale": "en-US",
+        "timezone": "America/New_York",
+        "stealth_args": False,
+        "user_data_dir": "/tmp/cloak-profile",
+    }
+
+
+
+def test_switching_away_from_cloakbrowser_disables_cloakbrowser_flag(monkeypatch):
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "use_gateway": False,
+            "cloakbrowser": {"enabled": True},
+        }
+    }
+    local_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "local"
+    )
+
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+    _configure_provider(local_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "local"
+    assert config["browser"]["use_gateway"] is False
+    assert config["browser"]["cloakbrowser"]["enabled"] is False
+
+
 def test_fresh_install_browser_default_is_free_local_not_paid_nous():
     """On a fresh install the browser picker must default to the free local
     backend, never the paid Nous Subscription gateway.
@@ -810,7 +1246,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
         "hermes_cli.tools_config._configure_tool_category_for_reconfig",
         lambda ts_key, cat, config, **kwargs: configured.append(ts_key),
     )
-    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
 
     _reconfigure_tool(config)
 
@@ -843,7 +1279,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         "hermes_cli.tools_config._prompt_toolset_checklist",
         lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
     )
-    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
     # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
     # import) from adding extra platforms. The loop in tools_command runs
     # apply_nous_managed_defaults per platform; a second iteration sees values
@@ -907,7 +1343,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "hermes_cli.tools_config._prompt_toolset_checklist",
         lambda *args, **kwargs: {"video_gen"},
     )
-    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
     monkeypatch.setattr(
         "hermes_cli.tools_config._get_enabled_platforms",
         lambda: ["cli"],
@@ -1098,6 +1534,197 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     run.assert_not_called()
     assert "custom-cua" in seen
     assert "curl" in seen
+
+
+class TestCloakBrowserSetupGate:
+    """_toolset_needs_configuration_prompt must gate on cloakbrowser install state.
+
+    A returning user whose config selects CloakBrowser but whose Python
+    environment lacks the ``cloakbrowser`` package should be re-prompted so the
+    post-setup install hook can run.  Existing non-CloakBrowser providers should
+    not be affected.
+    """
+
+    def test_cloakbrowser_not_installed_forces_prompt(self):
+        """When cloakbrowser is not importable and no cloud_provider exists → prompt."""
+        with patch("hermes_cli.tools_config.importlib.util.find_spec", return_value=None):
+            assert _toolset_needs_configuration_prompt("browser", {}) is True
+
+    def test_cloakbrowser_installed_with_cloud_provider_skips_prompt(self):
+        """Installed package + existing cloud_provider → no prompt needed."""
+        config = {"browser": {"cloud_provider": "cloakbrowser"}}
+        with patch("hermes_cli.tools_config.importlib.util.find_spec") as find_spec:
+            find_spec.return_value = object()  # importlib found it
+            assert _toolset_needs_configuration_prompt("browser", config) is False
+
+    def test_cloakbrowser_not_installed_with_cloud_provider_forces_prompt(self):
+        """cloud_provider is set but package is missing → re-prompt so post_setup runs."""
+        config = {"browser": {"cloud_provider": "cloakbrowser"}}
+        with patch("hermes_cli.tools_config.importlib.util.find_spec", return_value=None):
+            assert _toolset_needs_configuration_prompt("browser", config) is True
+
+    def test_non_cloakbrowser_provider_does_not_trigger_on_missing_cloakbrowser(self):
+        """User with a non-CloakBrowser provider should not be forced back into
+        the browser setup picker just because the CloakBrowser package is absent."""
+        config = {"browser": {"cloud_provider": "local"}}
+        with patch("hermes_cli.tools_config.importlib.util.find_spec", return_value=None):
+            assert _toolset_needs_configuration_prompt("browser", config) is False
+
+    def test_cloakbrowser_missing_package_inline_check(self):
+        """Direct inline check: find_spec(None) forces re-prompt when CloakBrowser active."""
+        from hermes_cli.tools_config import importlib as tc_importlib
+        with patch.object(tc_importlib.util, "find_spec", return_value=None):
+            config = {"browser": {"cloud_provider": "cloakbrowser"}}
+            assert _toolset_needs_configuration_prompt("browser", config) is True
+
+    def test_cloakbrowser_present_package_inline_check(self):
+        """Direct inline check: find_spec(spec) skips prompt when CloakBrowser active."""
+        from hermes_cli.tools_config import importlib as tc_importlib
+        with patch.object(tc_importlib.util, "find_spec", return_value=object()):
+            config = {"browser": {"cloud_provider": "cloakbrowser"}}
+            assert _toolset_needs_configuration_prompt("browser", config) is False
+
+    def test_cloakbrowser_provider_normalized_before_install_gate(self):
+        """Legacy mixed-case provider strings should still trigger the CloakBrowser gate."""
+        config = {"browser": {"cloud_provider": " CloakBrowser "}}
+        with patch("hermes_cli.tools_config.importlib.util.find_spec", return_value=None):
+            assert _toolset_needs_configuration_prompt("browser", config) is True
+
+
+def test_returning_user_tools_command_reconfigures_browser_post_setup(monkeypatch):
+    """Returning-user flow re-enters the browser provider/post_setup path
+    when browser is already enabled with CloakBrowser but the package is
+    not installed (e.g., a first-time install that failed).
+
+    The fix adds a post_setup check for already-enabled category toolsets
+    after the usual ``added``-toolset config loop, so toggling a *different*
+    toolset still triggers the CloakBrowser re-install prompt.
+    """
+    config = {
+        "browser": {"cloud_provider": "cloakbrowser"},
+        "platform_toolsets": {"cli": ["browser"]},
+    }
+
+    # Clear env vars that would add extra platforms.
+    for env_var in (
+        "DISCORD_BOT_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
+
+    # Return to the platform menu, then hit "Done".
+    prompt_choice_calls = iter([0, 2])
+
+    def fake_prompt_choice(question, choices, default=0):
+        return next(prompt_choice_calls)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        fake_prompt_choice,
+    )
+    # User toggles "web" on; browser stays enabled.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"browser", "web"},
+    )
+    # Simulate CloakBrowser package missing.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.importlib.util.find_spec",
+        lambda *args: None,
+    )
+    # Record which toolsets _configure_toolset is called for.
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config: configured.append(ts_key),
+    )
+    # Prevent calls to Nous subscription internals from _visible_providers.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        lambda *args, **kwargs: type("MockFeatures", (), {
+            "nous_auth_present": False,
+            "account_info": None,
+            "features": {},
+        })(),
+    )
+
+    tools_command(first_install=False, config=config)
+
+    assert "browser" in configured, (
+        "Expected browser to be reconfigured when CloakBrowser package is missing, "
+        f"got configured={configured}"
+    )
+
+
+def test_returning_user_tools_command_skips_browser_when_installed(monkeypatch):
+    """Returning-user flow should NOT re-enter browser setup when
+    CloakBrowser is already installed — no false-positive re-prompt.
+    """
+    config = {
+        "browser": {"cloud_provider": "cloakbrowser"},
+        "platform_toolsets": {"cli": ["browser"]},
+    }
+
+    for env_var in (
+        "DISCORD_BOT_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
+
+    prompt_choice_calls = iter([0, 2])
+
+    def fake_prompt_choice(question, choices, default=0):
+        return next(prompt_choice_calls)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        fake_prompt_choice,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"browser", "web"},
+    )
+    # Simulate CloakBrowser package IS installed.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.importlib.util.find_spec",
+        lambda *args: object(),
+    )
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config: configured.append(ts_key),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        lambda *args, **kwargs: type("MockFeatures", (), {
+            "nous_auth_present": False,
+            "account_info": None,
+            "features": {},
+        })(),
+    )
+
+    tools_command(first_install=False, config=config)
+
+    assert "browser" not in configured, (
+        "Expected browser NOT to be reconfigured when CloakBrowser is installed, "
+        f"got configured={configured}"
+    )
 
 
 class TestImagegenBackendRegistry:
@@ -1401,6 +2028,23 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
     assert config["browser"]["use_gateway"] is False
 
 
+def test_reconfigure_browser_provider_clears_stale_cloakbrowser_enabled():
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "use_gateway": False,
+            "cloakbrowser": {"enabled": True},
+        }
+    }
+    provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
+
+    _reconfigure_provider(provider, config)
+
+    assert config["browser"]["cloud_provider"] == "browserbase"
+    assert config["browser"]["use_gateway"] is False
+    assert config["browser"]["cloakbrowser"]["enabled"] is False
+
+
 @pytest.mark.parametrize("provider_name,post_setup_key", [
     ("Camofox", "camofox"),
 ])
@@ -1511,6 +2155,24 @@ def test_apply_provider_selection_tts_sets_provider():
 
     assert config["tts"]["provider"] == "edge"
     assert config["tts"]["use_gateway"] is False
+
+
+
+def test_apply_provider_selection_browser_cloakbrowser_switches_and_cleans_up():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("browser", "CloakBrowser", config)
+
+    assert config["browser"]["cloud_provider"] == "cloakbrowser"
+    assert config["browser"]["use_gateway"] is False
+    assert config["browser"]["cloakbrowser"]["enabled"] is True
+
+    apply_provider_selection("browser", "Nous Subscription (Browser Use cloud)", config)
+
+    assert config["browser"]["cloud_provider"] == "browser-use"
+    assert config["browser"]["use_gateway"] is True
+    assert config["browser"]["cloakbrowser"]["enabled"] is False
 
 
 def test_apply_provider_selection_unknown_provider_raises_keyerror():

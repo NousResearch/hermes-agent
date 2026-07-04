@@ -9,6 +9,8 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import copy
+import importlib
 import json as _json
 import logging
 import os
@@ -20,16 +22,22 @@ from typing import Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
+    DEFAULT_CONFIG,
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
+    get_effective_browser_cdp_override,
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
-from tools.tool_backend_helpers import fal_key_is_configured
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    normalize_browser_cloud_provider,
+    sync_cloakbrowser_enabled_flag,
+)
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,34 @@ logger = logging.getLogger(__name__)
 _warned_invalid_platform_toolsets: Set[str] = set()
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+
+def _tool_config_preserve_keys(config: dict) -> Set[tuple[str, ...]]:
+    """Return config paths that tool setup should persist even at defaults."""
+    browser_cfg = config.get("browser")
+    if not isinstance(browser_cfg, dict):
+        return set()
+    cloak_cfg = browser_cfg.get("cloakbrowser")
+    if not isinstance(cloak_cfg, dict):
+        return set()
+
+    defaults = DEFAULT_CONFIG.get("browser", {}).get("cloakbrowser", {})
+    preserve = {
+        ("browser", "cloakbrowser", key)
+        for key, value in defaults.items()
+        if not isinstance(value, dict)
+    }
+    preserve.update(
+        ("browser", "cloakbrowser", key)
+        for key, value in cloak_cfg.items()
+        if not isinstance(value, dict)
+    )
+    return preserve
+
+
+def _save_tools_config(config: dict) -> None:
+    """Save tool config while preserving explicit CloakBrowser setup defaults."""
+    save_config(config, preserve_keys=_tool_config_preserve_keys(config))
 
 
 # ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
@@ -490,6 +526,14 @@ TOOL_CATEGORIES = {
                 ],
                 "browser_provider": "camofox",
                 "post_setup": "camofox",
+            },
+            {
+                "name": "CloakBrowser",
+                "badge": "free · local",
+                "tag": "Anti-detection browser (Chromium)",
+                "env_vars": [],
+                "browser_provider": "cloakbrowser",
+                "post_setup": "cloakbrowser",
             },
         ],
     },
@@ -1052,6 +1096,33 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Chromium install failed: {exc}")
             _print_info("    Run manually: npx agent-browser install --with-deps")
+
+    elif post_setup_key == "cloakbrowser":
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec("cloakbrowser") is not None:
+                _print_success("    cloakbrowser is already installed")
+                return
+        except Exception:
+            pass
+
+        _print_info("    Installing CloakBrowser Python package...")
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "cloakbrowser"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            _print_success("    CloakBrowser installed")
+        else:
+            _print_warning("    CloakBrowser install failed")
+            if result.stderr:
+                _print_info(f"    {result.stderr.strip().splitlines()[-1]}")
+            _print_info("    Run manually: python -m pip install cloakbrowser")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -1774,7 +1845,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
                 if remaining != disabled_toolsets:
                     agent_cfg["disabled_toolsets"] = remaining
 
-    save_config(config)
+    _save_tools_config(config)
 
 
 def _toolset_has_keys(
@@ -2324,6 +2395,7 @@ _POST_SETUP_INSTALLED: dict = {
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
     "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
+    "cloakbrowser": lambda: importlib.util.find_spec("cloakbrowser") is not None,
 }
 
 
@@ -2351,15 +2423,10 @@ def _toolset_needs_configuration_prompt(
     if not cat:
         return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
 
-    # If any visible provider has a registered post_setup install-state
-    # check that hasn't been satisfied (e.g. cua-driver binary not on
-    # PATH yet), force the configuration flow so `_configure_provider`
-    # invokes `_run_post_setup` and the install actually runs.
-    for provider in _visible_providers(cat, config, force_fresh=force_fresh):
-        post_setup = provider.get("post_setup")
-        if post_setup and not _post_setup_already_installed(post_setup):
-            return True
-
+    # Toolset-specific checks — run BEFORE the post_setup loop so that a
+    # properly-configured toolset (e.g. browser with Local Browser) is not
+    # forced back into setup just because an unrelated provider (e.g.
+    # CloakBrowser) has an unsatisfied install side-effect (#43284).
     if ts_key == "tts":
         tts_cfg = config.get("tts", {})
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
@@ -2368,7 +2435,14 @@ def _toolset_needs_configuration_prompt(
         return not isinstance(web_cfg, dict) or "backend" not in web_cfg
     if ts_key == "browser":
         browser_cfg = config.get("browser", {})
-        return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
+        if not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg:
+            return True
+        if (
+            normalize_browser_cloud_provider(browser_cfg.get("cloud_provider"))
+            == "cloakbrowser"
+        ):
+            return not _post_setup_already_installed("cloakbrowser")
+        return False
     if ts_key == "image_gen":
         # Satisfied when the in-tree FAL backend is configured OR any
         # plugin-registered image gen provider is available.
@@ -2405,6 +2479,14 @@ def _toolset_needs_configuration_prompt(
         except Exception:
             pass
         return True
+
+    # Generic post_setup check: for toolsets without toolset-specific checks
+    # (e.g. computer_use), check if any visible provider has a registered
+    # post_setup install-state check that hasn't been satisfied.
+    for provider in _visible_providers(cat, config, force_fresh=force_fresh):
+        post_setup = provider.get("post_setup")
+        if post_setup and not _post_setup_already_installed(post_setup):
+            return True
 
     return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
 
@@ -2979,6 +3061,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         if bp:
             browser_cfg["cloud_provider"] = bp
         browser_cfg["use_gateway"] = bool(managed_feature)
+        sync_cloakbrowser_enabled_flag(browser_cfg)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -3057,6 +3140,118 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
             img_cfg["provider"] = "fal"
 
 
+def _configure_cloakbrowser_settings(config: dict) -> None:
+    """Prompt for the CloakBrowser settings still exposed in setup UX."""
+    cloak_defaults = DEFAULT_CONFIG.get("browser", {}).get("cloakbrowser", {})
+    browser_cfg = config.setdefault("browser", {})
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        config["browser"] = browser_cfg
+    cloak_cfg = browser_cfg.setdefault("cloakbrowser", {})
+    if not isinstance(cloak_cfg, dict):
+        cloak_cfg = {}
+        browser_cfg["cloakbrowser"] = cloak_cfg
+
+    cloak_cfg.setdefault("proxy", str(cloak_cfg.get("proxy") or ""))
+    cloak_cfg.setdefault(
+        "user_data_dir",
+        str(cloak_cfg.get("user_data_dir") or cloak_defaults.get("user_data_dir") or ""),
+    )
+    cloak_cfg.setdefault(
+        "inactivity_timeout",
+        cloak_defaults.get("inactivity_timeout", 3600),
+    )
+
+    headless_default = 1 if is_truthy_value(cloak_cfg.get("headless"), default=False) else 0
+    headless_choice = _prompt_choice(
+        "  Run CloakBrowser headed or headless?",
+        ["headed", "headless"],
+        default=headless_default,
+    )
+    cloak_cfg["headless"] = headless_choice == 1
+
+    humanize_default = 0 if is_truthy_value(cloak_cfg.get("humanize"), default=True) else 1
+    humanize_choice = _prompt_choice(
+        "  Enable humanized behavior?",
+        ["yes", "no"],
+        default=humanize_default,
+    )
+    cloak_cfg["humanize"] = humanize_choice == 0
+
+    stealth_default = 0 if is_truthy_value(cloak_cfg.get("stealth_args"), default=True) else 1
+    stealth_choice = _prompt_choice(
+        "  Enable default stealth arguments?",
+        ["yes", "no"],
+        default=stealth_default,
+    )
+    cloak_cfg["stealth_args"] = stealth_choice == 0
+
+
+
+def _handle_cloakbrowser_cdp_conflict(config: dict) -> str:
+    """Resolve an explicit CDP override before native CloakBrowser setup.
+
+    Returns one of: ``"clear"`` (continue with native CloakBrowser setup),
+    ``"keep"`` (preserve direct CDP attach and skip native setup), or
+    ``"cancel"`` (restore prior browser config and abort).
+    """
+    browser_cfg = config.setdefault("browser", {})
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        config["browser"] = browser_cfg
+
+    cdp_url, cdp_source = get_effective_browser_cdp_override(browser_cfg)
+    if not cdp_url:
+        return "clear"
+
+    if cdp_source == "BROWSER_CDP_URL":
+        _print_warning("  BROWSER_CDP_URL is set and overrides native CloakBrowser launch.")
+        _print_info(f"  Current BROWSER_CDP_URL: {cdp_url}")
+        _print_info(
+            "  Unset BROWSER_CDP_URL before rerunning setup if you want native CloakBrowser to launch."
+        )
+        conflict_choice = _prompt_choice(
+            "  Resolve the BROWSER_CDP_URL conflict:",
+            [
+                "Keep BROWSER_CDP_URL and keep using direct CDP attach",
+                "Cancel and go back",
+            ],
+            default=0,
+        )
+        if conflict_choice == 0:
+            _print_info(
+                "  Keeping BROWSER_CDP_URL. Runtime will continue using direct CDP attach."
+            )
+            return "keep"
+        _print_info("  Cancelled")
+        return "cancel"
+
+    _print_warning("  browser.cdp_url is configured and overrides native CloakBrowser launch.")
+    _print_info(f"  Current browser.cdp_url: {cdp_url}")
+    _print_info("  Keep it to continue using direct CDP attach, or clear it to use native CloakBrowser.")
+
+    conflict_choice = _prompt_choice(
+        "  Resolve the browser.cdp_url conflict:",
+        [
+            "Clear browser.cdp_url and use native CloakBrowser",
+            "Keep browser.cdp_url and keep using direct CDP attach",
+            "Cancel and go back",
+        ],
+        default=0,
+    )
+    if conflict_choice == 0:
+        browser_cfg["cdp_url"] = ""
+        _print_success("  Cleared browser.cdp_url; native CloakBrowser can launch.")
+        return "clear"
+    if conflict_choice == 1:
+        _print_info("  Keeping browser.cdp_url. Runtime will continue using direct CDP attach.")
+        return "keep"
+
+    _print_info("  Cancelled")
+    return "cancel"
+
+
+
 def _configure_provider(
     provider: dict,
     config: dict,
@@ -3126,7 +3321,20 @@ def _configure_provider(
     # Persist the provider/backend config keys + use_gateway flags. Shared
     # with the GUI provider-select endpoint via apply_provider_selection so
     # there is a single source of truth for these writes.
+    original_browser_cfg = copy.deepcopy(config.get("browser")) if "browser_provider" in provider else None
+    conflict_action = None
     _write_provider_config(provider, config, managed_feature=managed_feature)
+
+    if provider.get("browser_provider") == "cloakbrowser":
+        conflict_action = _handle_cloakbrowser_cdp_conflict(config)
+        if conflict_action == "cancel":
+            if original_browser_cfg is None:
+                config.pop("browser", None)
+            else:
+                config["browser"] = original_browser_cfg
+            return
+        if conflict_action == "clear":
+            _configure_cloakbrowser_settings(config)
 
     if not env_vars:
         if provider.get("post_setup"):
@@ -3274,7 +3482,7 @@ def _configure_vision_backend() -> None:
         # Auto: clear any pinned override so the resolver auto-detects.
         for key in ("provider", "model", "base_url", "api_key", "api_mode"):
             vision_cfg.pop(key, None)
-        save_config(config)
+        _save_tools_config(config)
         _print_success("  Vision set to auto (main model / aggregator fallback)")
         return
 
@@ -3306,7 +3514,7 @@ def _configure_vision_backend() -> None:
             vision_cfg["model"] = model
         else:
             vision_cfg.pop("model", None)
-        save_config(config)
+        _save_tools_config(config)
         _print_success(f"  Vision set to custom endpoint{f' ({model})' if model else ''}")
         return
 
@@ -3375,7 +3583,7 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     # A provider selection supersedes any prior custom endpoint override.
     vision_cfg.pop("base_url", None)
     vision_cfg.pop("api_key", None)
-    save_config(config)
+    _save_tools_config(config)
     _print_success(f"  Vision set to {slug} / {model}")
 
 
@@ -3453,7 +3661,7 @@ def _reconfigure_tool(
     else:
         _reconfigure_simple_requirements(ts_key)
 
-    save_config(config)
+    _save_tools_config(config)
 
 
 def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
@@ -3550,6 +3758,8 @@ def _reconfigure_provider(
     """Reconfigure a provider - update API keys."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
+    original_browser_cfg = None
+    conflict_action = None
 
     # Same inline Nous Portal login + entitlement gate as _configure_provider:
     # managed Tool Gateway backends only activate with paid Portal access.
@@ -3592,6 +3802,7 @@ def _reconfigure_provider(
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if "browser_provider" in provider:
+        original_browser_cfg = copy.deepcopy(config.get("browser"))
         bp = provider["browser_provider"]
         browser_cfg = config.setdefault("browser", {})
         if bp == "local":
@@ -3601,6 +3812,18 @@ def _reconfigure_provider(
             browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
         browser_cfg["use_gateway"] = bool(managed_feature)
+        sync_cloakbrowser_enabled_flag(browser_cfg)
+
+    if provider.get("browser_provider") == "cloakbrowser":
+        conflict_action = _handle_cloakbrowser_cdp_conflict(config)
+        if conflict_action == "cancel":
+            if original_browser_cfg is None:
+                config.pop("browser", None)
+            else:
+                config["browser"] = original_browser_cfg
+            return
+        if conflict_action == "clear":
+            _configure_cloakbrowser_settings(config)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -3825,7 +4048,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)
-            save_config(config)
+            _save_tools_config(config)
             print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
             print()
 
@@ -3917,8 +4140,24 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                                 force_fresh=True,
                             ):
                                 _configure_toolset(ts_key, config)
+
+                    # Configure already-enabled toolsets with unsatisfied
+                    # post_setup (e.g. CloakBrowser configured but the
+                    # package failed to install during setup).
+                    for ts_key in sorted(new_enabled & _diff_universe):
+                        if ts_key in added:
+                            continue
+                        cat = TOOL_CATEGORIES.get(ts_key)
+                        if not cat:
+                            continue
+                        if _toolset_needs_configuration_prompt(
+                            ts_key,
+                            config,
+                            force_fresh=True,
+                        ):
+                            _configure_toolset(ts_key, config)
                     _save_platform_tools(config, pk, new_enabled)
-                save_config(config)
+                _save_tools_config(config)
                 print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
                 # Update choice labels
                 for ci, pk in enumerate(platform_keys):
@@ -3970,8 +4209,24 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     ):
                         _configure_toolset(ts_key, config)
 
+            # Configure already-enabled toolsets whose post_setup install
+            # side-effect is unsatisfied (e.g. CloakBrowser configured but
+            # the package failed to install during first-time setup).
+            for ts_key in sorted(new_enabled):
+                if ts_key in added:
+                    continue
+                cat = TOOL_CATEGORIES.get(ts_key)
+                if not cat:
+                    continue
+                if _toolset_needs_configuration_prompt(
+                    ts_key,
+                    config,
+                    force_fresh=True,
+                ):
+                    _configure_toolset(ts_key, config)
+
             _save_platform_tools(config, pkey, new_enabled)
-            save_config(config)
+            _save_tools_config(config)
             print(color(f"  ✓ Saved {pinfo['label']} configuration", Colors.GREEN))
         else:
             print(color(f"  No changes to {pinfo['label']}", Colors.DIM))
@@ -4119,7 +4374,7 @@ def _configure_mcp_tools_interactive(config: dict):
         any_changes = True
 
     if any_changes:
-        save_config(config)
+        _save_tools_config(config)
         print()
         print(color("  ✓ MCP tool configuration saved", Colors.GREEN))
     else:
@@ -4259,7 +4514,7 @@ def tools_disable_enable_command(args):
         for srv in failed_servers:
             _print_error(f"MCP server '{srv}' not found in config")
 
-    save_config(config)
+    _save_tools_config(config)
 
     successful = [
         t for t in targets

@@ -1201,6 +1201,21 @@ DEFAULT_CONFIG = {
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
+        "cloakbrowser": {
+            "enabled": False,
+            "inactivity_timeout": 3600,
+            "headless": False,
+            "humanize": True,
+            "proxy": "",
+            "geoip": False,
+            "stealth_args": True,
+            "locale": "",
+            "timezone": "",
+            "color_scheme": "",
+            "user_agent": "",
+            "extra_args": [],
+            "user_data_dir": "${HERMES_HOME}/cloakbrowser_profile",
+        },
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.

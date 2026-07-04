@@ -184,17 +184,38 @@ class TestIsLocalBackend:
         assert browser_tool._is_local_backend() is True
 
     def test_cloud_provider_is_not_local(self, monkeypatch):
-        """Cloud provider configured and not Camofox → NOT local."""
+        """Cloud provider configured and not Camofox/CloakBrowser → NOT local."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_cloakbrowser_mode", lambda: False)
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "bb")
 
         assert browser_tool._is_local_backend() is False
+
+    def test_truly_local_cloakbrowser_is_local(self, monkeypatch):
+        """CloakBrowser preserves local behavior only on a truly local terminal."""
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_cloakbrowser_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "cloakbrowser")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        assert browser_tool._is_local_backend() is True
 
     @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "ssh", "singularity"])
     def test_container_terminal_backend_is_not_local(self, monkeypatch, backend):
         """Terminal running in a container → NOT local (browser on host can access internal networks)."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_cloakbrowser_mode", lambda: False)
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+
+        assert browser_tool._is_local_backend() is False
+
+    @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "ssh", "singularity"])
+    def test_container_terminal_backend_keeps_cloakbrowser_non_local(self, monkeypatch, backend):
+        """CloakBrowser must not widen trust in remote/container terminal deployments."""
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_cloakbrowser_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "cloakbrowser")
         monkeypatch.setenv("TERMINAL_ENV", backend)
 
         assert browser_tool._is_local_backend() is False

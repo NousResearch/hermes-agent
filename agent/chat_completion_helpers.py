@@ -1752,7 +1752,17 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")
     try:
-        _ra().cleanup_browser(task_id)
+        from tools.browser_tool import _is_cloakbrowser_mode
+
+        if _is_cloakbrowser_mode():
+            if agent.verbose_logging:
+                logger.debug(
+                    "Skipping per-turn cleanup_browser for native CloakBrowser session %s; "
+                    "session shutdown or inactivity timeout will reap it.",
+                    task_id,
+                )
+        else:
+            _ra().cleanup_browser(task_id)
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")

@@ -74,6 +74,28 @@ def normalize_browser_cloud_provider(value: object | None) -> str:
     return provider or _DEFAULT_BROWSER_PROVIDER
 
 
+def sync_cloakbrowser_enabled_flag(browser_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep ``browser.cloakbrowser.enabled`` aligned with ``cloud_provider``.
+
+    The flag is only meaningful when CloakBrowser is the selected browser
+    provider. Persisting a stale ``enabled: true`` while another provider is
+    selected should not change runtime behavior, but it can mislead setup/status
+    surfaces that inspect config. Normalize the flag in-place wherever provider
+    selection is persisted.
+    """
+    if not isinstance(browser_cfg, dict):
+        return browser_cfg
+
+    cloak_cfg = browser_cfg.get("cloakbrowser")
+    if not isinstance(cloak_cfg, dict):
+        cloak_cfg = {}
+        browser_cfg["cloakbrowser"] = cloak_cfg
+
+    provider = normalize_browser_cloud_provider(browser_cfg.get("cloud_provider"))
+    cloak_cfg["enabled"] = provider == "cloakbrowser"
+    return browser_cfg
+
+
 def coerce_modal_mode(value: object | None) -> str:
     """Return the requested modal mode when valid, else the default."""
     mode = str(value or _DEFAULT_MODAL_MODE).strip().lower()

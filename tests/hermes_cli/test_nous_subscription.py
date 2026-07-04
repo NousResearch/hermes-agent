@@ -1,5 +1,7 @@
 """Tests for Nous subscription feature detection."""
 
+from typing import cast
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 
@@ -156,7 +158,37 @@ def test_get_nous_subscription_features_uses_direct_browserbase_when_no_managed_
     assert features.browser.current_provider == "Browserbase"
 
 
-def test_get_nous_subscription_features_prefers_camofox_over_managed_browser_use(monkeypatch):
+def test_get_nous_subscription_features_respects_explicit_browser_use_over_camofox(
+    monkeypatch,
+):
+    env = {"CAMOFOX_URL": "http://localhost:9377"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(
+        ns,
+        "is_managed_tool_gateway_ready",
+        lambda vendor: vendor == "browser-use",
+    )
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "browser-use"}}
+    )
+
+    assert features.browser.available is True
+    assert features.browser.active is True
+    assert features.browser.managed_by_nous is True
+    assert features.browser.direct_override is False
+    assert features.browser.current_provider == "Browser Use"
+
+
+def test_get_nous_subscription_features_legacy_camofox_still_wins_when_unconfigured(monkeypatch):
     env = {"CAMOFOX_URL": "http://localhost:9377"}
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
@@ -173,15 +205,128 @@ def test_get_nous_subscription_features_prefers_camofox_over_managed_browser_use
         lambda vendor: vendor == "browser-use",
     )
 
-    features = ns.get_nous_subscription_features(
-        {"browser": {"cloud_provider": "browser-use"}}
-    )
+    features = ns.get_nous_subscription_features({})
 
     assert features.browser.available is True
     assert features.browser.active is True
     assert features.browser.managed_by_nous is False
     assert features.browser.direct_override is True
     assert features.browser.current_provider == "Camofox"
+
+
+def test_get_nous_subscription_features_reports_selected_cloakbrowser_when_available(
+    monkeypatch,
+):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "http://localhost:9377" if name == "CAMOFOX_URL" else "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_local_browser_runnable", lambda: False)
+    monkeypatch.setattr(ns, "_cloakbrowser_available", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "cloakbrowser", "cloakbrowser": {"enabled": True}}}
+    )
+
+    assert features.browser.available is True
+    assert features.browser.active is True
+    assert features.browser.current_provider == "CloakBrowser"
+
+
+def test_get_nous_subscription_features_selected_cloakbrowser_without_package_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_local_browser_runnable", lambda: False)
+    monkeypatch.setattr(ns, "_cloakbrowser_available", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "cloakbrowser", "cloakbrowser": {"enabled": True}}}
+    )
+
+    assert features.browser.available is False
+    assert features.browser.active is False
+    assert features.browser.current_provider == "CloakBrowser"
+
+
+def test_get_nous_subscription_features_marks_cloakbrowser_blocked_by_cdp_url(
+    monkeypatch,
+):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_local_browser_runnable", lambda: False)
+    monkeypatch.setattr(ns, "_cloakbrowser_available", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+
+    features = ns.get_nous_subscription_features(
+        {
+            "browser": {
+                "cloud_provider": "cloakbrowser",
+                "cdp_url": "http://localhost:9222",
+                "cloakbrowser": {"enabled": True},
+            }
+        }
+    )
+
+    assert features.browser.available is False
+    assert features.browser.active is False
+    assert features.browser.current_provider == "CloakBrowser"
+    assert features.browser.blocked_reason == "browser.cdp_url overrides native CloakBrowser launch"
+
+
+def test_get_nous_subscription_features_marks_cloakbrowser_blocked_by_browser_cdp_url_env(
+    monkeypatch,
+):
+    env = {"BROWSER_CDP_URL": "http://localhost:9333"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_local_browser_runnable", lambda: False)
+    monkeypatch.setattr(ns, "_cloakbrowser_available", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+
+    features = ns.get_nous_subscription_features(
+        {
+            "browser": {
+                "cloud_provider": "cloakbrowser",
+                "cdp_url": "http://localhost:9222",
+                "cloakbrowser": {"enabled": True},
+            }
+        }
+    )
+
+    assert features.browser.available is False
+    assert features.browser.active is False
+    assert features.browser.current_provider == "CloakBrowser"
+    assert (
+        features.browser.blocked_reason
+        == "BROWSER_CDP_URL overrides native CloakBrowser launch"
+    )
 
 
 def test_get_nous_subscription_features_requires_agent_browser_for_browserbase(monkeypatch):
@@ -525,6 +670,33 @@ def test_apply_nous_managed_defaults_writes_image_gen_config(monkeypatch):
     assert config["image_gen"]["use_gateway"] is True
 
 
+def test_apply_nous_managed_defaults_clears_stale_cloakbrowser_flag(monkeypatch):
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
+    monkeypatch.setattr(ns, "_local_browser_runnable", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: vendor == "browser-use")
+
+    config = {
+        "model": {"provider": "nous"},
+        "browser": {"cloakbrowser": {"enabled": True}},
+    }
+
+    changed = ns.apply_nous_managed_defaults(config, enabled_toolsets=["browser"])
+
+    assert "browser" in changed
+    assert config["browser"]["cloud_provider"] == "browser-use"
+    assert config["browser"]["cloakbrowser"]["enabled"] is False
+
+
 def test_apply_nous_managed_defaults_skips_fal_tools_when_key_present(monkeypatch):
     """When FAL_KEY is set, apply_nous_managed_defaults should not touch
     image_gen or video_gen config — the user's direct key takes precedence."""
@@ -854,3 +1026,20 @@ def test_apply_gateway_defaults_sets_stt_use_gateway(monkeypatch):
     assert "stt" in changed
     assert config["stt"]["provider"] == "openai"
     assert config["stt"]["use_gateway"] is True
+
+
+def test_apply_gateway_defaults_clears_stale_cloakbrowser_enabled():
+    config = {
+        "browser": {
+            "cloud_provider": "cloakbrowser",
+            "use_gateway": False,
+            "cloakbrowser": {"enabled": True},
+        }
+    }
+
+    changed = ns.apply_gateway_defaults(cast(dict[str, object], config), ["browser"])
+
+    assert "browser" in changed
+    assert config["browser"]["cloud_provider"] == "browser-use"
+    assert config["browser"]["use_gateway"] is True
+    assert config["browser"]["cloakbrowser"]["enabled"] is False

@@ -337,7 +337,13 @@ def show_status(args):
         else:
             print("  Nous Portal   ✓ managed tools available")
         for feature in features.items():
-            if feature.managed_by_nous:
+            if feature.blocked_reason:
+                provider = feature.current_provider or "configured provider"
+                if feature.explicit_configured:
+                    state = f"selected {provider}, blocked: {feature.blocked_reason}"
+                else:
+                    state = f"blocked: {feature.blocked_reason}"
+            elif feature.managed_by_nous:
                 state = "active via Nous subscription"
             elif feature.active:
                 current = feature.current_provider or "configured provider"

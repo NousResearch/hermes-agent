@@ -22,6 +22,7 @@ from tools.tool_backend_helpers import (
     normalize_modal_mode,
     resolve_modal_backend_state,
     resolve_openai_audio_api_key,
+    sync_cloakbrowser_enabled_flag,
 )
 
 
@@ -54,6 +55,23 @@ def _uses_gateway(section: object) -> bool:
     return is_truthy_value(section.get("use_gateway"), default=False)
 
 
+def get_effective_browser_cdp_override(browser_cfg: object) -> tuple[str, str]:
+    """Return the active explicit CDP override and its source label.
+
+    Precedence matches runtime:
+    1. ``BROWSER_CDP_URL``
+    2. ``browser.cdp_url``
+    """
+    env_override = str(get_env_value("BROWSER_CDP_URL") or "").strip()
+    if env_override:
+        return env_override, "BROWSER_CDP_URL"
+    if isinstance(browser_cfg, dict):
+        cfg_override = str(browser_cfg.get("cdp_url") or "").strip()
+        if cfg_override:
+            return cfg_override, "browser.cdp_url"
+    return "", ""
+
+
 @dataclass(frozen=True)
 class NousFeatureState:
     key: str
@@ -66,6 +84,7 @@ class NousFeatureState:
     toolset_enabled: bool
     current_provider: str = ""
     explicit_configured: bool = False
+    blocked_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -199,12 +218,23 @@ def _local_browser_runnable() -> bool:
     return _chromium_installed()
 
 
+def _cloakbrowser_available() -> bool:
+    """Return True when the CloakBrowser Python package is importable."""
+    try:
+        from tools.browser_cloakbrowser import check_cloakbrowser_available
+
+        return bool(check_cloakbrowser_available())
+    except Exception:
+        return False
+
+
 def _browser_label(current_provider: str) -> str:
     mapping = {
         "browserbase": "Browserbase",
         "browser-use": "Browser Use",
         "firecrawl": "Firecrawl",
         "camofox": "Camofox",
+        "cloakbrowser": "CloakBrowser",
         "local": "Local browser",
     }
     return mapping.get(current_provider or "local", current_provider or "Local browser")
@@ -262,7 +292,8 @@ def _resolve_browser_feature_state(
     direct_browser_use: bool,
     direct_firecrawl: bool,
     managed_browser_available: bool,
-) -> tuple[str, bool, bool, bool]:
+    cdp_override_source: str,
+) -> tuple[str, bool, bool, bool, str]:
     """Resolve browser availability using the same precedence as runtime.
 
     ``browser_local_available`` means "the agent-browser CLI is present" — the
@@ -273,15 +304,12 @@ def _resolve_browser_feature_state(
     on the latter, or setup/status advertise a browser that fails on first use
     when Chromium is missing.
     """
-    if direct_camofox:
-        return "camofox", True, bool(browser_tool_enabled), False
-
     if browser_provider_explicit:
         current_provider = browser_provider or "local"
         if current_provider == "browserbase":
             available = bool(browser_local_available and direct_browserbase)
             active = bool(browser_tool_enabled and available)
-            return current_provider, available, active, False
+            return current_provider, available, active, False, ""
         if current_provider == "browser-use":
             provider_available = managed_browser_available or direct_browser_use
             available = bool(browser_local_available and provider_available)
@@ -292,18 +320,36 @@ def _resolve_browser_feature_state(
                 and not direct_browser_use
             )
             active = bool(browser_tool_enabled and available)
-            return current_provider, available, active, managed
+            return current_provider, available, active, managed, ""
         if current_provider == "firecrawl":
             available = bool(browser_local_available and direct_firecrawl)
             active = bool(browser_tool_enabled and available)
-            return current_provider, available, active, False
+            return current_provider, available, active, False, ""
         if current_provider == "camofox":
-            return current_provider, False, False, False
+            return current_provider, False, False, False, ""
+        if current_provider == "cloakbrowser":
+            if cdp_override_source:
+                return (
+                    current_provider,
+                    False,
+                    False,
+                    False,
+                    f"{cdp_override_source} overrides native CloakBrowser launch",
+                )
+            # CloakBrowser runtime selection is gated by the Python package/path,
+            # not the local agent-browser/Chromium stack used by the default
+            # local backend. Keep setup/status aligned with that contract.
+            available = bool(_cloakbrowser_available())
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, False, ""
 
         current_provider = "local"
         available = bool(browser_local_runnable)
         active = bool(browser_tool_enabled and available)
-        return current_provider, available, active, False
+        return current_provider, available, active, False, ""
+
+    if direct_camofox:
+        return "camofox", True, bool(browser_tool_enabled), False, ""
 
     if managed_browser_available or direct_browser_use:
         available = bool(browser_local_available)
@@ -314,16 +360,16 @@ def _resolve_browser_feature_state(
             and not direct_browser_use
         )
         active = bool(browser_tool_enabled and available)
-        return "browser-use", available, active, managed
+        return "browser-use", available, active, managed, ""
 
     if direct_browserbase:
         available = bool(browser_local_available)
         active = bool(browser_tool_enabled and available)
-        return "browserbase", available, active, False
+        return "browserbase", available, active, False, ""
 
     available = bool(browser_local_runnable)
     active = bool(browser_tool_enabled and available)
-    return "local", available, active, False
+    return "local", available, active, False, ""
 
 
 def get_nous_subscription_features(
@@ -386,6 +432,9 @@ def get_nous_subscription_features(
     browser_provider_explicit = "cloud_provider" in browser_cfg
     browser_provider = normalize_browser_cloud_provider(
         browser_cfg.get("cloud_provider") if browser_provider_explicit else None
+    )
+    _, browser_cdp_override_source = get_effective_browser_cdp_override(
+        browser_cfg
     )
     terminal_backend = (
         str(terminal_cfg.get("backend") or "local").strip().lower()
@@ -579,6 +628,7 @@ def get_nous_subscription_features(
         browser_available,
         browser_active,
         browser_managed,
+        browser_blocked_reason,
     ) = _resolve_browser_feature_state(
         browser_tool_enabled=browser_tool_enabled,
         browser_provider=browser_provider,
@@ -590,6 +640,7 @@ def get_nous_subscription_features(
         direct_browser_use=direct_browser_use,
         direct_firecrawl=direct_firecrawl,
         managed_browser_available=managed_browser_available,
+        cdp_override_source=browser_cdp_override_source,
     )
 
     if terminal_backend != "modal":
@@ -710,6 +761,7 @@ def get_nous_subscription_features(
             toolset_enabled=browser_tool_enabled,
             current_provider=_browser_label(browser_current_provider),
             explicit_configured=browser_provider_explicit,
+            blocked_reason=browser_blocked_reason,
         ),
         "modal": NousFeatureState(
             key="modal",
@@ -821,6 +873,7 @@ def apply_nous_managed_defaults(
         or get_env_value("BROWSERBASE_API_KEY")
     ):
         browser_cfg["cloud_provider"] = "browser-use"
+        sync_cloakbrowser_enabled_flag(browser_cfg)
         changed.add("browser")
 
     if "image_gen" in selected_toolsets and not fal_key_is_configured():
@@ -1026,6 +1079,7 @@ def apply_gateway_defaults(
     if "browser" in tool_keys:
         browser_cfg["cloud_provider"] = "browser-use"
         browser_cfg["use_gateway"] = True
+        sync_cloakbrowser_enabled_flag(browser_cfg)
         changed.add("browser")
 
     if "image_gen" in tool_keys:

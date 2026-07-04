@@ -106,6 +106,116 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
     assert "active via Nous subscription" in out
 
 
+def test_show_status_surfaces_explicit_cloakbrowser_cdp_block_reason(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: True)
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": {"default": "claude-opus-4-6", "provider": "nous"}},
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Nous Portal", raising=False)
+    monkeypatch.setattr(
+        status_mod,
+        "get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=True,
+            nous_auth_present=True,
+            provider_is_nous=True,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
+                "browser": NousFeatureState(
+                    "browser",
+                    "Browser automation",
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                    "CloakBrowser",
+                    True,
+                    "browser.cdp_url overrides native CloakBrowser launch",
+                ),
+                "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+            },
+        ),
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Browser automation" in out
+    assert "CloakBrowser" in out
+    assert "browser.cdp_url overrides native CloakBrowser launch" in out
+    assert "included by subscription, not currently selected" not in out
+
+
+def test_show_status_surfaces_env_specific_cloakbrowser_cdp_block_reason(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: True)
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": {"default": "claude-opus-4-6", "provider": "nous"}},
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Nous Portal", raising=False)
+    monkeypatch.setattr(
+        status_mod,
+        "get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=True,
+            nous_auth_present=True,
+            provider_is_nous=True,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
+                "browser": NousFeatureState(
+                    "browser",
+                    "Browser automation",
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                    "CloakBrowser",
+                    True,
+                    "BROWSER_CDP_URL overrides native CloakBrowser launch",
+                ),
+                "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+            },
+        ),
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Browser automation" in out
+    assert "CloakBrowser" in out
+    assert "BROWSER_CDP_URL overrides native CloakBrowser launch" in out
+    assert "included by subscription, not currently selected" not in out
+
+
 def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: False)
     from hermes_cli import status as status_mod

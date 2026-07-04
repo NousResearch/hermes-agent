@@ -426,10 +426,11 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
-    browser_provider = subscription_features.browser.current_provider
-    if subscription_features.browser.managed_by_nous:
+    browser_feature = subscription_features.browser
+    browser_provider = browser_feature.current_provider
+    if browser_feature.managed_by_nous:
         tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
-    elif subscription_features.browser.available:
+    elif browser_feature.available:
         label = "Browser Automation"
         if browser_provider:
             label = f"Browser Automation ({browser_provider})"
@@ -447,13 +448,27 @@ def _print_setup_summary(config: dict, hermes_home):
             )
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
+        elif browser_provider == "CloakBrowser":
+            if browser_feature.blocked_reason:
+                override_hint = "clear browser.cdp_url to use native CloakBrowser or keep direct CDP attach"
+                if "BROWSER_CDP_URL" in browser_feature.blocked_reason:
+                    override_hint = (
+                        "unset BROWSER_CDP_URL or clear browser.cdp_url to use native CloakBrowser, "
+                        "or keep direct CDP attach"
+                    )
+                missing_browser_hint = (
+                    f"{browser_feature.blocked_reason}; {override_hint}"
+                )
+            else:
+                missing_browser_hint = "pip install cloakbrowser"
         elif browser_provider == "Local browser":
             missing_browser_hint = (
                 "npm install -g agent-browser && agent-browser install --with-deps"
             )
-        tool_status.append(
-            ("Browser Automation", False, missing_browser_hint)
-        )
+        label = "Browser Automation"
+        if browser_provider:
+            label = f"Browser Automation ({browser_provider})"
+        tool_status.append((label, False, missing_browser_hint))
 
     # Image generation — FAL (direct or via Nous), or any plugin-registered
     # provider (OpenAI, etc.)

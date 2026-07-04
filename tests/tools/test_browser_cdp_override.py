@@ -182,6 +182,20 @@ class TestGetCdpOverride:
                    return_value={"browser": {"cdp_url": HTTP_URL}}):
             assert bc.is_camofox_mode() is False
 
+        # An explicit conflicting browser.cloud_provider also suppresses camofox.
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"cloud_provider": "cloakbrowser"}},
+        ):
+            assert bc.is_camofox_mode() is False
+
+        # Explicit camofox keeps the legacy CAMOFOX_URL path enabled.
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"cloud_provider": "camofox"}},
+        ):
+            assert bc.is_camofox_mode() is True
+
         # The env override still suppresses camofox.
         monkeypatch.setenv("BROWSER_CDP_URL", HTTP_URL)
         with patch("hermes_cli.config.read_raw_config", return_value={}):

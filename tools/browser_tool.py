@@ -62,7 +62,7 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Callable, Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
@@ -70,6 +70,8 @@ from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+logger = logging.getLogger(__name__)
 
 # Browser-specific tool keys passed through to the agent-browser subprocess
 # AFTER credential stripping.  agent-browser is a Node process loading npm
@@ -147,8 +149,62 @@ try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
+try:
+    from tools.browser_cloakbrowser import (
+        is_cloakbrowser_mode as _is_cloakbrowser_mode,
+        check_cloakbrowser_available,
+        cloakbrowser_navigate,
+        cloakbrowser_snapshot,
+        cloakbrowser_click,
+        cloakbrowser_type,
+        cloakbrowser_scroll,
+        cloakbrowser_back,
+        cloakbrowser_press,
+        cloakbrowser_current_url,
+        cloakbrowser_get_images,
+        cloakbrowser_console,
+        cloakbrowser_close,
+        cloakbrowser_close_all,
+    )
+except ImportError:
+    _is_cloakbrowser_mode = lambda: False  # noqa: E731
+    check_cloakbrowser_available = lambda: False  # noqa: E731
 
-logger = logging.getLogger(__name__)
+    def cloakbrowser_navigate(url: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_snapshot(full: bool = False, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_click(ref: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_scroll(direction: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_back(task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_press(key: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_current_url(task_id: Optional[str] = None) -> Optional[str]:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_get_images(task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_close(task_id: Optional[str] = None) -> bool:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_close_all() -> int:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
@@ -782,6 +838,8 @@ def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
     if _get_cdp_override():
         return False
+    if _is_cloakbrowser_mode():
+        return True
     return _get_cloud_provider() is None
 
 
@@ -816,10 +874,13 @@ def _is_local_backend() -> bool:
         return False
     if _is_camofox_mode():
         return True
-    if _get_cloud_provider() is not None:
+    if _get_cloud_provider() is not None and not _is_cloakbrowser_mode():
         return False
     # When terminal runs in a container, browser on host can access
     # internal networks the terminal can't → treat as non-local.
+    # CloakBrowser is a local browser backend only when that terminal/browser
+    # trust boundary is actually shared; remote/container terminal deployments
+    # must keep SSRF protection enabled.
     terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
     return terminal_backend in ("local", "")
 
@@ -885,6 +946,8 @@ def _should_inject_engine(engine: str) -> bool:
     if engine == "auto":
         return False
     if _is_camofox_mode():
+        return False
+    if _is_cloakbrowser_mode():
         return False
     return _is_local_mode()
 
@@ -1274,6 +1337,8 @@ def _navigation_session_key(task_id: str, url: str) -> str:
         return task_id
     if _is_camofox_mode():
         return task_id
+    if _is_cloakbrowser_mode():
+        return task_id
     if _get_cloud_provider() is None:
         return task_id
     if not _auto_local_for_private_urls():
@@ -1416,6 +1481,12 @@ DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(
     DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120)
 )
 
+DEFAULT_CLOAKBROWSER_SESSION_INACTIVITY_TIMEOUT = int(
+    DEFAULT_CONFIG.get("browser", {}).get("cloakbrowser", {}).get(
+        "inactivity_timeout", DEFAULT_SESSION_INACTIVITY_TIMEOUT
+    )
+)
+
 
 def _get_session_inactivity_timeout() -> int:
     result = env_int("BROWSER_INACTIVITY_TIMEOUT", DEFAULT_SESSION_INACTIVITY_TIMEOUT)
@@ -1428,6 +1499,25 @@ def _get_session_inactivity_timeout() -> int:
     except Exception as e:
         logger.debug("Could not read inactivity_timeout from config: %s", e)
     return result
+
+
+def _get_cloakbrowser_session_inactivity_timeout() -> int:
+    result = DEFAULT_CLOAKBROWSER_SESSION_INACTIVITY_TIMEOUT
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "cloakbrowser", "inactivity_timeout")
+        if val is not None:
+            result = max(int(val), 30)  # Floor at 30s to avoid instant reaping
+    except Exception as e:
+        logger.debug("Could not read cloakbrowser inactivity_timeout from config: %s", e)
+    return result
+
+
+def _get_active_session_inactivity_timeout() -> int:
+    if _is_cloakbrowser_mode():
+        return _get_cloakbrowser_session_inactivity_timeout()
+    return BROWSER_SESSION_INACTIVITY_TIMEOUT
 
 
 BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
@@ -1503,11 +1593,12 @@ def _cleanup_inactive_browser_sessions():
     orphaned sessions (local or Browserbase) from accumulating.
     """
     current_time = time.time()
+    inactivity_timeout = _get_active_session_inactivity_timeout()
     sessions_to_cleanup = []
 
     with _cleanup_lock:
         for task_id, last_time in list(_session_last_activity.items()):
-            if current_time - last_time > BROWSER_SESSION_INACTIVITY_TIMEOUT:
+            if current_time - last_time > inactivity_timeout:
                 sessions_to_cleanup.append(task_id)
 
     for task_id in sessions_to_cleanup:
@@ -1806,6 +1897,14 @@ def _update_session_activity(task_id: str):
     """Update the last activity timestamp for a session."""
     with _cleanup_lock:
         _session_last_activity[task_id] = time.time()
+
+
+def _mark_cloakbrowser_activity(task_id: Optional[str] = None) -> str:
+    """Track native CloakBrowser activity for inactivity cleanup."""
+    effective_task_id = task_id or "default"
+    _start_browser_cleanup_thread()
+    _update_session_activity(effective_task_id)
+    return effective_task_id
 
 
 # Register cleanup thread stop on exit
@@ -2346,7 +2445,7 @@ def _run_browser_command(
     # hybrid private-URL routing can create a local sidecar while a cloud
     # provider remains configured for public URLs.
     engine = _engine_override or _get_browser_engine()
-    if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
+    if engine != "auto" and not _is_camofox_mode() and not _is_cloakbrowser_mode() and not session_info.get("cdp_url"):
         backend_args += ["--engine", engine]
 
     # Keep concrete executable paths intact, even when they contain spaces.
@@ -2691,6 +2790,47 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
+def _post_redirect_ssrf_response(
+    *,
+    requested_url: str,
+    result: Dict[str, Any],
+    is_local_backend: bool,
+    auto_local_this_nav: bool,
+    clear_session: Callable[[], Any],
+) -> Optional[str]:
+    """Return a blocked response if navigation redirected across the SSRF boundary."""
+    if not result.get("success"):
+        return None
+
+    data = result.get("data")
+    if not isinstance(data, dict):
+        data = result
+    final_url = data.get("url", requested_url)
+    if not final_url or final_url == requested_url:
+        return None
+
+    if _is_always_blocked_url(final_url):
+        clear_session()
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: redirect landed on a cloud metadata endpoint",
+        })
+
+    if (
+        not is_local_backend
+        and not auto_local_this_nav
+        and not _allow_private_urls()
+        and not _is_safe_url(final_url)
+    ):
+        clear_session()
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: redirect landed on a private/internal address",
+        })
+
+    return None
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -2787,6 +2927,22 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        raw_result = cloakbrowser_navigate(url, task_id)
+        try:
+            parsed_result = json.loads(raw_result)
+        except Exception:
+            return raw_result
+
+        blocked_response = _post_redirect_ssrf_response(
+            requested_url=url,
+            result=parsed_result,
+            is_local_backend=_is_local_backend(),
+            auto_local_this_nav=auto_local_this_nav,
+            clear_session=lambda: cloakbrowser_navigate("about:blank", task_id),
+        )
+        return blocked_response or raw_result
 
     if auto_local_this_nav:
         logger.info(
@@ -2828,29 +2984,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Always-blocked floor (cloud metadata / IMDS) is enforced for every
         # backend and even when auto_local_this_nav is true — see pre-nav
         # check for rationale (#16234).
-        if (
-            final_url
-            and final_url != url
-            and _is_always_blocked_url(final_url)
-        ):
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: redirect landed on a cloud metadata endpoint",
-            })
-
-        if (
-            not _is_local_backend()
-            and not auto_local_this_nav
-            and not _allow_private_urls()
-            and final_url and final_url != url and not _is_safe_url(final_url)
-        ):
-            # Navigate away to a blank page to prevent snapshot leaks
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: redirect landed on a private/internal address",
-            })
+        blocked_response = _post_redirect_ssrf_response(
+            requested_url=url,
+            result=result,
+            is_local_backend=_is_local_backend(),
+            auto_local_this_nav=auto_local_this_nav,
+            clear_session=lambda: _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10),
+        )
+        if blocked_response:
+            return blocked_response
 
         response = {
             "success": True,
@@ -2936,6 +3078,13 @@ def browser_snapshot(
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
         return camofox_snapshot(full, task_id, user_task)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_snapshot(effective_task_id)
+        if blocked is not None:
+            return blocked
+        return cloakbrowser_snapshot(full, task_id, user_task)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3031,6 +3180,13 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_action(effective_task_id, "click")
+        if blocked is not None:
+            return blocked
+        return cloakbrowser_click(ref, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "click")
@@ -3072,6 +3228,13 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_action(effective_task_id, "type")
+        if blocked is not None:
+            return blocked
+        return cloakbrowser_type(ref, text, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "type")
@@ -3146,6 +3309,9 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         for _ in range(_SCROLL_REPEATS):
             result = camofox_scroll(direction, task_id)
         return result
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        return cloakbrowser_scroll(direction, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3177,6 +3343,19 @@ def browser_back(task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_back
         return camofox_back(task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        raw_result = cloakbrowser_back(task_id)
+        try:
+            result = json.loads(raw_result)
+        except Exception:
+            return raw_result
+        if result.get("success"):
+            blocked = _blocked_private_page_history(effective_task_id, "back")
+            if blocked is not None:
+                return blocked
+        return raw_result
 
     effective_task_id = _last_session_key(task_id or "default")
     result = _run_browser_command(effective_task_id, "back", [])
@@ -3229,6 +3408,13 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_press
         return camofox_press(key, task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_action(effective_task_id, "press")
+        if blocked is not None:
+            return blocked
+        return cloakbrowser_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "press")
@@ -3267,6 +3453,57 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
     }, ensure_ascii=False)
 
 
+def _blocked_private_page_snapshot(effective_task_id: str) -> Optional[str]:
+    """Return a blocked payload when a snapshot would expose a private page."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). This may have been caused by a JavaScript "
+            "navigation via browser_console."
+        ),
+    }, ensure_ascii=False)
+
+
+def _blocked_private_page_history(effective_task_id: str, action: str) -> Optional[str]:
+    """Return a blocked payload when history navigation lands on a private page."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Browser history navigation ({action}) landed "
+            "on this address."
+        ),
+    }, ensure_ascii=False)
+
+
+def _blocked_private_page_images(effective_task_id: str) -> Optional[str]:
+    """Return a blocked payload when image extraction would expose a private page."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). This may have been caused by a "
+            "JavaScript navigation via browser_console."
+        ),
+    }, ensure_ascii=False)
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
 
@@ -3287,12 +3524,26 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         policy_error = _enforce_browser_eval_policy(expression)
         if policy_error:
             return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
+        if _is_cloakbrowser_mode():
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "JavaScript evaluation via browser_console(expression=...) is "
+                    "not yet supported with the CloakBrowser backend in this "
+                    "minimal slice. CloakBrowser console capture is also not "
+                    "available yet; use browser_snapshot or browser_vision to "
+                    "inspect page state instead."
+                ),
+            }, ensure_ascii=False)
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_console
         return camofox_console(clear, task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        return cloakbrowser_console(clear, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3387,26 +3638,30 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     """Return the current page URL when it targets a private/internal address.
 
-    Reads ``window.location.href`` via a low-cost eval and returns it when the
-    page has been navigated (e.g. via ``location.href = '...'`` in a prior
-    eval) to an address the SSRF guard would reject.  Returns ``None`` when the
-    page is public, the URL can't be determined, or the check errors (fail-open
-    on probe failure, matching the snapshot/vision guards).
+    Reads the current page URL and returns it when the page has been navigated
+    (e.g. via ``location.href = '...'`` in a prior eval) to an address the SSRF
+    guard would reject. Returns ``None`` when the page is public, the URL can't
+    be determined, or the check errors (fail-open on probe failure, matching the
+    snapshot/vision guards).
     """
     try:
-        url_result = _run_browser_command(
-            effective_task_id, "eval", ["window.location.href"],
-            timeout=5, _engine_override="auto",
-        )
-        if url_result.get("success"):
+        if _is_cloakbrowser_mode():
+            current_url = (cloakbrowser_current_url(_bare_task_id_for_session_key(effective_task_id)) or "").strip()
+        else:
+            url_result = _run_browser_command(
+                effective_task_id, "eval", ["window.location.href"],
+                timeout=5, _engine_override="auto",
+            )
+            if not url_result.get("success"):
+                return None
             current_url = (
                 url_result.get("data", {}).get("result", "")
                 .strip().strip('"').strip("'")
             )
-            if current_url and (
-                _is_always_blocked_url(current_url) or not _is_safe_url(current_url)
-            ):
-                return current_url
+        if current_url and (
+            _is_always_blocked_url(current_url) or not _is_safe_url(current_url)
+        ):
+            return current_url
     except Exception as exc:
         logger.debug("_current_page_private_url: probe failed (%s)", exc)
     return None
@@ -3824,6 +4079,13 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_get_images
         return camofox_get_images(task_id)
+    if _is_cloakbrowser_mode():
+        _mark_cloakbrowser_activity(task_id)
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_images(effective_task_id)
+        if blocked is not None:
+            return blocked
+        return cloakbrowser_get_images(task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -4271,6 +4533,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
 
+    with _cleanup_lock:
+        for session_key in session_keys:
+            _session_last_activity.pop(session_key, None)
+
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the
     # recorded owner. This prevents a later click/snapshot from resurrecting a
@@ -4299,6 +4565,12 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 camofox_close(task_id)
         except Exception as e:
             logger.debug("Camofox cleanup for task %s: %s", task_id, e)
+
+    if _is_cloakbrowser_mode():
+        try:
+            cloakbrowser_close(task_id)
+        except Exception as e:
+            logger.debug("CloakBrowser cleanup for task %s: %s", task_id, e)
 
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))
@@ -4369,6 +4641,12 @@ def cleanup_all_browsers() -> None:
         task_ids = list(_active_sessions.keys())
     for task_id in task_ids:
         cleanup_browser(task_id)
+
+    if _is_cloakbrowser_mode():
+        try:
+            cloakbrowser_close_all()
+        except Exception:
+            pass
 
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:
@@ -4595,6 +4873,8 @@ def check_browser_requirements() -> bool:
     # Camofox backend — only needs the server URL, no agent-browser CLI
     if _is_camofox_mode():
         return True
+    if _is_cloakbrowser_mode():
+        return check_cloakbrowser_available()
 
     # CDP override mode can connect to an existing remote/local browser endpoint
     # without requiring the local agent-browser binary on PATH.

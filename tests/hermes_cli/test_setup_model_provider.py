@@ -341,8 +341,7 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
-    assert "Browser Automation (Browserbase)" not in output
-    assert "Browser Automation" in output
+    assert "Browser Automation (Browserbase)" in output
     assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output
 
 
@@ -382,5 +381,124 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
-    assert "Browser Automation (Local browser)" not in output
+    assert "Browser Automation (Local browser)" in output
     assert "agent-browser install --with-deps" in output
+
+
+def test_setup_summary_selected_cloakbrowser_without_package_shows_install_hint(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "CloakBrowser"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (CloakBrowser)" in output
+    assert "pip install cloakbrowser" in output
+
+
+
+def test_setup_summary_cloakbrowser_cdp_conflict_shows_selected_provider_and_conflict_hint(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState(
+                    "browser",
+                    "Browser automation",
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                    "CloakBrowser",
+                    False,
+                    blocked_reason="browser.cdp_url overrides native CloakBrowser launch",
+                ),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (CloakBrowser)" in output
+    assert "browser.cdp_url overrides native CloakBrowser launch" in output
+    assert "clear browser.cdp_url" in output
+
+
+
+def test_setup_summary_cloakbrowser_env_cdp_conflict_mentions_env_override(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState(
+                    "browser",
+                    "Browser automation",
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                    "CloakBrowser",
+                    False,
+                    blocked_reason="BROWSER_CDP_URL overrides native CloakBrowser launch",
+                ),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (CloakBrowser)" in output
+    assert "BROWSER_CDP_URL overrides native CloakBrowser launch" in output
+    assert "unset BROWSER_CDP_URL" in output
+    assert "clear browser.cdp_url" in output

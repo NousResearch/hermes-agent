@@ -100,6 +100,71 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["browser"]["cloakbrowser"] == {
+                "enabled": False,
+                "headless": False,
+                "humanize": True,
+                "proxy": "",
+                "geoip": False,
+                "stealth_args": True,
+                "locale": "",
+                "timezone": "",
+                "color_scheme": "",
+                "user_agent": "",
+                "extra_args": [],
+                "user_data_dir": "",
+            }
+
+    def test_partial_browser_config_gets_cloakbrowser_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("browser:\n  allow_private_urls: true\n")
+
+            config = load_config()
+            assert config["browser"]["allow_private_urls"] is True
+            assert config["browser"]["cloakbrowser"] == {
+                "enabled": False,
+                "headless": False,
+                "humanize": True,
+                "proxy": "",
+                "geoip": False,
+                "stealth_args": True,
+                "locale": "",
+                "timezone": "",
+                "color_scheme": "",
+                "user_agent": "",
+                "extra_args": [],
+                "user_data_dir": "",
+            }
+
+    def test_partial_cloakbrowser_config_keeps_user_values_and_fills_supported_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "browser:\n"
+                "  cloakbrowser:\n"
+                "    headless: true\n"
+                "    proxy: http://proxy.example:8080\n"
+                "    extra_args:\n"
+                "      - --disable-blink-features=AutomationControlled\n"
+            )
+
+            config = load_config()
+
+            assert config["browser"]["cloakbrowser"] == {
+                "enabled": False,
+                "headless": True,
+                "humanize": True,
+                "proxy": "http://proxy.example:8080",
+                "geoip": False,
+                "stealth_args": True,
+                "locale": "",
+                "timezone": "",
+                "color_scheme": "",
+                "user_agent": "",
+                "extra_args": ["--disable-blink-features=AutomationControlled"],
+                "user_data_dir": "",
+            }
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1700,3 +1765,9 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
 
     def test_explicit_config_paths_ignore_empty_sections(self):
         assert _explicit_config_paths({"memory": {}, "display": {}}) == set()
+
+    def test_default_cloakbrowser_config_contains_hidden_setup_defaults(self):
+        cloak_cfg = DEFAULT_CONFIG["browser"]["cloakbrowser"]
+
+        assert cloak_cfg["inactivity_timeout"] == 3600
+        assert cloak_cfg["user_data_dir"] == "${HERMES_HOME}/cloakbrowser_profile"

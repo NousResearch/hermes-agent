@@ -160,6 +160,20 @@ class TestBrowserConsole:
         assert result == {"success": True, "result": "Example"}
         mock_eval.assert_called_once_with("document.title", "test")
 
+    def test_expression_reports_cloakbrowser_backend_limitation_without_eval(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True), \
+             patch("tools.browser_tool._browser_eval") as mock_eval:
+            result = json.loads(browser_console(expression="document.title", task_id="test"))
+
+        assert result["success"] is False
+        assert "browser_console(expression=...)" in result["error"]
+        assert "CloakBrowser backend" in result["error"]
+        assert "browser_snapshot or browser_vision" in result["error"]
+        mock_eval.assert_not_called()
+
     def test_expression_blocks_cookie_access_before_eval(self):
         from tools.browser_tool import browser_console
 

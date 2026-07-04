@@ -17,6 +17,7 @@ def _reset_caches():
     bt._agent_browser_resolved = False
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._session_last_activity.clear()
     # lru_cache for _discover_homebrew_node_dirs
     if hasattr(bt._discover_homebrew_node_dirs, "cache_clear"):
         bt._discover_homebrew_node_dirs.cache_clear()
@@ -145,6 +146,36 @@ class TestSessionInactivityTimeout:
         cfg = {"browser": {"inactivity_timeout": "not-an-int"}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _get_session_inactivity_timeout() == 240
+
+    def test_cloakbrowser_cleanup_uses_nested_timeout(self):
+        import tools.browser_tool as bt
+
+        with patch.object(bt, "_is_cloakbrowser_mode", return_value=True), \
+             patch.object(bt, "_get_cloakbrowser_session_inactivity_timeout", return_value=600), \
+             patch.object(bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 120), \
+             patch.object(bt, "cleanup_browser") as mock_cleanup, \
+             patch("tools.browser_tool.time.time", return_value=1000):
+            bt._session_last_activity.clear()
+            bt._session_last_activity["cloak-task"] = 700
+            bt._cleanup_inactive_browser_sessions()
+
+        assert "cloak-task" in bt._session_last_activity
+        mock_cleanup.assert_not_called()
+
+    def test_generic_cleanup_keeps_using_generic_timeout(self):
+        import tools.browser_tool as bt
+
+        with patch.object(bt, "_is_cloakbrowser_mode", return_value=False), \
+             patch.object(bt, "_get_cloakbrowser_session_inactivity_timeout", return_value=600), \
+             patch.object(bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 120), \
+             patch.object(bt, "cleanup_browser") as mock_cleanup, \
+             patch("tools.browser_tool.time.time", return_value=1000):
+            bt._session_last_activity.clear()
+            bt._session_last_activity["generic-task"] = 700
+            bt._cleanup_inactive_browser_sessions()
+
+        assert "generic-task" not in bt._session_last_activity
+        mock_cleanup.assert_called_once_with("generic-task")
 
 
 # ---------------------------------------------------------------------------

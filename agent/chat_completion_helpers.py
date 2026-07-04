@@ -680,12 +680,14 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             try:
                 import copy as _copy
                 from tools.schema_sanitizer import (
+                    promote_xai_optional_strings,
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
                 tools_for_api = _copy.deepcopy(tools_for_api)
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
                 tools_for_api, _ = strip_slash_enum(tools_for_api)
+                tools_for_api, _ = promote_xai_optional_strings(tools_for_api)
             except Exception as exc:
                 logger.warning(
                     "%s⚠️ Failed to sanitize tool schemas for xAI: %s",

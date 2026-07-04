@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from tools.schema_sanitizer import (
+    promote_xai_optional_strings,
     sanitize_tool_schemas,
     strip_pattern_and_format,
     strip_slash_enum,
@@ -700,3 +701,168 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ── promote_xai_optional_strings ────────────────────────────────────────────
+
+
+def test_promote_optional_strings_basic():
+    """Optional string params should be promoted to required."""
+    tools = [_tool("send_message", {
+        "type": "object",
+        "properties": {
+            "inboxId": {"type": "string"},
+            "to": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": "string"},
+            "text": {"type": "string"},
+            "html": {"type": "string"},
+        },
+        "required": ["inboxId", "to"],
+    })]
+    result, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 3, f"Expected 3 promoted (subject, text, html), got {promoted}"
+    required = result[0]["function"]["parameters"]["required"]
+    assert "subject" in required
+    assert "text" in required
+    assert "html" in required
+    assert "inboxId" in required  # already required, still there
+    assert "to" in required
+
+
+def test_promote_optional_strings_skips_non_string():
+    """Non-string top-level properties should not be promoted; nested strings are."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "count": {"type": "integer"},
+            "flag": {"type": "boolean"},
+            "items": {"type": "array", "items": {"type": "string"}},
+            "nested": {"type": "object", "properties": {"x": {"type": "string"}}},
+        },
+        "required": [],
+    })]
+    result, promoted = promote_xai_optional_strings(tools)
+    # name (top-level string) + x (nested string inside nested object) = 2
+    assert promoted == 2, f"Expected 2 promoted (name + nested x), got {promoted}"
+    required = result[0]["function"]["parameters"]["required"]
+    assert "name" in required
+    assert "count" not in required
+    assert "flag" not in required
+    assert "items" not in required
+    assert "nested" not in required
+    # Nested string property also promoted
+    nested = result[0]["function"]["parameters"]["properties"]["nested"]
+    assert "x" in nested["required"]
+
+
+def test_promote_optional_strings_already_required_noop():
+    """Already-required string params should not double-count."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "a": {"type": "string"},
+            "b": {"type": "string"},
+        },
+        "required": ["a", "b"],
+    })]
+    _, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 0, f"Expected 0 promoted, got {promoted}"
+
+
+def test_promote_optional_strings_idempotent():
+    """Second call on already-promoted tools is a no-op."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "required": [],
+    })]
+    _, first = promote_xai_optional_strings(tools)
+    _, second = promote_xai_optional_strings(tools)
+    assert first == 1
+    assert second == 0
+
+
+def test_promote_optional_strings_empty():
+    tools, promoted = promote_xai_optional_strings([])
+    assert tools == []
+    assert promoted == 0
+
+
+def test_promote_optional_strings_none():
+    tools, promoted = promote_xai_optional_strings(None)
+    assert tools is None
+    assert promoted == 0
+
+
+def test_promote_optional_strings_responses_format():
+    """Responses-format tools (no function wrapper) should also be promoted."""
+    tools = [{
+        "name": "send_message",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "inboxId": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["inboxId"],
+        },
+        "type": "function",
+    }]
+    result, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 1
+    assert "text" in result[0]["parameters"]["required"]
+
+
+def test_promote_optional_strings_nested_object():
+    """String properties inside nested objects should be promoted."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "config": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "count": {"type": "integer"},
+                },
+            },
+        },
+        "required": [],
+    })]
+    result, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 1, f"Expected 1 promoted (label), got {promoted}"
+    nested = result[0]["function"]["parameters"]["properties"]["config"]
+    assert "label" in nested["required"]
+    assert "count" not in nested.get("required", [])
+
+
+def test_promote_optional_strings_anyof_combinator():
+    """String properties inside anyOf should be promoted."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": [],
+    })]
+    # anyOf with string should NOT be promoted (type is not "string" at top level)
+    _, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 0
+
+
+def test_promote_optional_strings_array_type():
+    """Properties with type: ["string", "null"] should be promoted."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "text": {"type": ["string", "null"]},
+        },
+        "required": [],
+    })]
+    _, promoted = promote_xai_optional_strings(tools)
+    assert promoted == 1

@@ -481,3 +481,104 @@ def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+def promote_xai_optional_strings(tools: list[dict]) -> tuple[list[dict], int]:
+    """Promote optional string parameters to required for xAI compatibility.
+
+    xAI's grok-4.3 model silently drops **optional** string arguments whose
+    values contain newlines from function calls.  The model emits the tool
+    call but omits the optional parameter entirely — producing a valid (but
+    content-free) invocation that the tool accepts without error.  Making
+    the parameter ``required`` in the tool schema forces the model to emit
+    it correctly every time (verified via direct API matrix test).
+
+    This is a *reactive* workaround in the same family as
+    ``strip_pattern_and_format`` (issue #27197) and ``strip_slash_enum``,
+    but it addresses argument-level corruption rather than schema-level
+    HTTP 400 rejections.
+
+    Only properties with an explicit ``type: "string"`` (or
+    ``type: ["string", ...]`` array form) are promoted.  Object/array
+    properties are skipped to avoid forcing complex nested structures that
+    the model might not be able to produce for all call sites.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list, mutated in
+            place.  Callers that need to preserve the original should
+            deep-copy first.
+
+    Returns:
+        ``(tools, promoted_count)`` — the same list reference plus a count
+        of how many optional string parameters were promoted to required.
+    """
+    if not tools:
+        return tools, 0
+
+    promoted = 0
+
+    def _walk_schema(node: dict) -> None:
+        nonlocal promoted
+        if not isinstance(node, dict):
+            return
+
+        props = node.get("properties")
+        if isinstance(props, dict):
+            required = node.get("required")
+            if not isinstance(required, list):
+                required = []
+            new_required = list(required)
+            for prop_name, prop_schema in props.items():
+                if prop_name in new_required:
+                    continue
+                if not isinstance(prop_schema, dict):
+                    continue
+                # Match explicit "string" type (scalar or array form).
+                ptype = prop_schema.get("type")
+                is_string = ptype == "string" or (
+                    isinstance(ptype, list) and "string" in ptype
+                )
+                if is_string:
+                    new_required.append(prop_name)
+                    promoted += 1
+            if len(new_required) > len(required):
+                node["required"] = new_required
+
+        # Recurse into nested schemas.
+        for key in ("properties", "items", "additionalProperties"):
+            child = node.get(key)
+            if isinstance(child, dict):
+                if key == "properties":
+                    for v in child.values():
+                        _walk_schema(v)
+                else:
+                    _walk_schema(child)
+        # Handle anyOf / oneOf / allOf combinators.
+        for key in ("anyOf", "oneOf", "allOf"):
+            children = node.get(key)
+            if isinstance(children, list):
+                for child in children:
+                    _walk_schema(child)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk_schema(params)
+                continue
+        # Responses-format: {"name": "...", "parameters": {...}}
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk_schema(params)
+
+    if promoted:
+        logger.info(
+            "schema_sanitizer: promoted %d optional string parameter(s) "
+            "to required for xAI multiline-arg drop workaround (#58345)",
+            promoted,
+        )
+    return tools, promoted

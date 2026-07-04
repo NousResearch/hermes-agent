@@ -530,6 +530,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // Bridge browser context-menu copy to xterm's selection.  When the user
+    // right-clicks and picks "Copy" from the browser menu, xterm.js fires a
+    // DOM copy event on the terminal host.  Without this listener, the
+    // browser copies whatever is selected in the DOM (usually nothing) rather
+    // than the text xterm has selected internally.
+    const onCopy = (ev: ClipboardEvent) => {
+      const sel = term.getSelection();
+      if (sel) {
+        ev.clipboardData?.setData("text/plain", sel);
+        ev.preventDefault();
+      }
+    };
+    host.addEventListener("copy", onCopy);
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.

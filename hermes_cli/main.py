@@ -5811,9 +5811,15 @@ def cmd_gui(args: argparse.Namespace):
                 creationflags=windows_detach_flags(),
                 **popen_kwargs,
             )
-        except OSError:
-            # The parent's job object disallows breakaway (rare — no
-            # JOB_OBJECT_LIMIT_BREAKAWAY_OK); retry without the breakaway bit.
+        except OSError as exc:
+            # Only recover from a denied job breakaway (the parent's job object
+            # lacks JOB_OBJECT_LIMIT_BREAKAWAY_OK), which surfaces as
+            # ERROR_ACCESS_DENIED (winerror == 5). Re-raise every other spawn
+            # failure (bad argv/env, missing exe) so it stays a clear, single
+            # error instead of being masked by a doomed second attempt.
+            if getattr(exc, "winerror", None) != 5:
+                raise
+            # Breakaway denied — retry without the breakaway bit.
             subprocess.Popen(
                 launch_command,
                 creationflags=windows_detach_flags_without_breakaway(),

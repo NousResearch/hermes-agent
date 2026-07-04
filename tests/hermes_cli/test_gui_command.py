@@ -1099,8 +1099,13 @@ def test_gui_win32_launches_detached_and_returns(tmp_path, monkeypatch):
 
 
 def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
-    """If the first detached spawn is denied job breakaway (OSError), retry
-    without CREATE_BREAKAWAY_FROM_JOB rather than crashing."""
+    """If the first detached spawn is denied job breakaway, retry without
+    CREATE_BREAKAWAY_FROM_JOB rather than crashing.
+
+    On Windows a denied breakaway surfaces as ``PermissionError`` with
+    ``winerror == 5`` (``ERROR_ACCESS_DENIED``); use that realistic shape so
+    the test exercises the launcher's narrowed exception handler.
+    """
     import hermes_cli._subprocess_compat as _subproc_compat
 
     root = _make_desktop_tree(tmp_path)
@@ -1108,10 +1113,15 @@ def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
     _make_packaged_executable(root, monkeypatch, platform="win32")
     monkeypatch.setattr(_subproc_compat, "IS_WINDOWS", True)
 
+    breakaway_denied = PermissionError("breakaway denied")
+    # ``winerror`` is only auto-populated on Windows; set it explicitly so the
+    # narrowed handler's ``winerror == 5`` gate is exercised on any platform.
+    breakaway_denied.winerror = 5
+
     with patch("hermes_cli.main.shutil.which", return_value=None), \
          patch(
              "hermes_cli.main.subprocess.Popen",
-             side_effect=[OSError("breakaway denied"), None],
+             side_effect=[breakaway_denied, None],
          ) as mock_popen, \
          patch("hermes_cli.main.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
@@ -1127,6 +1137,39 @@ def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
     assert (
         mock_popen.call_args_list[1].kwargs["creationflags"]
         == _subproc_compat.windows_detach_flags_without_breakaway()
+    )
+
+
+def test_gui_win32_detach_reraises_non_breakaway_oserror(tmp_path, monkeypatch):
+    """A spawn failure that is NOT a denied breakaway (winerror != 5, e.g. a
+    bad argv/env) must propagate immediately, not trigger a doomed second
+    attempt without CREATE_BREAKAWAY_FROM_JOB."""
+    import hermes_cli._subprocess_compat as _subproc_compat
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="win32")
+    monkeypatch.setattr(_subproc_compat, "IS_WINDOWS", True)
+
+    spawn_error = OSError("The system cannot find the file specified")
+    spawn_error.winerror = 2  # ERROR_FILE_NOT_FOUND — unrelated to breakaway.
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch(
+             "hermes_cli.main.subprocess.Popen",
+             side_effect=[spawn_error, None],
+         ) as mock_popen, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(OSError) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.winerror == 2
+    mock_run.assert_not_called()
+    # Only the first (breakaway) attempt ran; no doomed retry masked the error.
+    assert mock_popen.call_count == 1
+    assert (
+        mock_popen.call_args_list[0].kwargs["creationflags"]
+        == _subproc_compat.windows_detach_flags()
     )
 
 

@@ -207,14 +207,42 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            if not results:
-                return ""
-            lines = []
-            for r in results:
-                trust = r.get("trust_score", r.get("trust", 0))
-                lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
-            return "## Holographic Memory\n" + "\n".join(lines)
+            parts = []
+
+            # ── StarMap L2 top3 ──────────────────────────────────────────────
+            l2_chunks = self._store.query_starmap_l2_chunks(query, limit=3)
+
+            # 收集 L2 已覆盖的 L0 id 集合
+            covered_l0_ids: set[int] = set()
+            if l2_chunks:
+                lines = []
+                for chunk in l2_chunks:
+                    lines.append(
+                        f"- [{chunk['chunk_id']}] **{chunk['chunk_name']}**\n"
+                        f"  {chunk['content']}"
+                    )
+                    for fid in chunk.get("source_l0_ids", []):
+                        try:
+                            covered_l0_ids.add(int(fid))
+                        except (TypeError, ValueError):
+                            pass
+                parts.append("## StarMap Memory (L2)\n" + "\n".join(lines))
+
+            # ── 孤儿 L0 补充（最多 3 条，过滤掉已被 L2 覆盖的）────────────────
+            facts_results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+            orphan_facts = [
+                r for r in facts_results
+                if r.get("fact_id") not in covered_l0_ids
+            ][:3]
+
+            if orphan_facts:
+                lines = []
+                for r in orphan_facts:
+                    trust = r.get("trust_score", r.get("trust", 0))
+                    lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
+                parts.append("## Holographic Memory\n" + "\n".join(lines))
+
+            return "\n\n".join(parts) if parts else ""
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
             return ""

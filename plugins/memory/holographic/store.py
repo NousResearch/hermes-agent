@@ -3,6 +3,7 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import json
 import re
 import sqlite3
 import threading
@@ -119,6 +120,7 @@ class MemoryStore:
         )
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
+        self._l2_fts_dirty: bool = True  # 首次启动强制重建一次
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -137,6 +139,10 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # StarMap L2_chunks FTS index (created here; populated on demand via rebuild_l2_chunks_fts)
+        self._conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS L2_chunks_fts USING fts5(id, context, category)
+        """)
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -185,6 +191,17 @@ class MemoryStore:
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
             self._rebuild_bank(category)
+
+            # ── 触发 seed膨胀：新 fact 写入后自动联想归类 ──────────
+            try:
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent))
+                from seed_expand import run as _seed_run
+                _seed_run(fact_id, content)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug("seed_expand trigger failed: %s", e)
 
             return fact_id
 
@@ -565,6 +582,87 @@ class MemoryStore:
                 self._rebuild_bank(category)
 
             return len(rows)
+
+    def mark_l2_fts_dirty(self) -> None:
+        """标记 L2 FTS 索引需要重建（新 L2 写入后调用）。"""
+        self._l2_fts_dirty = True
+
+    def rebuild_l2_chunks_fts(self) -> int:
+        """Rebuild the L2_chunks_fts FTS index from confirmed L2_chunks rows.
+
+        Uses a plain FTS5 table (no content=) so INSERT...SELECT works normally.
+        Only rebuilds when dirty (marked via mark_l2_fts_dirty). No-op otherwise.
+
+        Returns the number of rows indexed, or 0 if skipped.
+        """
+        with self._lock:
+            if not self._l2_fts_dirty:
+                return 0
+
+            # Check if L2_chunks table exists
+            tables = {r[0] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "L2_chunks" not in tables:
+                return 0
+
+            # Recreate plain FTS table
+            self._conn.execute("DROP TABLE IF EXISTS L2_chunks_fts")
+            self._conn.execute("""
+                CREATE VIRTUAL TABLE L2_chunks_fts USING fts5(id, context, category)
+            """)
+
+            # Populate from confirmed L2_chunks
+            self._conn.execute("""
+                INSERT INTO L2_chunks_fts(id, context, category)
+                SELECT id, context, category
+                FROM L2_chunks
+                WHERE status = 'confirmed'
+            """)
+            self._conn.commit()
+            count = self._conn.total_changes
+            self._l2_fts_dirty = False  # 重建完成，清除脏标记
+            return count
+
+    def query_starmap_l2_chunks(
+        self,
+        query: str,
+        limit: int = 3,
+    ) -> list[dict]:
+        """Full-text search over confirmed StarMap L2_chunks via FTS5.
+
+        Returns up to `limit` L2 chunks ordered by FTS rank.
+        """
+        with self._lock:
+            query = query.strip()
+            if not query:
+                return []
+
+            # 按需重建 FTS 索引（dirty 时才真正重建，否则直接跳过）
+            self.rebuild_l2_chunks_fts()
+
+            # FTS5 prefix search — each token suffixed with *
+            tokens = query.split()
+            fts_query = " OR ".join(f"{t}*" for t in tokens if t)
+
+            rows = self._conn.execute("""
+                SELECT c.id, c.chunk_name, c.context, c.category,
+                       c.source_l0_ids, fts.rank
+                FROM L2_chunks_fts fts
+                JOIN L2_chunks c ON c.id = fts.id
+                WHERE L2_chunks_fts MATCH ?
+                ORDER BY fts.rank
+                LIMIT ?
+            """, (fts_query, limit)).fetchall()
+
+            return [
+                {
+                    "chunk_id":      r["id"],
+                    "chunk_name":    r["chunk_name"],
+                    "content":       r["context"],
+                    "category":      r["category"],
+                    "source_l0_ids": json.loads(r["source_l0_ids"] or "[]"),
+                }
+                for r in rows
+            ]
 
     # ------------------------------------------------------------------
     # Utilities

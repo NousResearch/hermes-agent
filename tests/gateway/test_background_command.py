@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -400,6 +400,94 @@ class TestRunBackgroundTask:
             "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "463",
         }
+
+    @pytest.mark.asyncio
+    async def test_completion_message_ids_allow_reply_continuation(self, monkeypatch):
+        """Successful background replies are indexed so user replies continue that task."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=True,
+                message_id="900",
+                continuation_message_ids=("901",),
+                raw_response={"message_ids": ["900", "901", "902"]},
+            )
+        )
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        await runner._run_background_task("say hello", source, "bg_test")
+
+        continuations = getattr(runner, "_background_reply_continuations", {})
+        assert continuations[("telegram", "67890", "900")]["task_id"] == "bg_test"
+        assert continuations[("telegram", "67890", "901")]["task_id"] == "bg_test"
+        assert continuations[("telegram", "67890", "902")]["task_id"] == "bg_test"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_background_completion_starts_followup_without_main_session(self):
+        """Replying to a background result starts a background follow-up, not the chat session."""
+        runner = _make_runner()
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._background_reply_continuations = {
+            ("telegram", "67890", "900"): {"task_id": "bg_test"},
+        }
+        runner._run_background_task = AsyncMock()
+        runner.session_store.get_or_create_session.side_effect = AssertionError(
+            "background reply should not enter the main session"
+        )
+
+        created_tasks = []
+
+        def capture_task(coro, *args, **kwargs):
+            coro.close()
+            mock_task = MagicMock()
+            created_tasks.append(mock_task)
+            return mock_task
+
+        event = _make_event(text="now make it shorter")
+        event.reply_to_message_id = "900"
+        event.message_id = "902"
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            result = await runner._handle_message(event)
+
+        assert "Background task started" in result
+        assert "bg_test" in result
+        assert len(created_tasks) == 1
+        runner._run_background_task.assert_called_once()
+        call = runner._run_background_task.call_args
+        assert call.args[0] == "now make it shorter"
+        assert call.args[2] == "bg_test"
+        assert call.kwargs["event_message_id"] == "902"
+        runner.session_store.get_or_create_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_agent_cleanup_runs_when_background_agent_raises(self):

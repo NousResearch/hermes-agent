@@ -1698,6 +1698,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    SendResult,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -2994,6 +2995,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        self._background_reply_continuations: "OrderedDict[tuple[str, str, str], Dict[str, Any]]" = OrderedDict()
+        self._background_reply_continuations_max = 256
 
         # scale-to-zero (Phase 0, F13): gateway-scoped "last inbound seen" clock.
         # There is no such clock today (only a per-agent _last_activity_ts), so the
@@ -8688,6 +8691,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        background_continuation = self._background_reply_continuation_for_event(event)
+        if background_continuation is not None:
+            response = await self._handle_background_reply_continuation(
+                event,
+                background_continuation,
+            )
+            if response is not None:
+                return response
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -10309,6 +10321,122 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         return source
+
+    @staticmethod
+    def _background_reply_key(source: SessionSource, message_id: Optional[str]) -> Optional[tuple[str, str, str]]:
+        """Return the in-memory key for a sent background result message."""
+        if not source or message_id is None:
+            return None
+        platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+        chat_id = getattr(source, "chat_id", None)
+        if platform is None or chat_id is None:
+            return None
+        return (str(platform), str(chat_id), str(message_id))
+
+    def _background_reply_map(self) -> "OrderedDict[tuple[str, str, str], Dict[str, Any]]":
+        continuations = getattr(self, "_background_reply_continuations", None)
+        if not isinstance(continuations, OrderedDict):
+            continuations = OrderedDict(continuations or {})
+            self._background_reply_continuations = continuations
+        return continuations
+
+    def _remember_background_reply_message(
+        self,
+        source: SessionSource,
+        message_id: Optional[str],
+        task_id: str,
+    ) -> None:
+        """Map a delivered background result message to its background session."""
+        key = self._background_reply_key(source, message_id)
+        if key is None:
+            return
+        continuations = self._background_reply_map()
+        continuations[key] = {"task_id": task_id}
+        continuations.move_to_end(key)
+        max_size = getattr(self, "_background_reply_continuations_max", 256)
+        while len(continuations) > max_size:
+            continuations.popitem(last=False)
+
+    def _remember_background_reply_result(
+        self,
+        source: SessionSource,
+        task_id: str,
+        result: Optional[SendResult],
+    ) -> None:
+        """Index every message id produced by a background completion send."""
+        if not isinstance(result, SendResult) or not result.success:
+            return
+        message_ids: list[str] = []
+        if result.message_id:
+            message_ids.append(str(result.message_id))
+        raw_message_ids = None
+        if isinstance(result.raw_response, dict):
+            raw_message_ids = result.raw_response.get("message_ids")
+        if isinstance(raw_message_ids, (list, tuple)):
+            for message_id in raw_message_ids:
+                if message_id:
+                    message_ids.append(str(message_id))
+        for message_id in result.continuation_message_ids or ():
+            if message_id:
+                message_ids.append(str(message_id))
+        for message_id in dict.fromkeys(message_ids):
+            self._remember_background_reply_message(source, message_id, task_id)
+
+    def _background_reply_continuation_for_event(self, event: MessageEvent) -> Optional[Dict[str, Any]]:
+        """Return continuation metadata when an inbound message replies to a background result."""
+        if event.is_command():
+            return None
+        key = self._background_reply_key(event.source, getattr(event, "reply_to_message_id", None))
+        if key is None:
+            return None
+        continuations = getattr(self, "_background_reply_continuations", None)
+        if not continuations:
+            return None
+        continuation = continuations.get(key)
+        if continuation is not None and hasattr(continuations, "move_to_end"):
+            try:
+                continuations.move_to_end(key)
+            except Exception:
+                pass
+        return continuation if isinstance(continuation, dict) else None
+
+    async def _handle_background_reply_continuation(
+        self,
+        event: MessageEvent,
+        continuation: Dict[str, Any],
+    ) -> Optional[str]:
+        """Start a follow-up turn in the referenced background session."""
+        task_id = str(continuation.get("task_id") or "").strip()
+        if not task_id:
+            return None
+
+        prompt = (event.text or "").strip()
+        media_urls = list(event.media_urls) if event.media_urls else []
+        media_types = list(event.media_types) if event.media_types else []
+        if not prompt and not media_urls:
+            return None
+
+        _task = asyncio.create_task(
+            self._run_background_task(
+                prompt,
+                event.source,
+                task_id,
+                event_message_id=self._reply_anchor_for_event(event),
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+        )
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._background_tasks = tasks
+        tasks.add(_task)
+        _task.add_done_callback(tasks.discard)
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        if not preview:
+            preview = "(media follow-up)"
+        return t("gateway.background.started", preview=preview, task_id=task_id)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -12877,17 +13005,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
 
                 if text_content:
-                    await adapter.send(
+                    send_result = await adapter.send(
                         chat_id=source.chat_id,
                         content=header + text_content,
                         metadata=_thread_metadata,
                     )
+                    self._remember_background_reply_result(source, task_id, send_result)
                 elif not images and not media_files:
-                    await adapter.send(
+                    send_result = await adapter.send(
                         chat_id=source.chat_id,
                         content=header + "(No response generated)",
                         metadata=_thread_metadata,
                     )
+                    self._remember_background_reply_result(source, task_id, send_result)
 
                 # Send extracted images
                 for image_url, alt_text in (images or []):

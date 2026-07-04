@@ -254,6 +254,64 @@ def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
     assert not folder.exists()
 
 
+def test_upload_blocks_protected_env_file(forced_files_client):
+    client, root = forced_files_client
+    env_file = root / ".env"
+
+    blocked = client.post(
+        "/api/files/upload",
+        json={
+            "path": str(env_file),
+            "data_url": "data:text/plain;base64,U0VDUkVUPTE=",
+        },
+    )
+
+    assert blocked.status_code == 403
+    assert not env_file.exists()
+
+
+def test_stream_upload_blocks_protected_env_file(forced_files_client):
+    client, root = forced_files_client
+    env_file = root / ".env.local"
+
+    blocked = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(env_file), "overwrite": "true"},
+        files={"file": (".env.local", b"SECRET=1", "text/plain")},
+    )
+
+    assert blocked.status_code == 403
+    assert not env_file.exists()
+
+
+def test_mkdir_blocks_protected_mcp_tokens_directory(local_files_client, monkeypatch):
+    client, home = local_files_client
+    hermes_home = home / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token_dir = hermes_home / "mcp-tokens"
+
+    blocked = client.post("/api/files/mkdir", json={"path": str(token_dir)})
+
+    assert blocked.status_code == 403
+    assert not token_dir.exists()
+
+
+def test_delete_blocks_protected_env_file(forced_files_client):
+    client, root = forced_files_client
+    env_file = root / ".env"
+    root.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("SECRET=1")
+
+    blocked = client.request(
+        "DELETE",
+        "/api/files",
+        json={"path": str(env_file)},
+    )
+
+    assert blocked.status_code == 403
+    assert env_file.read_text() == "SECRET=1"
+
+
 def _seed_file(client, root, name="out/hello.txt"):
     file_path = root / name
     created = client.post(

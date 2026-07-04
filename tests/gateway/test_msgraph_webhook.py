@@ -1,6 +1,7 @@
 """Tests for the Microsoft Graph webhook adapter."""
 
 import asyncio
+from gateway.session import build_session_key
 
 import pytest
 
@@ -182,6 +183,32 @@ class TestMSGraphNotifications:
         assert event.source.platform == Platform.MSGRAPH_WEBHOOK
         assert event.source.chat_type == "webhook"
         assert event.message_id == "id:notif-1"
+
+    def test_same_subscription_different_resources_get_distinct_session_scope(self):
+        adapter = _make_adapter()
+        first = adapter._build_message_event(
+            {
+                "id": "notif-1",
+                "subscriptionId": "sub-1",
+                "changeType": "updated",
+                "resource": "communications/onlineMeetings/meeting-1",
+                "resourceData": {"id": "meeting-1"},
+            },
+            "id:notif-1",
+        )
+        second = adapter._build_message_event(
+            {
+                "id": "notif-2",
+                "subscriptionId": "sub-1",
+                "changeType": "updated",
+                "resource": "communications/onlineMeetings/meeting-2",
+                "resourceData": {"id": "meeting-2"},
+            },
+            "id:notif-2",
+        )
+
+        assert first.source.chat_id != second.source.chat_id
+        assert build_session_key(first.source) != build_session_key(second.source)
 
     @pytest.mark.anyio
     async def test_bad_client_state_rejected_as_auth_failure(self):

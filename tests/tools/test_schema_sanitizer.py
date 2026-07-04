@@ -201,8 +201,8 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
-def test_ref_with_default_sibling_stripped():
-    """Strict backends reject ``default`` alongside ``$ref``."""
+def test_ref_with_default_sibling_inlined_without_default():
+    """Strict backends reject refs/defaults; inline local refs and drop default."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -217,7 +217,8 @@ def test_ref_with_default_sibling_stripped():
     })]
     out = sanitize_tool_schemas(tools)
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
-    assert payload == {"$ref": "#/$defs/Payload"}
+    assert payload == {"type": "object", "properties": {"q": {"type": "string"}}}
+    assert "$defs" not in out[0]["function"]["parameters"]
 
 
 def test_nullable_union_collapse_does_not_leave_default_on_ref():
@@ -242,13 +243,15 @@ def test_nullable_union_collapse_does_not_leave_default_on_ref():
     })]
     out = sanitize_tool_schemas(tools)
     prop = out[0]["function"]["parameters"]["properties"]["input"]
-    assert prop["$ref"] == "#/$defs/Payload"
+    assert prop["type"] == "object"
+    assert prop["properties"] == {"q": {"type": "string"}}
     assert "default" not in prop
     assert prop.get("nullable") is True
+    assert "$defs" not in out[0]["function"]["parameters"]
 
 
 def test_ref_description_preserved():
-    """Annotation siblings that strict backends allow should survive."""
+    """Annotation siblings that strict backends allow should survive inlining."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -264,7 +267,43 @@ def test_ref_description_preserved():
     out = sanitize_tool_schemas(tools)
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
     assert payload["description"] == "The payload"
-    assert payload["$ref"] == "#/$defs/Payload"
+    assert payload["type"] == "object"
+    assert payload["properties"] == {}
+    assert "$ref" not in payload
+
+
+def test_nested_internal_refs_are_inlined_recursively():
+    tools = [_tool("browser", {
+        "type": "object",
+        "properties": {
+            "cookies": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/SetCookieParam"},
+            },
+        },
+        "$defs": {
+            "SetCookieParam": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "sameSite": {"$ref": "#/$defs/SameSite"},
+                },
+                "required": ["name"],
+            },
+            "SameSite": {"type": "string", "enum": ["Strict", "Lax", "None"]},
+        },
+    })]
+
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    item = params["properties"]["cookies"]["items"]
+
+    assert "$defs" not in params
+    assert "$ref" not in item
+    assert item["properties"]["sameSite"] == {
+        "type": "string",
+        "enum": ["Strict", "Lax", "None"],
+    }
 
 
 def test_empty_tools_list_returns_empty():

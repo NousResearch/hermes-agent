@@ -27,6 +27,10 @@ The failure modes we've seen in the wild:
   after nullable-union collapse::
 
       {"$ref": "#/$defs/Foo", "default": null}
+* Internal ``#/$defs/...`` / ``#/definitions/...`` references — some strict
+  OpenAI-compatible endpoints (notably Fireworks) fail while resolving local
+  refs in function schemas, so resolvable local refs are inlined before the
+  request leaves Hermes.
 
 This module walks the final tool schema tree (after MCP-level normalization
 and any per-tool dynamic rebuilds) and fixes the known-hostile constructs
@@ -97,6 +101,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"], path=fn.get("name", "<tool>")
     )
     fn["parameters"] = _strip_ref_siblings(fn["parameters"])
+    fn["parameters"] = _inline_internal_refs(fn["parameters"])
     return out
 
 
@@ -125,6 +130,83 @@ def _strip_ref_siblings(node: Any) -> Any:
         for key in _REF_FORBIDDEN_SIBLINGS:
             if key in out:
                 out.pop(key, None)
+    return out
+
+
+def _decode_json_pointer_part(part: str) -> str:
+    return part.replace("~1", "/").replace("~0", "~")
+
+
+def _resolve_local_ref(root: dict, ref: str) -> Any:
+    """Resolve a local JSON pointer (``#/...``) inside ``root``.
+
+    Returns ``None`` when the pointer cannot be resolved. ``None`` is safe here
+    because JSON Schema fragments we care about are objects/lists, not literal
+    null schemas.
+    """
+    if not ref.startswith("#/"):
+        return None
+
+    cur: Any = root
+    for raw_part in ref[2:].split("/"):
+        part = _decode_json_pointer_part(raw_part)
+        if isinstance(cur, dict):
+            if part not in cur:
+                return None
+            cur = cur[part]
+        elif isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+    return cur
+
+
+def _inline_internal_refs(schema: Any) -> Any:
+    """Inline resolvable local ``$ref`` nodes and remove now-unused defs.
+
+    Fireworks' OpenAI-compatible endpoint has rejected tool schemas with an
+    internal reference such as ``#/$defs/SetCookieParam`` before the model can
+    run. OpenAI accepts these refs, but Hermes' tool schemas are more portable
+    if the final request carries the concrete schema where possible.
+
+    Only local JSON pointers are inlined. Remote/unknown refs are left in place
+    rather than guessed.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    root = copy.deepcopy(schema)
+
+    def _walk(node: Any, resolving: tuple[str, ...]) -> Any:
+        if isinstance(node, list):
+            return [_walk(item, resolving) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/"):
+            target = _resolve_local_ref(root, ref)
+            if target is not None and ref not in resolving:
+                merged = _walk(copy.deepcopy(target), (*resolving, ref))
+                if isinstance(merged, dict):
+                    for key, value in node.items():
+                        if key != "$ref":
+                            merged[key] = _walk(value, resolving)
+                    return merged
+            # If a local ref is missing or recursive, remove the unusable ref
+            # but keep any annotation siblings so strict endpoints do not fail
+            # the whole tool schema on a dangling pointer.
+            return {key: _walk(value, resolving) for key, value in node.items() if key != "$ref"}
+
+        return {key: _walk(value, resolving) for key, value in node.items()}
+
+    out = _walk(root, ())
+    if isinstance(out, dict):
+        out.pop("$defs", None)
+        out.pop("definitions", None)
     return out
 
 

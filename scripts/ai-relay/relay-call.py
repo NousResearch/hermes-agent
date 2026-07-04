@@ -38,7 +38,7 @@ DEFAULT_ADAPTERS = {
     "grok":   {"cmd": ["grok","-p","{prompt}","--cwd","{cwd}","--output-format","json","--always-approve"]},
     "gemini": {"cmd": ["gemini","-p","{prompt}","-m","gemini-2.5-flash","--skip-trust","--approval-mode","yolo","--output-format","text"], "run_in_cwd": True},
     "ollama": {"cmd": ["ollama","run","{model}","{prompt}"], "run_in_cwd": True},
-    "codex":  {"cmd": ["codex","exec","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
+    "codex":  {"cmd": ["codex","exec","--sandbox","workspace-write","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
     # สมองพิเศษ (brain · premium) · เฉพาะงานเกรด "ยาก" หรือบันไดส่งต่อขึ้น · ห้ามเข้าสายสำรองของ coder
     # premium=True = ตัวแพงสุด มีเพดานเรียกแยก · โดน limit/พัง → ตกไปสมองสำรอง (opus) อัตโนมัติ
     "fable":  {"cmd": ["claude","--model","claude-fable-5","-p","{prompt}"], "run_in_cwd": True, "brain": True, "premium": True},

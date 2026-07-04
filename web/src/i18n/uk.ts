@@ -434,6 +434,14 @@ export const uk: Translations = {
     replaceCurrentValue: "Замінити поточне значення ({preview})",
     showValue: "Показати справжнє значення",
     hideValue: "Сховати значення",
+    customTitle: "Власні ключі",
+    customHint: "Довільні змінні середовища, збережені у вашому .env, які Hermes не розпізнає. Використовуйте їх для впровадження змінних середовища для навичок, серверів MCP або власних інструментів.",
+    customConfigured: "Задано власних ключів: {count}",
+    addCustomKey: "Додати власний ключ",
+    customKeyName: "Назва змінної",
+    customKeyNamePlaceholder: "напр. MY_SERVICE_API_KEY",
+    add: "Додати",
+    invalidKeyName: "Використовуйте лише літери, цифри та підкреслення (має починатися з літери або підкреслення).",
   },
 
   oauth: {

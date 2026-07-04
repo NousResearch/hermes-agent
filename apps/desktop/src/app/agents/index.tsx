@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -19,7 +20,7 @@ import {
   type SubagentStreamEntry
 } from '@/store/subagents'
 
-import { OverlayView } from '../overlays/overlay-view'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -86,18 +87,16 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
-    <OverlayView
-      closeLabel={t.agents.close}
-      contentClassName="px-5 pt-5 pb-4 sm:px-6"
-      onClose={onClose}
-      rootClassName="mx-auto max-w-3xl"
-    >
-      <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
-        <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
-      </header>
-      <SubagentTree tree={tree} />
-    </OverlayView>
+    <Panel closeLabel={t.agents.close} onClose={onClose}>
+      {tree.length === 0 ? (
+        <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
+      ) : (
+        <>
+          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
+          <SubagentTree tree={tree} />
+        </>
+      )}
+    </Panel>
   )
 }
 
@@ -116,14 +115,11 @@ const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => 
   return a.durationMinutes(m, s)
 }
 
-const fmtTokens = (value: number | undefined, a: Translations['agents']) => {
-  if (!value) {
-    return ''
-  }
+const fmtTokens = (value: number | undefined, a: Translations['agents']) =>
+  value ? a.tokens(compactNumber(value)) : ''
 
-  return value >= 1000 ? a.tokensK((value / 1000).toFixed(1)) : a.tokens(value)
-}
-
+// Distinct contract from coarseElapsed: rounds to the second (this ticks live),
+// and hours are unbounded ("25h", never "1d"). Kept local on purpose.
 const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => {
   const s = Math.max(0, Math.round((nowMs - updatedAt) / 1000))
 
@@ -137,11 +133,7 @@ const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => 
 
   const m = Math.floor(s / 60)
 
-  if (m < 60) {
-    return a.ageMinutes(m)
-  }
-
-  return a.ageHours(Math.floor(m / 60))
+  return m < 60 ? a.ageMinutes(m) : a.ageHours(Math.floor(m / 60))
 }
 
 const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>

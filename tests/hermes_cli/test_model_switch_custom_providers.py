@@ -337,6 +337,7 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
 
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # #9210: group custom_providers by (base_url, api_key) in /model picker
 # ─────────────────────────────────────────────────────────────────────────────
@@ -642,8 +643,8 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -678,15 +679,124 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
     )
 
     assert gateway_prov is not None, "Custom provider group not found in results"
-    assert calls == [("sk-gateway-key", "https://gateway.example.com/v1")], (
-        "fetch_api_models must be called with the custom provider's credentials"
-    )
+    assert calls == [
+        ("sk-gateway-key", "https://gateway.example.com/v1", {"headers": None})
+    ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
         "gateway-model-b",
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
+    """custom_providers[].extra_headers must apply to live /models probes."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["gateway-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "LLM Proxy",
+                "api_key": "local-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "http://localhost:8081/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None
+    assert calls == [
+        (
+            "local-key",
+            "http://localhost:8081/v1",
+            {
+                "headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                }
+            },
+        )
+    ]
+    assert gateway_prov["models"] == ["gateway-model"]
+
+
+def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
+    """Entries sharing (api_url, credential, api_mode) but declaring different
+    extra_headers must NOT collapse into one picker row — each is a distinct
+    header-authenticated endpoint (e.g. per-tenant routing behind one proxy)
+    and must probe /models with its own headers."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs.get("headers")))
+        # Return a per-tenant model list keyed by the routing header so we can
+        # assert each row got its OWN probe rather than a shared one.
+        tenant = (kwargs.get("headers") or {}).get("X-Tenant", "none")
+        return [f"model-{tenant}"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "Proxy Tenant A",
+                "api_key": "shared-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {"X-Tenant": "a"},
+            },
+            {
+                "name": "Proxy Tenant B",
+                "api_key": "shared-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {"X-Tenant": "b"},
+            },
+        ],
+        max_models=50,
+    )
+
+    rows = [
+        p for p in providers if p.get("api_url") == "http://localhost:8081/v1"
+    ]
+    # Two distinct rows, not one collapsed row.
+    assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
+
+    # Each tenant was probed with its OWN header set (order-independent).
+    assert ("shared-key", "http://localhost:8081/v1", {"X-Tenant": "a"}) in calls
+    assert ("shared-key", "http://localhost:8081/v1", {"X-Tenant": "b"}) in calls
+
+    # Each row surfaces the model list its own headers unlocked.
+    models_by_row = {tuple(r["models"]) for r in rows}
+    assert models_by_row == {("model-a",), ("model-b",)}
 
 
 def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatch):
@@ -703,8 +813,8 @@ def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatc
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -759,8 +869,8 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["live-a", "live-b"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -791,3 +901,52 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+
+def test_resolve_custom_provider_passes_key_env():
+    """resolve_custom_provider should propagate key_env into api_key_env_vars.
+
+    Regression: previously api_key_env_vars was always (), silently dropping
+    the configured env var and causing 401s on every request.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom:token-plan",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+                "model": "mimo-v2-pro",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
+    assert resolved.base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():
+    """The bare-'custom' self-heal path must also propagate key_env.
+
+    A corrupt stored provider of the bare string 'custom' falls back to the
+    first valid entry; that fallback previously hardcoded api_key_env_vars=(),
+    dropping the env var just like the named-match path did.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)

@@ -10,6 +10,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/platform-support',
         'getting-started/termux',
         'getting-started/nix-setup',
         'getting-started/updating',
@@ -661,6 +662,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/line',
             'user-guide/messaging/simplex',
             'user-guide/messaging/ntfy',
+            'user-guide/messaging/irc',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/webhooks',
           ],
@@ -708,6 +710,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/google-vertex',
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
         'guides/oauth-over-ssh',

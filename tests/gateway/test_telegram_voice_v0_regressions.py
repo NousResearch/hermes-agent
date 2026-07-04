@@ -49,6 +49,52 @@ def test_telegram_audio_size_gate_rejects_oversized_media_before_download():
 
 
 @pytest.mark.asyncio
+async def test_telegram_video_size_gate_rejects_oversized_media_before_download():
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    adapter._should_process_message = lambda _message: True
+    adapter._build_message_event = lambda _message, _type, update_id=None: SimpleNamespace(
+        text="caption",
+        media_urls=[],
+        media_types=[],
+    )
+    adapter._apply_telegram_group_observe_attribution = lambda event: event
+
+    handled = []
+
+    async def handle_message(event):
+        handled.append(event)
+
+    adapter.handle_message = handle_message
+
+    class OversizedVideo:
+        file_size = 2048
+
+        async def get_file(self):  # pragma: no cover - failure path assertion
+            pytest.fail("oversized videos must not be downloaded")
+
+    msg = SimpleNamespace(
+        caption=None,
+        sticker=None,
+        photo=None,
+        voice=None,
+        audio=None,
+        video=OversizedVideo(),
+        document=None,
+        media_group_id=None,
+    )
+    update = SimpleNamespace(message=msg, update_id=1)
+
+    await TelegramAdapter._handle_media_message(adapter, update, SimpleNamespace())
+
+    assert len(handled) == 1
+    assert handled[0].media_urls == []
+    assert handled[0].media_types == []
+    assert "video file" in handled[0].text
+    assert "exceeds" in handled[0].text
+
+
+@pytest.mark.asyncio
 async def test_voice_tts_is_explicit_audio_reply_opt_in():
     adapter = SimpleNamespace(
         _auto_tts_disabled_chats=set(),

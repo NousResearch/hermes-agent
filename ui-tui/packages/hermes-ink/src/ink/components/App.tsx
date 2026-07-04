@@ -457,6 +457,19 @@ export default class App extends PureComponent<Props, State> {
         })
         stdin.addListener('readable', this.handleReadable)
       }
+
+      // Issue #31486: even after re-attaching, any bytes already buffered
+      // when the loop threw are stranded because Node only fires 'readable'
+      // on buffer transitions, not for data the consumer already saw. Schedule
+      // one drain on the next macrotask so the handler runs against a fresh
+      // try/catch and clears whatever is left.
+      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+        setImmediate(() => {
+          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+            this.handleReadable()
+          }
+        })
+      }
     }
   }
   handleInput = (input: string | undefined): void => {

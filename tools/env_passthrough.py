@@ -59,11 +59,32 @@ def _is_hermes_provider_credential(name: str) -> bool:
     Non-Hermes API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
     in the blocklist and remain legitimately registerable — skills that
     wrap third-party APIs still work.
+
+    Fail closed: if the authoritative blocklist cannot be imported (partial
+    install, import-time error, etc.) we treat the name as a protected
+    provider credential and refuse passthrough, rather than fall open and
+    let a skill tunnel a Hermes credential into the execute_code child.
     """
     try:
-        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-    except Exception:
-        return False
+        from tools.environments.local import (
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _is_hermes_internal_secret,
+        )
+    except Exception as e:
+        logger.warning(
+            "env passthrough: provider credential blocklist import failed; "
+            "failing closed and refusing passthrough registration for %r: %s",
+            name,
+            e,
+        )
+        return True
+    # Dynamically-generated Hermes-internal secrets (AUXILIARY_*_API_KEY /
+    # _BASE_URL side-LLM credentials, GATEWAY_RELAY_* relay-auth) are provider
+    # credentials the static blocklist can't enumerate — they're injected per
+    # task/relay at gateway startup. A skill must not be able to register them
+    # as passthrough and tunnel them into an execute_code / terminal child.
+    if _is_hermes_internal_secret(name):
+        return True
     return name in _HERMES_PROVIDER_ENV_BLOCKLIST
 
 

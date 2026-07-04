@@ -100,6 +100,42 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
+def test_whatsapp_lid_user_matches_phone_allowlist_via_modern_session_mapping(
+    monkeypatch, tmp_path,
+):
+    """Modern ``platforms/`` installs store bridge mappings under
+    ``platforms/whatsapp/session`` — the LID→phone resolution (and therefore
+    the allowlist match) must work there too, not just the legacy layout.
+    Regression guard for the silently-dropped-LID-sender bug (#36664)."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    session_dir = tmp_path / "platforms" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-15550000001.json").write_text(
+        '"900000000000001"', encoding="utf-8",
+    )
+    (session_dir / "lid-mapping-900000000000001_reverse.json").write_text(
+        '"15550000001"', encoding="utf-8",
+    )
+
+    runner, _adapter = _make_runner(
+        Platform.WHATSAPP,
+        GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="900000000000001@lid",
+        chat_id="900000000000001@lid",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
 def test_simplex_allowlist_accepts_display_name(monkeypatch):
     """SIMPLEX_ALLOWED_USERS should match the contact's display name as well
     as the numeric contactId. The SimpleX UI surfaces only display names, so

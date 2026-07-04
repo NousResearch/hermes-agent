@@ -2,16 +2,27 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
+import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { persistString, storedString } from '@/lib/storage'
-import { $petInfo, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
+import {
+  $petAtRest,
+  $petInfo,
+  $petRoam,
+  $petRoamDir,
+  clearPetUnread,
+  type PetInfo,
+  petProfile,
+  setPetInfo
+} from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { PetSprite } from './pet-sprite'
+import { PetSprite, roamWalkRow } from './pet-sprite'
+import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
 // v2: positions are now top/left anchored (v1 stored bottom-anchored values,
@@ -104,6 +115,10 @@ export function FloatingPet() {
   const gatewayState = useStore($gatewayState)
   const info = useStore($petInfo)
   const overlayActive = useStore($petOverlayActive)
+  const roamEnabled = useStore($petRoam)
+  const atRest = useStore($petAtRest)
+  const roamDir = useStore($petRoamDir)
+  const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -199,22 +214,10 @@ export function FloatingPet() {
   // Pets are per-profile. When the active profile changes, drop the previous
   // profile's mascot + gallery cache so the poll above refetches the new
   // profile's pet (its config + pets dir resolve per-profile on the backend).
-  const profileRef = useRef(normalizeProfileKey($activeGatewayProfile.get()))
-  useEffect(
-    () =>
-      $activeGatewayProfile.subscribe(next => {
-        const key = normalizeProfileKey(next)
-
-        if (key === profileRef.current) {
-          return
-        }
-
-        profileRef.current = key
-        setPetInfo({ enabled: false })
-        resetPetGallery()
-      }),
-    []
-  )
+  useOnProfileSwitch(() => {
+    setPetInfo({ enabled: false })
+    resetPetGallery()
+  })
 
   // Wire the overlay control channel once, only in the primary window — the
   // pop-out overlay belongs to it (main.cjs positions it against the main
@@ -367,6 +370,35 @@ export function FloatingPet() {
 
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
+  // Commit a roamed-to position back to React state + storage when the wander
+  // loop settles, so the inline style matches the DOM once the loop stops
+  // driving it imperatively. Stable identity keeps the roam effect from
+  // restarting every render.
+  const commitRoamPosition = useCallback((point: Point) => {
+    setPosition(point)
+    persistString(POSITION_KEY, JSON.stringify(point))
+  }, [])
+
+  const isDragging = useCallback(() => dragRef.current !== null, [])
+
+  // Roam only the in-window pet, only while it's idle (agent at rest) and not
+  // popped out into the OS overlay. Activity pauses the wander; the pet reacts
+  // in place, then resumes strolling when the turn ends.
+  usePetRoam({
+    commit: commitRoamPosition,
+    containerRef,
+    enabled: roamEnabled && active && !overlayActive && atRest,
+    isInteracting: isDragging,
+    loopMs: info.loopMs ?? 1100,
+    overlayOpen: routeOverlayOpen,
+    petH,
+    petW
+  })
+
+  // While roaming, drive the directional run row + mirror from the travel
+  // direction; at rest, fall back to the inward-facing static mascot.
+  const walk = roamWalkRow(roamDir, info.stateRows)
+
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
   if (!info.enabled || !info.spritesheetBase64 || overlayActive) {
@@ -406,9 +438,14 @@ export function FloatingPet() {
       />
       <div
         ref={spriteWrapRef}
-        style={{ lineHeight: 0, position: 'relative', transform: facing(position.x, petW), zIndex: 1 }}
+        style={{
+          lineHeight: 0,
+          position: 'relative',
+          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          zIndex: 1
+        }}
       >
-        <PetSprite info={info} />
+        <PetSprite info={info} rowOverride={walk.row} />
       </div>
     </div>
   )

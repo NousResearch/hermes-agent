@@ -1,9 +1,10 @@
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
+import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -28,7 +29,10 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <StatusSection label={c.queued(entries.length)}>
+    <StatusSection
+      icon={<Codicon className="text-muted-foreground/70" name="layers" size="0.8rem" />}
+      label={c.queued(entries.length)}
+    >
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length
@@ -52,7 +56,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <Pencil size={11} />
+                    <Pencil className={iconSize.xs} />
                   </Button>
                 </Tip>
                 <Tip label={busy ? c.queueSendNext : c.queueSend}>
@@ -65,7 +69,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <ArrowUp size={11} />
+                    <ArrowUp className={iconSize.xs} />
                   </Button>
                 </Tip>
                 <Tip label={c.queueDelete}>
@@ -77,7 +81,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <Trash2 size={11} />
+                    <Trash2 className={iconSize.xs} />
                   </Button>
                 </Tip>
               </>

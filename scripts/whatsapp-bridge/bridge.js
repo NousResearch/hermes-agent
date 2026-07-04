@@ -30,6 +30,8 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { createOutboundIdTracker } from './outbound_ids.js';
+import { classifyOwnerMessageGate } from './owner_message_gate.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -43,6 +45,23 @@ const WHATSAPP_DEBUG =
   process.env &&
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+
+// Opt-in: when true (and WHATSAPP_MODE === 'bot'), fromMe inbound messages
+// that are NOT echoes of our own /send or /send-media calls are forwarded
+// to the Python adapter with `fromOwner: true`. This lets plugins detect
+// "owner just typed in this customer chat" — needed for handover / sliding
+// TTL flows. Default OFF: existing deployments see no behavior change.
+//
+// Heuristic limitation: we distinguish bot-API-sent from owner-typed by
+// looking up `key.id` in `recentlySentIds` (populated when /send returns).
+// On bridge restart that set is empty, so a few in-flight bot replies may
+// briefly look like owner-typed until they age out. Acceptable; we don't
+// persist the set.
+const FORWARD_OWNER_MESSAGES =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -83,6 +102,19 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
+// --- Send queue: serialise all sock.sendMessage() calls across concurrent
+//     HTTP handlers so a single Baileys socket never has overlapping sends.
+//     Overlapping sends are the root cause of cross-chat contamination
+//     (#33360) — the WhatsApp protocol-level routing can misdeliver when
+//     two sendMessage() Promises race on the same socket. ---
+let _sendQueue = Promise.resolve();
+
+function enqueueSend(fn) {
+  const task = _sendQueue.then(() => fn(), () => fn());
+  _sendQueue = task.catch(() => {});
+  return task;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -95,8 +127,10 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
       timeoutMs,
     );
   });
-  return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
-    .finally(() => clearTimeout(timer));
+  return enqueueSend(() =>
+    Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
+      .finally(() => clearTimeout(timer))
+  );
 }
 
 function formatOutgoingMessage(message) {
@@ -131,12 +165,7 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
 }
 
 function trackSentMessageId(sent) {
-  if (sent?.key?.id) {
-    recentlySentIds.add(sent.key.id);
-    if (recentlySentIds.size > MAX_RECENT_IDS) {
-      recentlySentIds.delete(recentlySentIds.values().next().value);
-    }
-  }
+  rememberSentId(sent?.key?.id);
 }
 
 function normalizeWhatsAppId(value) {
@@ -190,9 +219,18 @@ const logger = pino({ level: 'warn' });
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
 
-// Track recently sent message IDs to prevent echo-back loops with media
-const recentlySentIds = new Set();
-const MAX_RECENT_IDS = 50;
+// Track recently sent message IDs.  Two purposes:
+//   1. Prevent echo-back loops with media in self-chat mode.
+//   2. (When WHATSAPP_FORWARD_OWNER_MESSAGES=true) distinguish our own
+//      bot-API outbound messages from owner-typed messages on the linked
+//      device so we can forward only the latter.
+// Capacity bounded (see outbound_ids.js) to keep memory flat under
+// sustained sending.
+const recentlySentIds = createOutboundIdTracker(512);
+
+function rememberSentId(id) {
+  recentlySentIds.remember(id);
+}
 
 let sock = null;
 let connectionState = 'disconnected';
@@ -285,23 +323,55 @@ async function startSocket() {
       const senderNumber = senderId.replace(/@.*/, '');
 
       // Handle fromMe messages based on mode
+      let fromOwner = false;
       if (msg.key.fromMe) {
         if (isGroup || chatId.includes('status')) continue;
 
         if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
-          continue;
+          // Bot mode: separate bot number. fromMe inbound is either
+          //   (a) an echo of our own /send (recentlySentIds will catch it), or
+          //   (b) a message the owner typed from their own phone using the
+          //       linked-device session.
+          //
+          // We always drop (a). We drop (b) too unless the operator opts in
+          // via WHATSAPP_FORWARD_OWNER_MESSAGES so existing deployments see
+          // no behavior change. When opted in, we still gate on the
+          // customer chatId allowlist — without that gate, any contact
+          // the owner replied to would leak into Hermes and trigger
+          // implicit handover. See `owner_message_gate.js`.
+          const decision = classifyOwnerMessageGate({
+            fromMe: true,
+            fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
+            recentlySent: recentlySentIds,
+            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+            messageId: msg.key.id,
+            chatId,
+          });
+          if (decision.action === 'drop_echo') continue;
+          if (decision.action === 'drop_disabled') continue;
+          if (decision.action === 'drop_allowlist') {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch_owner_chat',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+          fromOwner = true;
+        } else {
+          // Self-chat mode: only allow messages in the user's own self-chat.
+          // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
+          // AND classic format: 34652029134@s.whatsapp.net
+          // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
+          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const chatNumber = chatId.replace(/@.*/, '');
+          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          if (!isSelfChat) continue;
         }
-
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
       }
 
       // Handle !fromMe messages (from other people) based on mode.
@@ -440,12 +510,19 @@ async function startSocket() {
         continue;
       }
 
+      // Resolve LID → phone for the senderId so the gateway can match
+      // against phone-based allowlists (WHATSAPP_ALLOWED_USERS).
+      const resolvedSenderId = lidToPhone[senderNumber]
+        ? (lidToPhone[senderNumber] + '@s.whatsapp.net')
+        : senderId;
+      const resolvedSenderNumber = lidToPhone[senderNumber] || senderNumber;
+
       const event = {
         messageId: msg.key.id,
         chatId,
-        senderId,
-        senderName: msg.pushName || senderNumber,
-        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
+        senderId: resolvedSenderId,
+        senderName: msg.pushName || resolvedSenderNumber,
+        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || resolvedSenderNumber),
         isGroup,
         body,
         hasMedia,
@@ -458,6 +535,7 @@ async function startSocket() {
         hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
+        fromOwner,
       };
 
       messageQueue.push(event);
@@ -663,9 +741,7 @@ app.post('/send-media', async (req, res) => {
     }
 
     const sent = await sendWithTimeout(chatId, msgPayload);
-
     trackSentMessageId(sent);
-
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -743,6 +819,9 @@ if (PAIR_ONLY) {
       console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
       console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+    }
+    if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
+      console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
     }
     console.log();
     startSocket();

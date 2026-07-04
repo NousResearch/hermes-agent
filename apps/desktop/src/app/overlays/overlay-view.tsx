@@ -49,7 +49,15 @@ export function OverlayView({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/22 p-3 backdrop-blur-[0.125rem] sm:p-6"
+      className={cn(
+        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem]',
+        // Equidistant inset on every side. The top value is driven by the
+        // titlebar height so the card clears the OS traffic-lights vertically;
+        // since the card top already sits below them, the left needs no extra
+        // inset — keeping all sides equal so the card is ~full-width at any size.
+        'p-[calc(var(--titlebar-height)+0.625rem)]',
+        'sm:p-[calc(var(--titlebar-height)+0.875rem)]'
+      )}
       onClick={event => {
         if (event.target === event.currentTarget) {
           closeOverlay()

@@ -6,9 +6,9 @@ descriptors to round-trip and their inbound ``MessageEvent``s to drive
 ``build_session_key()`` correctly.
 
 Telegram's discriminator profile differs from Discord's, which is the point:
-  - No ``guild_id``; isolation between chats comes from ``chat_id`` alone.
+  - No ``scope_id``; isolation between chats comes from ``chat_id`` alone.
   - Forum topics live inside ONE ``chat_id`` and isolate by ``thread_id`` (the
-    Telegram analog of Discord's per-guild isolation).
+    Telegram analog of Discord's per-scope isolation).
   - Forum/thread sessions are shared across participants by default
     (``thread_sessions_per_user=False``) — user_id is NOT appended in a thread.
   - ``len_unit="utf16"`` (Telegram counts UTF-16 code units) and
@@ -51,7 +51,7 @@ def _tg_group_event(chat_id: str, user_id: str, text: str, thread_id: str | None
     """Synthetic inbound the connector would build from a Telegram update.
 
     A plain group message has no thread_id; a forum-topic message carries the
-    topic id as thread_id (no guild_id — Telegram has no guild concept).
+    topic id as thread_id (no scope_id — Telegram has no scope concept).
     """
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -105,13 +105,13 @@ async def test_inbound_telegram_event_reaches_adapter(wired, monkeypatch):
     assert len(captured) == 1
     assert captured[0].text == "hello"
     assert captured[0].source.platform == Platform.TELEGRAM
-    assert captured[0].source.guild_id is None  # Telegram has no guild
+    assert captured[0].source.scope_id is None  # Telegram has no scope
 
 
 @pytest.mark.asyncio
 async def test_two_telegram_chats_isolate_by_chat_id(wired):
-    """No guild_id on Telegram — two distinct chats must still isolate, keyed
-    on chat_id alone (the Discord-guild role is played by chat_id here)."""
+    """No scope_id on Telegram — two distinct chats must still isolate, keyed
+    on chat_id alone (the Discord-scope role is played by chat_id here)."""
     ev_a = _tg_group_event("chat-A", "userX", "hi A")
     ev_b = _tg_group_event("chat-B", "userX", "hi B")
     key_a = build_session_key(ev_a.source)
@@ -125,7 +125,7 @@ async def test_two_telegram_chats_isolate_by_chat_id(wired):
 @pytest.mark.asyncio
 async def test_forum_topics_isolate_by_thread_id_within_one_chat(wired):
     """Telegram forum topics share a single chat_id and isolate by thread_id —
-    the Telegram analog of Discord per-guild isolation. Two topics in the same
+    the Telegram analog of Discord per-scope isolation. Two topics in the same
     forum must NOT collide, and (threads shared across participants by default)
     a second user in the same topic shares the session."""
     topic1 = _tg_group_event("forum-1", "userX", "in topic 1", thread_id="t-1")

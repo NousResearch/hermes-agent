@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -176,6 +177,30 @@ def _connect(board: Optional[str] = None):
     """
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
+
+
+_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+
+
+def _goal_judge_available() -> bool:
+    """True when an auxiliary client is configured for the goal judge.
+
+    ``judge_goal`` is fail-open at the source: when no auxiliary model can
+    be reached it returns a ``"continue"`` verdict that is indistinguishable
+    from a real "not done yet" judgment. The completion gate must not treat
+    that as a rejection, or an unconfigured/degraded auxiliary model would
+    wedge every ``goal_mode`` worker (it could never close its own task).
+
+    So we probe availability first and only enforce the gate when a judge is
+    actually reachable. This mirrors the same client lookup ``judge_goal``
+    performs internally.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +592,37 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Goal-mode pre-completion judge gate (Issue #38367).
+            # Prevent workers from bypassing the auxiliary judge by
+            # calling kanban_complete before acceptance criteria are met.
+            # Only enforce when a judge is actually reachable — see
+            # _goal_judge_available for why an unavailable judge fails open.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode and _goal_judge_available():
+                verdict = "done"
+                reason = ""
+                try:
+                    verdict, reason, _ = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=(summary or result or "").strip(),
+                    )
+                except Exception as judge_exc:
+                    # Defensive: judge_goal swallows its own errors, but if
+                    # it ever raises, fail open rather than wedge the worker.
+                    logger.warning(
+                        "goal judge check failed, allowing completion: %s",
+                        judge_exc,
+                        exc_info=True,
+                    )
+                if verdict != "done":
+                    return tool_error(
+                        f"Goal completion rejected by judge: {reason}. "
+                        f"To proceed, either: (1) provide explicit acceptance "
+                        f"evidence in your summary matching the task's criteria, "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
+                        f"and keep this task alive."
+                    )
+
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -631,6 +687,30 @@ def _handle_block(args: dict, **kw) -> str:
             conn.close()
             return tool_error(
                 f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
+        # Goal-mode block gate (Issue #38696, sibling of the kanban_complete
+        # judge gate in #38367). kanban_block is a second exit path out of
+        # the goal loop — run_kanban_goal_loop() treats ANY `blocked` status
+        # as terminal, identically to `done`, regardless of kind. Without
+        # this, a worker that learns kanban_complete is gated can just call
+        # kanban_block(reason="anything") to escape the loop instead.
+        # Restrict goal_mode tasks to the kinds that represent a genuine
+        # external blocker the worker cannot resolve itself; `capability`
+        # and `transient` (or an unset kind) route back through
+        # kanban_complete, which the judge now gates.
+        task = kb.get_task(conn, tid)
+        if (
+            task
+            and task.goal_mode
+            and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
+        ):
+            conn.close()
+            return tool_error(
+                f"goal_mode tasks can only block with kind in "
+                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
+                f"If the task is actually finished or cannot proceed for "
+                f"another reason, call kanban_complete instead — the "
+                f"completion judge will evaluate it."
             )
         try:
             ok = kb.block_task(
@@ -947,7 +1027,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        notifier_profile = os.environ.get("HERMES_PROFILE")
+        notifier_profile = (
+            get_session_env("HERMES_SESSION_PROFILE", "")
+            or os.environ.get("HERMES_PROFILE")
+        )
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb

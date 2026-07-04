@@ -42,6 +42,9 @@ from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
+# Per-profile by design (issue #4707): suggestions live alongside the active
+# profile's cron store. Anchor on get_hermes_home() (profile home), not the
+# shared default root. See cron/jobs.py for the full rationale.
 CRON_DIR = get_hermes_home().resolve() / "cron"
 SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
 

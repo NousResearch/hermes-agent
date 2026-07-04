@@ -433,6 +433,14 @@ export const tr: Translations = {
     replaceCurrentValue: "Mevcut değeri değiştir ({preview})",
     showValue: "Gerçek değeri göster",
     hideValue: "Değeri gizle",
+    customTitle: "Özel Anahtarlar",
+    customHint: ".env dosyanızda saklanan ve Hermes'in tanımadığı rastgele ortam değişkenleri. Bunları beceriler, MCP sunucuları veya kendi araçlarınız için ortam değişkenleri eklemek için kullanın.",
+    customConfigured: "{count} özel anahtar ayarlandı",
+    addCustomKey: "Özel anahtar ekle",
+    customKeyName: "Değişken adı",
+    customKeyNamePlaceholder: "örn. MY_SERVICE_API_KEY",
+    add: "Ekle",
+    invalidKeyName: "Yalnızca harf, rakam ve alt çizgi kullanın (bir harf veya alt çizgi ile başlamalıdır).",
   },
 
   oauth: {

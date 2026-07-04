@@ -66,6 +66,24 @@ def _install_example_plugin(_isolate_hermes_home):
         shutil.rmtree(dst)
     shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
 
+    # The dashboard now gates user-plugin asset serving + backend import
+    # behind the ``plugins.enabled`` allow-list (GHSA-mcfc-hp25-cjv7).
+    # An installed-but-not-enabled user plugin has its API mount skipped
+    # and its assets 404'd — which is the whole point of the gate. These
+    # fixtures exist to exercise the *serving* paths, so opt the example
+    # plugin in exactly as a real operator would with `hermes plugins
+    # enable example`.
+    from hermes_cli.config import load_config, save_config
+    _cfg = load_config()
+    _plugins_cfg = _cfg.setdefault("plugins", {})
+    _enabled = _plugins_cfg.get("enabled")
+    if not isinstance(_enabled, list):
+        _enabled = []
+    if "example" not in _enabled:
+        _enabled.append("example")
+    _plugins_cfg["enabled"] = _enabled
+    save_config(_cfg)
+
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.
     #   2. Restore the original list on teardown — otherwise leftover
@@ -268,6 +286,31 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["action"] == "drain"
         assert drain_control.drain_requested() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_suppress_notification_passthrough(self):
+        from gateway import drain_control
+
+        resp = self.client.post(
+            "/api/gateway/drain",
+            json={"action": "drain", "suppress_notification": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["suppress_notification"] is True
+        # The flag landed on the marker the gateway reads at shutdown.
+        body = drain_control.read_drain_request()
+        assert body is not None and body["suppress_notification"] is True
+        assert drain_control.drain_notification_suppressed() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_suppress_defaults_false(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
+        assert resp.status_code == 200
+        assert resp.json()["suppress_notification"] is False
+        assert drain_control.drain_notification_suppressed() is False
         drain_control.clear_drain_request()
 
     def test_gateway_drain_cancel_removes_marker(self):
@@ -1609,6 +1652,145 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert captured["args"] == ["import", str(archive)]
 
+    def test_ops_backup_defaults_to_dashboard_downloadable_archive(self, monkeypatch):
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import get_hermes_home
+
+        captured = {}
+
+        def fake_spawn(subcommand, name):
+            captured["args"] = subcommand
+            captured["name"] = name
+            from types import SimpleNamespace as NS
+            return NS(pid=12345)
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post("/api/ops/backup", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        archive = Path(data["archive"])
+
+        assert data["name"] == "backup"
+        assert captured["name"] == "backup"
+        assert captured["args"] == ["backup", str(archive)]
+        assert archive.parent == get_hermes_home() / "backups"
+        assert archive.name.startswith("hermes-backup-")
+        assert archive.suffix == ".zip"
+
+    def test_ops_backup_uses_hosted_hermes_home(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+
+        hosted_home = tmp_path / "opt-data"
+        monkeypatch.setenv("HERMES_HOME", str(hosted_home))
+        captured = {}
+
+        def fake_spawn(subcommand, name):
+            captured["args"] = subcommand
+            captured["name"] = name
+            from types import SimpleNamespace as NS
+            return NS(pid=12345)
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post("/api/ops/backup", json={})
+        assert resp.status_code == 200
+        archive = Path(resp.json()["archive"])
+
+        assert archive.parent == hosted_home / "backups"
+        assert captured["args"] == ["backup", str(archive)]
+        assert archive.parent.is_dir()
+
+    def test_ops_backup_download_streams_dashboard_backup(self, tmp_path):
+        import hermes_cli.web_server as ws
+
+        backup_dir = ws._dashboard_backup_dir()
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        archive = backup_dir / "hermes-backup-test.zip"
+        archive.write_bytes(b"zip bytes")
+
+        resp = self.client.get(
+            "/api/ops/backup/download",
+            params={"archive": str(archive)},
+        )
+        assert resp.status_code == 200
+        assert resp.content == b"zip bytes"
+        assert "attachment" in resp.headers["content-disposition"]
+
+        outside = tmp_path / "outside.zip"
+        outside.write_bytes(b"nope")
+        denied = self.client.get(
+            "/api/ops/backup/download",
+            params={"archive": str(outside)},
+        )
+        assert denied.status_code == 403
+
+    def test_ops_import_upload_stages_archive_and_passes_force(self, tmp_path, monkeypatch):
+        import zipfile
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+
+        archive = tmp_path / "backup.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("config.yaml", "model: {}\n")
+
+        captured = {}
+
+        def fake_spawn(subcommand, name):
+            captured["args"] = subcommand
+            captured["name"] = name
+            from types import SimpleNamespace as NS
+            return NS(pid=12345)
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post(
+            "/api/ops/import-upload",
+            data={"force": "true"},
+            files={
+                "file": (
+                    "my backup.zip",
+                    archive.read_bytes(),
+                    "application/zip",
+                ),
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "import"
+        assert data["uploaded_bytes"] == archive.stat().st_size
+        staged = Path(captured["args"][1])
+        assert captured["name"] == "import"
+        assert captured["args"] == ["import", str(staged), "--force"]
+        assert staged.is_file()
+        assert staged.name.startswith("dashboard-import-")
+        assert staged.name.endswith("-my-backup.zip")
+        assert zipfile.is_zipfile(staged)
+        assert data["archive"] == str(staged)
+
+    def test_ops_import_upload_rejects_invalid_zip(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        def fail_spawn(*_args):
+            raise AssertionError("invalid uploads must not spawn import")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn)
+
+        resp = self.client.post(
+            "/api/ops/import-upload",
+            data={"force": "true"},
+            files={"file": ("backup.zip", b"not a zip", "application/zip")},
+        )
+
+        assert resp.status_code == 400
+        assert "valid zip" in resp.json()["detail"]
+
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
@@ -1745,6 +1927,31 @@ class TestWebServerEndpoints:
             assert "iLink" in fields[key]["description"]
             assert "QR login" in fields[key]["description"]
             assert "Official Account" not in fields[key]["description"]
+
+    def test_teams_messaging_metadata_links_setup_guide(self):
+        # Teams is a platform plugin, so the catalog entry is built from the
+        # plugin registry. The override must still supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        teams = _build_catalog_entry("teams")
+        assert teams["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams"
+        )
+
+    def test_google_chat_messaging_metadata_links_setup_guide(self):
+        # Google Chat is a platform plugin, so the catalog entry is built from
+        # the plugin registry. The override must supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        google_chat = _build_catalog_entry("google_chat")
+        assert google_chat["name"] == "Google Chat"
+        assert google_chat["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
+        )
 
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
@@ -2904,6 +3111,74 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
+    def test_round_trip_preserves_custom_providers(self):
+        """``custom_providers`` is not in the dashboard schema, so the
+        frontend never sends it in PUT bodies. Saving must still preserve
+        it on disk — otherwise every dashboard click that saves silently
+        wipes the user's custom endpoints."""
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"default": "test/model", "provider": "custom:myprov"},
+            "custom_providers": [
+                {
+                    "name": "myprov",
+                    "base_url": "https://example.invalid/v1",
+                    "key_env": "MYPROV_API_KEY",
+                    "api_mode": "chat_completions",
+                    "model": "test/model",
+                },
+            ],
+        })
+
+        # Frontend behaviour: GET full config, then PUT without keys the
+        # schema doesn't know about (custom_providers is the prime example).
+        web_config = self.client.get("/api/config").json()
+        web_config.pop("custom_providers", None)
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        after = load_config()
+        cps = after.get("custom_providers")
+        assert isinstance(cps, list) and len(cps) == 1, \
+            f"custom_providers wiped by lossy PUT: {cps!r}"
+        assert cps[0].get("name") == "myprov"
+        assert cps[0].get("base_url") == "https://example.invalid/v1"
+
+    def test_round_trip_preserves_schema_invisible_nested_keys(self):
+        """Nested keys that aren't in CONFIG_SCHEMA must also survive a
+        round-trip. Deep-merge is required — a shallow merge would drop
+        ``agent.<custom_key>`` when the frontend sends a partial ``agent``
+        dict containing only schema-known sub-fields."""
+        from hermes_cli.config import load_config, read_raw_config, save_config
+
+        # Seed config with a key under `agent` that isn't in the schema.
+        # Use a sentinel name to avoid colliding with future schema fields.
+        save_config({
+            "agent": {
+                "max_turns": 50,
+                "x_dashboard_invisible_test_key": {"nested": "value"},
+            },
+        })
+
+        # PUT only schema-known agent fields, exactly like the dashboard.
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("agent", {})
+        web_config["agent"]["max_turns"] = 75
+        # Strip our sentinel so we're sending what the schema-driven form
+        # would send.
+        web_config["agent"].pop("x_dashboard_invisible_test_key", None)
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        on_disk = read_raw_config()
+        assert on_disk.get("agent", {}).get("max_turns") == 75
+        assert on_disk.get("agent", {}).get("x_dashboard_invisible_test_key") \
+            == {"nested": "value"}, \
+            "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
+            "was wiped when the frontend sent a partial agent dict."
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()
@@ -3288,7 +3563,7 @@ class TestNewEndpoints:
         assert spawned == [
             (
                 ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
-                "skills-install",
+                web_server._hub_action_name("install", "someuser/some-skill"),
             )
         ]
 
@@ -3537,12 +3812,16 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
+                "usage": 0,
+                "provenance": "agent",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
+                "usage": 0,
+                "provenance": "agent",
             },
         ]
 
@@ -3749,6 +4028,74 @@ class TestNewEndpoints:
             json={"provider": "whatever"},
         )
         assert resp.status_code == 400
+
+    def test_get_toolset_models_no_catalog_toolset(self):
+        """Toolsets without a model catalog report has_models: false."""
+        resp = self.client.get("/api/tools/toolsets/web/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["has_models"] is False
+        assert body["models"] == []
+
+    def test_get_toolset_models_fal_catalog(self):
+        """image_gen with the FAL backend returns its model catalog."""
+        resp = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # Behavior contract, not a snapshot: FAL always has >= 1 model and
+        # each row carries the picker columns.
+        assert body["has_models"] is True
+        assert body["plugin"] == "fal"
+        assert len(body["models"]) >= 1
+        for row in body["models"]:
+            assert "id" in row
+            assert "speed" in row
+            assert "strengths" in row
+            assert "price" in row
+        # current resolves to a real catalog entry (default when unset).
+        ids = {row["id"] for row in body["models"]}
+        assert body["current"] in ids
+        assert body["default"] in ids
+
+    def test_select_toolset_model_persists_and_validates(self):
+        """PUT .../model writes image_gen.model; bad ids/toolsets are 400."""
+        catalog = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        model_id = catalog["models"][0]["id"]
+
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": model_id, "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["image_gen"]["model"] == model_id
+
+        # The next catalog read reflects the persisted choice.
+        after = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        assert after["current"] == model_id
+
+        # Unknown model id → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": "not-a-real-model", "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 400
+
+        # Toolset without a model catalog → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/web/model", json={"model": model_id}
+        )
+        assert resp.status_code == 400
+
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
@@ -4038,6 +4385,102 @@ class TestModelContextLength:
         })
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 32000
+
+
+class TestDenormalizeProviderSwitch:
+    """The flat Config-page Model field carries no provider info. When the
+    model string changes to one served by a different provider, the saved
+    provider must follow it (issue #14058)."""
+
+    def test_vendor_slug_switches_off_non_aggregator_provider(self):
+        """ollama-local + a vendor/model slug → switch to openrouter and drop
+        the stale local base_url (the issue's exact repro)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+                "api_mode": "chat_completions",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+        # The old ollama-local endpoint must not carry over to openrouter.
+        assert not model.get("base_url")
+
+    def test_unchanged_model_preserves_provider_and_base_url(self):
+        """Saving with the model unchanged must never re-detect/overwrite the
+        provider — protects unrelated config saves and custom endpoints."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "llama3.2"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["base_url"] == "http://localhost:11434/v1"
+
+    def test_bare_model_name_change_keeps_local_provider(self):
+        """A bare (non-slug) model name gives no provider signal — leave the
+        existing provider alone rather than guessing."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "qwen2.5"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["default"] == "qwen2.5"
+
+    def test_same_aggregator_model_swap_keeps_provider(self):
+        """Swapping models within an aggregator must not change the provider."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+
+    def test_context_length_override_survives_provider_switch(self):
+        """An explicit context-length override must persist alongside a
+        provider switch."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
+
+        result = _denormalize_config_from_web({
+            "model": "google/gemini-2.5-flash",
+            "model_context_length": 128000,
+        })
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["context_length"] == 128000
 
 
 class TestModelContextLengthSchema:

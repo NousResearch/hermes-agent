@@ -134,6 +134,109 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     assert provider._initialized is False
 
 
+@pytest.mark.asyncio
+async def test_handle_401_tracks_inflight_task_to_prevent_gc(tmp_path, monkeypatch):
+    """The 401 handler task must be strongly referenced by the manager.
+
+    ``asyncio.create_task`` returns a task the event loop only weakly
+    references. If the manager discards its handle, the background coroutine
+    can be garbage-collected mid-run and every concurrent waiter stuck on
+    ``await pending`` hangs forever. See the design note on
+    ``MCPOAuthManager._inflight_tasks``.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    class _TrackedSet(set):
+        """set subclass that records every element ever inserted."""
+
+        def __init__(self):
+            super().__init__()
+            self.ever_added: list = []
+
+        def add(self, item):  # noqa: A003
+            self.ever_added.append(item)
+            super().add(item)
+
+    mgr = MCPOAuthManager()
+    mgr._inflight_tasks = _TrackedSet()
+
+    class _DummyProvider:
+        context = None  # forces the can_refresh=False branch
+
+    mgr._entries["srv"] = _ProviderEntry(
+        server_url="https://example.com/mcp",
+        oauth_config=None,
+        provider=_DummyProvider(),
+    )
+
+    result = await mgr.handle_401("srv", failed_access_token="TOK")
+
+    # The discard done-callback is scheduled via loop.call_soon, so it runs on
+    # a later loop iteration than the one that resolved `pending` and let
+    # handle_401 return. Yield once so the callback fires before we assert the
+    # task was removed from the live set.
+    await asyncio.sleep(0)
+
+    # Exactly one handler task was created and tracked.
+    assert len(mgr._inflight_tasks.ever_added) == 1
+    tracked_task = mgr._inflight_tasks.ever_added[0]
+    assert isinstance(tracked_task, asyncio.Task)
+    # done_callback must have removed the finished task from the live set,
+    # otherwise the set would grow unbounded across repeated 401s.
+    assert tracked_task not in mgr._inflight_tasks
+    assert len(mgr._inflight_tasks) == 0
+    assert tracked_task.done()
+    # With provider.context=None, there's nothing to refresh — result False.
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path, monkeypatch):
+    """Concurrent 401s share one handler task and all callers resolve.
+
+    Regression guard: if the manager ever stops holding a strong reference
+    to the `_do_handle` task, this test can intermittently hang when the
+    task is GC'd between the ``await`` checkpoints inside ``_do_handle``.
+    Running it in CI with ``gc.collect()`` mid-flight (below) exercises
+    that window.
+    """
+    import asyncio
+    import gc
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    mgr = MCPOAuthManager()
+
+    class _DummyProvider:
+        context = None
+
+    mgr._entries["srv"] = _ProviderEntry(
+        server_url="https://example.com/mcp",
+        oauth_config=None,
+        provider=_DummyProvider(),
+    )
+
+    # Fan out N concurrent callers sharing the same failed token so all
+    # collapse onto a single deduped handler future.
+    async def _caller():
+        return await mgr.handle_401("srv", failed_access_token="TOK")
+
+    tasks = [asyncio.create_task(_caller()) for _ in range(8)]
+    # Give the event loop one tick to schedule _do_handle, then force GC.
+    await asyncio.sleep(0)
+    gc.collect()
+
+    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
+    assert results == [False] * 8
+    # Let the shared _do_handle task's discard done-callback (call_soon) run.
+    await asyncio.sleep(0)
+    assert len(mgr._inflight_tasks) == 0
+
+
 def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     """get_or_build_provider returns HermesMCPOAuthProvider, not plain OAuthClientProvider."""
     from tools.mcp_oauth_manager import (

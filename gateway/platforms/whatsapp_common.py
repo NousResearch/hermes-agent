@@ -147,23 +147,86 @@ class WhatsAppBehaviorMixin:
         return False
 
     # ------------------------------------------------------------------ gating
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
+    @staticmethod
+    def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
+        """Match a WhatsApp identifier against an allowlist across phone/LID forms.
+
+        WhatsApp delivers inbound senders in LID form (``<id>@lid``) while
+        operators usually configure allowlists with phone numbers, and vice
+        versa. A raw set-membership check therefore never matches a known
+        contact. Resolve both the candidate and each allowlist entry through
+        the bridge's ``lid-mapping-*.json`` files (the shared
+        ``gateway.whatsapp_identity`` helper that the gateway authz and
+        session-key paths already use) so either configured form resolves to
+        the inbound form.
+        """
+        if not allow_from:
+            return False
+        # Fast path: exact match against the raw configured value (e.g. a full
+        # ``@g.us`` group JID or an entry that already matches verbatim).
+        if candidate in allow_from:
+            return True
+
+        from gateway.whatsapp_identity import (
+            expand_whatsapp_aliases,
+            normalize_whatsapp_identifier,
+        )
+
+        candidate_aliases = expand_whatsapp_aliases(candidate)
+        if not candidate_aliases:
+            return False
+        for entry in allow_from:
+            if entry == "*":
+                return True
+            if normalize_whatsapp_identifier(entry) in candidate_aliases:
+                return True
+            # Entry may itself be an unmapped form; expand it too so a phone
+            # allowlist entry resolves when the inbound sender arrived as a LID.
+            if expand_whatsapp_aliases(entry) & candidate_aliases:
+                return True
+        return False
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Check whether a DM from the given sender should be processed."""
+        """Strict DM authorization — pairing does not imply access."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
-        # "open" — all DMs allowed
-        return True
+            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
+        """Whether a DM may reach the gateway intake (pairing handshake path)."""
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return self._matches_whatsapp_allowlist(principal, self._allow_from)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return chat_id in self._group_allow_from
-        # "open" — all groups allowed
-        return True
+            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return True
+        return False
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
@@ -279,7 +342,7 @@ class WhatsAppBehaviorMixin:
                 return False
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")
-            if not self._is_dm_allowed(sender_id):
+            if not self._is_dm_intake_allowed(sender_id):
                 return False
             # DMs that pass the policy gate are always processed
             return True

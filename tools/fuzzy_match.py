@@ -134,6 +134,18 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             effective_new = _maybe_unescape_new_string(
                 new_string, content, matches,
             )
+            # Unicode-preservation guard: when strategy 7 (unicode_normalized)
+            # matched, the file has Unicode characters (em-dashes, smart quotes,
+            # ellipsis) but old_string/new_string from the LLM are ASCII
+            # equivalents.  Writing new_string verbatim would silently corrupt
+            # the file's Unicode — em-dashes become two hyphens, smart quotes
+            # become straight quotes.  Align the replacement with the file's
+            # actual Unicode so only the LLM's intended changes are applied
+            # and unchanged portions keep their original characters.
+            if strategy_name == "unicode_normalized":
+                effective_new = _preserve_unicode_in_replacement(
+                    content, matches, old_string, effective_new,
+                )
             new_content = _apply_replacements(
                 content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
@@ -304,6 +316,74 @@ def _maybe_unescape_new_string(new_string: str,
     return out
 
 
+def _preserve_unicode_in_replacement(
+    content: str, matches: List[Tuple[int, int]],
+    old_string: str, new_string: str,
+) -> str:
+    """Preserve Unicode characters from the file in the replacement string.
+
+    When strategy 7 (unicode_normalized) matched, the file has Unicode
+    characters (em-dashes, smart quotes, ellipsis, non-breaking spaces)
+    but old_string/new_string from the LLM are ASCII equivalents.
+    Writing new_string verbatim would silently corrupt the file's
+    Unicode — em-dashes become two hyphens, smart quotes become
+    straight quotes.
+
+    This function aligns the replacement with the file's actual Unicode
+    by diffing old_string→new_string and applying only the actual edits
+    to the file's original text, preserving Unicode for unchanged portions.
+    """
+    # Aggregate the matched file regions
+    file_region = "".join(content[start:end] for start, end in matches)
+
+    # Normalize both for comparison
+    norm_old = _unicode_normalize(old_string)
+    norm_file = _unicode_normalize(file_region)
+
+    # If the normalized forms don't match, the strategy shouldn't have
+    # fired — fall back to direct replacement.
+    if norm_old != norm_file:
+        return new_string
+
+    # Build position maps from normalized space back to original space
+    # for both old_string and file_region.  UNICODE_MAP replacements can
+    # expand characters (em-dash → '--'), so normalized positions don't
+    # map 1:1 to original positions.  Reuse the module-level
+    # _build_orig_to_norm_map, then invert it (same inversion as
+    # _map_positions_norm_to_orig) to get norm→orig lookups.
+    file_orig_to_norm = _build_orig_to_norm_map(file_region)
+    file_norm_to_orig: dict[int, int] = {}
+    for orig_pos, np in enumerate(file_orig_to_norm[:-1]):
+        if np not in file_norm_to_orig:
+            file_norm_to_orig[np] = orig_pos
+
+    # Diff norm_old → new_string to find the actual edits
+    sm = SequenceMatcher(None, norm_old, new_string)
+    opcodes = sm.get_opcodes()
+
+    # Apply edits to file_region, preserving Unicode for unchanged spans
+    result_parts: List[str] = []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            # Keep the original file_region text for this span
+            orig_start = file_norm_to_orig.get(i1, 0)
+            orig_end = orig_start
+            while (
+                orig_end < len(file_region)
+                and file_orig_to_norm[orig_end] < i2
+            ):
+                orig_end += 1
+            result_parts.append(file_region[orig_start:orig_end])
+        elif tag == "replace":
+            result_parts.append(new_string[j1:j2])
+        elif tag == "delete":
+            pass  # skip deleted portion
+        elif tag == "insert":
+            result_parts.append(new_string[j1:j2])
+
+    return "".join(result_parts)
+
+
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],
                         new_string: str, old_string: Optional[str] = None) -> str:
     """
@@ -349,7 +429,12 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Advance past the whole match, not just one char, so self-overlapping
+        # patterns (e.g. "aa" in "aaaa") produce non-overlapping spans matching
+        # str.replace() semantics. Advancing by 1 yielded overlapping matches
+        # that corrupt the file under replace_all=True (reverse-order apply on
+        # stale offsets).
+        start = pos + len(pattern)
     return matches
 
 

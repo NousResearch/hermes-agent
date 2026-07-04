@@ -12,22 +12,16 @@ def _dockerfile_text() -> str:
     return DOCKERFILE.read_text()
 
 
-def test_dockerfile_makes_opt_hermes_root_owned_and_non_writable() -> None:
+def test_dockerfile_makes_opt_hermes_readonly_for_hermes_user() -> None:
     text = _dockerfile_text()
 
-    assert "COPY --chown=hermes:hermes . ." not in text
-    assert "COPY . ." in text
-    assert "chown -R root:root /opt/hermes" in text
-    assert "chmod -R a+rX /opt/hermes" in text
-    assert "chmod -R a-w /opt/hermes" in text
-
-    immutable_block = re.search(
-        r"RUN mkdir -p /opt/hermes/bin && \\\n"
-        r"(?:.*\\\n)+?"
-        r"\s+chmod -R a-w /opt/hermes",
-        text,
-    )
-    assert immutable_block, "Dockerfile must lock /opt/hermes after installing code/deps"
+    # --chmod on the source COPY bakes read-only perms at copy time instead
+    # of a separate chmod -R pass (which walked ~30k files — #49113).
+    assert "COPY --link --chmod=a+rX,go-w . ." in text
+    # The old tree-walking passes must not be present.
+    assert "chown -R root:root /opt/hermes" not in text
+    assert "chmod -R a+rX /opt/hermes" not in text
+    assert "chmod -R a-w /opt/hermes" not in text
 
 
 def test_dockerfile_keeps_mutable_state_under_opt_data() -> None:
@@ -68,22 +62,20 @@ def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
     (/opt/hermes/.install_method) first; baking it at build time keeps the
     published image self-identifying as 'docker' WITHOUT writing into the
     shared $HERMES_HOME data volume (which a host install may also use).
-    It must live inside the immutable block so the runtime user can't alter it.
+    The stamp is created by root in the shim-wiring RUN block; the hermes
+    user can't modify it (go-w from the --chmod on the source COPY).
     """
     text = _dockerfile_text()
     assert "printf 'docker\\n' > /opt/hermes/.install_method" in text
 
-    immutable_block = re.search(
+    # The stamp must be in the RUN block that wires the exec shim.
+    shim_block = re.search(
         r"RUN mkdir -p /opt/hermes/bin && \\\n"
         r"(?:.*\\\n)+?"
-        r"\s+chmod -R a-w /opt/hermes",
+        r"\s+printf 'docker\\n' > /opt/hermes/\.install_method",
         text,
     )
-    assert immutable_block, "immutable block must exist"
-    assert ".install_method" in immutable_block.group(0), (
-        "the code-scoped install-method stamp must be baked inside the "
-        "immutable /opt/hermes block"
-    )
+    assert shim_block, "install-method stamp must be in the shim-wiring RUN block"
 
 
 def test_dockerfile_redirects_lazy_installs_to_durable_target() -> None:

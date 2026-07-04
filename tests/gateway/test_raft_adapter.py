@@ -32,6 +32,7 @@ from plugins.platforms.raft.adapter import (
     _on_session_end,
     _on_session_finalize,
     check_raft_requirements,
+    interactive_setup,
     register,
 )
 from gateway.session import build_session_key
@@ -425,6 +426,34 @@ class TestRaftConfig:
         assert _is_connected(PlatformConfig(enabled=True, extra={"enabled": True})) is True
         assert _is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+    def test_interactive_setup_saves_raft_profile(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("RAFT_PROFILE", raising=False)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "dev-profile")
+
+        interactive_setup()
+
+        assert (tmp_path / ".env").read_text(encoding="utf-8") == "RAFT_PROFILE=dev-profile\n"
+        assert os.environ["RAFT_PROFILE"] == "dev-profile"
+        out = capsys.readouterr().out
+        assert "Raft configuration saved" in out
+        assert "hermes gateway restart" in out
+
+    def test_interactive_setup_keeps_existing_profile_when_not_reconfigured(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        env_path = tmp_path / ".env"
+        env_path.write_text("RAFT_PROFILE=existing\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RAFT_PROFILE", "existing")
+        monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+        interactive_setup()
+
+        assert env_path.read_text(encoding="utf-8") == "RAFT_PROFILE=existing\n"
+        assert os.environ["RAFT_PROFILE"] == "existing"
+        assert "Keeping RAFT_PROFILE=existing" in capsys.readouterr().out
+
     def test_register_calls_register_platform(self):
         registered = {}
         hooks = {}
@@ -441,6 +470,7 @@ class TestRaftConfig:
         assert registered["name"] == "raft"
         assert registered["label"] == "Raft"
         assert registered["emoji"] == "🔔"
+        assert registered["setup_fn"] is interactive_setup
         assert "profile show" in registered["platform_hint"]
         assert "manual get" in registered["platform_hint"]
         assert "--profile" in registered["platform_hint"]

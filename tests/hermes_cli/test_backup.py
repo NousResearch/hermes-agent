@@ -1666,6 +1666,204 @@ class TestQuickSnapshot:
         # Cleanup the seeded escape source so the test is hermetic.
         escape_src.unlink()
 
+
+class TestQuickSnapshotProjectsKanban:
+    """Regression for #52889: projects.db / kanban.db must survive an upgrade.
+
+    Both are per-profile user-created stores outside the git checkout. If they
+    are not in the pre-update snapshot, the post-update ``CREATE TABLE IF NOT
+    EXISTS`` runs against a missing file and every project / board row is lost.
+    """
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        # Minimal critical file so the snapshot is non-empty.
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+
+        for name, table, row in (
+            ("projects.db", "projects", ("p1", "demo")),
+            ("kanban.db", "tasks", ("t1", "todo")),
+        ):
+            conn = sqlite3.connect(str(home / name))
+            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute(f"INSERT INTO {table} VALUES (?, ?)", row)
+            conn.commit()
+            conn.close()
+        return home
+
+    def test_in_quick_state_files(self):
+        from hermes_cli.backup import _QUICK_STATE_FILES
+        # All per-profile user-created stores that the upgrade can wipe.
+        for name in (
+            "projects.db", "kanban.db", "kanban/boards",
+            "response_store.db", "memory_store.db", "verification_evidence.db",
+        ):
+            assert name in _QUICK_STATE_FILES, name
+
+    def test_projects_db_snapshotted(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = hermes_home / "state-snapshots" / snap_id / "projects.db"
+        assert copy.exists()
+        conn = sqlite3.connect(str(copy))
+        rows = conn.execute("SELECT * FROM projects").fetchall()
+        conn.close()
+        assert rows == [("p1", "demo")]
+
+    def test_kanban_db_snapshotted(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = hermes_home / "state-snapshots" / snap_id / "kanban.db"
+        assert copy.exists()
+        conn = sqlite3.connect(str(copy))
+        rows = conn.execute("SELECT * FROM tasks").fetchall()
+        conn.close()
+        assert rows == [("t1", "todo")]
+
+    def test_restore_recreates_emptied_projects_db(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        # Simulate the upgrade wiping the store back to an empty schema.
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        conn.execute("DELETE FROM projects")
+        conn.commit()
+        conn.close()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        rows = conn.execute("SELECT * FROM projects").fetchall()
+        conn.close()
+        assert rows == [("p1", "demo")]
+
+    def test_non_default_kanban_board_snapshotted(self, hermes_home):
+        """#52889 completeness: non-default boards live at
+        <root>/kanban/boards/<slug>/kanban.db, not <root>/kanban.db. The
+        ``kanban/boards`` dir entry must capture them too, or multi-board
+        users still lose every board except ``default`` on upgrade."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        board_dir = hermes_home / "kanban" / "boards" / "work"
+        board_dir.mkdir(parents=True)
+        conn = sqlite3.connect(str(board_dir / "kanban.db"))
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO tasks VALUES (?, ?)", ("w1", "ship"))
+        conn.commit()
+        conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = (
+            hermes_home / "state-snapshots" / snap_id
+            / "kanban" / "boards" / "work" / "kanban.db"
+        )
+        assert copy.exists(), "non-default board kanban.db was not snapshotted"
+
+        # Simulate the upgrade wiping the board, then restore it.
+        conn = sqlite3.connect(str(board_dir / "kanban.db"))
+        conn.execute("DELETE FROM tasks")
+        conn.commit()
+        conn.close()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        conn = sqlite3.connect(str(board_dir / "kanban.db"))
+        rows = conn.execute("SELECT * FROM tasks").fetchall()
+        conn.close()
+        assert rows == [("w1", "ship")]
+
+    def test_additional_per_profile_dbs_round_trip(self, hermes_home):
+        """#52889 completeness: response_store.db (conversation history),
+        memory_store.db (holographic memory) and verification_evidence.db are
+        the same upgrade-wiped data-loss class as projects.db and must also be
+        snapshotted + restored."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        seeded = {
+            "response_store.db": ("responses", ("r1", "hello")),
+            "memory_store.db": ("facts", ("f1", "the sky is blue")),
+            "verification_evidence.db": ("verification_events", ("v1", "passed")),
+        }
+        for name, (table, row) in seeded.items():
+            conn = sqlite3.connect(str(hermes_home / name))
+            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute(f"INSERT INTO {table} VALUES (?, ?)", row)
+            conn.commit()
+            conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        # Wipe every store (the upgrade failure), then restore.
+        for name, (table, _row) in seeded.items():
+            conn = sqlite3.connect(str(hermes_home / name))
+            conn.execute(f"DELETE FROM {table}")
+            conn.commit()
+            conn.close()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        for name, (table, row) in seeded.items():
+            conn = sqlite3.connect(str(hermes_home / name))
+            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+            conn.close()
+            assert rows == [row], name
+
+    def test_board_workspaces_and_attachments_are_skipped(self, hermes_home):
+        """#52889 W3: the kanban/boards walk must capture board DBs + metadata
+        but SKIP the heavy regenerable workspaces/ and attachments/ subtrees so
+        snapshots don't bloat (×20 retained)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        board = hermes_home / "kanban" / "boards" / "work"
+        (board / "workspaces" / "scratch").mkdir(parents=True)
+        (board / "attachments" / "t1").mkdir(parents=True)
+        conn = sqlite3.connect(str(board / "kanban.db"))
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+        conn.commit()
+        conn.close()
+        (board / "board.json").write_text('{"name": "work"}')
+        (board / "workspaces" / "scratch" / "big.bin").write_bytes(b"x" * 4096)
+        (board / "attachments" / "t1" / "file.bin").write_bytes(b"y" * 4096)
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        snap = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work"
+        # Board db + metadata captured...
+        assert (snap / "kanban.db").exists()
+        assert (snap / "board.json").exists()
+        # ...but the heavy subtrees skipped.
+        assert not (snap / "workspaces" / "scratch" / "big.bin").exists()
+        assert not (snap / "attachments" / "t1" / "file.bin").exists()
+
+    def test_board_db_copied_wal_safely(self, hermes_home, monkeypatch):
+        """#52889 W2: a non-default board's .db (dir-branch) must go through the
+        WAL-safe _safe_copy_db, not a raw shutil.copy2, so an open WAL doesn't
+        produce an inconsistent copy."""
+        import hermes_cli.backup as bk
+        from hermes_cli.backup import create_quick_snapshot
+
+        board = hermes_home / "kanban" / "boards" / "work"
+        board.mkdir(parents=True)
+        conn = sqlite3.connect(str(board / "kanban.db"))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO tasks VALUES ('w1', 'ship')")
+        conn.commit()
+        conn.close()
+
+        called = {"db": []}
+        real = bk._safe_copy_db
+
+        def _spy(src, dst):
+            called["db"].append(str(src))
+            return real(src, dst)
+
+        monkeypatch.setattr(bk, "_safe_copy_db", _spy)
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        # The board db was copied via _safe_copy_db (not raw copy).
+        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
+        rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
+        assert rows == [("w1", "ship")]
+
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

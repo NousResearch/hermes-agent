@@ -97,11 +97,21 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_respects_aux_vision_override_even_for_vision_model(self):
-        """If the user configured a dedicated vision backend, don't bypass it."""
+    def test_auto_prefers_native_for_vision_capable_main_model_even_with_aux_configured(self):
+        """Regression #29135: vision-capable main model wins over aux fallback.
+
+        Auxiliary.vision is a fallback for text-only main models; it must
+        not preempt native vision on a vision-capable main model.
+        """
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_auto_uses_aux_vision_fallback_for_text_only_main_model(self):
+        """#29135: aux vision still acts as fallback for non-vision main models."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("deepseek", "deepseek-v4-pro", cfg) == "text"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -224,6 +234,37 @@ class TestSupportsVisionOverride:
         cfg = {"model": "some-string", "providers": ["not-a-dict"]}
         assert _supports_vision_override(cfg, "custom", "my-llava") is None
 
+    def test_custom_colon_name_stripped_suffix_lookup(self):
+        # model.provider: custom:my-proxy → should resolve stripped key "my-proxy"
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
+    def test_custom_colon_name_stripped_suffix_false(self):
+        # Explicitly disabled vision on the stripped key.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is False
+
+    def test_custom_colon_name_no_stripped_key_falls_through(self):
+        # custom:my-proxy but providers only has "custom" — stripped key
+        # doesn't match, but "custom" does via runtime provider.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "custom": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
 
 # ─── _lookup_supports_vision (override-aware) ────────────────────────────────
 
@@ -248,8 +289,23 @@ class TestLookupSupportsVisionOverride:
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
     def test_no_override_no_models_dev_entry_returns_none(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=False):
             assert _lookup_supports_vision("custom", "my-llava", {}) is None
+
+    def test_ollama_probe_when_models_dev_missing(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=True):
+            assert _lookup_supports_vision("ollama", "gemma4:e2b", cfg) is True
+
+    def test_ollama_probe_false_for_text_only_model(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=False):
+            assert _lookup_supports_vision("custom", "gemma4:31b", cfg) is False
 
     def test_cfg_none_falls_back_to_models_dev(self):
         # Caller didn't pass cfg at all — old call sites must still work.
@@ -279,15 +335,25 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+    def test_explicit_aux_vision_no_longer_overrides_native_capable_main(self):
+        # #29135: aux.vision is a fallback for text-only main models; it
+        # must NOT preempt native routing when the main model can take
+        # images directly (supports_vision: true).
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
+
+    def test_explicit_aux_vision_used_when_main_model_supports_vision_false(self):
+        # #29135 counterpart: text-only main model + aux fallback → text.
+        cfg = {
+            "model": {"supports_vision": False},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "deepseek-v4", cfg) == "text"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
@@ -636,3 +702,109 @@ class TestBuildNativeContentPartsURLs:
         )
         assert parts[0]["type"] == "text"
         assert parts[0]["text"].startswith("What do you see in this image?")
+
+
+# ─── Format compatibility: transcode non-universal formats to PNG ────────────
+
+
+class TestFormatCompatibility:
+    """Some image formats Discord (and other chat platforms) accept aren't
+    accepted by every major vision provider. Anthropic for example returns
+    HTTP 400 'Could not process image' for AVIF/HEIC/BMP/TIFF/ICO/SVG.
+
+    We transcode anything outside the universal-safe set (PNG/JPEG/GIF/WEBP)
+    to PNG with Pillow before declaring media_type so the provider call
+    actually succeeds. Regression coverage for the user-reported Discord
+    'Could not process image' HTTP 400 (issue #25935).
+    """
+
+    def test_avif_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        avif_header = b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(avif_header) == "image/avif"
+
+    def test_tiff_sniffed_both_endians(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"II*\x00" + b"\x00" * 16) == "image/tiff"
+        assert _sniff_mime_from_bytes(b"MM\x00*" + b"\x00" * 16) == "image/tiff"
+
+    def test_ico_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"\x00\x00\x01\x00" + b"\x00" * 16) == "image/x-icon"
+
+    def test_heic_still_sniffed(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        heic_header = b"\x00\x00\x00\x20ftypheic\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(heic_header) == "image/heic"
+
+    def test_svg_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"
+        assert _sniff_mime_from_bytes(b'<?xml version="1.0"?><svg/>') == "image/svg+xml"
+
+    def test_bmp_transcoded_to_png(self, tmp_path: Path):
+        """BMP file should land as image/png in the data URL, not image/bmp,
+        because not every provider (Anthropic) accepts BMP."""
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.bmp"
+        Image.new("RGB", (4, 4), (255, 0, 0)).save(img_path, format="BMP")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,"), (
+            f"BMP must be transcoded to PNG for cross-provider compatibility, got: {url[:60]}"
+        )
+
+    def test_tiff_transcoded_to_png(self, tmp_path: Path):
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.tiff"
+        Image.new("RGB", (4, 4), (0, 255, 0)).save(img_path, format="TIFF")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+
+    def test_png_passes_through_no_transcode(self, tmp_path: Path):
+        """Universal-safe formats must NOT be re-encoded — preserves bytes."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.png"
+        img_path.write_bytes(_png_bytes())
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+        b64 = url.split(",", 1)[1]
+        assert base64.b64decode(b64) == _png_bytes()
+
+    def test_jpeg_passes_through_no_transcode(self, tmp_path: Path):
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.jpg"
+        img_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/jpeg;base64,")
+
+    def test_transcode_failure_is_skipped_not_crashed(self, tmp_path: Path):
+        """If Pillow can't decode (corrupted bytes labeled as a rare format),
+        return None so the caller skips it rather than sending broken data."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "corrupt.avif"
+        img_path.write_bytes(b"\x00\x00\x00\x20ftypavif" + b"\x00" * 32)
+        url = _file_to_data_url(img_path)
+        assert url is None
+
+    def test_svg_skipped_not_transcoded(self, tmp_path: Path):
+        """SVG is vector; Pillow can't rasterize it. It must be skipped
+        (None) rather than producing an invalid data URL."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "icon.svg"
+        img_path.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>')
+        url = _file_to_data_url(img_path)
+        assert url is None

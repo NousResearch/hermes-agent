@@ -1,8 +1,19 @@
 #!/usr/bin/env node
 // Patch spectrum-ts' iMessage inbound mapper until upstream preserves mixed
-// text + attachment Apple events. The current spectrum-ts mapper returns only
+// text + attachment Apple events. The mapper returns only
 // buildAttachmentMessage(...) whenever attachments are present, which drops
-// event.message.content.text before Hermes can see it.
+// `message.content.text` before Hermes can see it. We rewrite the two inbound
+// mappers — `rebuildFromAppleMessage` (used by `space.getMessage`) and
+// `toInboundMessages` (used by the live stream) — so a bubble carrying both
+// text and attachment(s) surfaces as a group whose first child is the typed
+// text. Paths with no text are rewritten to byte-identical behavior, so only
+// mixed text+attachment messages change shape.
+//
+// Since spectrum-ts 5.x split the SDK into scoped packages, the iMessage mapper
+// lives in `@spectrum-ts/imessage/dist/index.js` (it used to be a chunk under
+// `spectrum-ts/dist`). The published output is tab-indented and uses
+// `const ... = async` declarations; the anchors below match that exactly and
+// fail loudly if a future spectrum-ts reshapes the mapper.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,47 +32,51 @@ function replaceOnce(source, from, to, label) {
   return source.replace(from, to);
 }
 
-function replaceFirst(source, from, to, label) {
-  if (!source.includes(from)) {
-    throw new Error(`expected at least one ${label} match, found 0`);
+function replaceExactly(source, from, to, expected, label) {
+  const count = source.split(from).length - 1;
+  if (count !== expected) {
+    throw new Error(
+      `expected exactly ${expected} ${label} matches, found ${count}`
+    );
   }
-  return source.replace(from, to);
+  return source.split(from).join(to);
 }
 
-function addTextChildSnippet(messageExpr) {
-  return `if (text2) {\n      items.unshift({\n        ...base,\n        id: formatChildId(0, messageGuidStr),\n        content: asText(text2),\n        partIndex: 0,\n        parentId: messageGuidStr\n      });\n    }`;
+// The text-first child of a mixed text+attachment group, indented `tabs` deep
+// (the object's closing brace sits at `tabs`; its properties one level in).
+function textChild(tabs) {
+  const t = "\t".repeat(tabs);
+  return (
+    `{\n${t}\t...base,\n${t}\tid: formatChildId(0, messageGuidStr),` +
+    `\n${t}\tcontent: asText(text2),\n${t}\tpartIndex: 0,` +
+    `\n${t}\tparentId: messageGuidStr\n${t}}`
+  );
 }
 
 function patchRebuild(source) {
+  // Capture the bubble text before the attachment branches consume it. The
+  // existing no-attachment branch keeps its own `const text` declaration, so a
+  // distinct name avoids a redeclaration.
   source = replaceOnce(
     source,
-    `  const attachments = messageAttachments(message);\n  if (attachments.length === 1) {`,
-    `  const attachments = messageAttachments(message);\n  const text2 = message.content.text;\n  if (attachments.length === 1) {`,
+    `\tconst attachments = messageAttachments(message);\n\tif (attachments.length === 1) {`,
+    `\tconst attachments = messageAttachments(message);\n\tconst text2 = message.content.text;\n\tif (attachments.length === 1) {`,
     "rebuild text capture"
   );
+  // Single attachment: when text is present, push it to slot 0 and the
+  // attachment to slot 1, then wrap both in a group.
   source = replaceOnce(
     source,
-    `    return buildAttachmentMessage(client, base, info, messageGuidStr, 0);`,
-    `    const msg2 = await buildAttachmentMessage(\n      client,\n      base,\n      info,\n      text2 ? formatChildId(1, messageGuidStr) : messageGuidStr,\n      text2 ? 1 : 0,\n      text2 ? messageGuidStr : void 0\n    );\n    if (text2) {\n      const textMsg = {\n        ...base,\n        id: formatChildId(0, messageGuidStr),\n        content: asText(text2),\n        partIndex: 0,\n        parentId: messageGuidStr\n      };\n      return {\n        ...base,\n        id: messageGuidStr,\n        content: asProviderGroup([textMsg, msg2])\n      };\n    }\n    return msg2;`,
+    `\t\treturn buildAttachmentMessage(client, base, info, messageGuidStr, 0);`,
+    `\t\tconst msg2 = await buildAttachmentMessage(client, base, info, text2 ? formatChildId(1, messageGuidStr) : messageGuidStr, text2 ? 1 : 0, text2 ? messageGuidStr : void 0);\n\t\tif (text2) {\n\t\t\tconst textMsg = ${textChild(3)};\n\t\t\treturn {\n\t\t\t\t...base,\n\t\t\t\tid: messageGuidStr,\n\t\t\t\tcontent: asProviderGroup([textMsg, msg2])\n\t\t\t};\n\t\t}\n\t\treturn msg2;`,
     "rebuild single attachment"
   );
-  source = replaceFirst(
+  // Multi attachment: prepend the text child to the group's items.
+  source = replaceOnce(
     source,
-    `          formatChildId(i, messageGuidStr),\n          i,\n          messageGuidStr`,
-    `          formatChildId(text2 ? i + 1 : i, messageGuidStr),\n          text2 ? i + 1 : i,\n          messageGuidStr`,
-    "rebuild multi attachment child index"
-  );
-  source = replaceFirst(
-    source,
-    `    return {\n      ...base,\n      id: messageGuidStr,\n      content: asProviderGroup(items)\n    };\n  }\n  if (getBalloonBundleId(message) === URL_BALLOON_BUNDLE_ID) {`,
-    `    ${addTextChildSnippet("message")}\n    return {\n      ...base,\n      id: messageGuidStr,\n      content: asProviderGroup(items)\n    };\n  }\n  if (getBalloonBundleId(message) === URL_BALLOON_BUNDLE_ID) {`,
+    `\t\treturn {\n\t\t\t...base,\n\t\t\tid: messageGuidStr,\n\t\t\tcontent: asProviderGroup(items)\n\t\t};`,
+    `\t\tif (text2) {\n\t\t\titems.unshift(${textChild(3)});\n\t\t}\n\t\treturn {\n\t\t\t...base,\n\t\t\tid: messageGuidStr,\n\t\t\tcontent: asProviderGroup(items)\n\t\t};`,
     "rebuild multi attachment text child"
-  );
-  source = replaceFirst(
-    source,
-    `  const text2 = message.content.text;\n  return {\n    ...base,`,
-    `  return {\n    ...base,`,
-    "rebuild duplicate text declaration"
   );
   return source;
 }
@@ -69,41 +84,47 @@ function patchRebuild(source) {
 function patchInbound(source) {
   source = replaceOnce(
     source,
-    `  const attachments = messageAttachments(event.message);\n  if (attachments.length === 1) {`,
-    `  const attachments = messageAttachments(event.message);\n  const text2 = event.message.content.text;\n  if (attachments.length === 1) {`,
+    `\tconst attachments = messageAttachments(event.message);\n\tif (attachments.length === 1) {`,
+    `\tconst attachments = messageAttachments(event.message);\n\tconst text2 = event.message.content.text;\n\tif (attachments.length === 1) {`,
     "inbound text capture"
   );
   source = replaceOnce(
     source,
-    `      messageGuidStr,\n      0\n    );\n    cacheMessage(cache, msg2);\n    return [msg2];`,
-    `      text2 ? formatChildId(1, messageGuidStr) : messageGuidStr,\n      text2 ? 1 : 0,\n      text2 ? messageGuidStr : void 0\n    );\n    if (text2) {\n      const textMsg = {\n        ...base,\n        id: formatChildId(0, messageGuidStr),\n        content: asText(text2),\n        partIndex: 0,\n        parentId: messageGuidStr\n      };\n      const parent = {\n        ...base,\n        id: messageGuidStr,\n        content: asProviderGroup([textMsg, msg2])\n      };\n      cacheMessage(cache, parent);\n      return [parent];\n    }\n    cacheMessage(cache, msg2);\n    return [msg2];`,
+    `\t\tconst msg = await buildAttachmentMessage(client, base, info, messageGuidStr, 0);\n\t\tcacheMessage(cache, msg);\n\t\treturn [msg];`,
+    `\t\tconst msg = await buildAttachmentMessage(client, base, info, text2 ? formatChildId(1, messageGuidStr) : messageGuidStr, text2 ? 1 : 0, text2 ? messageGuidStr : void 0);\n\t\tif (text2) {\n\t\t\tconst textMsg = ${textChild(3)};\n\t\t\tconst parent = {\n\t\t\t\t...base,\n\t\t\t\tid: messageGuidStr,\n\t\t\t\tcontent: asProviderGroup([textMsg, msg])\n\t\t\t};\n\t\t\tcacheMessage(cache, parent);\n\t\t\treturn [parent];\n\t\t}\n\t\tcacheMessage(cache, msg);\n\t\treturn [msg];`,
     "inbound single attachment"
   );
   source = replaceOnce(
     source,
-    `          formatChildId(i, messageGuidStr),\n          i,\n          messageGuidStr`,
-    `          formatChildId(text2 ? i + 1 : i, messageGuidStr),\n          text2 ? i + 1 : i,\n          messageGuidStr`,
-    "inbound multi attachment child index"
-  );
-  source = replaceOnce(
-    source,
-    `    const parent = {\n      ...base,\n      id: messageGuidStr,\n      content: asProviderGroup(items)\n    };`,
-    `    ${addTextChildSnippet("event.message")}\n    const parent = {\n      ...base,\n      id: messageGuidStr,\n      content: asProviderGroup(items)\n    };`,
+    `\t\tconst parent = {\n\t\t\t...base,\n\t\t\tid: messageGuidStr,\n\t\t\tcontent: asProviderGroup(items)\n\t\t};`,
+    `\t\tif (text2) {\n\t\t\titems.unshift(${textChild(3)});\n\t\t}\n\t\tconst parent = {\n\t\t\t...base,\n\t\t\tid: messageGuidStr,\n\t\t\tcontent: asProviderGroup(items)\n\t\t};`,
     "inbound multi attachment text child"
-  );
-  source = replaceOnce(
-    source,
-    `  const text2 = event.message.content.text;\n  const msg = {`,
-    `  const msg = {`,
-    "inbound duplicate text declaration"
   );
   return source;
 }
 
+// Shift attachment part indices by one when a text child occupies slot 0. The
+// push line is byte-identical in both mappers, so patch both occurrences.
+function patchChildIndices(source) {
+  return replaceExactly(
+    source,
+    `items.push(await buildAttachmentMessage(client, base, info, formatChildId(i, messageGuidStr), i, messageGuidStr));`,
+    `items.push(await buildAttachmentMessage(client, base, info, formatChildId(text2 ? i + 1 : i, messageGuidStr), text2 ? i + 1 : i, messageGuidStr));`,
+    2,
+    "multi attachment child index"
+  );
+}
+
 export function patchSpectrumTs(root = scriptDir()) {
-  const dist = path.join(root, "node_modules", "spectrum-ts", "dist");
+  const dist = path.join(
+    root,
+    "node_modules",
+    "@spectrum-ts",
+    "imessage",
+    "dist"
+  );
   if (!fs.existsSync(dist)) {
-    throw new Error(`spectrum-ts dist not found: ${dist}`);
+    throw new Error(`@spectrum-ts/imessage dist not found: ${dist}`);
   }
   const files = fs.readdirSync(dist)
     .filter((name) => name.endsWith(".js"))
@@ -117,18 +138,20 @@ export function patchSpectrumTs(root = scriptDir()) {
     // Normalize to LF for matching so the patch works regardless of the
     // checkout's line-ending style (Windows git autocrlf produces CRLF,
     // which would otherwise defeat the \n-based search strings). The
-    // original EOL style is restored on write.
+    // original EOL style is restored on write. Indentation in the published
+    // tarball is tabs; the anchors match that directly.
     const CR = String.fromCharCode(13);
     const CRLF = CR + "\n";
     const usedCRLF = raw.includes(CRLF);
     const original = usedCRLF ? raw.split(CRLF).join("\n") : raw;
-    if (!original.includes("var toInboundMessages = async") ||
-        !original.includes("var rebuildFromAppleMessage = async")) {
+    if (!original.includes("const toInboundMessages = async") ||
+        !original.includes("const rebuildFromAppleMessage = async")) {
       continue;
     }
     let patched = original;
     patched = patchRebuild(patched);
     patched = patchInbound(patched);
+    patched = patchChildIndices(patched);
     patched = `// ${MARKER}\n${patched}`;
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
@@ -136,7 +159,7 @@ export function patchSpectrumTs(root = scriptDir()) {
     fs.writeFileSync(file, patched, "utf8");
     return { patched: true, file };
   }
-  throw new Error("could not find spectrum-ts iMessage inbound chunk to patch");
+  throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
 }
 
 const _invokedDirectly =

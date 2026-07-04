@@ -688,6 +688,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'moa.reference':
+        turnController.recordMoaReference(
+          String(ev.payload?.label ?? 'reference'),
+          String(ev.payload?.text ?? ''),
+          typeof ev.payload?.index === 'number' ? ev.payload.index : undefined,
+          typeof ev.payload?.count === 'number' ? ev.payload.count : undefined
+        )
+
+        return
+
+      case 'moa.aggregating':
+        // Spinner/status transition only — the aggregator's response follows
+        // through the normal message stream. No committed transcript entry.
+        return
+
       case 'tool.progress':
         if (ev.payload?.preview && ev.payload.name) {
           turnController.recordToolProgress(ev.payload.name, ev.payload.preview)

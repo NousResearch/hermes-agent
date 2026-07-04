@@ -7,6 +7,16 @@ production probe must run on its own httpx client outside the MCP SDK's anyio
 task group, and a faithful test must exercise that actual method so the
 content-type allow-list, HEAD->GET fallback, and best-effort pass-through are
 all covered as shipped.
+
+OAuth note
+----------
+``MCPServerTask.run()`` skips the preflight entirely when ``auth_type=="oauth"``
+(see ``test_run_skips_preflight_for_oauth``).  OAuth-protected MCP servers
+return ``200 text/html`` (a login/landing page) on an unauthenticated probe,
+which ``_preflight_content_type`` correctly rejects — the probe cannot tell
+whether the page is a valid OAuth endpoint or a misconfigured URL.  The right
+validator for OAuth servers is ``.well-known/oauth-protected-resource``, which
+the OAuth handshake consults automatically.
 """
 
 from __future__ import annotations
@@ -205,6 +215,74 @@ def test_head_501_falls_back_to_get_and_passes_json():
 # ---------------------------------------------------------------------------
 # ssl_verify / client_cert forwarding to the probe client
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# OAuth server: why the run() guard is needed
+# ---------------------------------------------------------------------------
+
+def test_oauth_server_html_response_raises_without_skip():
+    """_preflight_content_type raises NonMcpEndpointError for 200 text/html.
+
+    This documents the failure mode that the ``self._auth_type != "oauth"``
+    guard in ``MCPServerTask.run()`` prevents.  An OAuth-protected MCP server
+    returns a login/landing page on an unauthenticated HEAD probe — identical
+    to a misconfigured URL from the preflight's point of view — because it
+    cannot serve a meaningful MCP response without a Bearer token.
+
+    Real-world example: Hospitable's MCP server
+    (``https://mcp.hospitable.com/mcp``) returns ``200 text/html`` to an
+    unauthenticated httpx HEAD request.  With the guard removed, connecting
+    via ``hermes mcp add/login`` raises ``NonMcpEndpointError`` before the
+    OAuth browser flow can begin.  With the guard in place, 63 tools are
+    discovered and the server connects successfully.
+    """
+    task = _make_task("hospitable")
+    # HEAD returns 200 text/html — what Hospitable sends without a token.
+    with _serve(_handler(status=200, content_type="text/html; charset=UTF-8")) as base:
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+    assert "hospitable" in str(exc_info.value)
+
+
+def test_run_skips_preflight_for_oauth(monkeypatch):
+    """MCPServerTask.run() must not call _preflight_content_type for OAuth servers.
+
+    The ``self._auth_type != "oauth"`` guard in the preflight condition ensures
+    that OAuth-protected servers never hit ``NonMcpEndpointError`` from the
+    unauthenticated GET probe.  The probe is inapplicable to OAuth servers:
+    their identity is established by the OAuth metadata discovery
+    (``.well-known/oauth-protected-resource``), not by a GET content-type check.
+    """
+    import tools.mcp_tool as _mcp
+
+    preflight_calls: list[str] = []
+
+    async def _inner():
+        # Patch at the class level: replacement receives (self, url, **kwargs).
+        async def _fake_preflight(self, url, **kwargs):
+            preflight_calls.append(url)
+
+        async def _fake_run_http(self, config):
+            # Abort immediately after the preflight gate — we only want to
+            # verify the gate, not exercise the real transport.
+            raise asyncio.CancelledError()
+
+        # Bypass URL validation so the test doesn't need a live network.
+        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
+
+        task = _mcp.MCPServerTask("hospitable-test")
+        with pytest.raises(asyncio.CancelledError):
+            await task.run({"url": "https://mcp.hospitable.com/mcp", "auth": "oauth"})
+
+    asyncio.run(_inner())
+    assert preflight_calls == [], (
+        "_preflight_content_type must not be called for OAuth servers; "
+        "without the guard the OAuth flow is blocked by the 200 text/html "
+        "landing page the server returns to an unauthenticated probe"
+    )
+
 
 def test_ssl_verify_and_cert_forwarded(monkeypatch):
     captured: dict = {}

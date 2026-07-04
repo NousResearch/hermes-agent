@@ -388,6 +388,37 @@ def test_admit_pipeline(case):
 # --- Mention call-count semantics ------------------------------------------
 
 
+def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
+    """Empty FEISHU_ALLOWED_USERS must not block pairing handshake intake."""
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset()
+    sender = make_sender(open_id="ou_unknown")
+    message = make_message(chat_type="p2p")
+    assert adapter._admit(sender, message) is None
+
+
+def test_dm_allowlist_rejects_unknown_sender(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    sender = make_sender(open_id="ou_unknown")
+    message = make_message(chat_type="p2p")
+    assert adapter._admit(sender, message) == "dm_policy_rejected"
+
+
+def test_dm_allowlist_admits_configured_sender(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    sender = make_sender(open_id="ou_owner")
+    message = make_message(chat_type="p2p")
+    assert adapter._admit(sender, message) is None
+
+
 def test_admit_skips_mention_check_under_all_mode():
     # Tripwire: under allow_bots=all the mention path must not be probed.
     adapter = make_adapter_skeleton(bot_open_id="ou_self", allow_bots="all")

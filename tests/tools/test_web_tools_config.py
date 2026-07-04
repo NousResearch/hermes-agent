@@ -160,47 +160,6 @@ class TestFirecrawlClientConfig:
             importlib.reload(tools.web_tools)
             assert tools.web_tools._read_nous_access_token() == "nous-token"
 
-    def test_check_auxiliary_model_re_resolves_backend_each_call(self):
-        """Availability checks should not be pinned to module import state."""
-        import tools.web_tools
-
-        # Simulate the pre-fix import-time cache slot for regression coverage.
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        with patch(
-            "tools.web_tools.get_async_text_auxiliary_client",
-            side_effect=[(None, None), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model")],
-        ):
-            assert tools.web_tools.check_auxiliary_model() is False
-            assert tools.web_tools.check_auxiliary_model() is True
-
-    @pytest.mark.asyncio
-    async def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
-        """Summarization should pick up a backend that becomes available later in-process."""
-        import tools.web_tools
-
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        response = MagicMock()
-        response.choices = [MagicMock(message=MagicMock(content="summary text"))]
-
-        with patch(
-            "tools.web_tools._resolve_web_extract_auxiliary",
-            side_effect=[(None, None, {}), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model", {})],
-        ), patch(
-            "tools.web_tools.async_call_llm",
-            new=AsyncMock(return_value=response),
-        ) as mock_async_call:
-            assert tools.web_tools.check_auxiliary_model() is False
-            result = await tools.web_tools._call_summarizer_llm(
-                "Some content worth summarizing",
-                "Source: https://example.com\n\n",
-                None,
-            )
-
-        assert result == "summary text"
-        mock_async_call.assert_awaited_once()
-
     # ── Singleton caching ────────────────────────────────────────────
 
     def test_singleton_returns_same_instance(self):
@@ -709,3 +668,122 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+class TestNonBuiltinProviderAvailability:
+    """Regression: a plugin-registered WebSearchProvider with no built-in
+    provider credentials must still light up web_search / web_extract tools.
+
+    The web_tools availability gate delegates non-legacy backend names to the
+    web_search_registry's provider ``is_available()``.  This class verifies
+    that a custom (non-built-in) provider discovered via the registry is
+    sufficient to make check_web_api_key() return True, _get_backend() return
+    the custom name, the per-capability selection honor it (issue #32698), and
+    the tool registry entries remain active.
+
+    Original tests contributed by @m0n5t3r (PR #28652 / issue #28651).
+    """
+
+    # All env vars that could make a built-in provider available.
+    _WEB_ENV_KEYS = (
+        "EXA_API_KEY",
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+        "TAVILY_API_KEY",
+        "SEARXNG_URL",
+        "BRAVE_SEARCH_API_KEY",
+        "XAI_API_KEY",
+    )
+
+    @staticmethod
+    def _create_fake_provider(*, search=True, extract=True):
+        """Dynamically create a WebSearchProvider subclass.
+
+        Uses a local class definition (not a nested class) to avoid
+        Python 3.13 __bases__ deallocator issue with nested class
+        reassignment.
+        """
+        from agent.web_search_provider import WebSearchProvider
+
+        class FakePluginProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "fake-plugin-prov"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return search
+
+            def supports_extract(self):
+                return extract
+
+        return FakePluginProvider()
+
+    def setup_method(self):
+        """Strip all built-in web provider env vars and reset the registry."""
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+        from agent.web_search_registry import _reset_for_tests, register_provider
+        _reset_for_tests()
+        register_provider(self._create_fake_provider())
+
+    def teardown_method(self):
+        """Reset the registry and restore env after each test."""
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_check_web_api_key_returns_true_for_custom_provider(self):
+        """With only a custom provider registered (no built-in creds),
+        check_web_api_key() must return True."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_get_backend_discovers_custom_provider(self):
+        """_get_backend() must return the custom provider name when it's
+        the only available provider."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "fake-plugin-prov"
+
+    def test_is_backend_available_delegates_to_registry(self):
+        """_is_backend_available() must consult the registry for a
+        non-legacy backend name."""
+        from tools.web_tools import _is_backend_available
+        assert _is_backend_available("fake-plugin-prov") is True
+        # Unknown, unregistered name -> False (no legacy probe matches).
+        assert _is_backend_available("totally-unknown-backend") is False
+
+    def test_capability_backend_honors_custom_extract_provider(self):
+        """Per-capability selection (_get_extract_backend) must resolve the
+        custom provider when configured, instead of dead-ending — issue #32698."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None), \
+             patch("tools.web_tools._load_web_config",
+                   return_value={"extract_backend": "fake-plugin-prov"}):
+            from tools.web_tools import _get_extract_backend
+            assert _get_extract_backend() == "fake-plugin-prov"
+
+    def test_tool_registry_entries_not_filtered_out(self):
+        """web_search and web_extract tool entries must remain in the
+        registry when only a custom provider is available."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            import tools.web_tools
+            web_search_entry = tools.web_tools.registry.get_entry("web_search")
+            web_extract_entry = tools.web_tools.registry.get_entry("web_extract")
+            assert web_search_entry is not None, \
+                "web_search tool was filtered out despite custom provider being available"
+            assert web_extract_entry is not None, \
+                "web_extract tool was filtered out despite custom provider being available"

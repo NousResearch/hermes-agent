@@ -117,7 +117,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),
         chat_id_alt=src.get("chat_id_alt"),
-        guild_id=src.get("guild_id"),
+        scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
         # Authentic upstream-trust signal: this event arrived over the

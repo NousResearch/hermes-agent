@@ -120,14 +120,14 @@ export function RemoteFolderPicker() {
 
   return (
     <Dialog onOpenChange={open => !open && close()} open={Boolean(pending)}>
-      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
-        <div className="border-b border-border/70 px-4 py-3">
+      <DialogContent className="flex h-[min(36rem,calc(100vh-4rem))] max-w-lg flex-col gap-0 overflow-hidden p-0">
+        <div className="shrink-0 border-b border-border/70 px-4 py-3">
           <DialogTitle className="text-sm">{pending?.title || r.remotePickerTitle}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">{r.remotePickerDescription}</DialogDescription>
         </div>
 
-        <div className="flex min-h-[22rem] flex-col">
-          <div className="flex flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 flex flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
             {crumbs.map((crumb, index) => (
               <button
                 className={cn(
@@ -166,7 +166,7 @@ export function RemoteFolderPicker() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
+        <div className="shrink-0 flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
           <div className="min-w-0 truncate text-xs text-muted-foreground">{currentPath}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button onClick={() => close()} size="sm" variant="ghost">
@@ -185,7 +185,7 @@ export function RemoteFolderPicker() {
 function FolderRow({ disabled = false, name, onClick }: { disabled?: boolean; name: string; onClick: () => void }) {
   return (
     <button
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      className="row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-(--ui-text-secondary) hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
       disabled={disabled}
       onClick={onClick}
       type="button"

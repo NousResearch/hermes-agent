@@ -35,11 +35,11 @@ const BACKGROUND_POLL_MS = 5_000
 // letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
 const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
 
-// Real codicons per group (no sparkles): a checklist for todos, a bot for
-// subagents, a background process glyph for background tasks.
+// Real codicons per group (no sparkles): a checklist for todos, the agent glyph
+// for subagents, a background process glyph for background tasks.
 const GROUP_ICON: Record<StatusGroup['type'], string> = {
   todo: 'checklist',
-  subagent: 'hubot',
+  subagent: 'agent',
   background: 'server-process'
 }
 
@@ -118,48 +118,59 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   const hasBackgroundGroup = groups.some(g => g.type === 'background')
 
-  const sections: { key: string; node: ReactNode }[] = groups.map(group => ({
-    key: group.type,
-    node: (
-      <StatusSection
-        accessory={
-          group.type === 'subagent' ? (
-            <Button
-              className="text-muted-foreground/75 hover:text-foreground/90"
-              onClick={openAgents}
-              size="micro"
-              type="button"
-              variant="text"
-            >
-              {t.statusStack.agents}
-            </Button>
-          ) : undefined
-        }
-        defaultCollapsed={group.type !== 'todo'}
-        icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
-        label={groupLabel(group, t.statusStack)}
-      >
-        {group.items.map(item => (
-          <StatusItemRow
-            item={item}
-            key={item.id}
-            onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
-            onOpen={() => openSubagent(item)}
-            onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
-          />
-        ))}
-        {group.type === 'background' && previewRows}
-      </StatusSection>
-    )
-  }))
+  const previewBlock = <div className="px-1 py-0.5">{previewRows}</div>
+
+  const sections: { key: string; node: ReactNode }[] = []
+
+  for (const group of groups) {
+    sections.push({
+      key: group.type,
+      node: (
+        <StatusSection
+          accessory={
+            group.type === 'subagent' ? (
+              <Button
+                className="text-muted-foreground/75 hover:text-foreground/90"
+                onClick={openAgents}
+                size="micro"
+                type="button"
+                variant="text"
+              >
+                {t.statusStack.agents}
+              </Button>
+            ) : undefined
+          }
+          defaultCollapsed={group.type !== 'todo'}
+          icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
+          label={groupLabel(group, t.statusStack)}
+        >
+          {group.items.map(item => (
+            <StatusItemRow
+              item={item}
+              key={item.id}
+              onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
+              onOpen={() => openSubagent(item)}
+              onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+            />
+          ))}
+        </StatusSection>
+      )
+    })
+
+    // Preview links belong to the background group (a localhost dev server and
+    // its preview are the same thing), but they must stay VISIBLE even when that
+    // group is collapsed — the whole point is a one-tap open. Render them as an
+    // always-visible block right after the background section, not as collapsible
+    // children that get swallowed the moment a background task appears.
+    if (group.type === 'background' && previewRows.length > 0) {
+      sections.push({ key: 'preview', node: previewBlock })
+    }
+  }
 
   // No background group to host them (e.g. a standalone on-disk file preview):
-  // keep the previews as their own row block so they don't disappear.
+  // still render them as their own always-visible block.
   if (previewRows.length > 0 && !hasBackgroundGroup) {
-    sections.push({
-      key: 'preview',
-      node: <div className="px-1 py-0.5">{previewRows}</div>
-    })
+    sections.push({ key: 'preview', node: previewBlock })
   }
 
   if (queue) {

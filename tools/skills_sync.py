@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,35 @@ def _get_bundled_dir() -> Path:
 def _get_optional_dir() -> Path:
     """Locate the official optional-skills/ directory."""
     return get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+
+
+def _build_external_skill_index() -> Set[str]:
+    """Index every skill available in external_dirs by name and frontmatter name.
+
+    Returns a set of skill names that are already provided by external dirs.
+    Used to prevent sync_skills from shadowing externally-delegated skills.
+    """
+    try:
+        from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
+    except ImportError:
+        return set()
+
+    # Clear the external dirs cache so a config edit (or a test patch) is seen.
+    _external_dirs_cache_clear()
+
+    external_names: Set[str] = set()
+    for ext_dir in get_external_skills_dirs():
+        for skill_md in ext_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            skill_dir = skill_md.parent
+            # Index by directory name (how _find_skill resolves skills)
+            external_names.add(skill_dir.name)
+            # Also index by frontmatter name (alternate identifier)
+            frontmatter_name = _read_skill_name(skill_md, "")
+            if frontmatter_name:
+                external_names.add(frontmatter_name)
+    return external_names
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -486,6 +515,9 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
     suppressed = _read_suppressed_names()
+    # Index of skills already provided by external_dirs (skip writing them)
+    external_index = _build_external_skill_index()
+    shadowed_by_external: List[str] = []
 
     copied = []
     updated = []
@@ -523,6 +555,31 @@ def sync_skills(quiet: bool = False) -> dict:
                     "Could not recover orphaned skill backup %s", _orphan,
                     exc_info=True,
                 )
+
+        if skill_name in external_index:
+            # An external_dirs source already provides this skill. Writing it
+            # into the profile-local tree would create a name collision the
+            # loader refuses to resolve (#28126). Defer to the external copy
+            # for ALL manifest states (new, previously-synced, user-deleted).
+            shadowed_by_external.append(skill_name)
+            skipped += 1
+            if not quiet:
+                print(
+                    f"  ⇢ {skill_name} (deferred to external_dirs, "
+                    "not written to local tree)"
+                )
+            # Self-healing: a prior sync (before external_dirs was configured,
+            # or an older buggy sync) may have left a local shadow that now
+            # collides. We own that shadow only when it is byte-identical to
+            # the bundled source — a user's own customized skill by the same
+            # name differs, so never delete or re-baseline it. Drop the stale
+            # manifest entry so the skill isn't later misread as user-deleted.
+            if dest.exists() and _dir_hash(dest) == bundled_hash:
+                _rmtree_writable(dest)
+                if not quiet:
+                    print(f"  ✓ removed stale shadow of {skill_name}")
+                manifest.pop(skill_name, None)
+            continue
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
@@ -659,6 +716,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "suppressed": suppressed_skipped,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,
+        "shadowed_by_external": shadowed_by_external,
     }
 
 

@@ -353,6 +353,39 @@ class TestRuntimeMode:
         assert any("coding agent" in b for b in blocks)
         assert any("Workspace" in b for b in blocks)
 
+    def test_coding_instructions_append_their_own_block(self, tmp_path):
+        _git_init(tmp_path)
+        cfg = {
+            "agent": {
+                "coding_context": "on",
+                "coding_instructions": "Clean the diff before commit.",
+            }
+        }
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config=cfg)
+        blocks = mode.system_blocks()
+        # The brief stays block 0 (byte-stable, cache-keyed independently); the
+        # operator instructions ride a separate trailing block.
+        assert blocks[0] == cc.CODING_AGENT_GUIDANCE
+        assert any("Clean the diff before commit." in b for b in blocks[1:])
+
+    def test_coding_instructions_accept_a_list(self, tmp_path):
+        _git_init(tmp_path)
+        cfg = {
+            "agent": {
+                "coding_context": "on",
+                "coding_instructions": ["No tsc/lint on UI.", "Clean the diff."],
+            }
+        }
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config=cfg)
+        instr_block = mode.system_blocks()[-1]
+        assert "No tsc/lint on UI." in instr_block
+        assert "Clean the diff." in instr_block
+
+    def test_no_instructions_block_when_unset(self, tmp_path):
+        _git_init(tmp_path)
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "on"}})
+        assert not any("Operator instructions" in b for b in mode.system_blocks())
+
     def test_toolset_selection_gated_on_focus(self, tmp_path):
         _git_init(tmp_path)
         focus = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "focus"}})

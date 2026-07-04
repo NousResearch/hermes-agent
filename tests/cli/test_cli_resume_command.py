@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
@@ -37,6 +38,39 @@ class TestCliResumeCommand:
         assert "Research" in output
         assert "/resume 2" in output
         assert "/resume <session title>" in output
+
+    def test_show_recent_sessions_uses_prompt_toolkit_safe_print(self):
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_002", "title": "Coding", "preview": "build feature", "last_active": None},
+        ])
+
+        running_app = SimpleNamespace(_is_running=True)
+        with (
+            patch("prompt_toolkit.application.get_app_or_none", return_value=running_app),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            shown = cli_obj._show_recent_sessions(reason="sessions")
+
+        assert shown is True
+        printed = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
+        assert "Recent sessions" in printed
+        assert "Coding" in printed
+
+    def test_show_history_uses_prompt_toolkit_safe_print(self):
+        cli_obj = _make_cli()
+        cli_obj.conversation_history = [{"role": "user", "content": "Hello"}]
+
+        running_app = SimpleNamespace(_is_running=True)
+        with (
+            patch("prompt_toolkit.application.get_app_or_none", return_value=running_app),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj.show_history()
+
+        printed = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
+        assert "Conversation History" in printed
+        assert "Hello" in printed
 
     def test_handle_resume_by_index_switches_to_numbered_session(self):
         cli_obj = _make_cli()
@@ -287,3 +321,33 @@ class TestRestoreSessionCwdMarkup:
             assert "Working directory" in printed or "working" in printed.lower()
         finally:
             os.chdir(original_cwd)
+
+
+class TestResumeFlushesBeforeEndSession:
+    """Regression for #47202: /resume must flush un-persisted messages to
+    the session DB before ending the old session, just like /new and
+    compress_context() already do."""
+
+    def test_resume_flushes_when_agent_present(self):
+        cli_obj = _make_cli()
+        cli_obj.conversation_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        agent = MagicMock()
+        cli_obj.agent = agent
+
+        cli_obj._session_db.get_session.return_value = {"id": "target", "title": "T"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.resolve_resume_session_id.return_value = "target"
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_resume_command("/resume target")
+
+        agent._flush_messages_to_session_db.assert_called_once_with(
+            [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+        )
+        cli_obj._session_db.end_session.assert_called_once()

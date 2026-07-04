@@ -320,3 +320,31 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
     assert "X-OpenRouter-Cache" not in headers
     assert "X-OpenRouter-Cache-TTL" not in headers
+
+
+@patch("run_agent.OpenAI")
+def test_copilot_enterprise_base_url_applies_copilot_default_headers(mock_openai):
+    """Enterprise Copilot endpoints (api.<tenant>.githubcopilot.com) must apply
+    the same default_headers — including Copilot-Integration-Id: vscode-chat —
+    as the default api.githubcopilot.com endpoint. Without this, the upstream
+    sees the request as integrator 'zed' or 'copilot-language-server' and
+    rejects it with a 400 error for many models (regression seen May 2026)."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.enterprise.githubcopilot.com",
+        model="claude-opus-4.6-1m",
+        provider="copilot",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.enterprise.githubcopilot.com")
+
+    headers = agent._client_kwargs.get("default_headers", {})
+    # Lookup is case-insensitive — normalize for the assertion.
+    lc = {k.lower(): v for k, v in headers.items()}
+    assert lc.get("copilot-integration-id") == "vscode-chat", (
+        f"enterprise Copilot endpoint must carry Copilot-Integration-Id=vscode-chat; got {headers}"
+    )

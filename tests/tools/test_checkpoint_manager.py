@@ -1049,3 +1049,80 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# =========================================================================
+# project_key for Docker bind-mount key mismatch
+# =========================================================================
+
+class TestProjectKey:
+    """Regression: Docker bind-mount checkpoint/rollback key mismatch.
+
+    When TERMINAL_CWD is a container path (e.g. /workspace/repos/myproject)
+    but the file-tool checkpoint resolves to the host path, the project
+    hashes diverge and /rollback cannot find the checkpoint.
+    """
+
+    def test_project_key_overrides_hash(
+        self, mgr, work_dir, checkpoint_base, monkeypatch
+    ):
+        """Checkpoint created with project_key uses that key for the hash."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        container_key = "/workspace/repos/myproject"
+
+        # Take checkpoint with a project_key (simulates Docker bind mount)
+        assert mgr.ensure_checkpoint(
+            str(work_dir), "before write_file", project_key=container_key
+        )
+
+        # The checkpoint should be stored under the container key's hash,
+        # not the host path's hash.
+        expected_hash = _project_hash(container_key)
+        ref = _ref_name(expected_hash)
+        store = _store_path(checkpoint_base)
+
+        ok, commit, _ = _run_git(
+            ["rev-parse", "--verify", ref + "^{commit}"],
+            store, str(work_dir),
+            allowed_returncodes={128},
+        )
+        assert ok, "checkpoint ref should exist under container-key hash"
+
+    def test_rollback_finds_checkpoint_with_project_key(
+        self, mgr, work_dir, checkpoint_base, monkeypatch
+    ):
+        """/rollback using TERMINAL_CWD finds checkpoint created with project_key."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        container_key = "/workspace/repos/myproject"
+
+        # Simulate file-tool checkpoint with project_key
+        (work_dir / "new_file.txt").write_text("new content\n")
+        assert mgr.ensure_checkpoint(
+            str(work_dir), "before write_file", project_key=container_key
+        )
+
+        # Simulate /rollback listing checkpoints using the container key
+        # (this is what slash_commands.py does: cwd = os.getenv("TERMINAL_CWD"))
+        checkpoints = mgr.list_checkpoints(container_key)
+        assert len(checkpoints) >= 1, (
+            "list_checkpoints(container_key) should find the checkpoint"
+        )
+
+    def test_without_project_key_uses_working_dir(
+        self, mgr, work_dir, checkpoint_base, monkeypatch
+    ):
+        """Without project_key, working_dir is used for the hash (default)."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        assert mgr.ensure_checkpoint(str(work_dir), "before write_file")
+
+        expected_hash = _project_hash(str(work_dir))
+        ref = _ref_name(expected_hash)
+        store = _store_path(checkpoint_base)
+
+        ok, commit, _ = _run_git(
+            ["rev-parse", "--verify", ref + "^{commit}"],
+            store, str(work_dir),
+            allowed_returncodes={128},
+        )
+        assert ok, "checkpoint ref should exist under working_dir hash"

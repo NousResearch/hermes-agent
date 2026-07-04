@@ -1205,7 +1205,7 @@ export default function ModelsPage() {
                         {
                           label: t.analytics.totalTokens,
                           value: formatTokens(
-                            data.totals.total_input + data.totals.total_output,
+                            data.totals.total_input + data.totals.total_output + data.totals.total_cache_read,
                           ),
                         },
                         {
@@ -1215,6 +1215,12 @@ export default function ModelsPage() {
                         {
                           label: t.analytics.output,
                           value: formatTokens(data.totals.total_output),
+                        },
+                        {
+                          label: "Cache",
+                          value: data.totals.total_cache_read > 0
+                            ? `${formatTokens(data.totals.total_cache_read)} (${(data.totals.total_cache_read / (data.totals.total_input + data.totals.total_cache_read) * 100).toFixed(0)}%)`
+                            : "0",
                         },
                         {
                           label: t.models.estimatedCost,

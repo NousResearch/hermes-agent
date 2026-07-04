@@ -257,6 +257,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label="Cache" col="cache_read_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -280,6 +281,13 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <span style={{ color: "var(--series-output-token)" }}>
                         {formatTokens(d.output_tokens)}
                       </span>
+                  </td>
+                  <td className="text-right py-2 px-4">
+                    <span className="text-sky-400">
+                      {d.cache_read_tokens > 0
+                        ? `${formatTokens(d.cache_read_tokens)} (${(d.cache_read_tokens / (d.input_tokens + d.cache_read_tokens) * 100).toFixed(0)}%)`
+                        : "—"}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -546,7 +554,7 @@ export default function AnalyticsPage() {
                     {
                       label: t.analytics.totalTokens,
                       value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
+                        data.totals.total_input + data.totals.total_output + data.totals.total_cache_read,
                       ),
                     },
                     {
@@ -556,6 +564,12 @@ export default function AnalyticsPage() {
                     {
                       label: t.analytics.output,
                       value: formatTokens(data.totals.total_output),
+                    },
+                    {
+                      label: "Cache",
+                      value: data.totals.total_cache_read > 0
+                        ? `${formatTokens(data.totals.total_cache_read)} (${(data.totals.total_cache_read / (data.totals.total_input + data.totals.total_cache_read) * 100).toFixed(0)}%)`
+                        : "0",
                     },
                     {
                       label: t.analytics.totalSessions,

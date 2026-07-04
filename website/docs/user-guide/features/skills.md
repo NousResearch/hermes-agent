@@ -4,7 +4,7 @@ title: "Skills System"
 description: "On-demand knowledge documents — progressive disclosure, agent-managed skills, and the Skills Hub"
 ---
 
-# Skills System
+# Skills System 
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 

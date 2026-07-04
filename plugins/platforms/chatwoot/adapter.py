@@ -1041,3 +1041,10 @@ def register(ctx) -> None:
     ctx.register_hook("pre_llm_call", coach_context.member_context_hook)
     ctx.register_middleware("tool_request", user_scope.on_tool_request)
     ctx.register_hook("pre_tool_call", user_scope.on_pre_tool_call)
+
+    from plugins.platforms.chatwoot.labels_tool import register_labels_tool
+    from plugins.platforms.chatwoot import labels_auto
+
+    register_labels_tool(ctx)
+    ctx.register_hook("pre_llm_call", labels_auto.labeling_reminder_hook)
+    ctx.register_hook("post_llm_call", labels_auto.auto_label_hook)

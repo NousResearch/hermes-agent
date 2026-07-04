@@ -46,6 +46,8 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
+from tools.url_safety import is_safe_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -319,6 +321,13 @@ def detect(base_url: str,
         result.hostname = (parsed.hostname or "").lower()
     except Exception:
         result.hostname = ""
+
+    # Block private/internal/loopback IPs and non-https schemes before
+    # making any outbound requests (SSRF-002).
+    if not is_safe_url(base_url):
+        logger.warning("azure_detect: unsafe URL rejected: %s", base_url)
+        result.reason = "URL blocked — must use https and may not target private/internal addresses"
+        return result
 
     # 1. Path sniff.  Azure Foundry exposes Anthropic-style deployments
     #    under a dedicated ``/anthropic`` path.

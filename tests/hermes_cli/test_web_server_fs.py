@@ -45,6 +45,27 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
 
 
+def test_fs_list_hides_hermes_credential_dirs(client, tmp_path, monkeypatch):
+    import agent.file_safety as file_safety
+    import hermes_constants
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "mcp-tokens").mkdir()
+    (hermes_home / "pairing").mkdir()
+    (hermes_home / "notes").mkdir()
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: hermes_home)
+
+    response = client.get("/api/fs/list", params={"path": str(hermes_home)})
+
+    assert response.status_code == 200
+    names = {entry["name"] for entry in response.json()["entries"]}
+    assert names == {"notes"}
+
+
 def test_fs_list_accepts_relative_paths(client, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "rel").mkdir()
@@ -107,6 +128,22 @@ def test_fs_read_text_flags_binary(client, tmp_path):
     assert body["text"].startswith("hello")
 
 
+def test_fs_read_text_blocks_credential_files(client, tmp_path, monkeypatch):
+    import agent.file_safety as file_safety
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    target = hermes_home / ".env"
+    target.write_text("OPENAI_API_KEY=sk-secret")
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+
+    response = client.get("/api/fs/read-text", params={"path": str(target)})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access to sensitive files is not allowed"
+
+
 def test_fs_read_data_url_returns_capped_data_url(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 16)
     target = tmp_path / "image.png"
@@ -116,6 +153,31 @@ def test_fs_read_data_url_returns_capped_data_url(client, tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert response.json() == {"dataUrl": "data:image/png;base64," + base64.b64encode(b"pngbytes").decode("ascii")}
+
+
+def test_fs_read_data_url_blocks_credential_dirs(client, tmp_path, monkeypatch):
+    import agent.file_safety as file_safety
+    import hermes_constants
+
+    hermes_home = tmp_path / "hermes-home"
+    token_dir = hermes_home / "mcp-tokens"
+    pairing_dir = hermes_home / "pairing"
+    token_dir.mkdir(parents=True)
+    pairing_dir.mkdir()
+    token_file = token_dir / "server.json"
+    pairing_file = pairing_dir / "device.json"
+    token_file.write_text('{"access_token":"secret"}')
+    pairing_file.write_text('{"pairing_secret":"secret"}')
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: hermes_home)
+
+    token_response = client.get("/api/fs/read-data-url", params={"path": str(token_file)})
+    pairing_response = client.get("/api/fs/read-data-url", params={"path": str(pairing_file)})
+
+    assert token_response.status_code == 403
+    assert pairing_response.status_code == 403
 
 
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):

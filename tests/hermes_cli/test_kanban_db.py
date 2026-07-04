@@ -425,6 +425,107 @@ def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_unblock_recovers_direct_db_block_as_blocked_and_respawns(
+    kanban_home, monkeypatch,
+):
+    """If a non-tool writer leaves a blocked handoff with an open run,
+    unblock should preserve the run as ``blocked`` and the next dispatcher
+    tick should be able to reclaim the task for follow-up work.
+
+    This mirrors the Codex app-server fallback failure mode: the task row
+    looked blocked and had a ``blocked`` event, but ``current_run_id`` still
+    pointed at an active run. The recovery path must be tolerant rather than
+    producing a confusing ``reclaimed`` history or stranding the ready task.
+    """
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _profile: True)
+
+    spawned: list[tuple[str, int | None, str]] = []
+
+    def _spawn(task, workspace, board=None):
+        spawned.append((task.id, task.current_run_id, task.status))
+        return 12345
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs review", assignee="coder")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+
+        # Simulate the bad external/SQLite lifecycle write: status + event were
+        # written, but the run row was never closed and current_run_id leaked.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                (tid,),
+            )
+            kb._append_event(
+                conn,
+                tid,
+                "blocked",
+                {"reason": "review-required: ready"},
+                run_id=run_id,
+            )
+
+        assert kb.unblock_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.current_run_id is None
+
+        recovered = conn.execute(
+            "SELECT status, outcome, summary, ended_at FROM task_runs "
+            "WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        assert recovered["status"] == "blocked"
+        assert recovered["outcome"] == "blocked"
+        assert recovered["summary"] == "review-required: ready"
+        assert recovered["ended_at"] is not None
+
+        result = kb.dispatch_once(conn, spawn_fn=_spawn, max_spawn=1)
+        running = kb.get_task(conn, tid)
+        assert running is not None
+        assert result.spawned == [(tid, "coder", running.workspace_path)]
+        assert spawned == [(tid, running.current_run_id, "running")]
+        assert running.status == "running"
+
+
+def test_unblock_unknown_dangling_run_still_reclaims(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unknown stale run", assignee="coder")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                (tid,),
+            )
+
+        assert kb.unblock_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.current_run_id is None
+
+        recovered = conn.execute(
+            "SELECT status, outcome, summary, ended_at FROM task_runs "
+            "WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        assert recovered["status"] == "reclaimed"
+        assert recovered["outcome"] == "reclaimed"
+        assert recovered["summary"] == "invariant recovery on unblock"
+        assert recovered["ended_at"] is not None
+
+
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
     import signal
     import hermes_cli.kanban_db as _kb

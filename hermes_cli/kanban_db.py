@@ -4829,10 +4829,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
-    is a no-op. If a future or external write left the pointer dangling,
-    the leaked run is closed as ``reclaimed`` inside the same txn so the
-    runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
-    state) holds for the rest of this function's lifetime.
+    is a no-op. If an external write left a matching ``blocked`` event but
+    forgot to close the active run, recover it as a blocked handoff; unknown
+    dangling runs are still closed as ``reclaimed``. Either way the runs
+    invariant (``current_run_id IS NULL`` ⇔ run row in terminal state) holds
+    for the rest of this function's lifetime.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -4841,16 +4842,48 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
+            stale_run_id = int(stale["current_run_id"])
+            # If an external writer/direct-DB path moved the task to
+            # ``blocked`` and emitted the blocked event but forgot to close the
+            # active run, treat the run as a successful block handoff rather
+            # than a reclaim. This keeps the history semantic and avoids
+            # confusing operator/debug tooling with a spurious reclaimed run on
+            # the normal review unblock path. Unknown dangling runs still get
+            # reclaimed below.
+            latest_block = conn.execute(
+                "SELECT run_id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'blocked' "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            recover_as_blocked = bool(
+                latest_block and latest_block["run_id"] == stale_run_id
+            )
+            recovered_summary = "invariant recovery on unblock"
+            if recover_as_blocked:
+                recovered_summary = "blocked handoff recovered on unblock"
+                try:
+                    payload = json.loads(latest_block["payload"] or "{}")
+                    if payload.get("reason"):
+                        recovered_summary = str(payload["reason"])
+                except Exception:
+                    pass
             conn.execute(
                 """
                 UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
+                   SET status = ?, outcome = ?,
+                       summary = COALESCE(summary, ?),
                        ended_at = ?,
                        claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
                  WHERE id = ? AND ended_at IS NULL
                 """,
-                (now, int(stale["current_run_id"])),
+                (
+                    "blocked" if recover_as_blocked else "reclaimed",
+                    "blocked" if recover_as_blocked else "reclaimed",
+                    recovered_summary,
+                    now,
+                    stale_run_id,
+                ),
             )
         # Re-gate on parent completion before flipping 'blocked' back to
         # 'ready'. Unconditionally setting status='ready' here bypasses the

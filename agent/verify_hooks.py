@@ -14,9 +14,12 @@ decision while preserving ``pre_verify`` for user/plugin policy.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_VERIFY_NUDGES = 3
 
@@ -55,7 +58,12 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
             from hermes_cli.config import load_config
 
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to load verification hook config; using verification defaults: %s",
+                exc,
+                exc_info=True,
+            )
             config = {}
     agent_cfg = (config or {}).get("agent") if isinstance(config, dict) else None
     return agent_cfg if isinstance(agent_cfg, dict) else {}

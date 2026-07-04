@@ -1064,7 +1064,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text())
+        # Match the UTF-8 encoding used by _save_auth_store (and tolerate a BOM
+        # if the file was hand-edited in Notepad). Without an explicit encoding,
+        # read_text() falls back to locale.getpreferredencoding(), which is
+        # cp1252 on Windows — a non-ASCII label (e.g. a CJK or emoji credential
+        # name) written as UTF-8 raises UnicodeDecodeError here, and this
+        # except branch then wipes the entire store to an empty one.
+        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         corrupt_path = auth_file.with_suffix(".json.corrupt")
         try:
@@ -3546,7 +3552,9 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     if not auth_path.is_file():
         return None
     try:
-        payload = json.loads(auth_path.read_text())
+        # Codex writes this file as UTF-8; read it the same way so non-ASCII
+        # account labels survive on Windows (cp1252 default would decode-fail).
+        payload = json.loads(auth_path.read_text(encoding="utf-8-sig"))
         tokens = payload.get("tokens")
         if not isinstance(tokens, dict):
             return None
@@ -4769,7 +4777,11 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text())
+        # Shared store is written as UTF-8; read it the same way. Without an
+        # explicit encoding, a non-ASCII byte (e.g. an accented display name)
+        # raises UnicodeDecodeError on Windows (cp1252), which this except
+        # silently swallows — dropping the user's shared credentials.
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
         return None

@@ -167,6 +167,21 @@ def _is_interactive() -> bool:
         return False
 
 
+def _raise_if_non_interactive(lead: str) -> None:
+    """Raise ``OAuthNonInteractiveError`` unless an interactive session exists.
+
+    ``lead`` is the boundary-specific first sentence; this helper appends the
+    shared, actionable ``hermes mcp login`` next-step so the guidance wording
+    lives in one place across every non-interactive OAuth boundary (#57836).
+    """
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            f"{lead} "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
+        )
+
+
 @contextmanager
 def force_interactive_oauth():
     """Treat the current execution context as interactive despite no TTY.
@@ -539,13 +554,10 @@ async def _redirect_handler(authorization_url: str) -> None:
     # promptly and the caller can skip this server with an actionable warning.
     # This intentionally re-checks interactivity here rather than trusting the
     # token-file existence guard alone. See #57836.
-    if not _is_interactive():
-        raise OAuthNonInteractiveError(
-            "MCP OAuth requires browser authorization but no interactive "
-            "session is available (non-interactive/background context). "
-            "Run `hermes mcp login <server>` interactively to (re)authorize, "
-            "then restart or reload the gateway."
-        )
+    _raise_if_non_interactive(
+        "MCP OAuth requires browser authorization but no interactive "
+        "session is available (non-interactive/background context)."
+    )
 
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
@@ -628,14 +640,11 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # gateway startup independent of an unusable optional MCP server. This
     # guard holds "regardless of whether a token file exists" — the point the
     # build_oauth_auth token-file guard cannot cover. See #57836.
-    if not _is_interactive():
-        raise OAuthNonInteractiveError(
-            "OAuth callback requires an interactive session but none is "
-            "available (non-interactive/background context); skipping browser "
-            "authorization without binding a callback listener. "
-            "Run `hermes mcp login <server>` interactively to (re)authorize, "
-            "then restart or reload the gateway."
-        )
+    _raise_if_non_interactive(
+        "OAuth callback requires an interactive session but none is "
+        "available (non-interactive/background context); skipping browser "
+        "authorization without binding a callback listener."
+    )
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.

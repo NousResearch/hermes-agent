@@ -679,6 +679,30 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
             asyncio.run(mod._wait_for_callback())
 
+    def test_guard_does_not_fire_on_interactive_redirect(self, monkeypatch, capsys):
+        """Positive control: the fail-fast guard is scoped to the auth-code path.
+
+        #57836 regression coverage asks that valid/refreshable OAuth keeps
+        working non-interactively — a good token never reaches these handlers,
+        so the guard must be inert once a real flow is in progress. Assert the
+        interactive path still prints the URL and does not raise, proving the
+        guard does not over-fire and swallow legitimate authorization.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Local (non-SSH) interactive session with no browser available, so the
+        # handler falls through to the manual-URL print without opening a tab.
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
+
+        asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=9"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize?x=9" in err
+
 
 # ---------------------------------------------------------------------------
 # Extracted helper tests (Task 3 of MCP OAuth consolidation)

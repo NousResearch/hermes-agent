@@ -252,7 +252,7 @@ def _compute_task_diagnostics(
     """Run the diagnostic rule engine against every task (or a subset)
     and return ``{task_id: [diagnostic_dict, ...]}``.
 
-    Tasks with no active diagnostics are omitted from the result.
+    Tasks with no diagnostics are omitted from the result.
     Uses ``hermes_cli.kanban_diagnostics`` — see that module for the
     rule definitions.
     """
@@ -326,13 +326,16 @@ def _warnings_summary_from_diagnostics(
     if not diagnostics:
         return None
     from hermes_cli.kanban_diagnostics import SEVERITY_ORDER
+    active_diags = [d for d in diagnostics if not d.get("stale")]
+    stale_count = len(diagnostics) - len(active_diags)
+    summary_diags = active_diags or diagnostics
 
     kinds: dict[str, int] = {}
     latest = 0
     highest_idx = -1
     highest_sev: Optional[str] = None
     count = 0
-    for d in diagnostics:
+    for d in summary_diags:
         kinds[d["kind"]] = kinds.get(d["kind"], 0) + d.get("count", 1)
         count += d.get("count", 1)
         la = d.get("last_seen_at") or 0
@@ -349,6 +352,8 @@ def _warnings_summary_from_diagnostics(
         "kinds": kinds,
         "latest_at": latest,
         "highest_severity": highest_sev,
+        "active_count": len(active_diags),
+        "stale_count": stale_count,
     }
 
 
@@ -1271,7 +1276,7 @@ def list_diagnostics(
 ):
     """Return ``[{task_id, task_title, task_status, task_assignee,
     diagnostics: [...]}, ...]`` for every task on the board with at
-    least one active diagnostic.
+    least one diagnostic entry.
 
     Severity-filterable so the UI can render "just the critical ones"
     or the CLI can grep. Useful for the board-header attention strip
@@ -1284,7 +1289,12 @@ def list_diagnostics(
     try:
         diags_by_task = _compute_task_diagnostics(conn, task_ids=None)
         if not diags_by_task:
-            return {"diagnostics": [], "count": 0}
+            return {
+                "diagnostics": [],
+                "count": 0,
+                "total_diagnostic_count": 0,
+                "stale_diagnostic_count": 0,
+            }
 
         # Narrow by severity if asked.
         if severity:
@@ -1295,7 +1305,12 @@ def list_diagnostics(
                     filtered[tid] = keep
             diags_by_task = filtered
             if not diags_by_task:
-                return {"diagnostics": [], "count": 0}
+                return {
+                    "diagnostics": [],
+                    "count": 0,
+                    "total_diagnostic_count": 0,
+                    "stale_diagnostic_count": 0,
+                }
 
         # Pull the task rows we need in one query so we can include
         # titles/statuses without a per-task lookup.
@@ -1310,13 +1325,20 @@ def list_diagnostics(
         }
 
         out = []
+        active_count = 0
+        stale_count = 0
         for tid, dl in diags_by_task.items():
             r = rows.get(tid)
+            active, stale = kd.split_diagnostics(dl)
+            active_count += len(active)
+            stale_count += len(stale)
             out.append({
                 "task_id": tid,
                 "task_title": r["title"] if r else None,
                 "task_status": r["status"] if r else None,
                 "task_assignee": r["assignee"] if r else None,
+                "active_diagnostic_count": len(active),
+                "stale_diagnostic_count": len(stale),
                 "diagnostics": dl,
             })
         # Sort: highest severity first, then most recent.
@@ -1332,7 +1354,9 @@ def list_diagnostics(
 
         return {
             "diagnostics": out,
-            "count": sum(len(d["diagnostics"]) for d in out),
+            "count": active_count,
+            "total_diagnostic_count": active_count + stale_count,
+            "stale_diagnostic_count": stale_count,
         }
     finally:
         conn.close()

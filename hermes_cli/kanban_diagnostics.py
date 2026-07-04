@@ -99,6 +99,10 @@ class Diagnostic:
     count: int = 1
     # Optional: the run id this diagnostic is scoped to. None = task-wide.
     run_id: Optional[int] = None
+    # Historical diagnostics stay visible for auditability but should
+    # not be counted as active runtime blockers.
+    stale: bool = False
+    stale_reason: Optional[str] = None
     # Optional structured payload for the UI (phantom ids, failure count).
     data: dict = field(default_factory=dict)
 
@@ -113,6 +117,8 @@ class Diagnostic:
             "last_seen_at": self.last_seen_at,
             "count": self.count,
             "run_id": self.run_id,
+            "stale": self.stale,
+            "stale_reason": self.stale_reason,
             "data": self.data,
         }
 
@@ -167,6 +173,65 @@ def _event_kind(ev) -> str:
 def _event_ts(ev) -> int:
     t = _task_field(ev, "created_at", 0)
     return int(t or 0)
+
+
+def _run_sort_key(run: Any) -> tuple[int, int]:
+    """Stable newest-first marker for run comparisons."""
+    ended_at = int(_task_field(run, "ended_at", 0) or 0)
+    run_id = int(_task_field(run, "id", 0) or 0)
+    return (ended_at, run_id)
+
+
+def _latest_run(runs: Iterable[Any], outcomes: set[str]) -> Optional[Any]:
+    latest = None
+    latest_key = (-1, -1)
+    for run in runs:
+        outcome = _task_field(run, "outcome")
+        if outcome not in outcomes:
+            continue
+        key = _run_sort_key(run)
+        if key > latest_key:
+            latest = run
+            latest_key = key
+    return latest
+
+
+def _stale_failure_state(task: Any, runs: list[Any]) -> tuple[bool, Optional[str]]:
+    """Return whether a failure-style diagnostic is historical only."""
+    status = str(_task_field(task, "status", "") or "")
+    if status == "todo":
+        return (True, "source_task_reset_to_todo")
+    if status in {"done", "archived"}:
+        return (True, "task_already_completed")
+
+    last_failure = _latest_run(
+        runs,
+        {"spawn_failed", "timed_out", "crashed", "gave_up"},
+    )
+    last_success = _latest_run(runs, {"completed"})
+    if last_failure is not None and last_success is not None:
+        if _run_sort_key(last_success) > _run_sort_key(last_failure):
+            return (True, "later_success_after_failure")
+    return (False, None)
+
+
+def split_diagnostics(
+    diagnostics: Iterable[Diagnostic | dict[str, Any]],
+) -> tuple[list[Diagnostic | dict[str, Any]], list[Diagnostic | dict[str, Any]]]:
+    """Partition diagnostics into active blockers and historical entries."""
+    active = []
+    stale = []
+    for diagnostic in diagnostics:
+        is_stale = (
+            diagnostic.get("stale", False)
+            if isinstance(diagnostic, dict)
+            else diagnostic.stale
+        )
+        if is_stale:
+            stale.append(diagnostic)
+        else:
+            active.append(diagnostic)
+    return active, stale
 
 
 def _active_hallucination_events(
@@ -593,7 +658,10 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         task, running=_task_field(task, "status") == "running",
     ))
 
+    stale, stale_reason = _stale_failure_state(task, runs)
     severity = "critical" if failures >= threshold * 2 else "error"
+    if stale:
+        severity = "warning"
     err_text = (last_err or "").strip() if last_err else ""
     err_snippet = err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
     outcome_label = {
@@ -601,8 +669,20 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         "timed_out": "timeout",
         "crashed": "crash",
     }.get(most_recent_outcome or "", "failure")
+    prefix = "Historical " if stale else ""
+    stale_note = {
+        "source_task_reset_to_todo": (
+            "The task is back in todo and no longer represents an active worker outage."
+        ),
+        "task_already_completed": (
+            "The task already completed after the recorded failures."
+        ),
+        "later_success_after_failure": (
+            "A later completed run exists after the recorded failure streak."
+        ),
+    }.get(stale_reason, "")
     if err_snippet:
-        title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
+        title = f"{prefix}agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
         detail = (
             f"This task has failed {failures} times in a row "
             f"(most recent: {outcome_label}). Full last error:\n\n"
@@ -612,12 +692,14 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"root cause and reclaim or unblock the task to retry."
         )
     else:
-        title = f"Agent {outcome_label} x{failures} (no error recorded)"
+        title = f"{prefix}agent {outcome_label} x{failures} (no error recorded)"
         detail = (
             f"This task has failed {failures} times in a row "
             f"(most recent: {outcome_label}) but no error text was "
             f"captured. Check the suggested command or the worker log."
         )
+    if stale_note:
+        detail = f"{detail}\n\nHistorical only: {stale_note}"
     return [Diagnostic(
         kind="repeated_failures",
         severity=severity,
@@ -627,12 +709,17 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         first_seen_at=now,
         last_seen_at=now,
         count=failures,
+        stale=stale,
+        stale_reason=stale_reason,
         data={
             "consecutive_failures": failures,
             "most_recent_outcome": most_recent_outcome,
             "last_error": last_err,
             "failure_threshold": threshold,
             "failure_limit": failure_limit,
+            "task_status": _task_field(task, "status"),
+            "stale": stale,
+            "stale_reason": stale_reason,
         },
     )]
 
@@ -693,24 +780,41 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         ))
     running = _task_field(task, "status") == "running"
     actions.extend(_generic_recovery_actions(task, running=running))
+    stale, stale_reason = _stale_failure_state(task, runs)
     severity = "critical" if consecutive >= threshold * 2 else "error"
+    if stale:
+        severity = "warning"
     # Put the actual error up-front so operators see WHAT broke without
     # having to open the logs. Truncate defensively — these can be huge
     # (full tracebacks).
     err_text = (last_err or "").strip() if last_err else ""
     err_snippet = err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
+    prefix = "Historical " if stale else ""
+    stale_note = {
+        "source_task_reset_to_todo": (
+            "The task is back in todo and no longer represents an active worker outage."
+        ),
+        "task_already_completed": (
+            "The task already completed after the recorded crashes."
+        ),
+        "later_success_after_failure": (
+            "A later completed run exists after the recorded crash streak."
+        ),
+    }.get(stale_reason, "")
     if err_snippet:
-        title = f"Agent crashed {consecutive}x: {err_snippet.splitlines()[0][:160]}"
+        title = f"{prefix}agent crashed {consecutive}x: {err_snippet.splitlines()[0][:160]}"
         detail = (
             f"The last {consecutive} runs ended with outcome=crashed. "
             f"Full last error:\n\n{err_snippet}"
         )
     else:
-        title = f"Agent crashed {consecutive}x (no error recorded)"
+        title = f"{prefix}agent crashed {consecutive}x (no error recorded)"
         detail = (
             f"The last {consecutive} runs ended with outcome=crashed but "
             f"no error text was captured. Check the worker log for more."
         )
+    if stale_note:
+        detail = f"{detail}\n\nHistorical only: {stale_note}"
     return [Diagnostic(
         kind="repeated_crashes",
         severity=severity,
@@ -720,7 +824,15 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         first_seen_at=now,
         last_seen_at=now,
         count=consecutive,
-        data={"consecutive_crashes": consecutive, "last_error": last_err},
+        stale=stale,
+        stale_reason=stale_reason,
+        data={
+            "consecutive_crashes": consecutive,
+            "last_error": last_err,
+            "task_status": _task_field(task, "status"),
+            "stale": stale,
+            "stale_reason": stale_reason,
+        },
     )]
 
 

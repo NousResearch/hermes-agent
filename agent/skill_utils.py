@@ -9,7 +9,12 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import (
+    get_config_path,
+    get_skills_dir,
+    get_subprocess_home,
+    is_termux,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -698,17 +703,37 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
+_HOME_VAR_RE = re.compile(r"\$(?:\{HOME\}|HOME)(?=$|[/\\])")
+
+
+def _expand_skill_config_path(value: str) -> str:
+    """Expand ``~`` / ``$HOME`` against the HOME Hermes injects into tool subprocesses.
+
+    Skill config defaults describe paths the agent hands to tools, so in a container where the
+    control process HOME (``/opt/data``) differs from the tool HOME (``{HERMES_HOME}/home``) a
+    plain ``expanduser`` pointed the prompt at a path no tool would ever read (#12260).
+    """
+    subprocess_home = get_subprocess_home()
+    if subprocess_home:
+        if value == "~":
+            return subprocess_home
+        if value.startswith(("~/", "~\\")):
+            return os.path.join(subprocess_home, value[2:])
+        value = _HOME_VAR_RE.sub(subprocess_home, value)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Map logical skill config keys to current values (or declared defaults);
-    path-like string values are ``~``/``${VAR}`` expanded."""
+    path-like string values are ``~``/``$HOME``/``${VAR}`` expanded against the tool HOME."""
     config = _load_raw_config()
     resolved: Dict[str, Any] = {}
     for var in config_vars:
         value = _resolve_dotpath(config, f"{SKILL_CONFIG_PREFIX}.{var['key']}")
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
-        if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+        if isinstance(value, str) and ("~" in value or "$" in value):
+            value = _expand_skill_config_path(value)
         resolved[var["key"]] = value
     return resolved
 

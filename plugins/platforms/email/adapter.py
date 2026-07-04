@@ -173,11 +173,19 @@ def check_email_requirements() -> bool:
 
 def _decode_header_value(raw: str) -> str:
     """Decode an RFC 2047 encoded email header into a plain string."""
-    parts = decode_header(raw)
+    try:
+        parts = decode_header(raw)
+    except Exception:  # noqa: BLE001 - malformed sender-controlled headers
+        logger.debug("[Email] Failed to decode RFC 2047 header; using raw value", exc_info=True)
+        return str(raw)
+
     decoded = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            try:
+                decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            except LookupError:
+                decoded.append(part.decode("utf-8", errors="replace"))
         else:
             decoded.append(part)
     return " ".join(decoded)

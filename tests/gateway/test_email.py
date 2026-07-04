@@ -102,6 +102,18 @@ class TestHelperFunctions(unittest.TestCase):
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
+    def test_decode_header_malformed_encoded_word_falls_back_raw(self):
+        from plugins.platforms.email.adapter import _decode_header_value
+
+        raw = "=?utf-8?B?a?="
+
+        self.assertEqual(_decode_header_value(raw), raw)
+
+    def test_decode_header_unknown_charset_uses_replacement(self):
+        from plugins.platforms.email.adapter import _decode_header_value
+
+        self.assertEqual(_decode_header_value("=?x-unknown?Q?hello?="), "hello")
+
     def test_extract_email_address_with_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
@@ -1145,6 +1157,37 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "john@test.com")
         self.assertEqual(results[0]["sender_name"], "John Doe")
+
+    def test_fetch_survives_malformed_encoded_subject(self):
+        """One malformed RFC 2047 header should not abort the IMAP batch."""
+        adapter = self._make_adapter()
+
+        raw_email = (
+            b"From: user@test.com\r\n"
+            b"Subject: =?utf-8?B?a?=\r\n"
+            b"Message-ID: <bad-subject@test.com>\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"Hello\r\n"
+        )
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email)])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["sender_addr"], "user@test.com")
+        self.assertEqual(results[0]["subject"], "=?utf-8?B?a?=")
 
 
 class TestPollLoop(unittest.TestCase):

@@ -304,7 +304,7 @@ def sanitize_tool_call_arguments(
                 continue
 
             try:
-                json.loads(arguments)
+                parsed = json.loads(arguments)
             except json.JSONDecodeError:
                 tool_call_id = tool_call.get("id")
                 function_name = function.get("name", "?")
@@ -345,6 +345,60 @@ def sanitize_tool_call_arguments(
                     _prepend_marker(existing_tool_msg)
 
                 repaired += 1
+            else:
+                # OpenAI-spec tool_call.arguments MUST be a JSON object.
+                # Some models (e.g. glm-5.2 on Volcengine Ark) occasionally
+                # emit a JSON array ("[{...}]") instead of an object.  Many
+                # OpenAI-compatible endpoints reject arrays with HTTP 400
+                # "InvalidParameter".  Unwrap a single-element array to its
+                # object; for multi-element or other non-dict types, fall
+                # back to "{}" so the request still succeeds.
+                if not isinstance(parsed, dict):
+                    tool_call_id = tool_call.get("id")
+                    function_name = function.get("name", "?")
+                    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                        function["arguments"] = json.dumps(parsed[0], ensure_ascii=False)
+                    else:
+                        function["arguments"] = "{}"
+
+                        # Same corruption-marker logic as the JSONDecodeError
+                        # path above: mark the corresponding tool result so the
+                        # model knows the arguments were repaired, and insert
+                        # a synthetic tool result if one is missing.
+                        existing_tool_msg = None
+                        scan_index = message_index + 1
+                        while scan_index < len(messages):
+                            candidate = messages[scan_index]
+                            if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                                break
+                            if candidate.get("tool_call_id") == tool_call_id:
+                                existing_tool_msg = candidate
+                                break
+                            scan_index += 1
+
+                        if existing_tool_msg is None:
+                            messages.insert(
+                                insert_at,
+                                make_tool_result_message(
+                                    function_name if function_name != "?" else "",
+                                    marker,
+                                    tool_call_id,
+                                ),
+                            )
+                            insert_at += 1
+                        else:
+                            _prepend_marker(existing_tool_msg)
+
+                    log.warning(
+                        "Tool_call arguments was a JSON %s, not object — "
+                        "repaired before request (session=%s, tool_call_id=%s, "
+                        "function=%s)",
+                        type(parsed).__name__,
+                        session_id or "-",
+                        tool_call_id or "-",
+                        function_name,
+                    )
+                    repaired += 1
 
         message_index += 1
 

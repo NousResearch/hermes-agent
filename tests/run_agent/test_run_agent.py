@@ -3870,6 +3870,108 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_api_sanitizer_repairs_array_arguments(self, agent):
+        """tool_call.function.arguments must be a JSON object per the OpenAI
+        Chat Completions spec.  Some models (e.g. glm-5.2 on Volcengine Ark)
+        occasionally emit a JSON array (``"[{...}]"``) instead of an object.
+        Many OpenAI-compatible endpoints reject arrays with HTTP 400
+        ``InvalidParameter``.  The sanitizer should unwrap a single-element
+        array to its object and fall back to ``"{}"`` for multi-element arrays
+        or other non-dict types — applying the same corruption-marker logic
+        as the existing JSONDecodeError path.
+        """
+        from agent.agent_runtime_helpers import sanitize_tool_call_arguments
+
+        _log = logging.getLogger(__name__)
+
+        # --- single-element array → unwrapped to object, no marker ---
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_unwrap",
+                        "type": "function",
+                        "function": {
+                            "name": "patch",
+                            "arguments": '[{"mode": "replace", "path": "f.txt"}]',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_unwrap", "content": "ok"},
+        ]
+        repaired = sanitize_tool_call_arguments(messages, logger=_log, session_id="test")
+        assert repaired == 1
+        args = json.loads(messages[0]["tool_calls"][0]["function"]["arguments"])
+        assert args == {"mode": "replace", "path": "f.txt"}
+        assert "corrupted" not in messages[1]["content"]
+
+        # --- multi-element array → "{}", marker on existing tool result ---
+        messages2 = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_multi",
+                        "type": "function",
+                        "function": {
+                            "name": "patch",
+                            "arguments": '[{"a": 1}, {"b": 2}]',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_multi", "content": "original"},
+        ]
+        repaired2 = sanitize_tool_call_arguments(messages2, logger=_log, session_id="test")
+        assert repaired2 == 1
+        assert messages2[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert "corrupted" in messages2[1]["content"]
+        assert "original" in messages2[1]["content"]
+
+        # --- non-dict (number) → "{}", synthetic tool result inserted ---
+        messages3 = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_num",
+                        "type": "function",
+                        "function": {"name": "calc", "arguments": "42"},
+                    }
+                ],
+            },
+        ]
+        repaired3 = sanitize_tool_call_arguments(messages3, logger=_log, session_id="test")
+        assert repaired3 == 1
+        assert messages3[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert len(messages3) == 2
+        assert messages3[1]["role"] == "tool"
+        assert messages3[1]["tool_call_id"] == "call_num"
+        assert "corrupted" in messages3[1]["content"]
+
+        # --- valid object → unchanged ---
+        messages4 = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ok",
+                        "type": "function",
+                        "function": {"name": "patch", "arguments": '{"key": "value"}'},
+                    }
+                ],
+            },
+        ]
+        repaired4 = sanitize_tool_call_arguments(messages4, logger=_log, session_id="test")
+        assert repaired4 == 0
+        assert messages4[0]["tool_calls"][0]["function"]["arguments"] == '{"key": "value"}'
+
     def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
         """A tool_call with id but empty function.name makes the Responses-API
         adapter drop the function_call while keeping its function_call_output,

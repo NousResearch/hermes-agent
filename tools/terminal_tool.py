@@ -1215,6 +1215,15 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
+# Backends whose file paths are POSIX/remote — resolved inside the sandbox or on
+# the remote host, never against the local (possibly Windows) filesystem — so
+# file_tools must skip host-side ``Path.resolve()`` for them. SSH is included
+# here (an SSH remote is POSIX) but is deliberately NOT added to
+# ``_CONTAINER_BACKENDS``: unlike a container sandbox, an SSH remote's
+# ``/home/<user>`` working directory is valid and must not be discarded by the
+# unusable-container-cwd guards that key off ``_CONTAINER_BACKENDS``.
+_POSIX_PATH_BACKENDS = _CONTAINER_BACKENDS | frozenset({"ssh"})
+
 
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """Return True if *cwd* is a host/relative path that won't work as the

@@ -26,7 +26,7 @@ function Harness() {
     hydrateFromStoredSession: vi.fn(async () => undefined),
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
-    refreshSessions: vi.fn(async () => undefined),
+    scheduleSessionsRefresh: vi.fn(),
     sessionStateByRuntimeIdRef,
     updateSessionState: (sessionId, updater) => {
       const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()

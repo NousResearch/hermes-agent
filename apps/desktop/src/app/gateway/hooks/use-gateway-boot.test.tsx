@@ -104,11 +104,16 @@ function fakeDesktop() {
   }
 }
 
-function Harness() {
+function Harness({
+  reconcileBusySessions
+}: {
+  reconcileBusySessions?: (gateway: unknown, profile: string) => Promise<void>
+} = {}) {
   useGatewayBoot({
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
+    reconcileBusySessions,
     refreshHermesConfig: async () => undefined,
     refreshSessions: async () => undefined
   })
@@ -262,6 +267,120 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // The remote comes back: next reconnect attempt opens.
     FakeWebSocket.mode = 'open'
     await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('runs the busy-state reconciliation after a successful reconnect', async () => {
+    const reconcile = vi.fn(async (_gateway: unknown, _profile: string) => undefined)
+    render(<Harness reconcileBusySessions={reconcile} />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    // The initial boot is not a reconnect — nothing to reconcile yet.
+    expect(reconcile).not.toHaveBeenCalled()
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await flushAsync()
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(reconcile.mock.calls[0][1]).toBe('default')
+  })
+})
+
+describe('useGatewayBoot dead-at-launch boot retry (B2)', () => {
+  it('retries a transport-failed boot on backoff until the backend comes back', async () => {
+    // Backend unreachable at launch: getConnection rejects with the
+    // waitForHermes timeout twice, then the tunnel comes up.
+    const desktop = fakeDesktop()
+    const realGetConnection = desktop.getConnection
+    let failures = 2
+    desktop.getConnection = vi.fn(async () => {
+      if (failures > 0) {
+        failures -= 1
+        throw new Error('Hermes backend did not become ready: Timed out connecting to Hermes backend after 15000ms')
+      }
+
+      return realGetConnection()
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // First boot failed → failure overlay up, retry scheduled.
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    // First retry (~5s + jitter) also fails.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000)
+    })
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    // Second retry (~15s + jitter) succeeds → boot completes, error clears.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    expect(desktop.getConnection.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('latches a genuine auth failure: no automatic retry, sign-in stays required', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.')
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    // Minutes pass: a transport failure would have retried many times by now.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+    })
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    // Wake/online nudges must not thrash the latched auth failure either.
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('a wake/online nudge retries a transport-failed boot immediately', async () => {
+    const desktop = fakeDesktop()
+    const realGetConnection = desktop.getConnection
+    let failures = 1
+    desktop.getConnection = vi.fn(async () => {
+      if (failures > 0) {
+        failures -= 1
+        throw new Error('Timed out connecting to Hermes backend after 15000ms')
+      }
+
+      return realGetConnection()
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    // Network comes back well before the 5s backoff timer would fire.
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await flushAsync()
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()

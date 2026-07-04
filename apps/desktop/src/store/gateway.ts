@@ -27,6 +27,9 @@ export const $gateway = atom<HermesGateway | null>(null)
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
+  /** A secondary's socket came back after a drop. Lets the owner reconcile
+   *  per-session busy state whose terminal events died with the old socket. */
+  onReconnected?: (profile: string, gateway: HermesGateway) => void
 }
 
 let config: RegistryConfig | null = null
@@ -139,6 +142,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
+    config?.onReconnected?.(entry.profile, entry.gateway)
   } catch {
     // Transport failure → fall through to the backoff below.
   } finally {

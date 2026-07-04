@@ -2384,8 +2384,10 @@ class BasePlatformAdapter(ABC):
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
         #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
-        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
-        #     the global default is False.
+        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires for
+        #     Telegram voice-message input even when the global default is False.
+        #   - ``_auto_tts_all_chats``: chat explicitly opted in via ``/voice tts``
+        #     (mode is ``all``). Fires for any input type, including dictated text.
         #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
         #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
         #     global default is True.
@@ -2394,6 +2396,7 @@ class BasePlatformAdapter(ABC):
         #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
+        self._auto_tts_all_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
@@ -4949,55 +4952,60 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
-                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                # Auto-TTS: generate audio FIRST (before sending text).
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
-                # True globally and no ``/voice off`` has been issued.
+                # True globally and no ``/voice off`` has been issued. ``/voice tts``
+                # additionally speaks typed/dictated text replies; ``/voice on`` stays
+                # voice-message-only.
                 _tts_path = None
+                _auto_tts_any_input = event.source.chat_id in getattr(self, "_auto_tts_all_chats", set())
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
+                        and (event.message_type == MessageType.VOICE or _auto_tts_any_input)
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements, _convert_to_opus
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
+                            # Auto-TTS must speak the same final text payload that
+                            # is sent to the chat. No summaries, no alternate draft,
+                            # no markdown-stripping rewrite, no gateway-side truncation.
+                            speech_text = text_content
                             if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
+                                raise ValueError("Empty text for TTS")
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
+                            # Telegram's Bot API renders .ogg/.opus via sendVoice
+                            # (proper voice bubble). .mp3/.m4a goes through sendAudio,
+                            # which Telegram treats like a playlist and auto-continues
+                            # into prior tracks. Force auto-TTS replies to Opus here
+                            # instead of relying on session-env detection inside the
+                            # TTS tool's background thread.
+                            if (
+                                self.platform == Platform.TELEGRAM
+                                and _tts_path
+                                and not str(_tts_path).lower().endswith((".ogg", ".opus"))
+                            ):
+                                _original_tts_path = _tts_path
+                                _opus_path = await asyncio.to_thread(_convert_to_opus, _tts_path)
+                                if _opus_path:
+                                    _tts_path = _opus_path
+                                    try:
+                                        os.remove(_original_tts_path)
+                                    except OSError:
+                                        pass
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
-                # Play TTS audio before text (voice-first experience)
+                # Defer TTS until after text delivery so Telegram shows the play
+                # button below the readable reply. Do not use Telegram captions here:
+                # captions place the audio control above the text, which is bad for
+                # hands-busy/driving use.
                 _tts_caption_delivered = False
-                if _tts_path and Path(_tts_path).exists():
-                    try:
-                        telegram_tts_caption = None
-                        if (
-                            self.platform == Platform.TELEGRAM
-                            and text_content
-                            and text_content[:1024] == text_content
-                        ):
-                            telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
-                            metadata=_final_thread_metadata,
-                        )
-                        _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
-                        )
-                    finally:
-                        try:
-                            os.remove(_tts_path)
-                        except OSError:
-                            pass
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
@@ -5025,6 +5033,22 @@ class BasePlatformAdapter(ABC):
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
+
+                # Send TTS audio after text, as a separate voice/audio bubble.
+                if _tts_path and Path(_tts_path).exists():
+                    try:
+                        tts_result = await self.play_tts(
+                            chat_id=event.source.chat_id,
+                            audio_path=_tts_path,
+                            caption=None,
+                            metadata=_final_thread_metadata,
+                        )
+                        _record_delivery(tts_result)
+                    finally:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()

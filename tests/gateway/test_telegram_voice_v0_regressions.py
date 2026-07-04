@@ -99,6 +99,7 @@ async def test_voice_tts_is_explicit_audio_reply_opt_in():
     adapter = SimpleNamespace(
         _auto_tts_disabled_chats=set(),
         _auto_tts_enabled_chats=set(),
+        _auto_tts_all_chats=set(),
     )
     runner = _runner(adapter)
     runner._voice_mode = {}
@@ -114,4 +115,5 @@ async def test_voice_tts_is_explicit_audio_reply_opt_in():
 
     assert runner._voice_mode["telegram:12345"] == "all"
     assert "12345" in adapter._auto_tts_enabled_chats
+    assert "12345" in adapter._auto_tts_all_chats
     assert result

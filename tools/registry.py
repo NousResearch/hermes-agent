@@ -16,6 +16,7 @@ Import chain (circular-import safe):
 
 import ast
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -571,10 +572,41 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _filter_kwargs_for_handler(handler: Callable, kwargs: dict) -> dict:
+        """Pass only kwargs the handler accepts.
+
+        Lets a handler declare ``def handler(args)`` instead of
+        ``def handler(args, **kw)`` and still be dispatched safely. The
+        bundled tool/plugin handlers all accept ``**kw``; this only
+        affects third-party plugins where authors wrote the natural
+        signature without knowing the dispatcher injects ``task_id`` /
+        ``user_task`` / ``parent_agent`` etc.
+        """
+        try:
+            sig = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return kwargs
+        params = sig.parameters.values()
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return kwargs
+        accepted = {
+            n for n, p in sig.parameters.items()
+            if p.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        }
+        return {k: v for k, v in kwargs.items() if k in accepted}
+
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
+        * Handler receives only the kwargs its signature accepts (see
+          ``_filter_kwargs_for_handler``); plugin handlers that omit
+          ``**kw`` no longer raise ``TypeError`` on injected context
+          kwargs like ``task_id``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
@@ -582,10 +614,11 @@ class ToolRegistry:
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
+            passed = self._filter_kwargs_for_handler(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                return _run_async(entry.handler(args, **passed))
+            return entry.handler(args, **passed)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             # Route through the sanitizer so framing tokens / CDATA / fences

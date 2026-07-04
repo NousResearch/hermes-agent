@@ -47,6 +47,49 @@ class TestRegisterAndDispatch:
         result = json.loads(reg.dispatch("echo", {"msg": "hi"}))
         assert result == {"msg": "hi"}
 
+    def test_dispatch_tolerates_handler_without_kwargs(self):
+        """A handler declared as ``def handler(args)`` must not raise
+        ``TypeError`` when the dispatcher injects kwargs like
+        ``task_id`` / ``user_task``. Plugin authors who omit ``**kw``
+        get the natural behavior instead of an error.
+        """
+        reg = ToolRegistry()
+
+        def naive_handler(args):
+            return json.dumps({"got": args})
+
+        reg.register(
+            name="naive",
+            toolset="core",
+            schema=_make_schema("naive"),
+            handler=naive_handler,
+        )
+        result = json.loads(
+            reg.dispatch("naive", {"x": 1}, task_id="t1", user_task="u1")
+        )
+        assert result == {"got": {"x": 1}}
+
+    def test_dispatch_passes_named_kwargs_when_handler_accepts_them(self):
+        """When a handler explicitly names a context kwarg (e.g.
+        ``task_id``), the dispatcher must still pass it through after
+        filtering — only unknown kwargs are dropped.
+        """
+        reg = ToolRegistry()
+
+        def named_handler(args, task_id=None):
+            return json.dumps({"task_id": task_id})
+
+        reg.register(
+            name="named",
+            toolset="core",
+            schema=_make_schema("named"),
+            handler=named_handler,
+        )
+        result = json.loads(
+            reg.dispatch("named", {}, task_id="t42", user_task="ignored")
+        )
+        assert result == {"task_id": "t42"}
+
 
 class TestGetDefinitions:
     def test_returns_openai_format(self):

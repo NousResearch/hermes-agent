@@ -1039,6 +1039,92 @@ class TestRuntimeAllowlistEnforcement:
 
 
 # ---------------------------------------------------------------------------
+# Runtime target allowlist enforcement
+# ---------------------------------------------------------------------------
+
+class TestRuntimeTargetAllowlist:
+    @patch("tools.discord_tool._discord_request")
+    def test_channel_read_outside_allowed_channels_is_blocked(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "11")
+        monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        result = json.loads(discord_core(action="fetch_messages", channel_id="99"))
+
+        assert "error" in result
+        assert "DISCORD_ALLOWED_CHANNELS" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_channel_read_inside_allowed_channels_proceeds(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "11")
+        monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = []
+
+        result = json.loads(discord_core(action="fetch_messages", channel_id="11"))
+
+        assert result == {"messages": [], "count": 0}
+        mock_req.assert_called_once()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_ignored_channel_blocks_even_if_allowed(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "11")
+        monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "11")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        result = json.loads(discord_admin_handler(action="channel_info", channel_id="11"))
+
+        assert "error" in result
+        assert "DISCORD_IGNORED_CHANNELS" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_guild_wide_read_requires_wildcard_when_channels_are_scoped(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "11")
+        monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        result = json.loads(discord_admin_handler(action="list_channels", guild_id="111"))
+
+        assert "error" in result
+        assert "guild-wide Discord metadata" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_guild_wide_read_proceeds_with_wildcard_channel_allowlist(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+        monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = []
+
+        result = json.loads(discord_admin_handler(action="list_channels", guild_id="111"))
+
+        assert result == {"channel_groups": [], "total_channels": 0}
+        mock_req.assert_called_once_with("GET", "/guilds/111/channels", "tok")
+
+
+# ---------------------------------------------------------------------------
 # 403 enrichment
 # ---------------------------------------------------------------------------
 

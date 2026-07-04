@@ -536,6 +536,66 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
 
+_CHANNEL_TARGETED_ACTIONS = frozenset({
+    "channel_info",
+    "fetch_messages",
+    "list_pins",
+    "pin_message",
+    "unpin_message",
+    "delete_message",
+    "create_thread",
+})
+
+_GUILD_WIDE_READ_ACTIONS = frozenset({
+    "list_guilds",
+    "server_info",
+    "list_channels",
+    "list_roles",
+    "member_info",
+    "search_members",
+})
+
+
+def _configured_allowed_channels() -> Optional[set[str]]:
+    raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
+    if not raw:
+        return None
+    allowed = {part.strip() for part in raw.split(",") if part.strip()}
+    return allowed or None
+
+
+def _configured_ignored_channels() -> set[str]:
+    raw = os.getenv("DISCORD_IGNORED_CHANNELS", "").strip()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _authorize_target(action: str, *, channel_id: str = "") -> Optional[str]:
+    """Return an error string when Discord tool target policy denies a call."""
+    allowed_channels = _configured_allowed_channels()
+    ignored_channels = _configured_ignored_channels()
+    channel = str(channel_id or "").strip()
+
+    if action in _CHANNEL_TARGETED_ACTIONS and channel:
+        if "*" in ignored_channels or channel in ignored_channels:
+            return (
+                f"Discord channel {channel} is blocked by DISCORD_IGNORED_CHANNELS; "
+                "not calling the Discord API."
+            )
+        if allowed_channels is not None and "*" not in allowed_channels and channel not in allowed_channels:
+            return (
+                f"Discord channel {channel} is outside DISCORD_ALLOWED_CHANNELS; "
+                "not calling the Discord API."
+            )
+
+    if action in _GUILD_WIDE_READ_ACTIONS and allowed_channels is not None and "*" not in allowed_channels:
+        return (
+            f"Action '{action}' reads guild-wide Discord metadata, but "
+            "DISCORD_ALLOWED_CHANNELS is scoped to specific channels. "
+            "Set DISCORD_ALLOWED_CHANNELS=* or disable the channel allowlist to allow this read."
+        )
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Config-based action allowlist
@@ -879,6 +939,10 @@ def _run_discord_action(
         return json.dumps({
             "error": f"Missing required parameters for '{action}': {', '.join(missing)}",
         })
+
+    target_error = _authorize_target(action, channel_id=channel_id)
+    if target_error:
+        return json.dumps({"error": target_error})
 
     try:
         return action_fn(

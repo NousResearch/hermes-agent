@@ -39,11 +39,16 @@ DEFAULT_ADAPTERS = {
     "gemini": {"cmd": ["gemini","-p","{prompt}","-m","gemini-2.5-flash","--skip-trust","--approval-mode","yolo","--output-format","text"], "run_in_cwd": True},
     "ollama": {"cmd": ["ollama","run","{model}","{prompt}"], "run_in_cwd": True},
     "codex":  {"cmd": ["codex","exec","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
-    # สมองพิเศษ (brain) · เฉพาะงานเกรด "ยาก" หรือบันไดส่งต่อขึ้น · ห้ามเข้าสายสำรองของ coder
-    "fable":  {"cmd": ["claude","--model","claude-fable-5","-p","{prompt}"], "run_in_cwd": True, "brain": True},
+    # สมองพิเศษ (brain · premium) · เฉพาะงานเกรด "ยาก" หรือบันไดส่งต่อขึ้น · ห้ามเข้าสายสำรองของ coder
+    # premium=True = ตัวแพงสุด มีเพดานเรียกแยก · โดน limit/พัง → ตกไปสมองสำรอง (opus) อัตโนมัติ
+    "fable":  {"cmd": ["claude","--model","claude-fable-5","-p","{prompt}"], "run_in_cwd": True, "brain": True, "premium": True},
+    # สมองสำรอง (brain) · รับช่วงเมื่อ fable โดน limit หรือเรียกไม่ได้ · ทำงานร่วมกับ coder เหมือนเดิม
+    "opus":   {"cmd": ["claude","--model","claude-opus-4-8","-p","{prompt}"], "run_in_cwd": True, "brain": True},
 }
 DEFAULT_ACCOUNTS = {
-    "fallback": {"code_writing": ["grok","codex","gemini","ollama"]},
+    "fallback": {"code_writing": ["grok","codex","gemini","ollama"],
+                 # สายสมอง: fable โดน limit/พัง → opus 4.8 อัตโนมัติ (แก้ทีเดียวใช้ทุกเครื่อง)
+                 "brain": ["opus"]},
     "limits": {"max_rounds_per_issue": 3, "max_calls_per_session": 50,
                "max_fable_calls_per_session": 3, "session_hours": 12, "budget": None},
     "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
@@ -351,14 +356,13 @@ def main():
                "calls_used":calls,"ledger_written":False}
         print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
 
-    # เพดานแยกของสมองพิเศษ (fable แพงสุด · นับต่างหาก · เกิน = หยุดทันที)
-    if is_brain:
+    # เพดานแยกของสมองพิเศษ (fable แพงสุด · นับต่างหาก) · เกินเพดาน = ไม่หยุด แต่สลับไปสมองสำรอง (opus) อัตโนมัติ
+    is_premium = bool(adapters.get(a.tool, {}).get("premium"))
+    premium_over_cap = False
+    if is_premium:
         fable_calls = bump_counter(cwd, ".session-fable-calls", session_hours=session_hours)
         if limits.get("max_fable_calls_per_session") and fable_calls > limits["max_fable_calls_per_session"]:
-            out = {"status":"limit_exceeded","tool":a.tool,
-                   "reason_human":f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) ให้กลับไปใช้สมองหลัก หรือถามเจ้าของก่อน",
-                   "fable_calls_used":fable_calls,"calls_used":calls,"ledger_written":False}
-            print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
+            premium_over_cap = True  # เกินเพดาน fable → ตัดออกจากสาย ใช้ opus แทน
 
     # เพดานรอบแก้ต่อ issue (นับข้ามทุก coder · ไม่รีเซ็ตตอนสลับ) · สมองพิเศษไม่กินรอบ coder
     safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", a.task_id)
@@ -371,9 +375,23 @@ def main():
                    "rounds_used":rounds,"calls_used":calls,"ledger_written":False}
             print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
 
-    # สายลำดับ: สมองพิเศษยืนเดี่ยว (พัง = รายงานกลับ ไม่ไหลลง coder) · coder มีสายสำรอง
+    # สายลำดับ:
+    #  - สมอง (brain): fable → สมองสำรอง (opus) · พัง/ชนเพดาน = ตกไป opus ไม่ไหลลง coder
+    #  - coder: มีสายสำรองของ coder เหมือนเดิม
+    prerotated = ""
     if is_brain:
-        chain = [a.tool]
+        brain_fallback = [t for t in (accounts.get("fallback", {}).get("brain") or ["opus"]) if t != a.tool]
+        chain = [a.tool] + brain_fallback
+        chain = [t for t in chain if t in adapters and adapters[t].get("brain")]
+        if premium_over_cap:
+            # fable เกินเพดาน → เอา premium ออกจากสาย เหลือแต่สมองสำรอง (opus)
+            chain = [t for t in chain if not adapters[t].get("premium")]
+            prerotated = a.tool
+            if not chain:
+                out = {"status":"limit_exceeded","tool":a.tool,
+                       "reason_human":f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) และไม่มีสมองสำรอง (opus) ตั้งไว้ · เพิ่ม opus ใน adapters หรือถามเจ้าของ",
+                       "calls_used":calls,"ledger_written":False}
+                print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
     else:
         chain = [a.tool] + [t for t in accounts.get("fallback",{}).get("code_writing",[]) if t != a.tool]
         chain = [t for t in chain if t in adapters and not adapters[t].get("brain")]
@@ -393,7 +411,10 @@ def main():
             "issue_id":a.task_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
             "status":st,"calls_used":calls,"output_ref":output_ref})
 
-    rotated_from = ""
+    rotated_from = prerotated
+    if prerotated:
+        # จดว่า fable ถูก "ข้ามเพราะเกินเพดาน" (ไม่ใช่เรียกจริง) แล้วสลับไปสมองสำรอง · relay-report ไม่นับเป็นการเรียก
+        attempt_row(prerotated, "skipped_by_cap", "")
     for tool in chain:
         # ด่านบัญชีโปรแกรมอนุญาต: กันไฟล์ adapters.yaml ใน worktree ถูกแก้ให้รันคำสั่งอันตราย
         bin_name = Path(str((adapters[tool].get("cmd") or ["?"])[0])).name
@@ -427,6 +448,10 @@ def main():
             rotated_from = tool
             continue   # สลับตัวถัดไปในสาย
         if st == "auth":
+            # สมอง (brain) ตัวหน้าล็อกอินหลุด + ยังมีสมองสำรองในสาย → สลับไปตัวถัดไป (fable หลุด → opus)
+            if is_brain and tool != chain[-1]:
+                rotated_from = tool
+                continue
             relay_now("clear")
             print(json.dumps({"status":"auth","tool":tool,"reason_human":REASON["auth"],
                 "hint":f"ล็อกอินใหม่: {tool} login","tried":tried,"ledger_written":True}, ensure_ascii=False)); sys.exit(20)

@@ -59,4 +59,16 @@ tools:
       - "{prompt}"
     run_in_cwd: true
     brain: true
-    note: "สมองพิเศษ แพงสุด เรียกเฉพาะงานเกรดยาก (catalog หมวด 6) หรือแก้ไม่ผ่าน 2 รอบ · ห้ามให้เขียนโค้ด · เพดานเรียกอยู่ใน accounts.yaml"
+    premium: true
+    note: "สมองพิเศษ แพงสุด เรียกเฉพาะงานเกรดยาก (catalog หมวด 6) หรือแก้ไม่ผ่าน 2 รอบ · ห้ามให้เขียนโค้ด · เพดานเรียกอยู่ใน accounts.yaml · โดน limit/พัง → ตกไป opus อัตโนมัติ"
+
+  opus:
+    cmd:
+      - claude
+      - --model
+      - claude-opus-4-8
+      - -p
+      - "{prompt}"
+    run_in_cwd: true
+    brain: true
+    note: "สมองสำรอง รับช่วงจาก fable เมื่อ fable โดน limit หรือเรียกไม่ได้ · ยังทำงานร่วมกับ coder (grok/codex/gemini) ได้เหมือนเดิม"

@@ -12,6 +12,8 @@ accounts:
     - id: gemini-google-staff
   fable:
     - id: claude-staff
+  opus:
+    - id: claude-staff
 
 fallback:
   code_writing:
@@ -20,6 +22,9 @@ fallback:
     - gemini
     - ollama
   # ห้ามใส่ fable ในสายนี้ · fable เป็นสมองพิเศษ (เฉพาะงานเกรดยาก) ไม่ใช่ coder สำรอง
+  brain:
+    # สายสมอง: fable โดน limit หรือเรียกไม่ได้ → ตกไป opus 4.8 อัตโนมัติ (ใช้เงื่อนไขนี้ทุกเครื่อง)
+    - opus
 
 limits:
   max_rounds_per_issue: 3

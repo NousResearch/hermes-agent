@@ -56,14 +56,22 @@ def main():
         sys.exit(2)
 
     # จัดกลุ่ม วัน × tool
-    days = defaultdict(lambda: defaultdict(lambda: {"calls": 0, "ok": 0, "fail": 0, "rotated": 0}))
-    fable_total = 0
+    days = defaultdict(lambda: defaultdict(lambda: {"calls": 0, "ok": 0, "fail": 0, "rotated": 0, "skipped": 0}))
+    fable_total = 0          # เฉพาะ fable ที่ "เรียกจริง" (ไม่นับที่ถูกข้ามเพราะเกินเพดาน)
+    fable_skipped_total = 0   # fable ที่ถูกข้ามไป opus เพราะชนเพดาน
     for r in call_rows:
         day = (r.get("timestamp") or "")[:10] or "ไม่ทราบวัน"
         tool = r.get("tool") or "?"
+        status = (r.get("status") or "").strip()
         e = days[day][tool]
+        if status == "skipped_by_cap":
+            # ไม่ใช่การเรียกจริง · แค่บันทึกว่าโดนเพดานแล้วสลับไปสมองสำรอง
+            e["skipped"] += 1
+            if tool == "fable":
+                fable_skipped_total += 1
+            continue
         e["calls"] += 1
-        if (r.get("status") or "") == "ok":
+        if status == "ok":
             e["ok"] += 1
         else:
             e["fail"] += 1
@@ -90,7 +98,8 @@ def main():
 
     print(f"═══ AI Relay · สรุปการใช้งานจาก ledger จริง ═══")
     print(f"โปรเจกต์: {cwd}")
-    print(f"สมองพิเศษ (fable) ถูกเรียกทั้งหมด: {fable_total} ครั้ง")
+    print(f"สมองพิเศษ (fable) ถูกเรียกจริงทั้งหมด: {fable_total} ครั้ง"
+          + (f" · ถูกข้ามไป opus เพราะชนเพดาน: {fable_skipped_total} ครั้ง" if fable_skipped_total else ""))
     no_gate_total = sum(g.get("no_gate", 0) for g in gates.values())
     gate_err_total = sum(g.get("error", 0) for g in gates.values())
     if no_gate_total or gate_err_total:

@@ -5,6 +5,9 @@ venv
 *.pyc*
 __pycache__/
 .venv/
+.venv-ears/
+scripts/jarvis-voice/.venv-ears/
+scripts/jarvis-voice/models/
 .vscode/
 .qwen/
 outputs/

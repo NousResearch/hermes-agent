@@ -151,7 +151,7 @@ class TestNonLocalBackendConfinement:
         assert res.origin == "container"
         assert res.data == PNG
         assert b"HOST-PRIVATE-KEY" not in res.data
-        assert "base64 --" in calls["cmd"]  # option-injection-safe form
+        assert "head -c" in calls["cmd"] and "< " in calls["cmd"]  # bounded, redirect-safe form
 
     @pytest.mark.asyncio
     async def test_non_cache_path_fails_closed_without_sandbox(self, tmp_path, monkeypatch):
@@ -192,8 +192,9 @@ class TestNonLocalBackendConfinement:
 
 class TestExecReadSafety:
     @pytest.mark.asyncio
-    async def test_exec_read_uses_option_terminator(self, tmp_path, monkeypatch):
-        """Leading-dash paths must not be parsed as base64 options."""
+    async def test_exec_read_is_bounded_and_redirect_safe(self, tmp_path, monkeypatch):
+        """Leading-dash paths go through an input redirect (no argv exposure)
+        and the read is size-bounded via head -c."""
         home = tmp_path / "hermes"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
@@ -207,7 +208,26 @@ class TestExecReadSafety:
                    return_value=SimpleNamespace(execute=fake_execute)):
             await isrc.resolve_image_source(
                 "/workspace/-i-etc-shadow.png", isrc.ResolveContext(task_id="t1"))
-        assert "base64 -- " in captured["cmd"]
+        assert f"head -c {isrc._MAX_INGEST_BYTES + 1} < " in captured["cmd"]
+        assert "'-i-etc-shadow.png'" in captured["cmd"] or "-i-etc-shadow.png" in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_exec_read_over_cap_rejected(self, tmp_path, monkeypatch):
+        """A sandbox file larger than the ingest cap is rejected, not embedded."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        # head -c returns cap+1 bytes for an oversized file.
+        over = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * (isrc._MAX_INGEST_BYTES - 7)).decode()
+
+        def fake_execute(cmd, **kw):
+            return {"returncode": 0, "output": over}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            with pytest.raises(isrc.SourceTooLarge):
+                await isrc.resolve_image_source(
+                    "/workspace/huge.png", isrc.ResolveContext(task_id="t1"))
 
     @pytest.mark.asyncio
     async def test_exec_read_nonzero_returncode_raises(self, tmp_path, monkeypatch):

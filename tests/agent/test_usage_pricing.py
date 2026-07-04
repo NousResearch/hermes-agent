@@ -40,7 +40,7 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
 
 
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
-    """Some OpenAI-compatible proxies (OpenRouter, Vercel AI Gateway, Cline) expose
+    """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when
     routing Claude models, instead of nesting them in prompt_tokens_details.
 
@@ -192,6 +192,32 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     assert float(entry.output_cost_per_million) == 2.0
 
 
+def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
+    seen = {}
+
+    def _fake_fetch_endpoint_model_metadata(base_url, api_key=None):
+        seen["base_url"] = base_url
+        return {
+            "openai/gpt-5.5-pro": {
+                "pricing": {
+                    "prompt": "0.000025",
+                    "completion": "0.000125",
+                }
+            }
+        }
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        _fake_fetch_endpoint_model_metadata,
+    )
+
+    entry = get_pricing_entry("openai/gpt-5.5-pro", provider="nous")
+
+    assert seen["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert float(entry.input_cost_per_million) == 25.0
+    assert float(entry.output_cost_per_million) == 125.0
+
+
 def test_deepseek_v4_pro_pricing_entry_exists():
     """Regression test: deepseek-v4-pro must have a pricing entry.
 
@@ -224,3 +250,75 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_bedrock_claude_rows_all_carry_cache_pricing():
+    """Invariant: every Bedrock Claude pricing row must carry cache-read AND
+    cache-write rates, otherwise a cached session prices as ``unknown``.
+
+    Bedrock Claude routes through the AnthropicBedrock SDK and injects
+    cache_control, so cached tokens are always reported — the pricing layer
+    must be able to value them.  See #50295.
+    """
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    claude_rows = [
+        (prov, model)
+        for (prov, model) in _OFFICIAL_DOCS_PRICING
+        if prov == "bedrock" and "claude" in model
+    ]
+    assert claude_rows, "expected at least one bedrock Claude pricing row"
+    for key in claude_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.input_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_write_cost_per_million is not None, key
+        # Cache reads are cheaper than fresh input; cache writes cost more.
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
+        assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
+
+
+def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
+    """Cross-region inference profiles (us./global./eu. prefixes) must resolve
+    to the same pricing entry as the bare foundation-model id.  Without prefix
+    normalization, ``us.anthropic.claude-*`` sessions price as unknown.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    bare = get_pricing_entry(
+        "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
+    )
+    assert bare is not None
+    for prefix in ("us.", "global.", "eu."):
+        scoped = get_pricing_entry(
+            f"{prefix}anthropic.claude-sonnet-4-5",
+            provider="bedrock",
+            base_url=bedrock_url,
+        )
+        assert scoped is not None, prefix
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+
+
+def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
+    """A Bedrock Claude session with cache hits must produce a dollar estimate,
+    not ``unknown`` — the user-visible symptom in #50295.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    usage = SimpleNamespace(
+        input_tokens=55,
+        output_tokens=7113,
+        cache_read_input_tokens=1369379,
+        cache_creation_input_tokens=42135,
+    )
+    canonical = normalize_usage(usage, provider="bedrock", api_mode="anthropic_messages")
+    assert canonical.cache_read_tokens == 1369379
+    assert canonical.cache_write_tokens == 42135
+
+    result = estimate_usage_cost(
+        "us.anthropic.claude-opus-4-6",
+        canonical,
+        provider="bedrock",
+        base_url=bedrock_url,
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None

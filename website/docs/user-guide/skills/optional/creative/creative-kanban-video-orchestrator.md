@@ -21,7 +21,7 @@ Plan, set up, and monitor a multi-agent video production pipeline backed by Herm
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `video`, `kanban`, `multi-agent`, `orchestration`, `production-pipeline` |
-| Related skills | [`kanban-orchestrator`](/user-guide/skills/bundled/devops/devops-kanban-orchestrator), [`kanban-worker`](/user-guide/skills/bundled/devops/devops-kanban-worker), [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video), [`p5js`](/user-guide/skills/bundled/creative/creative-p5js), [`comfyui`](/user-guide/skills/bundled/creative/creative-comfyui), [`touchdesigner-mcp`](/user-guide/skills/bundled/creative/creative-touchdesigner-mcp), [`blender-mcp`](/user-guide/skills/optional/creative/creative-blender-mcp), [`pixel-art`](/user-guide/skills/bundled/creative/creative-pixel-art), [`ascii-art`](/user-guide/skills/bundled/creative/creative-ascii-art), [`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music), [`heartmula`](/user-guide/skills/bundled/media/media-heartmula), [`songsee`](/user-guide/skills/bundled/media/media-songsee), [`spotify`](/user-guide/skills/bundled/media/media-spotify), [`youtube-content`](/user-guide/skills/bundled/media/media-youtube-content), [`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram), [`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams), [`baoyu-comic`](/user-guide/skills/bundled/creative/creative-baoyu-comic), [`baoyu-infographic`](/user-guide/skills/bundled/creative/creative-baoyu-infographic), [`humanizer`](/user-guide/skills/bundled/creative/creative-humanizer), [`gif-search`](/user-guide/skills/bundled/media/media-gif-search), [`meme-generation`](/user-guide/skills/optional/creative/creative-meme-generation) |
+| Related skills | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js), [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui), [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp), [`blender-mcp`](/docs/user-guide/skills/optional/creative/creative-blender-mcp), [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art), [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music), [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula), [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee), `spotify`, [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`concept-diagrams`](/docs/user-guide/skills/optional/creative/creative-concept-diagrams), [`baoyu-comic`](/docs/user-guide/skills/optional/creative/creative-baoyu-comic), [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic), [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer), [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search), [`meme-generation`](/docs/user-guide/skills/optional/creative/creative-meme-generation) |
 
 ## Reference: full SKILL.md
 
@@ -187,14 +187,14 @@ task graphs. See **[references/examples.md](https://github.com/NousResearch/herm
    file` toolset, the director's `SOUL.md` rules forbid it from executing
    work itself. It decomposes and routes only — every concrete task becomes
    a `hermes kanban create` call to a specialist profile. The
-   `kanban-orchestrator` skill spells this out further.
+   auto-injected kanban orchestration guidance spells this out further.
 
 7. **Don't over-decompose.** A 30-second product video does NOT need 20 tasks.
    Aim for the smallest task graph that still parallelizes well and exposes the
    right human-review gates.
 
 8. **Verify API keys BEFORE firing.** External APIs (TTS, image-gen,
-   image-to-video) need keys in `~/.hermes/.env` or the user's secret store.
+   image-to-video) need keys in `${HERMES_HOME:-~/.hermes}/.env` or the user's secret store.
    A worker that hits a missing-key error wastes a task slot. The setup
    script's `check_key` helper aborts cleanly if a required key is missing.
 

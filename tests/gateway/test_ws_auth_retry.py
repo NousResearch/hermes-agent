@@ -9,7 +9,6 @@ of stopping. These tests verify that auth errors now stop the reconnect.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +123,7 @@ class TestMatrixSyncAuthRetry:
 
         nio_mock.SyncError = SyncError
 
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
 
@@ -155,7 +154,7 @@ class TestMatrixSyncAuthRetry:
 
     def test_exception_with_401_stops_loop(self):
         """An exception containing '401' should stop syncing."""
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
 
@@ -190,7 +189,7 @@ class TestMatrixSyncAuthRetry:
 
     def test_transient_error_retries(self):
         """A transient error should retry (not stop immediately)."""
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
 

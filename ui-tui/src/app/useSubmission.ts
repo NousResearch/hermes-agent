@@ -1,28 +1,20 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { attachedImageNotice } from '../domain/messages.js'
-import { looksLikeSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  InputDetectDropResponse,
-  PromptSubmitResponse,
-  SessionSteerResponse,
-  ShellExecResponse
-} from '../gatewayTypes.js'
+import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
-const SESSION_BUSY_RE = /session busy|waiting for model response/i
-
-const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -88,62 +80,19 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
-        const sid = getUiState().sid
-
-        if (!sid) {
-          return sys('session not ready yet')
-        }
-
-        turnController.clearStatusTimer()
-        maybeGoodVibes(submitText)
-        setLastUserMsg(text)
-
-        if (showUserMessage) {
-          appendMessage({ role: 'user', text: displayText })
-        }
-
-        patchUiState({ busy: true, status: 'running…' })
-        turnController.bufRef = ''
-        turnController.interrupted = false
-
-        gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
-          if (isSessionBusyError(e)) {
-            composerActions.enqueue(submitText)
-            patchUiState({ busy: true, status: 'queued for next turn' })
-
-            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
-          }
-
-          sys(`error: ${e.message}`)
-          patchUiState({ busy: false, status: 'ready' })
-        })
-      }
-
-      const sid = getUiState().sid
-
-      if (!sid) {
-        return sys('session not ready yet')
-      }
-
-      // Always ask the backend whether this looks like a file drop.
-      // The backend's _detect_file_drop handles paths with spaces, quotes,
-      // Windows drive letters, and escaped characters correctly.
-      gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
-        .then(r => {
-          if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
-          }
-
-          if (r.is_image) {
-            turnController.pushActivity(attachedImageNotice(r))
-          } else {
-            turnController.pushActivity(`detected file: ${r.name}`)
-          }
-
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
-        })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+      submitPrompt(
+        text,
+        {
+          appendMessage,
+          enqueue: composerActions.enqueue,
+          expand,
+          gw,
+          maybeGoodVibes,
+          setLastUserMsg,
+          sys
+        },
+        showUserMessage
+      )
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
@@ -220,25 +169,28 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
-  //   - 'interrupt' (default): cancel the in-flight turn, then send the
-  //                   new text as a fresh prompt so it actually moves.
+  //   - 'interrupt' (default): queue the text + interrupt with `keepBusy`; the
+  //                   busy→false settle edge drains it once (desktop parity).
+  //                   No optimistic send → no duplicate bubble / race note.
   //
-  // `opts.fallbackToFront` controls whether a steer fallback re-inserts
-  // at the front of the queue (used by the queue-edit path to preserve
-  // a picked item's position); the mainline submit path always appends.
+  // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
+  // their position); the mainline submit path appends.
   const handleBusyInput = useCallback(
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
 
-      const fallback = (note: string) => {
+      const enqueueText = () => {
         if (opts.fallbackToFront) {
           composerRefs.queueRef.current.unshift(full)
           composerActions.syncQueue()
         } else {
           composerActions.enqueue(full)
         }
+      }
 
+      const fallback = (note: string) => {
+        enqueueText()
         sys(note)
       }
 
@@ -260,25 +212,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // 'interrupt' (default): tear down the current turn, then send.
-      // `interruptTurn` fires `session.interrupt` without awaiting; if
-      // the gateway is still mid-response when `prompt.submit` lands,
-      // `send()`'s catch path re-queues with a "queued: ..." sys note
-      // (`isSessionBusyError`) — so a lost race degrades to queue
-      // semantics, not a dropped message.
+      // 'interrupt': queue + interrupt(keepBusy); the settle edge drains it once.
+      enqueueText()
+
       if (live.sid) {
-        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
       }
-
-      if (hasInterpolation(full)) {
-        patchUiState({ busy: true })
-
-        return interpolate(full, send)
-      }
-
-      send(full)
     },
-    [appendMessage, composerActions, composerRefs, gw, interpolate, send, sys]
+    [appendMessage, composerActions, composerRefs, gw, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -362,14 +303,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
+        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next !== null) {
+          return composerActions.setInput(next)
         }
       }
 
@@ -380,7 +317,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
         lastEmptyAt.current = now
 
         if (doubleTap && live.busy && live.sid) {
-          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+          // Force-send: keep busy when a message is queued so the settle edge
+          // drains it once (no race). Empty queue = plain Stop → 'ready'.
+          const hasQueued = composerRefs.queueRef.current.length > 0
+
+          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: hasQueued })
         }
 
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {

@@ -75,6 +75,7 @@ def _termux_api_app_installed() -> bool:
             text=True,
             timeout=5,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         return "package:com.termux.api" in (result.stdout or "")
     except Exception:
@@ -83,6 +84,59 @@ def _termux_api_app_installed() -> bool:
 
 def _termux_voice_capture_available() -> bool:
     return _termux_microphone_command() is not None and _termux_api_app_installed()
+
+
+def _pulse_socket_reachable() -> bool:
+    """Return True if a PulseAudio/PipeWire socket is reachable on disk.
+
+    Covers the common case where a sound server runs locally (e.g. on a
+    remote SSH host) without ``PULSE_SERVER``/``PIPEWIRE_REMOTE`` being set --
+    the client just connects to the default socket under the runtime dir.
+    We look at ``PULSE_SERVER`` unix paths, ``PULSE_RUNTIME_PATH``, and
+    ``XDG_RUNTIME_DIR`` for a ``pulse/native`` or ``pipewire-0`` socket
+    (issue #35622).
+    """
+    import socket
+    import stat
+
+    candidates: List[str] = []
+
+    pulse_server = os.environ.get('PULSE_SERVER', '')
+    # PULSE_SERVER may be "unix:/path", "unix:/path;..." or a bare path.
+    for part in pulse_server.split(';'):
+        part = part.strip()
+        if part.startswith('unix:'):
+            candidates.append(part[len('unix:'):])
+
+    pulse_runtime = os.environ.get('PULSE_RUNTIME_PATH')
+    if pulse_runtime:
+        candidates.append(os.path.join(pulse_runtime, 'native'))
+
+    xdg_runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if xdg_runtime:
+        candidates.append(os.path.join(xdg_runtime, 'pulse', 'native'))
+        candidates.append(os.path.join(xdg_runtime, 'pipewire-0'))
+
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            if not stat.S_ISSOCK(os.stat(path).st_mode):
+                continue
+        except OSError:
+            continue
+        # Confirm the socket actually accepts a connection -- a stale socket
+        # file left by a dead server should not count as reachable.
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(0.5)
+            sock.connect(path)
+            return True
+        except OSError:
+            continue
+        finally:
+            sock.close()
+    return False
 
 
 def detect_audio_environment() -> dict:
@@ -97,15 +151,44 @@ def detect_audio_environment() -> dict:
     termux_mic_cmd = _termux_microphone_command()
     termux_app_installed = _termux_api_app_installed()
     termux_capture = bool(termux_mic_cmd and termux_app_installed)
+    has_forwarded_audio = bool(
+        os.environ.get('PULSE_SERVER')
+        or os.environ.get('PIPEWIRE_REMOTE')
+        or _pulse_socket_reachable()
+    )
 
-    # SSH detection
+    # SSH detection -- normally no audio devices, but honor a reachable
+    # sound server (PulseAudio/PipeWire socket or forwarding env vars), which
+    # works fine over SSH (issue #35622).
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
-        warnings.append("Running over SSH -- no audio devices available")
+        if has_forwarded_audio:
+            notices.append("Running over SSH with a reachable PulseAudio/PipeWire sound server")
+        else:
+            warnings.append(
+                "Running over SSH -- no audio devices available.\n"
+                "  If a sound server (PulseAudio/PipeWire) is running on this host,\n"
+                "  point Hermes at it, e.g.:\n"
+                "    export XDG_RUNTIME_DIR=/run/user/$(id -u)\n"
+                "    # or: export PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native"
+            )
 
-    # Docker/Podman container detection
+    # Docker/Podman container detection — honor host audio forwarding.
+    # When the user mounts a PulseAudio/PipeWire socket into the container
+    # and points PULSE_SERVER / PIPEWIRE_REMOTE at it, audio works fine
+    # (issue #21203).  Only block when no forwarding is configured.
     from hermes_constants import is_container
     if is_container():
-        warnings.append("Running inside Docker container -- no audio devices")
+        if has_forwarded_audio:
+            notices.append("Running inside container (Docker/Podman/LXC) with host audio forwarding")
+        else:
+            warnings.append(
+                "Running inside container (Docker/Podman/LXC) -- no audio devices.\n"
+                "  Forward host audio with one of (substitute $XDG_RUNTIME_DIR for your runtime dir,\n"
+                "  typically /run/user/$UID):\n"
+                "    PulseAudio:  -v $XDG_RUNTIME_DIR/pulse/native:$XDG_RUNTIME_DIR/pulse/native \\\n"
+                "                 -e PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native\n"
+                "    PipeWire:    -e PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0"
+            )
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
     # Only block if PULSE_SERVER is not configured.
@@ -130,17 +213,22 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                if os.environ.get('PULSE_SERVER'):
-                    notices.append("No PortAudio devices detected but PULSE_SERVER is set -- continuing")
+                if has_forwarded_audio:
+                    notices.append(
+                        "No PortAudio devices detected but host audio forwarding is configured -- continuing"
+                    )
                 elif termux_capture:
                     notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
                 else:
                     warnings.append("No audio input/output devices detected")
         except Exception:
             # In WSL with PulseAudio, device queries can fail even though
-            # recording/playback works fine. Don't block if PULSE_SERVER is set.
-            if os.environ.get('PULSE_SERVER'):
-                notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
+            # recording/playback works fine. Don't block if host audio
+            # forwarding is configured.
+            if has_forwarded_audio:
+                notices.append(
+                    "Audio device query failed but host audio forwarding is configured -- continuing"
+                )
             elif termux_capture:
                 notices.append("PortAudio device query failed, but Termux:API microphone capture is available")
             else:
@@ -301,7 +389,7 @@ class TermuxAudioRecorder:
             "-c", str(CHANNELS),
         ]
         try:
-            subprocess.run(command, capture_output=True, text=True, timeout=15, check=True)
+            subprocess.run(command, capture_output=True, text=True, timeout=15, check=True, stdin=subprocess.DEVNULL)
         except subprocess.CalledProcessError as e:
             details = (e.stderr or e.stdout or str(e)).strip()
             raise RuntimeError(f"Termux microphone start failed: {details}") from e
@@ -318,7 +406,7 @@ class TermuxAudioRecorder:
         mic_cmd = _termux_microphone_command()
         if not mic_cmd:
             return
-        subprocess.run([mic_cmd, "-q"], capture_output=True, text=True, timeout=15, check=False)
+        subprocess.run([mic_cmd, "-q"], capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
 
     def stop(self) -> Optional[str]:
         with self._lock:
@@ -1008,7 +1096,7 @@ def play_audio_file(file_path: str) -> bool:
         exe = shutil.which(cmd[0])
         if exe:
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
                 with _playback_lock:
                     _active_playback = proc
                 proc.wait(timeout=300)
@@ -1077,7 +1165,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (OpenAI)")
     else:
         details_parts.append(
-            "STT provider: MISSING (pip install faster-whisper, "
+            "STT provider: MISSING (uv pip install faster-whisper — "
+            "`pip install faster-whisper` also works if pip is on PATH, "
             "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
         )
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Runs website/scripts/extract-skills.py and generate-llms-txt.py before
 // docusaurus build/start so that:
-//   - website/src/data/skills.json (imported by src/pages/skills/index.tsx)
+//   - website/static/api/skills.json (lazy-fetched by src/pages/skills/index.tsx)
+//   - website/static/api/skills-meta.json (sidecar metadata for the Skills Hub)
 //   - website/static/llms.txt (agent-friendly short docs index)
 //   - website/static/llms-full.txt (full docs concat for LLM context)
 // all exist without contributors remembering to run Python scripts manually.
@@ -30,7 +31,8 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
-const outputFile = join(websiteDir, "src", "data", "skills.json");
+const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
+const outputFile = join(websiteDir, "static", "api", "skills.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
@@ -137,3 +139,7 @@ if (!existsSync(extractScript)) {
 
 // 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.
 runPython(llmsScript, "generate-llms-txt.py");
+
+// 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
+//    renders an empty state if the generator can't run.
+runPython(cronBlueprintsScript, "extract-automation-blueprints.py");

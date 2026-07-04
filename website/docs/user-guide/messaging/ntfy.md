@@ -4,6 +4,8 @@
 
 ntfy makes a great lightweight push channel for Hermes: subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), send messages to the topic to talk to the agent, get the response back on your phone.
 
+> Run `hermes gateway setup` and pick **ntfy** for a guided walk-through.
+
 ## Prerequisites
 
 - A topic name (any unique string — `hermes-myname-2026` works fine)
@@ -17,7 +19,7 @@ That's it. No SDK, no daemon, no Node.js. The adapter uses `httpx` which is alre
 ### Via setup wizard
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
 Select **ntfy** and follow the prompts.
@@ -83,10 +85,10 @@ cronjob(
 )
 ```
 
-Or target a specific topic explicitly:
+Or target a specific topic explicitly via the cron job's `deliver:` field, or from a shell script with the [`hermes send` CLI](/guides/pipe-script-output):
 
-```python
-send_message(target="ntfy:alerts-channel", message="Done!")
+```bash
+hermes send ntfy:alerts-channel "Done!"
 ```
 
 This works even when the cron runs out-of-process from the gateway — the plugin registers a `standalone_sender_fn` that opens its own HTTP connection.

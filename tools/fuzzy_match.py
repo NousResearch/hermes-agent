@@ -6,7 +6,7 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
@@ -113,8 +113,41 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # old_string/new_string — e.g. LLM used 2-space indent but the
             # file is 4-space. Shift new_string by the indentation delta so
             # the replacement matches the file's actual indent pattern.
+            # LLMs frequently serialize tabs / carriage returns in JSON
+            # tool-call arguments as the two-character sequences ``\t`` and
+            # ``\r`` (backslash + letter) instead of the real control bytes.
+            # If we write new_string verbatim, the file ends up with literal
+            # backslash sequences where the surrounding code uses real tabs.
+            #
+            # Strategy: only unescape when the matched region of the file
+            # *actually contains* the corresponding real control character.
+            # That mirrors the region-based heuristic in
+            # ``_detect_escape_drift`` and keeps legitimate writes of the
+            # literal two-character string ``"\t"`` (e.g. patching Python
+            # source that contains a tab string literal in source text)
+            # untouched — those files have a backslash+t in the matched
+            # region, not a real tab, so we leave new_string alone.
+            #
+            # ``\n`` is intentionally excluded: newlines serialize correctly
+            # through JSON, and rewriting backslash-n would mangle escape
+            # sequences in source code constants far more often than help.
+            effective_new = _maybe_unescape_new_string(
+                new_string, content, matches,
+            )
+            # Unicode-preservation guard: when strategy 7 (unicode_normalized)
+            # matched, the file has Unicode characters (em-dashes, smart quotes,
+            # ellipsis) but old_string/new_string from the LLM are ASCII
+            # equivalents.  Writing new_string verbatim would silently corrupt
+            # the file's Unicode — em-dashes become two hyphens, smart quotes
+            # become straight quotes.  Align the replacement with the file's
+            # actual Unicode so only the LLM's intended changes are applied
+            # and unchanged portions keep their original characters.
+            if strategy_name == "unicode_normalized":
+                effective_new = _preserve_unicode_in_replacement(
+                    content, matches, old_string, effective_new,
+                )
             new_content = _apply_replacements(
-                content, matches, new_string,
+                content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
             )
             return new_content, len(matches), strategy_name, None
@@ -247,6 +280,110 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
     return "\n".join(out_lines)
 
 
+def _maybe_unescape_new_string(new_string: str,
+                               content: str,
+                               matches: List[Tuple[int, int]]) -> str:
+    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+
+    LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
+    and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
+    meant a real tab or carriage-return byte. Writing the string verbatim
+    corrupts tab-indented files with literal backslash-letter pairs.
+
+    The unescape is only applied per-sequence when the *matched region of
+    the file* actually contains the corresponding control character — that
+    is, we only convert ``\\t`` -> tab when the file region we're replacing
+    contains a real tab byte. Files that legitimately contain the literal
+    two-character string ``"\\t"`` (e.g. a Python source line that defines
+    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
+    tab, so we leave new_string alone.
+
+    ``\\n`` is intentionally excluded: newlines serialize correctly through
+    JSON and rewriting backslash-n would corrupt escape sequences in
+    string literals far more often than it would help.
+    """
+    # Cheap pre-check — bail out unless new_string actually contains one of
+    # the suspect sequences. Keeps the common case free.
+    if "\\t" not in new_string and "\\r" not in new_string:
+        return new_string
+
+    matched_regions = "".join(content[start:end] for start, end in matches)
+    out = new_string
+    if "\\t" in out and "\t" in matched_regions:
+        out = out.replace("\\t", "\t")
+    if "\\r" in out and "\r" in matched_regions:
+        out = out.replace("\\r", "\r")
+    return out
+
+
+def _preserve_unicode_in_replacement(
+    content: str, matches: List[Tuple[int, int]],
+    old_string: str, new_string: str,
+) -> str:
+    """Preserve Unicode characters from the file in the replacement string.
+
+    When strategy 7 (unicode_normalized) matched, the file has Unicode
+    characters (em-dashes, smart quotes, ellipsis, non-breaking spaces)
+    but old_string/new_string from the LLM are ASCII equivalents.
+    Writing new_string verbatim would silently corrupt the file's
+    Unicode — em-dashes become two hyphens, smart quotes become
+    straight quotes.
+
+    This function aligns the replacement with the file's actual Unicode
+    by diffing old_string→new_string and applying only the actual edits
+    to the file's original text, preserving Unicode for unchanged portions.
+    """
+    # Aggregate the matched file regions
+    file_region = "".join(content[start:end] for start, end in matches)
+
+    # Normalize both for comparison
+    norm_old = _unicode_normalize(old_string)
+    norm_file = _unicode_normalize(file_region)
+
+    # If the normalized forms don't match, the strategy shouldn't have
+    # fired — fall back to direct replacement.
+    if norm_old != norm_file:
+        return new_string
+
+    # Build position maps from normalized space back to original space
+    # for both old_string and file_region.  UNICODE_MAP replacements can
+    # expand characters (em-dash → '--'), so normalized positions don't
+    # map 1:1 to original positions.  Reuse the module-level
+    # _build_orig_to_norm_map, then invert it (same inversion as
+    # _map_positions_norm_to_orig) to get norm→orig lookups.
+    file_orig_to_norm = _build_orig_to_norm_map(file_region)
+    file_norm_to_orig: dict[int, int] = {}
+    for orig_pos, np in enumerate(file_orig_to_norm[:-1]):
+        if np not in file_norm_to_orig:
+            file_norm_to_orig[np] = orig_pos
+
+    # Diff norm_old → new_string to find the actual edits
+    sm = SequenceMatcher(None, norm_old, new_string)
+    opcodes = sm.get_opcodes()
+
+    # Apply edits to file_region, preserving Unicode for unchanged spans
+    result_parts: List[str] = []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            # Keep the original file_region text for this span
+            orig_start = file_norm_to_orig.get(i1, 0)
+            orig_end = orig_start
+            while (
+                orig_end < len(file_region)
+                and file_orig_to_norm[orig_end] < i2
+            ):
+                orig_end += 1
+            result_parts.append(file_region[orig_start:orig_end])
+        elif tag == "replace":
+            result_parts.append(new_string[j1:j2])
+        elif tag == "delete":
+            pass  # skip deleted portion
+        elif tag == "insert":
+            result_parts.append(new_string[j1:j2])
+
+    return "".join(result_parts)
+
+
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],
                         new_string: str, old_string: Optional[str] = None) -> str:
     """
@@ -292,7 +429,12 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Advance past the whole match, not just one char, so self-overlapping
+        # patterns (e.g. "aa" in "aaaa") produce non-overlapping spans matching
+        # str.replace() semantics. Advancing by 1 yielded overlapping matches
+        # that corrupt the file under replace_all=True (reverse-order apply on
+        # stale offsets).
+        start = pos + len(pattern)
     return matches
 
 
@@ -711,9 +853,14 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     

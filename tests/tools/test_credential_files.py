@@ -1,6 +1,5 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
-import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +13,7 @@ from tools.credential_files import (
     get_skills_directory_mount,
     iter_cache_files,
     iter_skills_files,
+    map_cache_path_to_container,
     register_credential_file,
     register_credential_files,
 )
@@ -378,12 +378,14 @@ class TestCacheDirectoryMounts:
         hermes_home.mkdir()
         (hermes_home / "cache" / "documents").mkdir(parents=True)
         (hermes_home / "cache" / "audio").mkdir(parents=True)
+        (hermes_home / "cache" / "videos").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()
         paths = {m["container_path"] for m in mounts}
         assert "/root/.hermes/cache/documents" in paths
         assert "/root/.hermes/cache/audio" in paths
+        assert "/root/.hermes/cache/videos" in paths
 
     def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
         """Dirs that don't exist on disk are not returned."""
@@ -398,12 +400,22 @@ class TestCacheDirectoryMounts:
         assert mounts[0]["container_path"] == "/root/.hermes/cache/documents"
 
     def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
-        """Old-style dir names (e.g. document_cache) are resolved correctly."""
+        """Old-style dir names (e.g. document_cache) are resolved correctly.
+
+        Populates the legacy dirs with a sentinel file so they count as
+        ``has content`` for ``get_hermes_dir``'s populated-legacy check
+        (see #27602 — empty legacy stubs are no longer honoured).
+        """
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        # Use legacy dir name — get_hermes_dir prefers old if it exists
-        (hermes_home / "document_cache").mkdir()
-        (hermes_home / "image_cache").mkdir()
+        # Use legacy dir name with content — get_hermes_dir prefers
+        # populated old over new.
+        legacy_doc = hermes_home / "document_cache"
+        legacy_img = hermes_home / "image_cache"
+        legacy_doc.mkdir()
+        legacy_img.mkdir()
+        (legacy_doc / "cached.txt").write_bytes(b"x")
+        (legacy_img / "cached.png").write_bytes(b"x")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()
@@ -422,6 +434,48 @@ class TestCacheDirectoryMounts:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert get_cache_directory_mounts() == []
+
+
+class TestMapCachePathToContainer:
+    """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""
+
+    def test_maps_path_under_cache_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        img_dir = hermes_home / "cache" / "images"
+        img_dir.mkdir(parents=True)
+        host_path = str(img_dir / "generated.png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(host_path)
+            == "/root/.hermes/cache/images/generated.png"
+        )
+
+    def test_custom_container_base_for_remote_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        img_dir = hermes_home / "cache" / "images"
+        img_dir.mkdir(parents=True)
+        host_path = str(img_dir / "remote.png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(host_path, container_base="/home/agent/.hermes")
+            == "/home/agent/.hermes/cache/images/remote.png"
+        )
+
+    def test_returns_none_when_outside_cache_dirs(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "cache" / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert map_cache_path_to_container(str(tmp_path / "elsewhere.png")) is None
+
+    def test_returns_none_when_no_cache_dirs_exist(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png")) is None
 
 
 class TestIterCacheFiles:

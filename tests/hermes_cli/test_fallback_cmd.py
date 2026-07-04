@@ -1,7 +1,6 @@
 """Tests for `hermes fallback` — chain reading, add/remove/clear, legacy migration."""
 from __future__ import annotations
 
-import io
 import types
 from pathlib import Path
 from unittest.mock import patch

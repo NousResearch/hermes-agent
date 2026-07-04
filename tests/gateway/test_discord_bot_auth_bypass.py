@@ -13,9 +13,7 @@ These tests assert both gates now pass a bot message through when
 DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
-import os
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -33,6 +31,7 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
+        "TELEGRAM_ALLOW_BOTS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):

@@ -255,6 +255,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
+
+    # MCP server instructions — per the MCP spec, a server's initialize
+    # response may carry an ``instructions`` string meant to be surfaced to
+    # the model. Injected once here (per-session, cache-stable) alongside the
+    # other tool guidance; servers whose tools aren't exposed to this agent
+    # are filtered out inside the builder. Gated by config.yaml
+    # ``agent.inherit_mcp_instructions`` (default True).
+    if getattr(agent, "_inherit_mcp_instructions", True) and agent.valid_tool_names:
+        try:
+            mcp_instructions_prompt = _r.build_mcp_instructions_prompt(agent.valid_tool_names)
+        except Exception:
+            # MCP state probing must never block prompt build.
+            mcp_instructions_prompt = ""
+        if mcp_instructions_prompt:
+            stable_parts.append(mcp_instructions_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

@@ -1015,6 +1015,14 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # MCP server instructions — per the MCP spec, a server may return an
+        # ``instructions`` string in its initialize response, meant to be
+        # surfaced to the model (usage guidance for that server's tools).
+        # When True, Hermes injects each connected server's instructions into
+        # the system prompt as a per-server section, capped at 4000 chars per
+        # server and screened by the shared context threat scanner. Set False
+        # to keep MCP tools but drop the server-supplied free-text guidance.
+        "inherit_mcp_instructions": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

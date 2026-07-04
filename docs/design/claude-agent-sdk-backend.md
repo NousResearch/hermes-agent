@@ -174,13 +174,23 @@ Every `ClaudeAgentOptions` field was reviewed against the Agent SDK docs
 `interrupt()`. A background watcher polls Hermes' `/stop` flag every 0.25s and
 forwards it as a native interrupt, so a stop lands mid-tool (a long tool call
 emits no messages, so checking between messages is not enough). If the stream
-does not wind down within a 15s grace period, the transport is
-force-disconnected. The adapter then raises `InterruptedError` as before.
+does not wind down within a 15s grace period — or the interrupt request itself
+fails — the transport is force-disconnected. The adapter raises
+`InterruptedError` unless the final `ResultMessage` had already been collected
+when the stop landed; in that case the completed turn is returned, since the
+CLI transcript already recorded it and dropping it would fork Hermes' history
+from the SDK session.
 
-**Session persistence** — the SDK session id is stored on the agent object and
-in `HERMES_HOME/claude_agent_sdk_sessions.json` (keyed by Hermes session id +
-cwd), so cross-turn context survives a gateway restart or agent-cache
-eviction. A stale stored id is forgotten and the turn retried once fresh.
+**Session persistence** — the SDK session id is *derived* (UUIDv5) from
+Hermes' own persistent session id + cwd and pinned on the CLI with
+`--session-id` when the session is first created; plain `--resume` keeps the
+id stable across turns. After a gateway restart or agent-cache eviction the
+next turn re-derives the same id and resumes it — no mapping file, nothing to
+drift or race across the processes sharing HERMES_HOME. Resume-vs-create is
+picked by a transcript-existence check, and corrected by a single retry gated
+on the CLI's two session-identity errors (`No conversation found with session
+ID …` / `Session ID … is already in use.`); any other error surfaces
+immediately instead of silently re-running the turn.
 
 **Deliberately not used** (Hermes owns the equivalent, or N/A):
 `agents`/`skills`/`plugins` (Hermes has its own subagents/skills),
@@ -189,8 +199,8 @@ eviction. A stale stored id is forgotten and the turn retried once fresh.
 `can_use_tool` (cannot execute-and-return a result — documented SDK
 limitation; the PreToolUse hook covers deny/modify), `fork_session`,
 `session_store`/`session_store_flush`, `task_budget`, `user`,
-`include_hook_events`, `continue_conversation` (`resume` is used instead),
-`session_id` (the SDK-generated id is captured from `ResultMessage`),
+`include_hook_events`, `continue_conversation` (`resume`/`session_id` with a
+derived id are used instead),
 `max_thinking_tokens` (deprecated in favor of `thinking`),
 `permission_prompt_tool_name`, `debug_stderr`/`stderr`, `max_buffer_size`,
 `load_timeout_ms` (defaults).

@@ -59,9 +59,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
-import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.transports.hermes_tool_exposure import (
@@ -287,91 +288,72 @@ def build_auth_env(agent) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Durable SDK-session map (survives gateway restarts).
+# Durable SDK-session identity (survives gateway restarts).
 #
 # ``agent._claude_sdk_session_id`` dies with the process (or an agent-cache
-# eviction), and only the last user message is sent to the SDK — so the resume
-# id is the ONLY carrier of conversation context. Without persistence, a
-# gateway restart makes every conversation start from zero even though Hermes
-# still has the full history on disk. This maps Hermes' own persistent
-# ``agent.session_id`` -> {SDK session id, cwd} in a small JSON file under
-# HERMES_HOME so the next turn after a restart resumes where it left off.
+# eviction), and only the last user message is sent to the SDK — so the SDK
+# session is the ONLY carrier of conversation context. Instead of persisting
+# a Hermes-session -> SDK-session map on disk, the SDK session id is DERIVED
+# (UUIDv5) from Hermes' own persistent ``agent.session_id`` + cwd and pinned
+# on the CLI with ``--session-id`` when the session is first created. Plain
+# ``--resume`` keeps the session id stable across turns, so after a restart
+# the next turn re-derives the same id and resumes it — nothing to store,
+# nothing to drift, and no cross-process races between the gateway/CLI/
+# worktree processes that share HERMES_HOME.
 # ---------------------------------------------------------------------------
-_SESSION_STORE_NAME = "claude_agent_sdk_sessions.json"
-_SESSION_STORE_MAX = 500  # keep the most recent entries; drop the oldest
-_session_store_lock = threading.Lock()
+_SDK_SESSION_NS = uuid.UUID("6c1f6dfa-3f5e-4a54-9e19-5c6f1f0a8d21")
+
+# The CLI's two session-identity errors; anything else is NOT retried.
+_STALE_RESUME_MARKER = "No conversation found with session ID"
+_SESSION_IN_USE_MARKER = "is already in use"
 
 
-def _session_store_path() -> str:
-    from hermes_constants import get_hermes_home
+def _derive_sdk_session_id(hermes_session_id: Any, cwd: str) -> Optional[str]:
+    """Deterministic SDK session id for this Hermes session + cwd.
 
-    return str(get_hermes_home() / _SESSION_STORE_NAME)
-
-
-def _load_session_store() -> Dict[str, Any]:
-    try:
-        with open(_session_store_path(), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _write_session_store(store: Dict[str, Any]) -> None:
-    path = _session_store_path()
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(store, fh, indent=1)
-    os.replace(tmp, path)
-
-
-def _lookup_stored_session(hermes_session_id: Any, cwd: str) -> Optional[str]:
-    """Return the saved SDK session id for this Hermes session, or None.
-
-    Only valid for the same cwd — the CLI keys transcripts by directory, so a
-    session created under another project dir must not be resumed."""
+    Scoped to the cwd because the CLI keys transcripts by directory — the
+    same Hermes session working from another project dir gets its own SDK
+    session instead of a failing (or wrong-project) resume."""
     if not hermes_session_id:
         return None
-    entry = _load_session_store().get(str(hermes_session_id))
-    if isinstance(entry, dict) and entry.get("cwd") == cwd:
-        sid = entry.get("session_id")
-        if sid:
-            return str(sid)
-    return None
+    return str(uuid.uuid5(_SDK_SESSION_NS, f"{hermes_session_id}\n{cwd}"))
 
 
-def _store_session(hermes_session_id: Any, sdk_session_id: Any, cwd: str) -> None:
-    if not hermes_session_id or not sdk_session_id:
-        return
+def _sdk_transcript_exists(sdk_session_id: str, cwd: str, env: Optional[Dict[str, str]] = None) -> bool:
+    """Best-effort check that the CLI has a transcript for this session id.
+
+    The CLI stores transcripts at ``<config>/projects/<encoded-cwd>/<id>.jsonl``
+    where ``<config>`` is $CLAUDE_CONFIG_DIR or ~/.claude and ``<encoded-cwd>``
+    replaces every non-alphanumeric character with ``-``. Only a fast-path
+    hint for choosing resume-vs-create — a wrong guess is corrected by the
+    error-gated retry in ``create_claude_agent_message``."""
     try:
-        with _session_store_lock:
-            store = _load_session_store()
-            store[str(hermes_session_id)] = {
-                "session_id": str(sdk_session_id),
-                "cwd": cwd,
-                "ts": int(time.time()),
-            }
-            if len(store) > _SESSION_STORE_MAX:
-                newest = sorted(
-                    store.items(),
-                    key=lambda kv: (kv[1] or {}).get("ts", 0) if isinstance(kv[1], dict) else 0,
-                )[-_SESSION_STORE_MAX:]
-                store = dict(newest)
-            _write_session_store(store)
+        config_dir = (env or {}).get("CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
+        base = Path(config_dir) if config_dir else Path.home() / ".claude"
+        encoded = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+        return (base / "projects" / encoded / f"{sdk_session_id}.jsonl").is_file()
     except Exception:
-        logger.debug("claude_agent_sdk: failed to persist session id", exc_info=True)
+        return False
 
 
-def _forget_stored_session(hermes_session_id: Any) -> None:
-    if not hermes_session_id:
-        return
-    try:
-        with _session_store_lock:
-            store = _load_session_store()
-            if store.pop(str(hermes_session_id), None) is not None:
-                _write_session_store(store)
-    except Exception:
-        logger.debug("claude_agent_sdk: failed to drop stored session id", exc_info=True)
+def _swap_session_mode(opt_kwargs: Dict[str, Any], exc: Exception) -> bool:
+    """Flip resume<->create when ``exc`` is a CLI session-identity error.
+
+    ``--resume`` of an id the CLI no longer knows fails with
+    ``No conversation found with session ID …`` → create the session fresh
+    under the same id. ``--session-id`` of an id that already exists fails
+    with ``Session ID … is already in use.`` → resume it instead. Returns
+    True when it swapped (the turn should be retried once); any other error
+    is left alone so real failures surface instead of silently discarding
+    conversation context."""
+    blob = f"{exc}\n{getattr(exc, 'stderr', '') or ''}"
+    if opt_kwargs.get("resume") and _STALE_RESUME_MARKER in blob:
+        opt_kwargs["session_id"] = opt_kwargs.pop("resume")
+        return True
+    if opt_kwargs.get("session_id") and _SESSION_IN_USE_MARKER in blob:
+        opt_kwargs["resume"] = opt_kwargs.pop("session_id")
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -968,9 +950,16 @@ async def _collect_query(
     stop_reason: Optional[str] = None
     errors: List[str] = []
 
-    client = sdk.ClaudeSDKClient(options=options)
+    client_cls = getattr(sdk, "ClaudeSDKClient", None)
+    if client_cls is None:
+        raise RuntimeError(
+            "The installed claude-agent-sdk has no ClaudeSDKClient (too old). "
+            "Install the pinned version: pip install 'claude-agent-sdk==0.2.110'."
+        )
+    client = client_cls(options=options)
     await client.connect()
     interrupted = False
+    got_result = False
 
     async def _watch_interrupt():
         # Forward Hermes' /stop flag as the client's native interrupt. The
@@ -984,7 +973,18 @@ async def _collect_query(
                 try:
                     await client.interrupt()
                 except Exception:
+                    # The interrupt never reached the CLI (transport wedged) —
+                    # don't sit out a grace period waiting for a wind-down
+                    # that can't come; tear down now.
                     logger.debug("claude_agent_sdk: interrupt request failed", exc_info=True)
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    return
+                # The CLI normally answers an interrupt with a final
+                # ResultMessage, ending the message loop; if it hangs
+                # instead, force-close so a turn cannot outlive a /stop.
                 await asyncio.sleep(_INTERRUPT_GRACE_S)
                 try:
                     await client.disconnect()
@@ -998,14 +998,16 @@ async def _collect_query(
     try:
         await client.query(prompt)
         async for message in client.receive_response():
-            if interrupt_check is not None and interrupt_check():
+            if interrupted or (interrupt_check is not None and interrupt_check()):
                 # Fast path between messages; the watcher covers mid-tool.
+                # If the watcher set the flag it already sent the native
+                # interrupt — don't send a second one.
                 if not interrupted:
                     interrupted = True
                     try:
                         await client.interrupt()
                     except Exception:
-                        pass
+                        logger.debug("claude_agent_sdk: interrupt request failed", exc_info=True)
                 break
             if StreamEvent is not None and isinstance(message, StreamEvent):
                 # Live progress only — never part of the collected result. Subagent
@@ -1064,6 +1066,7 @@ async def _collect_query(
                     elif getattr(block, "type", None) == "thinking":
                         thinking_text.append(getattr(block, "thinking", "") or "")
             elif isinstance(message, ResultMessage):
+                got_result = True
                 result_text = getattr(message, "result", None)
                 usage = getattr(message, "usage", None)
                 total_cost = getattr(message, "total_cost_usd", None)
@@ -1087,8 +1090,11 @@ async def _collect_query(
         except Exception:
             pass
 
-    if interrupted:
+    if interrupted and not got_result:
         raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
+    # A /stop that landed after the final ResultMessage interrupts nothing —
+    # the turn already completed, and the CLI transcript recorded it. Return
+    # the result so Hermes' history can't diverge from the SDK session.
 
     # ResultMessage.result is only populated on the `success` subtype; on error
     # subtypes fall back to the collected assistant text so the user still sees
@@ -1180,13 +1186,21 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     resume = getattr(agent, "_claude_sdk_session_id", None)
     if resume and getattr(agent, "_claude_sdk_session_cwd", None) != cwd:
         resume = None
-    if not resume:
-        # Fresh agent object (gateway restart / agent-cache eviction): fall
-        # back to the durable store so the conversation continues instead of
-        # silently starting from zero.
-        resume = _lookup_stored_session(getattr(agent, "session_id", None), cwd)
     if resume:
         opt_kwargs["resume"] = resume
+    else:
+        # Fresh agent object (first turn, gateway restart, or agent-cache
+        # eviction): the SDK session id is derived from Hermes' persistent
+        # session id, so no stored mapping is needed — resume the derived id
+        # if its transcript exists, otherwise create the session under it.
+        # The existence check is only a hint; a wrong guess is corrected by
+        # the error-gated retry below.
+        derived = _derive_sdk_session_id(getattr(agent, "session_id", None), cwd)
+        if derived:
+            if _sdk_transcript_exists(derived, cwd, env):
+                opt_kwargs["resume"] = derived
+            else:
+                opt_kwargs["session_id"] = derived
 
     # Respect Hermes' reasoning settings instead of the CLI's own defaults —
     # AnthropicTransport.build_kwargs already mapped the user's reasoning
@@ -1296,18 +1310,19 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         except InterruptedError:
             raise
         except Exception as exc:  # noqa: BLE001
-            if attempt == 0 and opt_kwargs.get("resume"):
-                # The saved session may be stale (transcript pruned, HERMES_HOME
-                # copied to another machine, CLI storage cleared). Forget it and
-                # retry once from a fresh session instead of failing the turn —
-                # and failing every following turn the same way.
+            # Retry once, ONLY on the CLI's two session-identity errors
+            # (stale resume id → create fresh under the same id; id already
+            # in use → resume it). Both fail at spawn, before any streaming,
+            # so the bridge has no half-emitted state to double up. Any other
+            # error surfaces immediately — retrying a transient failure here
+            # would silently rerun a possibly side-effectful turn.
+            if attempt == 0 and _swap_session_mode(opt_kwargs, exc):
                 logger.warning(
-                    "claude_agent_sdk: resume %s failed (%s); retrying fresh",
-                    opt_kwargs["resume"], exc,
+                    "claude_agent_sdk: session-id mismatch (%s); retrying with %s",
+                    exc,
+                    "resume" if opt_kwargs.get("resume") else "a fresh session",
                 )
-                _forget_stored_session(getattr(agent, "session_id", None))
                 agent._claude_sdk_session_id = None
-                opt_kwargs.pop("resume", None)
                 options = _build_options(sdk, opt_kwargs)
                 continue
             _friendly = _classify_sdk_error(exc)
@@ -1316,16 +1331,14 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
             raise
         break
 
-    # Persist the session id so the next Hermes turn continues the SDK's
-    # own conversation context — on the agent for this process, and in the
-    # durable store so it survives a gateway restart.
+    # Remember the session id so the next Hermes turn in this process resumes
+    # directly. After a restart it is re-derived — no store needed.
     new_session = collected.get("session_id")
     if new_session:
         agent._claude_sdk_session_id = new_session
         # Remember which directory the session lives in — resume is only
         # valid from the same cwd (see the resume gate above).
         agent._claude_sdk_session_cwd = cwd
-        _store_session(getattr(agent, "session_id", None), new_session, cwd)
 
     text = collected.get("text") or ""
     if not text and collected.get("is_error"):

@@ -123,7 +123,8 @@ function UsageRatesCard({ data }: { data: UsageRatesResponse }) {
 // ── Token trends ──────────────────────────────────────────────────────────
 function TokenTrendsCard({ data }: { data: TokenTrendsResponse }) {
   const series = data.series;
-  const maxT = Math.max(1, ...series.map((b) => b.input + b.output));
+  const maxIn = Math.max(1, ...series.map((b) => b.input));
+  const maxOut = Math.max(1, ...series.map((b) => b.output));
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
@@ -144,6 +145,7 @@ function TokenTrendsCard({ data }: { data: TokenTrendsResponse }) {
           <span className="inline-flex items-center gap-1 text-muted-foreground">
             <span className="inline-block h-2 w-2" style={{ backgroundColor: "color-mix(in srgb, var(--series-output-token) 70%, transparent)" }} /> out
           </span>
+          <span className="text-[10px] text-text-tertiary">(scales independent)</span>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -152,8 +154,8 @@ function TokenTrendsCard({ data }: { data: TokenTrendsResponse }) {
         ) : (
           <div className="flex items-end gap-[2px]" style={{ height: CHART_HEIGHT_PX }}>
             {series.map((b) => {
-              const inH = Math.round((b.input / maxT) * CHART_HEIGHT_PX);
-              const outH = Math.round((b.output / maxT) * CHART_HEIGHT_PX);
+              const inH = Math.round((b.input / maxIn) * CHART_HEIGHT_PX);
+              const outH = Math.round((b.output / maxOut) * CHART_HEIGHT_PX);
               return (
                 <div
                   key={b.bucket_start}
@@ -168,8 +170,10 @@ function TokenTrendsCard({ data }: { data: TokenTrendsResponse }) {
                       <div>cache: {b.cache_hit_rate != null ? `${b.cache_hit_rate}%` : "—"}</div>
                     </div>
                   </div>
-                  <div className="w-full" style={{ backgroundColor: "color-mix(in srgb, var(--series-input-token) 70%, transparent)", height: Math.max(inH, b.input > 0 ? 1 : 0) }} />
-                  <div className="w-full" style={{ backgroundColor: "color-mix(in srgb, var(--series-output-token) 70%, transparent)", height: Math.max(outH, b.output > 0 ? 1 : 0) }} />
+                  <div className="flex items-end gap-[0.5px] w-full h-full">
+                    <div className="flex-1" style={{ backgroundColor: "color-mix(in srgb, var(--series-input-token) 70%, transparent)", height: Math.max(inH, b.input > 0 ? 2 : 0) }} />
+                    <div className="flex-1" style={{ backgroundColor: "color-mix(in srgb, var(--series-output-token) 70%, transparent)", height: Math.max(outH, b.output > 0 ? 2 : 0) }} />
+                  </div>
                 </div>
               );
             })}
@@ -200,9 +204,9 @@ function CostEstimateCard({ data }: { data: CostEstimateResponse }) {
           <Metric label="Daily (proj.)" value={usd(data.projection.daily_usd)} />
           <Metric label="Monthly (proj.)" value={usd(data.projection.monthly_usd)} />
           <Metric
-            label="By tier"
+            label={data.has_unpriced_models ? "Tier cost (priced only)" : "Tier breakdown"}
             value={usd(data.cost_by_tier.input + data.cost_by_tier.output + data.cost_by_tier.cache)}
-            sub={`in ${usd(data.cost_by_tier.input)} · out ${usd(data.cost_by_tier.output)} · cache ${usd(data.cost_by_tier.cache)}`}
+            sub={`in ${usd(data.cost_by_tier.input)} · out ${usd(data.cost_by_tier.output)} · cache ${usd(data.cost_by_tier.cache)}${data.has_unpriced_models ? " · excl. est." : ""}`}
           />
         </div>
         {data.models.length > 0 && (
@@ -218,7 +222,7 @@ function CostEstimateCard({ data }: { data: CostEstimateResponse }) {
                 </tr>
               </thead>
               <tbody>
-                {data.models.map((m, i) => (
+                {data.models.filter(m => m.model).map((m, i) => (
                   <tr key={`${m.model}-${i}`} className="border-t border-border/60">
                     <td className="py-1.5 pr-3 font-mono text-foreground">{m.model ?? "—"}</td>
                     <td className="py-1.5 pr-3 text-muted-foreground">{m.provider ?? "—"}</td>
@@ -327,11 +331,12 @@ export default function RealtimeAnalytics() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/10 px-4 py-3">
         <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
           Real-time usage (message-level)
         </h2>
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground mr-0.5">Window:</span>
           {WINDOWS.map((w) => (
             <Button key={w} type="button" size="sm" outlined={window !== w} onClick={() => setWindow(w)}>
               {w}

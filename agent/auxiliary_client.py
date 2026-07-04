@@ -4231,19 +4231,32 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
-            custom_key = (
-                (explicit_api_key or "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
-                or "no-key-required"  # local servers don't need auth
-            )
+            _explicit_key = (explicit_api_key or "").strip()
+            _env_key = os.getenv("OPENAI_API_KEY", "").strip()
+            # Only fall back to OPENAI_API_KEY when the base URL is an
+            # OpenAI-compatible endpoint.  Sending the main session's
+            # OpenAI key to a non-OpenAI backend (Gemini, local servers,
+            # etc.) leaks credentials to an unintended service (#39599).
+            if _explicit_key:
+                custom_key = _explicit_key
+            elif _env_key and base_url_host_matches(
+                explicit_base_url, "api.openai.com"
+            ):
+                custom_key = _env_key
+            else:
+                custom_key = "no-key-required"
             if not custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "
                     "but base_url is empty"
                 )
                 return None, None
+            # Do not fall back to main_runtime model here — the main session
+            # model (e.g. gpt-4o) is invalid for non-OpenAI custom backends
+            # like Gemini.  Only use the explicitly-requested model or the
+            # safe default (#39599).
             final_model = _normalize_resolved_model(
-                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
+                model or "gpt-4o-mini",
                 provider,
             )
             extra = {}

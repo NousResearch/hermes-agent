@@ -491,3 +491,64 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+class TestExplicitBaseUrlCredentialLeak:
+    """Regression tests for #39599: credential leak when explicit base_url
+    routes through the 'custom' branch of resolve_provider_client."""
+
+    def test_non_openai_base_url_does_not_leak_openai_key(self, monkeypatch):
+        """When explicit_base_url points to a non-OpenAI endpoint and no
+        explicit_api_key is provided, OPENAI_API_KEY must NOT be sent."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-leaked-key-should-not-appear")
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, _ = resolve_provider_client(
+            "custom",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert client is not None
+        assert client.api_key != "sk-leaked-key-should-not-appear"
+        assert client.api_key == "no-key-required"
+
+    def test_non_openai_base_url_uses_explicit_key(self, monkeypatch):
+        """When explicit_api_key IS provided, it must be used regardless of
+        the base_url host."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-key")
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, _ = resolve_provider_client(
+            "custom",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta",
+            explicit_api_key="my-gemini-key",
+        )
+        assert client is not None
+        assert client.api_key == "my-gemini-key"
+
+    def test_openai_base_url_still_uses_env_key(self, monkeypatch):
+        """When explicit_base_url IS api.openai.com and no explicit_api_key,
+        OPENAI_API_KEY should still be used (backward compat)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-key")
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, _ = resolve_provider_client(
+            "custom",
+            explicit_base_url="https://api.openai.com/v1",
+        )
+        assert client is not None
+        assert client.api_key == "sk-openai-key"
+
+    def test_non_openai_base_url_does_not_leak_main_model(self, monkeypatch):
+        """When explicit_base_url points to a non-OpenAI endpoint and no model
+        is specified, the main session model must NOT be used."""
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, model = resolve_provider_client(
+            "custom",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta",
+            main_runtime={"model": "gpt-4o"},
+        )
+        assert client is not None
+        # Must NOT be the main session model — the whole point of #39599
+        assert model != "gpt-4o"

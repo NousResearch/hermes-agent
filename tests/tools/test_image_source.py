@@ -223,3 +223,40 @@ class TestExecReadSafety:
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(
                     "/workspace/nope.png", isrc.ResolveContext(task_id="t1"))
+
+
+class TestSvgNormalization:
+    """SVG resolves end-to-end: the resolver passes it through as
+    image/svg+xml and the vision call sites rasterize it to PNG via
+    _normalize_to_supported_image (PR #52688, folded in)."""
+
+    @pytest.mark.asyncio
+    async def test_svg_rasterized_when_converter_available(self, tmp_path, monkeypatch):
+        from tools import vision_tools as vt
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        svg = tmp_path / "art.svg"
+        svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>')
+
+        def fake_rasterize(svg_path, out_path):
+            out_path.write_bytes(PNG)
+            return True
+
+        with patch.object(vt, "_rasterize_svg_to_png", side_effect=fake_rasterize):
+            res = await isrc.resolve_image_source(str(svg), isrc.ResolveContext())
+            assert res.mime == "image/svg+xml"
+            path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
+        assert err is None
+        assert mime == "image/png"
+        assert path.read_bytes() == PNG
+        path.unlink()
+
+    def test_svg_actionable_error_when_no_converter(self, tmp_path, monkeypatch):
+        from tools import vision_tools as vt
+        _reload(monkeypatch, tmp_path / "hermes")
+        svg = tmp_path / "art.svg"
+        svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
+        with patch.object(vt, "_rasterize_svg_to_png", return_value=False):
+            path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
+        assert path is None
+        assert "rasterizer" in err

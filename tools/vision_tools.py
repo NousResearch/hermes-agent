@@ -316,10 +316,9 @@ def _normalize_to_supported_image(
     if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
         return image_path, detected_mime, None
 
-    out_path = (
-        get_hermes_dir("cache/vision", "temp_vision_images")
-        / f"converted_{uuid.uuid4()}.png"
-    )
+    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"converted_{uuid.uuid4()}.png"
 
     # SVG: needs a rasterizer (Pillow cannot render SVG).
     if detected_mime == "image/svg+xml":

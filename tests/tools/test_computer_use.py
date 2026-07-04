@@ -35,6 +35,100 @@ def noop_backend():
 
 
 # ---------------------------------------------------------------------------
+# cua-driver result shape compatibility
+# ---------------------------------------------------------------------------
+
+class TestCuaDriverResultShapeCompatibility:
+    def test_windows_from_legacy_list_windows_shape(self):
+        from tools.computer_use import cua_backend
+
+        out = {
+            "structuredContent": {
+                "_legacy_windows": [
+                    {"pid": 123, "window_id": 456, "title": "Hermes", "z_index": 0}
+                ]
+            },
+            "data": None,
+        }
+
+        with patch.object(cua_backend, "_process_name_for_pid", return_value="Hermes.exe"):
+            windows = cua_backend._windows_from_tool_result(out)
+
+        assert windows == [{
+            "app_name": "Hermes.exe",
+            "pid": 123,
+            "window_id": 456,
+            "off_screen": False,
+            "title": "Hermes",
+            "z_index": 0,
+            "match_text": "hermes.exe hermes hermes.exe",
+        }]
+
+    def test_windows_from_canonical_list_windows_shape(self):
+        from tools.computer_use import cua_backend
+
+        out = {
+            "structuredContent": {
+                "windows": [
+                    {
+                        "app_name": "Google Chrome",
+                        "pid": 321,
+                        "window_id": 654,
+                        "title": "Computer Use",
+                        "is_on_screen": True,
+                        "z_index": 2,
+                    }
+                ]
+            },
+            "data": None,
+        }
+
+        with patch.object(cua_backend, "_process_name_for_pid", return_value="chrome.exe"):
+            windows = cua_backend._windows_from_tool_result(out)
+
+        assert windows[0]["app_name"] == "Google Chrome"
+        assert windows[0]["pid"] == 321
+        assert windows[0]["window_id"] == 654
+        assert windows[0]["off_screen"] is False
+        assert "chrome" in windows[0]["match_text"]
+
+    def test_windows_from_tool_result_marks_windows_parked_rows_off_screen(self):
+        from tools.computer_use import cua_backend
+
+        out = {
+            "structuredContent": {
+                "windows": [
+                    {
+                        "app_name": "lghub.exe",
+                        "pid": 6612,
+                        "window_id": 526250,
+                        "title": "Logitech G HUB",
+                        "is_on_screen": True,
+                        "bounds": {"x": -32000, "y": -32000, "width": 237, "height": 39},
+                        "z_index": 0,
+                    }
+                ]
+            },
+            "data": None,
+        }
+
+        with patch.object(cua_backend, "_process_name_for_pid", return_value="lghub.exe"):
+            windows = cua_backend._windows_from_tool_result(out)
+
+        assert windows[0]["off_screen"] is True
+
+    def test_apps_from_structured_content_shape(self):
+        from tools.computer_use import cua_backend
+
+        out = {
+            "structuredContent": {"apps": [{"name": "Hermes", "pid": 72216}]},
+            "data": None,
+        }
+
+        assert cua_backend._apps_from_tool_result(out) == [{"name": "Hermes", "pid": 72216}]
+
+
+# ---------------------------------------------------------------------------
 # Schema & registration
 # ---------------------------------------------------------------------------
 
@@ -301,6 +395,174 @@ class TestDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Direct pid/window_id targeting (the "Hermes fix")
+#
+# When cua-driver's MCP stdio channel returns empty for list_windows /
+# list_apps, the wrapper historically had no fallback — every capture()
+# returned 0x0 and every focus_app() reported "No on-screen window found."
+# The cua-driver itself (verified on Willie's box: Hermes PID 34300 /
+# window_id 27984774, driver returns 251 elements) sees the window fine.
+#
+# The fix: allow callers to pass pid and window_id directly, and have the
+# backend skip list_windows when both are provided. This keeps the
+# frontmost-window capture path intact while adding an escape hatch for
+# when discovery is broken. See issue "Fix Hermes computer_use so it can
+# target a window by pid and window_id when app-name discovery/list_apps
+# fails."
+# ---------------------------------------------------------------------------
+
+class TestPidWindowIdTargeting:
+    """Bypass list_windows when caller supplies pid + window_id."""
+
+    def test_capture_bypasses_list_windows_when_pid_and_window_id_supplied(self):
+        """Empty list_windows is no longer fatal when pid/window_id are passed.
+
+        The wrapper must call capture on the noop backend (which records
+        the call) even when list_windows would return [] for the underlying
+        cua-driver MCP channel.
+        """
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        class FakeBackend:
+            def __init__(self):
+                self.calls = []
+                self._started = False
+
+            def start(self):
+                self._started = True
+
+            def stop(self):
+                self._started = False
+
+            def is_available(self):
+                return True
+
+            def capture(self, mode="som", app=None,
+                        pid=None, window_id=None, **kw):
+                self.calls.append({
+                    "mode": mode, "app": app,
+                    "pid": pid, "window_id": window_id,
+                })
+                # A non-empty capture — what a successful get_window_state
+                # would look like. mode=ax returns a text-only result, which
+                # avoids the image-envelope branch and keeps the assertion
+                # path simple.
+                return CaptureResult(
+                    mode=mode, width=1024, height=768, png_b64=None,
+                    elements=[], app="Hermes", window_title="Hermes",
+                )
+
+            # The remaining methods are unused by this test, but must exist
+            # to satisfy the ComputerUseBackend ABC.
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False,
+                          pid=None, window_id=None, **kw): ...
+
+        cu_tool.reset_backend_for_tests()
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({
+                "action": "capture",
+                "mode": "ax",
+                "pid": 34300,
+                "window_id": 27984774,
+            })
+
+        # The backend received the call with pid and window_id forwarded.
+        assert len(fake.calls) == 1, (
+            f"capture backend should have been called exactly once, "
+            f"got {len(fake.calls)}: {fake.calls}"
+        )
+        call = fake.calls[0]
+        assert call["pid"] == 34300
+        assert call["window_id"] == 27984774
+        assert call["mode"] == "ax"
+
+        # The response is a non-empty capture (text JSON in ax mode).
+        parsed = json.loads(out)
+        assert parsed.get("error") is None
+        assert parsed["mode"] == "ax"
+        assert parsed["app"] == "Hermes"
+        assert parsed["window_title"] == "Hermes"
+        assert parsed["width"] == 1024
+        assert parsed["height"] == 768
+
+    def test_focus_app_accepts_pid_and_window_id(self):
+        """focus_app should skip discovery when caller supplies both ids.
+
+        Pair to the capture-bypass test above. The same Hermes-fix
+        rationale applies: list_windows / list_apps can return empty
+        even when cua-driver-rs itself sees the window.
+        """
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use import tool as cu_tool
+
+        class FakeBackend:
+            def __init__(self):
+                self.calls = []
+                self._started = False
+
+            def start(self):
+                self._started = True
+
+            def stop(self):
+                self._started = False
+
+            def is_available(self):
+                return True
+
+            # Unused by this test.
+            def capture(self, mode="som", app=None,
+                        pid=None, window_id=None, **kw): ...
+
+            def focus_app(self, app="", raise_window=False,
+                          pid=None, window_id=None, **kw):
+                self.calls.append({
+                    "app": app, "raise_window": raise_window,
+                    "pid": pid, "window_id": window_id,
+                })
+                return ActionResult(
+                    ok=True, action="focus_app",
+                    message=f"Targeted pid {pid}, window {window_id}.",
+                )
+
+            # Required ABC stubs.
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+
+        cu_tool.reset_backend_for_tests()
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({
+                "action": "focus_app",
+                "app": "Hermes",
+                "pid": 34300,
+                "window_id": 27984774,
+            })
+
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert parsed["action"] == "focus_app"
+        assert "34300" in parsed["message"] and "27984774" in parsed["message"]
+
+        assert len(fake.calls) == 1
+        call = fake.calls[0]
+        assert call["app"] == "Hermes"
+        assert call["pid"] == 34300
+        assert call["window_id"] == 27984774
+
+
+# ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)
 # ---------------------------------------------------------------------------
 
@@ -368,7 +630,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 return CaptureResult(
                     mode=mode, width=1024, height=768,
                     png_b64=fake_png, elements=[],
@@ -382,7 +644,8 @@ class TestCaptureResponse:
             def type_text(self, text): ...
             def key(self, keys): ...
             def list_apps(self): return []
-            def focus_app(self, app, raise_window=False): ...
+            def focus_app(self, app, raise_window=False,
+                          pid=None, window_id=None, **kw): ...
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
@@ -436,7 +699,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png,
@@ -452,7 +715,8 @@ class TestCaptureResponse:
             def type_text(self, text): ...
             def key(self, keys): ...
             def list_apps(self): return []
-            def focus_app(self, app, raise_window=False): ...
+            def focus_app(self, app, raise_window=False,
+                          pid=None, window_id=None, **kw): ...
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
@@ -478,7 +742,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64="",
@@ -491,7 +755,8 @@ class TestCaptureResponse:
             def type_text(self, text): ...
             def key(self, keys): ...
             def list_apps(self): return []
-            def focus_app(self, app, raise_window=False): ...
+            def focus_app(self, app, raise_window=False,
+                          pid=None, window_id=None, **kw): ...
 
         return FakeBackend()
 
@@ -627,7 +892,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png, elements=list(elements),
@@ -639,7 +904,8 @@ class TestCaptureResponse:
             def type_text(self, text): ...
             def key(self, keys): ...
             def list_apps(self): return []
-            def focus_app(self, app, raise_window=False): ...
+            def focus_app(self, app, raise_window=False,
+                          pid=None, window_id=None, **kw): ...
 
         cu_tool.reset_backend_for_tests()
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
@@ -1258,7 +1524,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1324,7 +1590,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **kwargs):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1522,6 +1788,25 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_app_filter_matching_only_parked_windows_returns_diagnostic(self):
+        windows = [
+            {"app_name": "chrome.exe", "pid": 35388, "window_id": 43914484,
+             "is_on_screen": True, "title": "New Tab - Google Chrome",
+             "bounds": {"x": -31991, "y": -32000, "width": 219, "height": 30},
+             "z_index": 2},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="ax", app="chrome.exe")
+
+        assert cap.app == ""
+        assert cap.width == 0
+        assert cap.height == 0
+        assert cap.elements == []
+        assert "off-screen or minimized" in cap.window_title
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
     def test_no_app_filter_still_picks_frontmost(self):
         """When no app= is given, capture continues to pick the frontmost
         window — the no-match early-return must not fire on the empty case."""
@@ -1540,6 +1825,38 @@ class TestCaptureAppFilterNoMatch:
         cap = backend.capture(mode="ax", app=None)
 
         assert backend._active_pid == 100
+
+    def test_no_app_filter_uses_windows_z_order_and_skips_parked_windows(self):
+        from tools.computer_use import cua_backend
+
+        windows = [
+            {"app_name": "lghub.exe", "pid": 6612, "window_id": 526250,
+             "is_on_screen": True, "title": "Logitech G HUB",
+             "bounds": {"x": -32000, "y": -32000, "width": 237, "height": 39},
+             "z_index": 0},
+            {"app_name": "chrome.exe", "pid": 35388, "window_id": 43914484,
+             "is_on_screen": True, "title": "New Tab - Google Chrome",
+             "bounds": {"x": 0, "y": 0, "width": 2560, "height": 1528},
+             "z_index": 12},
+            {"app_name": "Codex.exe", "pid": 10936, "window_id": 204972,
+             "is_on_screen": True, "title": "Codex",
+             "bounds": {"x": -11, "y": -11, "width": 2582, "height": 1550},
+             "z_index": 15},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Codex — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        with patch.object(cua_backend.sys, "platform", "win32"):
+            cap = backend.capture(mode="ax", app=None)
+
+        assert backend._active_pid == 10936
+        assert backend._active_window_id == 204972
+        assert cap.app == "Codex.exe"
 
 
 class TestFocusAppFilterNoMatch:
@@ -1564,6 +1881,23 @@ class TestFocusAppFilterNoMatch:
         assert "Calculator" in res.message
         # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
         assert backend._active_pid is None
+
+    def test_focus_app_ignores_parked_matching_window(self):
+        windows = [
+            {"app_name": "chrome.exe", "pid": 35388, "window_id": 43914484,
+             "is_on_screen": True, "title": "New Tab - Google Chrome",
+             "bounds": {"x": -31991, "y": -32000, "width": 219, "height": 30},
+             "z_index": 2},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("chrome.exe")
+
+        assert res.ok is False
+        assert res.action == "focus_app"
+        assert "chrome.exe" in res.message
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
 
     def test_focus_app_match_still_works(self):
         windows = [

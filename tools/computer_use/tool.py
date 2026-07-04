@@ -193,8 +193,19 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        # Keep the existing (name, kwargs) tuple shape so tests that
+        # iterate noop_backend.calls with c[0]/c[1] still work.
+        self.calls.append((
+            "capture",
+            {"mode": mode, "app": app, "pid": pid, "window_id": window_id},
+        ))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -222,8 +233,18 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("list_apps", {}))
         return []
 
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
+    def focus_app(
+        self,
+        app: str,
+        raise_window: bool = False,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> ActionResult:
+        self.calls.append((
+            "focus_app",
+            {"app": app, "raise": raise_window,
+             "pid": pid, "window_id": window_id},
+        ))
         return ActionResult(ok=True, action="focus_app")
 
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -347,7 +368,16 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        # Hermes-fix: when caller supplies pid + window_id, the backend's
+        # capture() bypasses list_windows. The wrapper just forwards the
+        # kwargs through; the backend is the one that decides to skip
+        # discovery.
+        cap = backend.capture(
+            mode=mode,
+            app=args.get("app"),
+            pid=args.get("pid"),
+            window_id=args.get("window_id"),
+        )
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -360,9 +390,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return json.dumps({"apps": apps, "count": len(apps)})
 
     if action == "focus_app":
+        # pid + window_id path: skip the discovery dance entirely. Either
+        # the caller already knows the window (e.g. resolved via
+        # PowerShell or `cua-driver list_windows`), or Hermes discovery
+        # is broken on this box.
         app = args.get("app")
+        pid = args.get("pid")
+        window_id = args.get("window_id")
+        if pid is not None and window_id is not None:
+            res = backend.focus_app(
+                app=app or "",
+                raise_window=bool(args.get("raise_window")),
+                pid=pid,
+                window_id=window_id,
+            )
+            return _maybe_follow_capture(backend, res, capture_after)
         if not app:
-            return json.dumps({"error": "focus_app requires `app`"})
+            return json.dumps({"error": "focus_app requires `app` "
+                                        "(or both `pid` and `window_id`)"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
 

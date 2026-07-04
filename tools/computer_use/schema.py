@@ -22,9 +22,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
+        "Works on any window — "
         "hidden, minimized, or behind another app. Requires cua-driver to "
-        "be installed."
+        "be installed. If `list_apps`/`list_windows` returns empty on "
+        "this box, callers can pass `pid` + `window_id` directly to "
+        "target a specific window without going through discovery."
     ),
     "parameters": {
         "type": "object",
@@ -200,6 +202,41 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "window to front (DISRUPTS the user). Default false "
                     "— input is routed to the app without raising, "
                     "matching the background co-work model."
+                ),
+            },
+            # ── direct targeting (bypass list_windows) ────────────
+            #
+            # When cua-driver's discovery (list_apps / list_windows) returns
+            # empty for transient or environmental reasons, the wrapper
+            # historically had no fallback — every capture() / focus_app()
+            # returned 0x0 / "no on-screen window." Allowing callers to
+            # supply pid + window_id directly lets the backend skip the
+            # list_windows round-trip and target a window the caller has
+            # already resolved via cua-driver's daemon directly (CLI or
+            # process inspection).
+            #
+            # Both fields are optional; omitting them preserves the original
+            # capture-frontmost / focus-by-app-name behavior. When pid is
+            # provided, window_id should also be provided — the backend uses
+            # (pid, window_id) as the unique key.
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Optional. Process ID of the target window. Use with "
+                    "`window_id` to bypass `list_windows` when discovery is "
+                    "broken. The cua-driver daemon (`cua-driver list_windows`) "
+                    "and PowerShell `(Get-Process | Where MainWindowHandle)` "
+                    "are reliable sources for both values when discovery "
+                    "returns empty."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Optional. Window handle (HWND on Windows, "
+                    "CGWindowID on macOS) of the target window. Required "
+                    "when `pid` is provided so the backend can disambiguate "
+                    "a window within a process."
                 ),
             },
             # ── return shape ───────────────────────────────────────

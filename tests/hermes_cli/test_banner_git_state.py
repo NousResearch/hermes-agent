@@ -60,7 +60,28 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         state = banner.get_git_banner_state(repo_dir)
 
-    assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
+    assert state == {"mode": "branch", "upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
+
+
+def test_format_banner_version_label_stable_tag_mode():
+    from hermes_cli import banner
+
+    with patch.object(
+        banner,
+        "get_git_banner_state",
+        return_value={
+            "mode": "stable-tags",
+            "stable_tag": "v2026.5.16",
+            "current_tag": "v2026.5.16",
+            "local": "a91a57fa",
+            "up_to_date": True,
+        },
+    ):
+        value = banner.format_banner_version_label()
+
+    assert value.endswith("· stable v2026.5.16")
+    assert "origin/main" not in value
+    assert "upstream" not in value
 
 
 def test_get_git_banner_state_falls_back_to_build_sha_when_no_repo():

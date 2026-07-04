@@ -49,3 +49,14 @@ tools:
       - "{prompt}"
     run_in_cwd: true
     note: "ใช้โมเดลในเครื่องเป็นตัวสำรองฟรี คุณภาพต้องตรวจเข้มเท่าเดิม"
+
+  fable:
+    cmd:
+      - claude
+      - --model
+      - claude-fable-5
+      - -p
+      - "{prompt}"
+    run_in_cwd: true
+    brain: true
+    note: "สมองพิเศษ แพงสุด เรียกเฉพาะงานเกรดยาก (catalog หมวด 6) หรือแก้ไม่ผ่าน 2 รอบ · ห้ามให้เขียนโค้ด · เพดานเรียกอยู่ใน accounts.yaml"

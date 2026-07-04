@@ -1,0 +1,17 @@
+{
+  "project": "hermes-agent",
+  "remote_must_match": "hermes-agent.git",
+  "default_target": "main",
+  "stack": "python",
+  "checks": {
+    "lint": "python3 -m compileall -q scripts/ai-relay",
+    "test": "python3 scripts/ai-relay/relay-call.py --help > /dev/null && python3 scripts/ai-relay/gate-run.py --help > /dev/null && python3 scripts/ai-relay/relay-report.py --help > /dev/null"
+  },
+  "test_timeout_sec": 300,
+  "forbidden_paths": [".env", "*.key", "*.pem", ".hermes/*", "*.secret"],
+  "scope_guard": { "max_commits": 5, "max_files": 30 },
+  "ci": {
+    "enabled": false,
+    "skip_reason": "workflow ใน .github เป็นของ upstream (NousResearch) · สายส่งจริงคือ push ไป fork แล้ว VPS ดึงด้วย git pull fork main · ไม่มี pipeline บังคับกับ push นี้"
+  }
+}

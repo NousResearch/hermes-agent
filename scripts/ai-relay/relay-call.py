@@ -8,8 +8,11 @@
 หมายเหตุ: คำสั่งเรียก coder อ่านจาก .hermes/ai-relay/adapters.yaml
           บัญชี/สาย/เพดาน อ่านจาก .hermes/ai-relay/accounts.yaml
           ถ้าไม่มีไฟล์ ใช้ค่าปริยายในตัว (รองรับ ollama ได้ทันทีเพื่อทดสอบ)
+v2.2:     เพิ่ม fable (สมองพิเศษ · --tool fable · เพดานแยก max_fable_calls_per_session ·
+          ยืนเดี่ยวไม่เข้าสาย coder) · เพดานรอบต่อ issue นับข้าม coder · cooldown ตัวที่พังซ้ำ ·
+          อ่าน YAML ได้แม้ไม่มี PyYAML (ตัวอ่านสำรองในตัว)
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys
+import argparse, glob, json, os, re, shutil, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +20,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 try:
     import yaml
 except ImportError:
-    yaml = None
+    yaml = None  # ไม่มี PyYAML ก็ยังอ่าน config ได้ ด้วยตัวอ่านสำรองข้างล่าง
+try:
+    import fcntl  # ล็อกไฟล์กันสองโปรเซสเขียนตัวนับ/สถานะพร้อมกัน (มีบน Mac/Linux)
+except ImportError:
+    fcntl = None
+
+# บัญชีโปรแกรมที่อนุญาตให้ adapter เรียกได้ (กันไฟล์ตั้งค่าใน worktree ถูกแก้ให้รันคำสั่งอันตราย)
+# เพิ่มชั่วคราวได้ทาง env RELAY_EXTRA_BINS=ชื่อ:ชื่อ (ตั้งโดยคนคุมเครื่อง ไม่ใช่ไฟล์ใน worktree)
+ALLOWED_BINS = {"grok", "gemini", "ollama", "codex", "claude"}
+def allowed_bins():
+    extra = os.environ.get("RELAY_EXTRA_BINS", "")
+    return ALLOWED_BINS | {b for b in extra.split(":") if b}
 
 # ---- ค่าปริยาย (ใช้เมื่อไม่มีไฟล์ตั้งค่า) ----
 DEFAULT_ADAPTERS = {
@@ -25,18 +39,95 @@ DEFAULT_ADAPTERS = {
     "gemini": {"cmd": ["gemini","-p","{prompt}","-m","gemini-2.5-flash","--skip-trust","--approval-mode","yolo","--output-format","text"], "run_in_cwd": True},
     "ollama": {"cmd": ["ollama","run","{model}","{prompt}"], "run_in_cwd": True},
     "codex":  {"cmd": ["codex","exec","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
+    # สมองพิเศษ (brain) · เฉพาะงานเกรด "ยาก" หรือบันไดส่งต่อขึ้น · ห้ามเข้าสายสำรองของ coder
+    "fable":  {"cmd": ["claude","--model","claude-fable-5","-p","{prompt}"], "run_in_cwd": True, "brain": True},
 }
 DEFAULT_ACCOUNTS = {
     "fallback": {"code_writing": ["grok","codex","gemini","ollama"]},
-    "limits": {"max_rounds_per_issue": 3, "max_calls_per_session": 50, "budget": None},
+    "limits": {"max_rounds_per_issue": 3, "max_calls_per_session": 50,
+               "max_fable_calls_per_session": 3, "budget": None},
+    "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
     "ollama_models": {"default": "qwen3:8b", "code": "deepseek-r1:7b"},
 }
 
+# ---- ตัวอ่าน YAML สำรอง (ใช้เมื่อไม่มี PyYAML) ----
+# อ่านเฉพาะโครงที่ Relay ใช้จริง: mapping ซ้อนกัน · list ของค่า · list ของ mapping (- id: x)
+def _scalar(v: str):
+    v = v.strip()
+    if v[:1] in "\"'" and v[-1:] == v[:1] and len(v) >= 2:
+        return v[1:-1]
+    if " #" in v:  # ตัด comment ท้ายบรรทัด (ค่าไม่ได้ห่อ quote)
+        v = v.split(" #", 1)[0].strip()
+    low = v.lower()
+    if low in ("null", "~", ""): return None
+    if low == "true": return True
+    if low == "false": return False
+    for cast in (int, float):
+        try: return cast(v)
+        except ValueError: pass
+    return v
+
+def _mini_yaml(text: str):
+    lines = [l for l in (raw.rstrip() for raw in text.splitlines())
+             if l.strip() and not l.strip().startswith("#")]
+    pos = 0
+    def indent_of(l): return len(l) - len(l.lstrip(" "))
+    def parse_block(indent):
+        nonlocal pos
+        result = None
+        while pos < len(lines):
+            line = lines[pos]
+            cur = indent_of(line)
+            if cur != indent:
+                break
+            s = line.strip()
+            if s.startswith("- "):
+                if result is None: result = []
+                if not isinstance(result, list): break
+                item = s[2:].strip()
+                pos += 1
+                if ":" in item and item[:1] not in "\"'":
+                    k, _, v = item.partition(":")
+                    d = {k.strip(): _scalar(v) if v.strip() else None}
+                    while pos < len(lines):
+                        nline = lines[pos]
+                        ni = indent_of(nline)
+                        if ni <= indent or nline.strip().startswith("- "): break
+                        nk, _, nv = nline.strip().partition(":")
+                        pos += 1
+                        if nv.strip():
+                            d[nk.strip()] = _scalar(nv)
+                        elif pos < len(lines) and indent_of(lines[pos]) > ni:
+                            d[nk.strip()] = parse_block(indent_of(lines[pos]))
+                        else:
+                            d[nk.strip()] = None
+                    result.append(d)
+                else:
+                    result.append(_scalar(item))
+            else:
+                if result is None: result = {}
+                if not isinstance(result, dict): break
+                k, _, v = s.partition(":")
+                pos += 1
+                if v.strip():
+                    result[k.strip()] = _scalar(v)
+                elif pos < len(lines) and indent_of(lines[pos]) > cur:
+                    result[k.strip()] = parse_block(indent_of(lines[pos]))
+                else:
+                    result[k.strip()] = None
+        return result
+    return parse_block(0) or {}
+
 def load_yaml(p: Path):
-    if p.exists() and yaml:
-        try: return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        except Exception: return {}
-    return {}
+    if not p.exists():
+        return {}
+    try:
+        text = p.read_text(encoding="utf-8")
+        if yaml:
+            return yaml.safe_load(text) or {}
+        return _mini_yaml(text)
+    except Exception:
+        return {}
 
 def cfg_dir(cwd: Path): return cwd/".hermes"/"ai-relay"
 
@@ -82,8 +173,18 @@ REASON = {
     "crash": "AI ตอบไม่ได้/พัง ลองซ้ำหรือสลับตัวสำรอง",
 }
 
-_SECRET_RE = re.compile(r"((?:token|password|secret|api[_-]?key|bearer)\s*[=:]\s*)\S+", re.I)
-def redact(t): return _SECRET_RE.sub(r"\1***", t or "")
+# กฎบังรหัสลับชุดเดียวกับ gate-run (URL ฝัง user:pass · key=value · รหัสขึ้นต้น sk-)
+_SECRET_RE = [
+    re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.I),
+    re.compile(r"((?:token|password|secret|api[_-]?key|bearer)\s*[=:]\s*)\S+", re.I),
+    re.compile(r"\b(sk-[A-Za-z0-9]{8,})\b"),
+]
+def redact(t):
+    if not t: return t or ""
+    t = _SECRET_RE[0].sub(r"\1***@", t)
+    t = _SECRET_RE[1].sub(r"\1***", t)
+    t = _SECRET_RE[2].sub("***", t)
+    return t
 
 def resolve_codex_bin():
     """หา codex CLI ข้ามเครื่อง · ไล่ตามลำดับ:
@@ -120,7 +221,9 @@ def write_ledger(cwd: Path, row: dict):
     if not f.exists():
         f.write_text("| "+" | ".join(cols)+" |\n|"+"---|"*len(cols)+"\n", encoding="utf-8")
     with f.open("a", encoding="utf-8") as fh:
+        if fcntl: fcntl.flock(fh, fcntl.LOCK_EX)
         fh.write("| "+" | ".join(str(row.get(c,"")) for c in cols)+" |\n")
+        if fcntl: fcntl.flock(fh, fcntl.LOCK_UN)
     return str(f)
 
 def run_once(spec, prompt, cwd, model):
@@ -135,11 +238,53 @@ def run_once(spec, prompt, cwd, model):
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
 
-# ---- ตัวนับงบระดับ session (ไฟล์เล็กใน cfg dir) ----
+# ---- ตัวนับงบระดับ session (ไฟล์เล็กใน cfg dir · ล็อกไฟล์กันนับพลาดเมื่อรันพร้อมกัน) ----
+def bump_counter(cwd: Path, name: str):
+    f = cfg_dir(cwd)/name; f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, "a+", encoding="utf-8") as fh:
+        if fcntl: fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.seek(0)
+        try: n = int((fh.read() or "0").strip() or 0)
+        except Exception: n = 0
+        n += 1
+        fh.seek(0); fh.truncate(); fh.write(str(n))
+        if fcntl: fcntl.flock(fh, fcntl.LOCK_UN)
+    return n
+
 def bump_calls(cwd: Path):
-    f = cfg_dir(cwd)/".session-calls"; f.parent.mkdir(parents=True, exist_ok=True)
-    n = int(f.read_text()) if f.exists() else 0
-    n += 1; f.write_text(str(n)); return n
+    return bump_counter(cwd, ".session-calls")
+
+# ---- cooldown: ตัวไหนพัง/ชนโควต้าซ้ำในช่วงสั้น พักตัวนั้นชั่วคราว ไม่เสียเวลาลองซ้ำทุกรอบ ----
+def _cooldown_file(cwd: Path): return cfg_dir(cwd)/".cooldown.json"
+
+def load_cooldown(cwd: Path):
+    f = _cooldown_file(cwd)
+    try: return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except Exception: return {}
+
+def save_cooldown(cwd: Path, state: dict):
+    f = _cooldown_file(cwd); f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".json.tmp")   # เขียนไฟล์ชั่วคราวแล้วสลับทั้งก้อน กันไฟล์ครึ่งๆ กลางๆ
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, f)
+
+def in_cooldown(state: dict, tool: str, now: float):
+    return float(state.get(tool, {}).get("until", 0)) > now
+
+def record_fail(cwd: Path, tool: str, cd: dict, now: float):
+    # อ่าน-แก้-เขียน ใต้ล็อกเดียว กันสองโปรเซสทับสถานะกัน
+    lockf = cfg_dir(cwd)/".cooldown.lock"; lockf.parent.mkdir(parents=True, exist_ok=True)
+    with open(lockf, "w") as lk:
+        if fcntl: fcntl.flock(lk, fcntl.LOCK_EX)
+        state = load_cooldown(cwd)
+        e = state.setdefault(tool, {"fails": [], "until": 0})
+        window = float(cd.get("window_seconds", 300))
+        e["fails"] = [t for t in e.get("fails", []) if now - t <= window] + [now]
+        if len(e["fails"]) >= int(cd.get("fail_threshold", 3)):
+            e["until"] = now + float(cd.get("minutes", 10)) * 60
+            e["fails"] = []
+        save_cooldown(cwd, state)
+        if fcntl: fcntl.flock(lk, fcntl.LOCK_UN)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -164,8 +309,10 @@ def main():
             ccmd[0] = resolve_codex_bin()
             adapters["codex"] = {**adapters["codex"], "cmd": ccmd}
     accounts = {**DEFAULT_ACCOUNTS, **load_yaml(cfg_dir(cwd)/"accounts.yaml")}
-    limits = accounts.get("limits", DEFAULT_ACCOUNTS["limits"])
+    limits = {**DEFAULT_ACCOUNTS["limits"], **(accounts.get("limits") or {})}
+    cd_cfg = {**DEFAULT_ACCOUNTS["cooldown"], **(accounts.get("cooldown") or {})}
     models = accounts.get("ollama_models", DEFAULT_ACCOUNTS["ollama_models"])
+    is_brain = bool(adapters.get(a.tool, {}).get("brain"))
 
     # เพดาน session
     calls = bump_calls(cwd)
@@ -174,12 +321,57 @@ def main():
                "calls_used":calls,"ledger_written":False}
         print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
 
-    # สายลำดับ: tool ที่เลือก + สำรองจาก fallback (ตัด tool ที่ไม่มี adapter)
-    chain = [a.tool] + [t for t in accounts.get("fallback",{}).get("code_writing",[]) if t != a.tool]
-    chain = [t for t in chain if t in adapters]
+    # เพดานแยกของสมองพิเศษ (fable แพงสุด · นับต่างหาก · เกิน = หยุดทันที)
+    if is_brain:
+        fable_calls = bump_counter(cwd, ".session-fable-calls")
+        if limits.get("max_fable_calls_per_session") and fable_calls > limits["max_fable_calls_per_session"]:
+            out = {"status":"limit_exceeded","tool":a.tool,
+                   "reason_human":f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) ให้กลับไปใช้สมองหลัก หรือถามเจ้าของก่อน",
+                   "fable_calls_used":fable_calls,"calls_used":calls,"ledger_written":False}
+            print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
 
-    tried, rotated_from = [], ""
+    # เพดานรอบแก้ต่อ issue (นับข้ามทุก coder · ไม่รีเซ็ตตอนสลับ) · สมองพิเศษไม่กินรอบ coder
+    safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", a.task_id)
+    rounds = 0
+    if not is_brain:
+        rounds = bump_counter(cwd, f".rounds-{safe_task}")
+        if limits.get("max_rounds_per_issue") and rounds > limits["max_rounds_per_issue"]:
+            out = {"status":"limit_exceeded","tool":a.tool,
+                   "reason_human":f"issue {a.task_id} แก้เกิน {limits['max_rounds_per_issue']} รอบแล้ว หยุดเพื่อกันวนไหม้เงิน ให้ยกขึ้นสมองคิดใหม่หรือถามเจ้าของ",
+                   "rounds_used":rounds,"calls_used":calls,"ledger_written":False}
+            print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
+
+    # สายลำดับ: สมองพิเศษยืนเดี่ยว (พัง = รายงานกลับ ไม่ไหลลง coder) · coder มีสายสำรอง
+    if is_brain:
+        chain = [a.tool]
+    else:
+        chain = [a.tool] + [t for t in accounts.get("fallback",{}).get("code_writing",[]) if t != a.tool]
+        chain = [t for t in chain if t in adapters and not adapters[t].get("brain")]
+
+    # ข้ามตัวที่ติด cooldown (พังซ้ำเมื่อกี้ ยังไม่ครบเวลาพัก)
+    now = time.time()
+    cooldown_state = load_cooldown(cwd)
+    tried = [f"{t}:cooldown-skip" for t in chain if in_cooldown(cooldown_state, t, now)]
+    chain = [t for t in chain if not in_cooldown(cooldown_state, t, now)]
+    if not chain:
+        print(json.dumps({"status":"crash","tool":a.tool,
+            "reason_human":"ทุกตัวในสายติด cooldown (พังซ้ำเมื่อสักครู่) รอครบเวลาพักหรือถามเจ้าของ",
+            "tried":tried}, ensure_ascii=False)); sys.exit(40)
+
+    def attempt_row(tool, st, rotated_from, output_ref=""):
+        return write_ledger(cwd, {"timestamp":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "issue_id":a.task_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
+            "status":st,"calls_used":calls,"output_ref":output_ref})
+
+    rotated_from = ""
     for tool in chain:
+        # ด่านบัญชีโปรแกรมอนุญาต: กันไฟล์ adapters.yaml ใน worktree ถูกแก้ให้รันคำสั่งอันตราย
+        bin_name = Path(str((adapters[tool].get("cmd") or ["?"])[0])).name
+        if bin_name not in allowed_bins():
+            tried.append(f"{tool}:blocked-bin")
+            attempt_row(tool, "blocked-bin", rotated_from)
+            rotated_from = tool
+            continue
         model = models.get("code") if tool == "ollama" else ""
         relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
         code, out, err = run_once(adapters[tool], prompt, cwd, model)
@@ -195,17 +387,19 @@ def main():
                 "status":"ok","calls_used":calls,"output_ref":str(ofile)})
             print(json.dumps({"status":"ok","tool":tool,"account_used":tool,"rotated_from":rotated_from,
                 "reason_human":REASON["ok"],"output_ref":str(ofile),"ledger_written":True,"calls_used":calls,
-                "tried":tried}, ensure_ascii=False))
+                "rounds_used":rounds,"tried":tried}, ensure_ascii=False))
             sys.exit(0)
 
-        # ไม่ ok → ตัดสินว่าสลับหรือหยุด
+        # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
+        attempt_row(tool, st, rotated_from)
         if st in ("quota", "crash"):
+            record_fail(cwd, tool, cd_cfg, time.time())  # พังซ้ำครบเกณฑ์ = พักตัวนี้ชั่วคราว
             rotated_from = tool
             continue   # สลับตัวถัดไปในสาย
         if st == "auth":
             relay_now("clear")
             print(json.dumps({"status":"auth","tool":tool,"reason_human":REASON["auth"],
-                "hint":f"ล็อกอินใหม่: {tool} login","tried":tried}, ensure_ascii=False)); sys.exit(20)
+                "hint":f"ล็อกอินใหม่: {tool} login","tried":tried,"ledger_written":True}, ensure_ascii=False)); sys.exit(20)
         if st == "not_found":
             rotated_from = tool
             continue   # ไม่มีตัวนี้ → ลองตัวถัดไป

@@ -10,6 +10,8 @@ accounts:
     - id: codex-staff
   gemini:
     - id: gemini-google-staff
+  fable:
+    - id: claude-staff
 
 fallback:
   code_writing:
@@ -17,11 +19,18 @@ fallback:
     - codex
     - gemini
     - ollama
+  # ห้ามใส่ fable ในสายนี้ · fable เป็นสมองพิเศษ (เฉพาะงานเกรดยาก) ไม่ใช่ coder สำรอง
 
 limits:
   max_rounds_per_issue: 3
   max_calls_per_session: 50
+  max_fable_calls_per_session: 3
   budget: null
+
+cooldown:
+  fail_threshold: 3
+  window_seconds: 300
+  minutes: 10
 
 ollama_models:
   default: qwen3:8b

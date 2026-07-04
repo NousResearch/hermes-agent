@@ -9,6 +9,11 @@ import argparse, json, os, re, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import fcntl  # ล็อกไฟล์กันสองโปรเซส append ledger พร้อมกัน (มีบน Mac/Linux)
+except ImportError:
+    fcntl = None
+
 GATE_TIMEOUT = 1800
 
 def detect_gate(cwd: Path):
@@ -61,7 +66,9 @@ def write_ledger(cwd: Path, row: dict):
     if not ledger.exists():
         ledger.write_text("| "+" | ".join(cols)+" |\n|"+"---|"*len(cols)+"\n", encoding="utf-8")
     with ledger.open("a", encoding="utf-8") as f:
+        if fcntl: fcntl.flock(f, fcntl.LOCK_EX)
         f.write("| "+" | ".join(str(row.get(c,"")) for c in cols)+" |\n")
+        if fcntl: fcntl.flock(f, fcntl.LOCK_UN)
     return str(ledger)
 
 def main():
@@ -99,7 +106,7 @@ def main():
     status = "pass" if exit_code == 0 else "fail"
     od = cwd/".hermes"/"gate-output"; od.mkdir(parents=True, exist_ok=True)
     safe_task = re.sub(r"[^A-Za-z0-9._-]","_",a.task_id)
-    out_file = od/f"{safe_task}-{ts.replace(':','')}.log"
+    out_file = od/f"{safe_task}-{ts.replace(':','')}-{os.getpid()}.log"  # ใส่ pid กันชื่อชนเมื่อรันพร้อมกันในวินาทีเดียว
     out_file.write_text(redact(output), encoding="utf-8")
     ledger = write_ledger(cwd, {**base,"gate_command":label,"gate_exit":exit_code,
                                 "result":status,"status":status,"output_ref":str(out_file)})

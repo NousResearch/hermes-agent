@@ -171,6 +171,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if (
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
+                or "codex_compaction_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
             ):
@@ -201,6 +202,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            msg.pop("codex_compaction_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

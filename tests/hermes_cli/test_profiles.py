@@ -1385,6 +1385,33 @@ class TestExportImport:
 
         assert not any("__pycache__" in n for n in names)
 
+    def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
+        """Export succeeds when the profile directory contains broken symlinks.
+
+        In Docker/custom HERMES_HOME deployments, unrelated directories may
+        contain stale symlinks.  copytree must not follow them.
+        """
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        # Create a broken symlink (target does not exist)
+        (default_dir / "broken_link").symlink_to("/nonexistent/path")
+        # Create a valid symlink for comparison
+        (default_dir / "valid_target.txt").write_text("real data")
+        (default_dir / "valid_link").symlink_to(default_dir / "valid_target.txt")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        assert result.exists()
+        with tarfile.open(str(result), "r:gz") as tf:
+            names = tf.getnames()
+            # Broken symlink is preserved as a symlink entry
+            assert any("broken_link" in n for n in names)
+            # Valid symlink and its target are both present
+            assert any("valid_link" in n for n in names)
+            assert any("valid_target.txt" in n for n in names)
+
     def test_import_default_without_name_raises(self, profile_env, tmp_path):
         """Importing a default export without --name gives clear guidance."""
         default_dir = get_profile_dir("default")

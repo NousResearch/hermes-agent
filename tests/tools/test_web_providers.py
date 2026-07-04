@@ -285,6 +285,7 @@ class TestUnconfiguredErrorEnvelopeParity:
             "EXA_API_KEY",
             "PARALLEL_API_KEY",
             "FIRECRAWL_API_KEY",
+            "FIRECRAWL_API_KEYS",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
             "TOOL_GATEWAY_DOMAIN",

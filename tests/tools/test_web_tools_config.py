@@ -192,7 +192,7 @@ class TestFirecrawlClientConfig:
 
     def test_empty_string_key_no_url_raises(self):
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
-        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""}):
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "", "FIRECRAWL_API_KEYS": ""}):
             with patch("tools.web_tools.Firecrawl"):
                 with patch("tools.web_tools._read_nous_access_token", return_value=None):
                     from tools.web_tools import _get_firecrawl_client
@@ -212,6 +212,7 @@ class TestBackendSelection:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_KEYS",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
@@ -534,6 +535,7 @@ class TestCheckWebApiKey:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_KEYS",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",

@@ -571,7 +571,10 @@ def _resolve_active_context_length() -> int:
     back to a fixed token cutoff in that case.
     """
     try:
-        from hermes_cli.config import load_config as _load
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            load_config as _load,
+        )
         cfg = _load() or {}
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         if not isinstance(model_cfg, dict):
@@ -579,8 +582,50 @@ def _resolve_active_context_length() -> int:
         model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
         if not model_id:
             return 0
+
+        provider = (model_cfg.get("provider") or "").strip()
+        base_url = (model_cfg.get("base_url") or "").strip()
+
+        config_context_length = None
+        raw_context_length = model_cfg.get("context_length")
+        try:
+            if raw_context_length is not None:
+                parsed_context_length = int(raw_context_length)
+                if parsed_context_length > 0:
+                    config_context_length = parsed_context_length
+        except (TypeError, ValueError):
+            config_context_length = None
+
+        custom_providers = get_compatible_custom_providers(cfg)
+        if provider and not base_url:
+            provider_lower = provider.lower()
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                entry_names = {
+                    str(entry.get("name") or "").strip().lower(),
+                    str(entry.get("provider_key") or "").strip().lower(),
+                }
+                if provider_lower not in entry_names:
+                    continue
+                base_url = (entry.get("base_url") or "").strip()
+                if config_context_length is None:
+                    try:
+                        entry_context_length = int(entry.get("context_length") or 0)
+                        if entry_context_length > 0:
+                            config_context_length = entry_context_length
+                    except (TypeError, ValueError):
+                        pass
+                break
+
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        return int(get_model_context_length(
+            model_id,
+            base_url=base_url,
+            config_context_length=config_context_length,
+            provider=provider,
+            custom_providers=custom_providers,
+        ) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

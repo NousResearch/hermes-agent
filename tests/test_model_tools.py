@@ -8,6 +8,7 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    _resolve_active_context_length,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
@@ -203,10 +204,103 @@ class TestHandleFunctionCall:
 
 
 # =========================================================================
+# Active context-length resolution
+# =========================================================================
+class TestResolveActiveContextLength:
+    def test_passes_model_config_to_context_length_resolver(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "example/model",
+                    "provider": "example-provider",
+                    "base_url": "https://example.invalid/v1",
+                    "context_length": "123456",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda cfg: [],
+        )
+
+        def fake_get_model_context_length(model, **kwargs):
+            calls.append((model, kwargs))
+            return kwargs["config_context_length"]
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            fake_get_model_context_length,
+        )
+
+        assert _resolve_active_context_length() == 123456
+        assert calls == [(
+            "example/model",
+            {
+                "base_url": "https://example.invalid/v1",
+                "config_context_length": 123456,
+                "provider": "example-provider",
+                "custom_providers": [],
+            },
+        )]
+
+    def test_resolves_custom_provider_base_url_before_context_lookup(self, monkeypatch):
+        custom_providers = [{
+            "provider_key": "local-llm",
+            "name": "Local LLM",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "models": {"llama-local": {"context_length": 65536}},
+        }]
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "llama-local",
+                    "provider": "local-llm",
+                },
+                "providers": {
+                    "local-llm": {
+                        "base_url": "http://127.0.0.1:1234/v1",
+                        "models": {"llama-local": {"context_length": 65536}},
+                    }
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda cfg: custom_providers,
+        )
+
+        def fake_get_model_context_length(model, **kwargs):
+            calls.append((model, kwargs))
+            return 65536
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            fake_get_model_context_length,
+        )
+
+        assert _resolve_active_context_length() == 65536
+        assert calls == [(
+            "llama-local",
+            {
+                "base_url": "http://127.0.0.1:1234/v1",
+                "config_context_length": None,
+                "provider": "local-llm",
+                "custom_providers": custom_providers,
+            },
+        )]
+
+
+# =========================================================================
 # Agent loop tools
 # =========================================================================
-
 class TestAgentLoopTools:
+
     def test_expected_tools_in_set(self):
         assert "todo" in _AGENT_LOOP_TOOLS
         assert "memory" in _AGENT_LOOP_TOOLS

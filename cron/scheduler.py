@@ -39,6 +39,11 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from agent.inactivity_watch import (
+    POLL_INTERVAL_SECONDS,
+    build_activity_diagnostic,
+    wait_for_future_or_inactivity,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -2772,7 +2777,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -2781,29 +2785,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+            _wait_result = wait_for_future_or_inactivity(
+                _cron_future,
+                agent=agent,
+                inactivity_limit=_cron_inactivity_limit,
+                poll_interval=POLL_INTERVAL_SECONDS,
+            )
+            result = _wait_result.result
+            _inactivity_timeout = _wait_result.timed_out
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -2812,17 +2801,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
-            _activity = {}
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _activity = agent.get_activity_summary()
-                except Exception:
-                    pass
-            _last_desc = _activity.get("last_activity_desc", "unknown")
-            _secs_ago = _activity.get("seconds_since_activity", 0)
-            _cur_tool = _activity.get("current_tool")
-            _iter_n = _activity.get("api_call_count", 0)
-            _iter_max = _activity.get("max_iterations", 0)
+            _activity = build_activity_diagnostic(agent)
+            _last_desc = _activity.last_activity_desc
+            _secs_ago = _activity.seconds_since_activity
+            _cur_tool = _activity.current_tool
+            _iter_n = _activity.api_call_count
+            _iter_max = _activity.max_iterations
 
             logger.error(
                 "Job '%s' idle for %.0fs (inactivity limit %.0fs) "

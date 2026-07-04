@@ -273,6 +273,24 @@ def test_seeded_folder_repo_does_not_duplicate_a_session_derived_repo():
     assert [r["path"] for r in node["repos"]] == ["/www/app"]
 
 
+def test_non_git_project_folder_uses_the_standard_main_lane():
+    # Non-git project folders have no resolver/persisted repo root, but they are
+    # still main checkouts for the desktop tree. Use the same lane id the live
+    # session overlay computes, otherwise the initial snapshot shows the folder
+    # name and the overlay adds a duplicate "main" lane with the same session.
+    project = _project("p_notes", "Notes", ["/work/notes"])
+    session = _session("/work/notes")
+
+    tree = pt.build_tree([project], [session], [], resolve=None, hydrate=True)
+
+    node = next(p for p in tree["projects"] if p["id"] == "p_notes")
+    lanes = node["repos"][0]["groups"]
+
+    assert [g["id"] for g in lanes] == ["/work/notes::branch::main"]
+    assert [g["label"] for g in lanes] == ["main"]
+    assert lanes[0]["sessions"] == [session]
+
+
 def test_discovered_repo_owned_by_explicit_project_is_not_duplicated():
     project = _project("p_app", "App", ["/www/app"])
     discovered = [{"root": "/www/app", "label": "app", "sessions": 2, "last_active": 1}]

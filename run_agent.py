@@ -3891,6 +3891,8 @@ class AIAgent:
 
             if "api.githubcopilot.com" in str(base_url or "").lower():
                 return _httpx.Client(verify=verify)
+            if "opencode.ai" in str(base_url or "").lower():
+                return _httpx.Client(verify=verify)
 
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
             if hasattr(_socket, "TCP_KEEPIDLE"):

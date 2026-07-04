@@ -170,6 +170,9 @@ def build_keepalive_http_client(
         if "api.githubcopilot.com" in str(base_url or "").lower():
             client_cls = httpx.AsyncClient if async_mode else httpx.Client
             return client_cls(verify=verify)
+        if "opencode.ai" in str(base_url or "").lower():
+            client_cls = httpx.AsyncClient if async_mode else httpx.Client
+            return client_cls(verify=verify)
 
         sock_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
         if hasattr(socket, "TCP_KEEPIDLE"):

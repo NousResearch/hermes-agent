@@ -2565,6 +2565,41 @@ class TestEditMessageStreamingPipeline:
 
 
 # ---------------------------------------------------------------------------
+# TestDeleteMessage
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteMessage:
+    """Verify delete_message() calls Slack chat.delete with correct params."""
+
+    @pytest.mark.asyncio
+    async def test_delete_message_success(self, adapter):
+        """delete_message calls chat_delete with channel and ts."""
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+        result = await adapter.delete_message("C123", "1234.5678")
+        assert result is True
+        kwargs = adapter._app.client.chat_delete.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["ts"] == "1234.5678"
+
+    @pytest.mark.asyncio
+    async def test_delete_message_not_connected(self, adapter):
+        """delete_message returns False when adapter is not connected."""
+        adapter._app = None
+        result = await adapter.delete_message("C123", "1234.5678")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_message_api_error(self, adapter):
+        """delete_message returns False on API error (best-effort)."""
+        adapter._app.client.chat_delete = AsyncMock(
+            side_effect=Exception("Slack API error")
+        )
+        result = await adapter.delete_message("C123", "1234.5678")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
 # TestReactions
 # ---------------------------------------------------------------------------
 

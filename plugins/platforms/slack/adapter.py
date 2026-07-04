@@ -1489,6 +1489,29 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Slack message.
+
+        Used by the gateway's cleanup_progress path to remove temporary
+        tool-progress bubbles after the final response lands. Slack's
+        ``chat.delete`` API works for bot-posted messages. Failures are
+        non-fatal — the caller leaves the message in place.
+        """
+        if not self._app:
+            return False
+        try:
+            await self._get_client(chat_id).chat_delete(
+                channel=chat_id,
+                ts=message_id,
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Slack message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 

@@ -287,6 +287,7 @@ from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
@@ -8797,6 +8798,20 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     bin_dir = "Scripts" if _is_windows() else "bin"
     venv_python = venv_dir / bin_dir / python_name
     if not venv_python.exists():
+        # No venv interpreter at all. In a dev checkout that's normal (the
+        # dev may run hermes from any interpreter), so report healthy to
+        # avoid forcing reinstalls. But on a MANAGED install (the Windows
+        # installer / desktop bootstrap stamps `.hermes-bootstrap-complete`,
+        # and an interrupted update leaves `.update-incomplete`), the venv
+        # IS the install — its absence means a repair got interrupted after
+        # the old venv was moved aside, and "Already up to date!" would
+        # gaslight the user while nothing can run.
+        managed_markers = (
+            PROJECT_ROOT / ".hermes-bootstrap-complete",
+            _update_marker_path(),
+        )
+        if any(m.exists() for m in managed_markers):
+            return False, f"venv python missing ({venv_python})"
         return True, ""
 
     # Core web/serve imports plus their newest transitive deps. Import (not
@@ -8864,6 +8879,10 @@ def _detect_venv_python_processes(
         venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
     except OSError:
         venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
+    try:
+        root_prefix = str(PROJECT_ROOT.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        root_prefix = str(PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
 
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
@@ -8875,7 +8894,7 @@ def _detect_venv_python_processes(
 
     matches: list[tuple[int, str, str]] = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline"])
+        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
     except Exception:
         return []
     for proc in proc_iter:
@@ -8891,11 +8910,27 @@ def _detect_venv_python_processes(
             exe_norm = str(Path(exe).resolve()).lower()
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
-        if not exe_norm.startswith(venv_prefix):
+        cmdline_raw = " ".join(info.get("cmdline") or [])
+        cmdline_low = cmdline_raw.lower()
+        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
+
+        # Primary match: the executable itself lives under this venv
+        # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
+        is_holder = exe_norm.startswith(venv_prefix)
+        # Fallback: uv/base-interpreter trampolines run a python whose exe is
+        # OUTSIDE the venv but which still imports from it and holds its .pyd
+        # files. Catch those by what they're running: a cmdline that references
+        # this venv's path, or a `-m hermes_cli.main ...` invocation tied to
+        # this install (install root in the cmdline or as the working dir).
+        if not is_holder and venv_prefix in cmdline_low:
+            is_holder = True
+        if not is_holder and "hermes_cli.main" in cmdline_low:
+            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+                is_holder = True
+        if not is_holder:
             continue
         name = info.get("name") or Path(exe).name
-        cmdline = " ".join(info.get("cmdline") or [])[:120]
-        matches.append((int(pid), str(name), cmdline))
+        matches.append((int(pid), str(name), cmdline_raw[:120]))
     return matches
 
 
@@ -8925,7 +8960,7 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  Close the Hermes desktop app / other Hermes terminals, then re-run:"
     )
     lines.append("    hermes update")
-    lines.append("  (or use `hermes update --force` to proceed anyway at your own risk)")
+    lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
 
 
@@ -9392,9 +9427,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
     # files locked and corrupt the dependency sync below. Refuse rather than
     # race: killing the desktop backend is futile (the app supervises and
-    # respawns it), so the user must close the app. --force preserves the old
-    # behavior for users who know what they're doing.
-    if _is_windows() and not getattr(args, "force", False):
+    # respawns it), so the user must close the app. Deliberately NOT bypassed
+    # by plain --force: the desktop bootstrap updater passes --force to skip
+    # the hermes.exe shim guard above, but its lock probe only checks the shim
+    # and app.asar — a non-desktop venv python holding a .pyd would sail
+    # through and corrupt the sync (the exact failure this guard exists for).
+    # --force-venv is the explicit escape hatch.
+    if _is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
@@ -9619,6 +9658,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_cli.managed_uv import ensure_uv
 
                 repair_uv = ensure_uv()
+                # A managed install whose venv is gone entirely (interrupted
+                # repair after the old venv was moved aside) needs the venv
+                # recreated before dependencies can be installed into it.
+                venv_python_missing = not (
+                    PROJECT_ROOT
+                    / "venv"
+                    / ("Scripts" if _is_windows() else "bin")
+                    / ("python.exe" if _is_windows() else "python")
+                ).exists()
+                if venv_python_missing and repair_uv:
+                    print("→ Recreating virtual environment...")
+                    subprocess.run(
+                        [repair_uv, "venv", "venv"],
+                        cwd=PROJECT_ROOT,
+                        check=False,
+                    )
                 if repair_uv:
                     repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
                     _install_python_dependencies_with_optional_fallback(
@@ -12096,6 +12151,13 @@ def cmd_logs(args):
     )
 
 
+def cmd_console(args):
+    """Open the safe Hermes command console."""
+    from hermes_cli.console_engine import run_console_repl
+
+    return run_console_repl()
+
+
 def _build_provider_choices() -> list[str]:
     """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
     try:
@@ -12125,7 +12187,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -12947,6 +13009,11 @@ def main():
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
+
+    # =========================================================================
+    # console command  (parser built in hermes_cli/subcommands/console.py)
+    # =========================================================================
+    build_console_parser(subparsers, cmd_console=cmd_console)
 
     # =========================================================================
     # pairing command  (parser built in hermes_cli/subcommands/pairing.py)

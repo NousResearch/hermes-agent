@@ -1602,7 +1602,12 @@ function Install-Venv {
     Write-Info "Creating virtual environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
-    
+
+    # Tasks we disabled below and must re-enable no matter how this stage
+    # exits. Populated only with tasks that were ENABLED before we touched
+    # them, so a task the user deliberately disabled is never re-armed.
+    $gatewayTasksDisabled = @()
+    try {
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
@@ -1614,18 +1619,23 @@ function Install-Venv {
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
-            # Disarm respawners FIRST: the gateway autostart Scheduled Task and
-            # the Startup-folder entry both relaunch a killed gateway within
-            # seconds, and losing that race re-locks the venv's .pyd files
-            # between our kill sweep and Remove-Item (the July 2026
-            # _brotlicffi.pyd incident). schtasks /End stops a running task
-            # instance; /Change /DISABLE stops it from re-firing mid-install.
-            # Re-enabled after the venv is recreated (below). Best-effort: a
-            # missing task just errors quietly.
-            $gatewayTasksDisabled = @()
+            # Disarm the respawner FIRST: the gateway autostart Scheduled Task
+            # relaunches a killed gateway within seconds, and losing that race
+            # re-locks the venv's .pyd files between our kill sweep and
+            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # /End stops a running task instance; /Change /DISABLE stops it
+            # from re-firing mid-install. (The Startup-folder .vbs fallback is
+            # NOT touched: it only fires at logon, so it cannot respawn a
+            # gateway mid-install.) Re-enabled in the finally below — including
+            # on failure — but only for tasks that were enabled to begin with.
+            # Best-effort: a missing task just errors quietly.
             try {
                 schtasks /Query /FO CSV 2>$null | ConvertFrom-Csv | Where-Object { $_.TaskName -like '*Hermes_Gateway*' } | ForEach-Object {
                     $tn = $_.TaskName
+                    if ($_.Status -eq 'Disabled') {
+                        Write-Info "  gateway autostart task $tn is already disabled; leaving it that way"
+                        return
+                    }
                     schtasks /End /TN $tn 2>$null | Out-Null
                     schtasks /Change /TN $tn /DISABLE 2>$null | Out-Null
                     $gatewayTasksDisabled += $tn
@@ -1727,7 +1737,6 @@ function Install-Venv {
     # ok=true) when the venv was never created.
     $venvExitCode = $LASTEXITCODE
     if ($venvExitCode -ne 0) {
-        Pop-Location
         throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
     }
 
@@ -1742,19 +1751,21 @@ function Install-Venv {
     if (Test-Path $venvPythonExe) {
         $env:UV_PYTHON = $venvPythonExe
     }
-
-    Pop-Location
-    
-    # Re-arm the gateway autostart tasks disabled during the venv teardown.
-    # Same function scope, so the list survives even under the stage-per-
-    # process bootstrap. Deliberately NOT started here — dependencies aren't
-    # installed yet; the task fires normally on next logon and `hermes update`
-    # / the gateway resume path handles the immediate restart.
-    if ($gatewayTasksDisabled -and $gatewayTasksDisabled.Count -gt 0) {
-        foreach ($tn in $gatewayTasksDisabled) {
-            schtasks /Change /TN $tn /ENABLE 2>$null | Out-Null
+    } finally {
+        Pop-Location
+        # Re-arm the gateway autostart tasks disabled during the venv teardown
+        # — in a finally so a failed teardown/creation can never strand the
+        # user's gateway autostart in the disabled state. Same function scope,
+        # so the list survives even under the stage-per-process bootstrap.
+        # Deliberately NOT started here — dependencies aren't installed yet;
+        # the task fires normally on next logon and `hermes update` / the
+        # gateway resume path handles the immediate restart.
+        if ($gatewayTasksDisabled -and $gatewayTasksDisabled.Count -gt 0) {
+            foreach ($tn in $gatewayTasksDisabled) {
+                schtasks /Change /TN $tn /ENABLE 2>$null | Out-Null
+            }
+            Write-Info "Re-enabled gateway autostart task(s): $($gatewayTasksDisabled -join ', ')"
         }
-        Write-Info "Re-enabled gateway autostart task(s): $($gatewayTasksDisabled -join ', ')"
     }
 
     Write-Success "Virtual environment ready (Python $PythonVersion)"

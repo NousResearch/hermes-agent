@@ -15,10 +15,129 @@ import logging
 import os
 import html as _html
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_abandoned_task(task: asyncio.Task) -> None:
+    """Observe a detached task's terminal exception to avoid noisy loop logs."""
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
+
+
+async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None):
+    """Await with a wall-clock deadline that does not depend on loop timers.
+
+    ``asyncio.wait_for`` schedules its timeout on the event loop and then waits
+    for cancellation to propagate.  PTB/httpcore initialization can sit inside
+    cancellation-shielded anyio scopes, so a timed-out initialize() may never
+    hand control back to the retry ladder under some supervisors.  This helper
+    lets a daemon ``threading.Timer`` wake the loop and, on timeout, abandons
+    the shielded task instead of awaiting cancellation completion.
+
+    ``on_abandon`` (optional) is a zero-arg callable returning an awaitable that
+    is scheduled as a detached best-effort cleanup when the task is abandoned on
+    timeout.  The abandoned initialize() may leave a half-built httpx client /
+    connection pool open (it never completed and we do not await its
+    cancellation), so the caller uses this to shut that state down and avoid
+    leaking a pool per retry attempt.  Cleanup runs detached and its own errors
+    are swallowed, so it can never re-block the retry ladder.
+    """
+    task = asyncio.ensure_future(awaitable)
+    loop = asyncio.get_running_loop()
+    deadline = loop.create_future()
+
+    def _mark_expired() -> None:
+        if not deadline.done():
+            deadline.set_result(None)
+
+    def _expire_from_thread() -> None:
+        loop.call_soon_threadsafe(_mark_expired)
+
+    timer = threading.Timer(max(timeout, 0.0), _expire_from_thread)
+    timer.daemon = True
+    timer.start()
+    try:
+        done, _ = await asyncio.wait(
+            {task, deadline},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            if not deadline.done():
+                deadline.cancel()
+            return await task
+
+        task.cancel()
+        task.add_done_callback(_consume_abandoned_task)
+        if on_abandon is not None:
+            # Detached best-effort cleanup: close the half-built app's httpx
+            # client/pool so an abandoned attempt can't leak sockets across the
+            # retry ladder. Detached + exception-observed so it never re-blocks
+            # or re-hangs the ladder we are trying to advance.
+            cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
+            cleanup.add_done_callback(_consume_abandoned_task)
+        raise asyncio.TimeoutError()
+    finally:
+        timer.cancel()
+
+
+async def _run_abandon_cleanup(on_abandon) -> None:
+    """Run the abandonment cleanup coroutine, swallowing any failure.
+
+    Wrapped so a cleanup that itself hangs or raises cannot surface as an
+    unhandled task error or block anything — it is fully fire-and-forget.
+    """
+    try:
+        result = on_abandon()
+        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+            await result
+    except Exception:
+        logger.debug("Abandoned Telegram init cleanup failed", exc_info=True)
+
+
+async def _shutdown_abandoned_app(app) -> None:
+    """Release a half-built PTB app's httpx transports after init was abandoned.
+
+    ``Application.shutdown()`` / ``Bot.shutdown()`` are gated on the app's
+    ``_initialized`` / ``_requests_initialized`` flags, which a wedged
+    ``initialize()`` (the case this whole path exists for) may never have set —
+    so calling only ``app.shutdown()`` no-ops and leaks the connection pool it
+    was meant to close.  ``HTTPXRequest`` builds its ``httpx.AsyncClient``
+    eagerly in its constructor and its ``shutdown()`` gates only on
+    ``client.is_closed``, so closing the request transports directly releases
+    the pool regardless of PTB init state.  We try the clean path first, then
+    fall back to the transports.  All best-effort and swallowed.
+    """
+    if app is None:
+        return
+    try:
+        await app.shutdown()
+    except Exception:
+        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    # Directly close the underlying request transports (bypasses PTB's
+    # init-gated shutdown so the eagerly-built httpx pool is released even when
+    # the abandoned initialize() never flipped _initialized).
+    bot = getattr(app, "bot", None)
+    requests = getattr(bot, "_request", None) if bot is not None else None
+    if not requests:
+        return
+    for request in requests:
+        shutdown = getattr(request, "shutdown", None)
+        if shutdown is None:
+            continue
+        try:
+            result = shutdown()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -276,6 +395,14 @@ def _rich_normalize_linebreaks(text: str) -> str:
     tail = text[pos:]
     out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
     return ''.join(out)
+
+
+# Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
+# in CLOSE-WAIT the PTB polling task is blocked on epoll on the dead socket and
+# never wakes, so an unguarded stop() hangs indefinitely and wedges the whole
+# reconnect/teardown ladder. This is an internal safety bound (not a user knob),
+# applied identically at every stop() site so no path can hang on a dead socket.
+_UPDATER_STOP_TIMEOUT = 15.0
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -1871,7 +1998,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if app and app.updater and app.updater.running:
-                await app.updater.stop()
+                try:
+                    # Guard stop() with a timeout: when the underlying TCP
+                    # connection is in CLOSE-WAIT the PTB polling task is
+                    # blocked on epoll on the dead socket and never wakes up,
+                    # so an unguarded stop() hangs indefinitely.  The result
+                    # is that _polling_error_task stays alive-but-blocked
+                    # forever, every subsequent heartbeat probe sees it as
+                    # "in-flight" and skips triggering a new reconnect, and
+                    # the gateway silently drops messages for hours.
+                    # Bounding stop() lets the reconnect ladder always advance.
+                    # Refs: NousResearch/hermes-agent#58270
+                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] updater.stop() timed out during network-error "
+                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
+                        "and restart without clean stop",
+                        self.name,
+                    )
         except Exception:
             pass
 
@@ -2245,10 +2390,19 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             # Stop the local updater cleanly before sleeping.  If it's already
             # stopped (e.g. PTB raised before updater.running was set) this is
-            # a no-op.
+            # a no-op.  Bounded with a timeout for the same reason as the
+            # network-error path: a CLOSE-WAIT socket can wedge stop() on epoll
+            # forever, which would stall the conflict-retry ladder.
             try:
                 if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during conflict "
+                            "retry (likely CLOSE-WAIT socket); continuing",
+                            self.name,
+                        )
             except Exception:
                 pass
 
@@ -2316,16 +2470,33 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] %s Original error: %s",
             self.name, message, error,
         )
+        # Snapshot whether we are the call that actually transitions to fatal.
+        # A concurrent retry task scheduled by an earlier conflict may already
+        # be suspended past the entry guard; once _set_fatal_error flips the
+        # flag, adding an await below (the bounded stop()) yields the loop and
+        # lets that task reach this branch too — double-notifying the fatal
+        # handler.  Only the first transition notifies.
+        _already_fatal = (
+            self.has_fatal_error
+            and self.fatal_error_code == "telegram_polling_conflict"
+        )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
-                await self._app.updater.stop()
+                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] updater.stop() timed out after exhausting conflict "
+                "retries (likely CLOSE-WAIT socket); proceeding to fatal notify",
+                self.name,
+            )
         except Exception as stop_error:
             logger.warning(
                 "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
                 self.name, stop_error, exc_info=True,
             )
-        await self._notify_fatal_error()
+        if not _already_fatal:
+            await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,
@@ -2925,7 +3096,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
                     )
-                    await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
+                    await _await_with_thread_deadline(
+                        self._app.initialize(),
+                        timeout=_init_timeout,
+                        # On timeout the initialize() task is abandoned without
+                        # awaiting its cancellation (it may be wedged in a
+                        # shielded scope). Best-effort release the half-built
+                        # app's httpx client/connection pool so it isn't leaked
+                        # across the retry ladder (mirrors the client-close-on-
+                        # timeout pattern in agent/auxiliary_client.py).
+                        on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
+                    )
                     break
                 except asyncio.TimeoutError:
                     if _attempt < _max_connect - 1:
@@ -3205,9 +3386,20 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._app:
             try:
-                # Only stop the updater if it's running
+                # Only stop the updater if it's running.  Bounded with a
+                # timeout: a CLOSE-WAIT socket can wedge stop() on epoll
+                # indefinitely, which would hang disconnect() (and any
+                # gateway shutdown/restart waiting on it) forever.  On timeout
+                # we fall through to app.stop()/shutdown() to force teardown.
                 if self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during disconnect "
+                            "(likely CLOSE-WAIT socket); forcing app shutdown",
+                            self.name,
+                        )
                 if self._app.running:
                     await self._app.stop()
                 await self._app.shutdown()
@@ -4429,7 +4621,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             # Build provider buttons — folds provider groups (display only).
-            keyboard = self._build_provider_keyboard(providers)
+            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
 
             provider_label = get_label(current_provider)
             text = self.format_message(
@@ -4437,7 +4629,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"Select a provider:{provider_page_info}"
                 )
             )
 
@@ -4467,6 +4659,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "on_model_selected": on_model_selected,
                 "current_model": current_model,
                 "current_provider": current_provider,
+                "provider_page": 0,
             }
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4474,10 +4667,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    _PROVIDER_PAGE_SIZE = 10
     _MODEL_PAGE_SIZE = 8
 
-    def _build_provider_keyboard(self, providers: list):
-        """Build the top-level provider keyboard, folding provider groups.
+    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+        """Build the paginated top-level provider keyboard, folding groups.
 
         Provider families (Kimi/Moonshot, MiniMax, xAI Grok, ...) collapse to
         a single ``mpg:<gid>`` button; tapping it drills into a member
@@ -4522,9 +4716,30 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in providers:
                 buttons.append(_provider_button(p))
 
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        page_size = self._PROVIDER_PAGE_SIZE
+        total = len(buttons)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_buttons = buttons[start:end]
+
+        rows = [page_buttons[i : i + 2] for i in range(0, len(page_buttons), 2)]
+
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mpv:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mpv:{page + 1}"))
+            rows.append(nav)
+
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
-        return InlineKeyboardMarkup(rows)
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -4648,6 +4863,38 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
+                    )
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mpv:"):
+            # --- Provider page navigation ---
+            try:
+                page = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            state["provider_page"] = page
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4833,7 +5080,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif data == "mb":
             # --- Back to provider list (folds groups) ---
-            keyboard = self._build_provider_keyboard(state["providers"])
+            page = int(state.get("provider_page", 0) or 0)
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                state["providers"], page
+            )
 
             try:
                 provider_label = get_label(state["current_provider"])
@@ -4846,7 +5096,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"Select a provider:{provider_page_info}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4908,7 +5158,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

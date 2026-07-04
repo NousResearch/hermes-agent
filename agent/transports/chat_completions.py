@@ -417,13 +417,26 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
+        #
+        # When ``reasoning_config`` is set with ``enabled: False`` (e.g. a
+        # delegated sub-agent inherits ``delegation.reasoning_effort: none``
+        # from the parent), suppress the reasoning emission entirely.
+        # Otherwise non-thinking providers reject the request with HTTP 400
+        # when the previous assistant turn included ``content[].thinking``
+        # blocks that the child can no longer send back. See issue #51903.
         if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
-            if is_github_models:
-                gh_reasoning = params.get("github_reasoning_extra")
-                if gh_reasoning is not None:
-                    extra_body["reasoning"] = gh_reasoning
-            else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+            _reasoning_disabled = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _reasoning_disabled:
+                if is_github_models:
+                    gh_reasoning = params.get("github_reasoning_extra")
+                    if gh_reasoning is not None:
+                        extra_body["reasoning"] = gh_reasoning
+                else:
+                    extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

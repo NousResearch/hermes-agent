@@ -230,7 +230,6 @@ try {
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
-  process.exit(3);
 }
 let Spectrum,
   imessage,

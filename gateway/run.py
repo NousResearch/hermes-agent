@@ -19563,6 +19563,36 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+# External supervisors may watch this process-level gateway heartbeat. Keep it
+# distinct from cron/ticker_heartbeat, which reports only the cron ticker thread.
+_GATEWAY_HEARTBEAT_FILENAME = ".gateway.heartbeat"
+
+
+def _start_heartbeat_bumper(
+    stop_event: threading.Event,
+    hb_file: "Path",
+    interval: int = 30,
+    loop_alive: Optional[Callable[[], bool]] = None,
+):
+    """Touch .gateway.heartbeat while the gateway event loop is fresh."""
+    try:
+        hb_file.parent.mkdir(parents=True, exist_ok=True)
+        hb_file.touch(exist_ok=True)
+    except Exception as e:
+        logger.debug("Heartbeat init error: %s", e)
+    while not stop_event.is_set():
+        stop_event.wait(timeout=interval)
+        if stop_event.is_set():
+            break
+        try:
+            if loop_alive is not None and not loop_alive():
+                logger.debug("Heartbeat skipped: event loop not beating")
+                continue
+            hb_file.touch(exist_ok=True)
+        except Exception as e:
+            logger.debug("Heartbeat bump error: %s", e)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -20030,6 +20060,64 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     cron_thread.start()
 
+    # Touch a gateway heartbeat file for external health monitors, but only
+    # while the asyncio loop itself is still making progress. A plain background
+    # thread heartbeat would keep looking healthy after a loop deadlock.
+    hb_stop = threading.Event()
+    hb_file = _hermes_home / "cron" / _GATEWAY_HEARTBEAT_FILENAME
+    _last_loop_beat = [time.monotonic()]
+
+    async def _loop_beat_refresher():
+        while True:
+            _last_loop_beat[0] = time.monotonic()
+            await asyncio.sleep(15)
+
+    async def _stop_gateway_heartbeat():
+        hb_stop.set()
+        hb_thread.join(timeout=5)
+        _loop_beat_task.cancel()
+        try:
+            await _loop_beat_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _cleanup_post_start_backgrounds():
+        await _stop_gateway_heartbeat()
+
+        try:
+            from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+
+            stop_nous_auth_keepalive()
+        except Exception:
+            pass
+
+        cron_stop.set()
+        try:
+            cron_provider.stop()
+        except Exception as e:
+            logger.debug("Cron provider stop() error: %s", e)
+        cron_thread.join(timeout=5)
+        housekeeping_thread.join(timeout=5)
+
+        _planned_stop_watcher_stop.set()
+        _planned_stop_watcher_thread.join(timeout=2)
+
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers
+            shutdown_mcp_servers()
+        except Exception:
+            pass
+
+    _loop_beat_task = loop.create_task(_loop_beat_refresher())
+    hb_thread = threading.Thread(
+        target=_start_heartbeat_bumper,
+        args=(hb_stop, hb_file),
+        kwargs={"loop_alive": lambda: (time.monotonic() - _last_loop_beat[0]) < 90},
+        daemon=True,
+        name="gateway-heartbeat",
+    )
+    hb_thread.start()
+
     # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
     # sweep, curator) — runs independently of which cron provider is active.
     # Shares cron_stop as the shutdown signal.
@@ -20042,41 +20130,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
     
-    # Wait for shutdown
-    await runner.wait_for_shutdown()
-
+    # Wait for shutdown. Background cleanup lives in a finally so cancellation or
+    # unexpected shutdown exceptions cannot leave liveness/cron machinery behind.
     try:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
-
-        stop_nous_auth_keepalive()
-    except Exception:
-        pass
+        await runner.wait_for_shutdown()
+    finally:
+        await _cleanup_post_start_backgrounds()
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron scheduler + housekeeping cleanly
-    cron_stop.set()
-    try:
-        cron_provider.stop()
-    except Exception as e:
-        logger.debug("Cron provider stop() error: %s", e)
-    cron_thread.join(timeout=5)
-    housekeeping_thread.join(timeout=5)
-
-    # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
-    _planned_stop_watcher_stop.set()
-    _planned_stop_watcher_thread.join(timeout=2)
-
-    # Close MCP server connections
-    try:
-        from tools.mcp_tool import shutdown_mcp_servers
-        shutdown_mcp_servers()
-    except Exception:
-        pass
-
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 

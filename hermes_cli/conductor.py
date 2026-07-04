@@ -89,6 +89,32 @@ def _pc_dispatch(raw: str) -> dict:
     }
 
 
+def _media_dispatch(raw: str) -> dict:
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": "+æ://media^ffmpeg → deterministic media pipeline\n",
+        "stderr": "",
+        "surface": {
+            "kind": "media",
+            "address": raw,
+            "runtime": "ffmpeg",
+            "execution": "deterministic",
+            "allowed": [
+                "encode/render agentic explainer video",
+                "transcode brand assets",
+                "render Omniverse simulation trailer",
+                "watermark/distribute to members",
+            ],
+            "governance": {
+                "required": "+æ member token",
+                "audit": True,
+                "tracer": "Wyoming DAO LLC audit trail",
+            },
+        },
+    }
+
+
 def _dao_dispatch(raw: str) -> dict:
     return {
         "ok": True,
@@ -245,6 +271,7 @@ _DISPATCHER.register("NOUS://", _nous_dispatch)
 _DISPATCHER.register("vscode://", _vscode_dispatch)
 _DISPATCHER.register("reachy://", _reachy_dispatch)
 _DISPATCHER.register("mcp://", _mcp_dispatch)
+_DISPATCHER.register("+æ://media^ffmpeg", _media_dispatch)
 
 
 def _is_scheme_cmd(raw: str) -> bool:

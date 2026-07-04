@@ -27,20 +27,22 @@ path       = ...
 
 ### 2.1 Scheme Registry
 
-| Scheme            | Canonical Form            | Dispatcher Priority |
-|-------------------|--------------------------|---------------------|
-| `c://cc <target>` | change context            | primary             |
-| `H:// <tail>`     | global agentic domain     | primary             |
-| `hermes://`       | default runtime           | fallback            |
-| `pc://`           | private client            | primary             |
-| `pc://run <name>` | private client run        | primary             |
-| `mcp://`          | MCP tools surface         | primary             |
-| `vscode://`       | control plane             | primary             |
-|| `reachy://`       | robot/operator surface    | primary             |
-| `NOUS://`         | provider/runtime          | primary             |
-| `llc://`          | business surface          | primary             |
-| `daollc://`       | governance/identity       | primary             |
-| `intent://`       | intent/permission token   | primary             |
+| Scheme                | Canonical Form                   | Dispatcher Priority |
+|-----------------------|----------------------------------|---------------------|
+| `c://cc <target>`     | change context                   | primary             |
+| `H:// <tail>`         | global agentic domain            | primary             |
+| `hermes://`           | default runtime                  | fallback            |
+| `pc://`               | private client                   | primary             |
+| `pc://run <name>`     | private client run               | primary             |
+| `mcp://`              | MCP tools surface                | primary             |
+| `vscode://`           | control plane                    | primary             |
+| `reachy://`           | robot/operator surface           | primary             |
+| `NOUS://`             | provider/runtime                 | primary             |
+| `llc://`              | business surface                 | primary             |
+| `daollc://`           | governance/identity              | primary             |
+| `intent://`           | intent/permission token          | primary             |
+| `+æ://`               | DAO/intent token                 | primary             |
+| `+æ://media^ffmpeg`   | media pipeline primitive         | primary             |
 
 Longest-prefix wins. Overlapping prefixes are resolved by depth, not registration order.
 

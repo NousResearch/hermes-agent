@@ -19,7 +19,8 @@
 - `NOUS://` — Nous Research provider/runtime
 - `llc://` — CLI LLC business surface
 - `daollc://` — governance/identity
-- `intent://` — intent/permission token surface
+- `+æ://` — intent/permission token surface
+- `+æ://media^ffmpeg` — deterministic media/graphics primitive
 
 ## Bridge Endpoints
 

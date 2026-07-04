@@ -72,14 +72,6 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
-            # Keep the write side aligned with the read-side Hermes credential
-            # store list so dashboard/file writes cannot poison stores that
-            # read_file already refuses to expose.
-            *(
-                str(base / rel_path)
-                for base in (hermes_home, hermes_root)
-                for rel_path in _HERMES_CREDENTIAL_STORE_REL_PATHS
-            ),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -133,9 +125,6 @@ def is_write_denied(path: str) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
-
-    if Path(resolved).name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
-        return True
 
     if resolved in build_write_denied_paths(home):
         return True

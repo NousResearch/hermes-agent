@@ -1940,11 +1940,11 @@ async def fs_write_text(payload: FsWriteText):
     """
     target = _fs_path(payload.path)
     try:
-        from agent.file_safety import is_write_denied
+        from agent.file_safety import get_read_block_error, is_write_denied
     except Exception:  # noqa: BLE001 - safety helper is in-tree; surface as a server error if unavailable
         logger.exception("Dashboard fs write guard unavailable")
         raise HTTPException(status_code=500, detail="File write guard unavailable")
-    if is_write_denied(str(target)):
+    if is_write_denied(str(target)) or get_read_block_error(str(target)):
         raise HTTPException(
             status_code=403,
             detail="Writing protected credential or system paths is not allowed",

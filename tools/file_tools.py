@@ -558,10 +558,46 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
+def _windows_system_path_prefixes() -> tuple[str, ...]:
+    """Windows system-root / Program Files write-guard prefixes.
+
+    Derived from the environment so the drive letter and a localized
+    ``Program Files`` name are honoured; empty off Windows. The POSIX prefixes
+    below never match a Windows path, so before this the guard was a no-op on
+    Windows — this gives Windows the same coverage macOS got in 311dac197
+    (``/private/etc``). Comparison is case-insensitive (see
+    ``_check_sensitive_path``) because Windows paths are.
+    """
+    if os.name != "nt":
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    candidates = [
+        os.environ.get("SystemRoot"),
+        os.environ.get("windir"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramW6432"),
+        # Fallbacks if the environment is unexpectedly bare.
+        "C:\\Windows",
+        "C:\\Program Files",
+        "C:\\Program Files (x86)",
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        prefix = raw.rstrip("\\/") + "\\"
+        key = os.path.normcase(prefix)
+        if key not in seen:
+            seen.add(key)
+            out.append(prefix)
+    return tuple(out)
+
+
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
     "/private/etc/", "/private/var/",
-)
+) + _windows_system_path_prefixes()
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 _hermes_config_resolved: str | None = None
@@ -596,8 +632,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    # normcase so the Windows prefixes match case-insensitively (Windows paths
+    # are case-insensitive); a no-op on POSIX.
+    resolved_nc = os.path.normcase(resolved)
+    normalized_nc = os.path.normcase(normalized)
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        prefix_nc = os.path.normcase(prefix)
+        if resolved_nc.startswith(prefix_nc) or normalized_nc.startswith(prefix_nc):
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err

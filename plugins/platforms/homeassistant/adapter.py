@@ -485,8 +485,23 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
     extra = getattr(pconfig, "extra", {}) or {}
-    hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-    token = (getattr(pconfig, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
+    hass_url_val = extra.get("url")
+    if not hass_url_val:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            hass_url_val = get_env_value_prefer_dotenv("HASS_URL") or ""
+        except Exception:
+            hass_url_val = os.getenv("HASS_URL", "")
+    hass_url = hass_url_val.rstrip("/")
+
+    token = getattr(pconfig, "token", None)
+    if not token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            token = get_env_value_prefer_dotenv("HASS_TOKEN") or ""
+        except Exception:
+            token = os.getenv("HASS_TOKEN", "")
+    token = token.strip()
     if not hass_url or not token:
         return {
             "error": (

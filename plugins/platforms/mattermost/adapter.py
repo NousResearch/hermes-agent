@@ -998,11 +998,23 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
-    base_url = (
-        (getattr(pconfig, "extra", {}) or {}).get("url")
-        or os.getenv("MATTERMOST_URL", "")
-    ).rstrip("/")
-    token = (getattr(pconfig, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    url_val = (getattr(pconfig, "extra", {}) or {}).get("url")
+    if not url_val:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            url_val = get_env_value_prefer_dotenv("MATTERMOST_URL") or ""
+        except Exception:
+            url_val = os.getenv("MATTERMOST_URL", "")
+    base_url = url_val.rstrip("/")
+
+    token = getattr(pconfig, "token", None)
+    if not token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            token = get_env_value_prefer_dotenv("MATTERMOST_TOKEN") or ""
+        except Exception:
+            token = os.getenv("MATTERMOST_TOKEN", "")
+    token = token.strip()
     if not base_url or not token:
         return {
             "error": (

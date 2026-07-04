@@ -7368,7 +7368,14 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
-    token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    token = getattr(pconfig, "token", None)
+    if not token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            token = get_env_value_prefer_dotenv("DISCORD_BOT_TOKEN") or ""
+        except Exception:
+            token = os.getenv("DISCORD_BOT_TOKEN", "")
+    token = token.strip()
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 

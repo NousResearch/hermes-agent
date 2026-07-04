@@ -416,15 +416,28 @@ async def _standalone_send(
 ):
     """Out-of-process SMS delivery via the Twilio REST API. Implements the
     standalone_sender_fn contract; replaces the legacy _send_sms helper."""
-    auth_token = getattr(pconfig, "api_key", None) or os.getenv("TWILIO_AUTH_TOKEN", "")
+    auth_token = getattr(pconfig, "api_key", None)
+    if not auth_token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            auth_token = get_env_value_prefer_dotenv("TWILIO_AUTH_TOKEN") or ""
+        except Exception:
+            auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     import base64
 
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        account_sid = get_env_value_prefer_dotenv("TWILIO_ACCOUNT_SID") or ""
+        from_number = get_env_value_prefer_dotenv("TWILIO_PHONE_NUMBER") or ""
+    except Exception:
+        account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 

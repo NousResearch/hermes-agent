@@ -4314,7 +4314,13 @@ async def _standalone_send(
     throwaway ``SlackAdapter`` instance's ``format_message`` — so cron-delivered
     Slack messages render identically to gateway-delivered ones.
     """
-    token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
+    token = getattr(pconfig, "token", None)
+    if not token:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            token = get_env_value_prefer_dotenv("SLACK_BOT_TOKEN") or ""
+        except Exception:
+            token = os.getenv("SLACK_BOT_TOKEN", "")
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
 

@@ -571,6 +571,45 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 
+  it('does not mirror a snapshot session into another inferred live lane', () => {
+    // Older/pre-git-context rows can already be present in the backend's real
+    // repo lane while the live cache still carries a fallback cwd that would
+    // infer a second lane (the Windows "main" + "default" duplicate report).
+    const snapshot = makeSession('/home/user/.hermes/hermes-agent', { id: 'dup', git_branch: 'main' })
+    const live = makeSession('/home/user/default', { id: 'dup' })
+
+    const project = projectNode({
+      id: '/home/user/.hermes/hermes-agent',
+      repos: [
+        {
+          id: '/home/user/.hermes/hermes-agent',
+          label: 'hermes-agent',
+          path: '/home/user/.hermes/hermes-agent',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/home/user/.hermes/hermes-agent::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/home/user/.hermes/hermes-agent',
+              sessions: [snapshot]
+            }),
+            lane({
+              id: '/home/user/default::branch::default',
+              label: 'default',
+              isMain: true,
+              path: '/home/user/default'
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
+  })
+
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree

@@ -12,6 +12,8 @@ asserting the expected env var outcomes.
 import os
 import json
 
+from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     """Simulate the gateway config bridge logic from gateway/run.py.
@@ -51,12 +53,9 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # Expand shell tilde for local/container backends so subprocess.Popen
                 # never receives a literal "~/" which the kernel rejects. SSH cwd is
                 # interpreted by the remote shell, so preserve "~" / "~/..." there.
+                # Uses the same production predicate as gateway/run.py.
                 if cfg_key == "cwd" and isinstance(val, str):
-                    raw_cwd = val.strip()
-                    if not (
-                        terminal_backend == "ssh"
-                        and (raw_cwd == "~" or raw_cwd.startswith("~/"))
-                    ):
+                    if not _is_ssh_remote_tilde_cwd(terminal_backend, val.strip()):
                         val = os.path.expanduser(val)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
@@ -73,15 +72,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             alias_val = cfg.get(alias_key)
             if isinstance(alias_val, str) and alias_val.strip():
                 if alias_key == "cwd":
-                    alias_backend = str(
-                        cfg.get("backend") or env.get("TERMINAL_ENV") or ""
-                    ).strip().lower()
-                    raw_cwd = alias_val.strip()
-                    if not (
-                        alias_backend == "ssh"
-                        and (raw_cwd == "~" or raw_cwd.startswith("~/"))
-                    ):
-                        alias_val = os.path.expanduser(alias_val)
+                    alias_val = os.path.expanduser(alias_val)
                 env[alias_env] = alias_val.strip()
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---

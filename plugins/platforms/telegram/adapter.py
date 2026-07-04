@@ -1990,7 +1990,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if app and app.updater and app.updater.running:
-                await app.updater.stop()
+                try:
+                    # Guard stop() with a timeout: when the underlying TCP
+                    # connection is in CLOSE-WAIT the PTB polling task is
+                    # blocked on epoll on the dead socket and never wakes up,
+                    # so an unguarded stop() hangs indefinitely.  The result
+                    # is that _polling_error_task stays alive-but-blocked
+                    # forever, every subsequent heartbeat probe sees it as
+                    # "in-flight" and skips triggering a new reconnect, and
+                    # the gateway silently drops messages for hours.
+                    # Bounding stop() lets the reconnect ladder always advance.
+                    # Refs: NousResearch/hermes-agent#58270
+                    await asyncio.wait_for(app.updater.stop(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] updater.stop() timed out during network-error "
+                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
+                        "and restart without clean stop",
+                        self.name,
+                    )
         except Exception:
             pass
 

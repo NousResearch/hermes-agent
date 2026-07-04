@@ -62,16 +62,24 @@ def _capture_output(fn: Callable[[], object]) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
     code = 0
+    message = ""
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
             result = fn()
             if isinstance(result, int) and result:
                 raise SystemExit(result)
         except SystemExit as exc:
-            code = int(exc.code or 0)
+            # sys.exit("msg") / raise SystemExit("msg") is the standard non-zero-exit idiom:
+            # exc.code is the message string, not an int. int() would raise ValueError here,
+            # which escapes execute()'s ConsoleCommandError handler and crashes the REPL.
+            if isinstance(exc.code, str):
+                message = exc.code
+                code = 1
+            else:
+                code = int(exc.code or 0)
     text = stdout.getvalue() + stderr.getvalue()
     if code:
-        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
+        raise ConsoleCommandError(message.strip() or text.strip() or f"Command exited with status {code}")
     return text.rstrip()
 
 

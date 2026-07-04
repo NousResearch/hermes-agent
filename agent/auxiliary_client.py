@@ -6834,10 +6834,26 @@ def _build_call_kwargs(
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
         _is_moa = bool(task) and str(task) == "moa_reference"
+        # Gemini's native generateContent maps max_tokens → maxOutputTokens and,
+        # when it is omitted, applies a fixed 65,535-token ceiling rather than
+        # "the model's full budget" (see gemini_native_adapter.build_gemini_request).
+        # So an explicit cap is both safe and the ONLY way to honor it here —
+        # dropping max_tokens silently makes MoA's reference_max_tokens a no-op
+        # for gemini advisors (they run effectively uncapped).
+        _is_gemini_native = _provider_norm in {
+            "gemini", "google", "google-gemini", "google-ai-studio",
+        }
+        if not _is_gemini_native and _effective_base:
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+                _is_gemini_native = is_native_gemini_base_url(_effective_base)
+            except Exception:
+                pass
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
             or _is_moa
+            or _is_gemini_native
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right

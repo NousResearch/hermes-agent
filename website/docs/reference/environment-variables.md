@@ -270,6 +270,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TELEGRAM_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord pattern. |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
+| `HERMES_FRONTPAGE_ENGINE_DIR` | Override the Telegram frontpage-photo handoff repo directory. Defaults to `/Users/nickgeorge-studio/Projects/hermes-frontpage-engine` when that adapter feature is used. |
+| `HERMES_FRONTPAGE_OVERRIDE_MANIFEST` | Override the manifest path written by Telegram single-photo `/frontpage`, `/frontpage-override`, or `/fp` caption triggers. |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_ALLOW_ALL_USERS` | Allow any Discord user to trigger the bot (dev only). |

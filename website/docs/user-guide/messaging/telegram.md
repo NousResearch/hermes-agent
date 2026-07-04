@@ -242,6 +242,80 @@ The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the
 
 Anything on this list delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
 
+## Single-Photo Caption Commands
+
+Telegram photo captions can trigger adapter-level workflows before Hermes hands the message to the normal agent loop. The current built-in flow is a **frontpage inspiration override** for downstream daily/frontpage pipelines.
+
+### Frontpage override command
+
+Send **one photo** with a caption like this:
+
+```text
+/frontpage urgent trend seed
+bias: election, breaking
+note: Keep source discovery broad.
+```
+
+Accepted command aliases on the first line:
+
+- `/frontpage`
+- `/frontpage-override`
+- `/fp`
+
+Behavior:
+
+- The first line may include the title directly after the command
+- `title:` on a later line can override that title
+- `bias:` becomes a comma-separated list of steering terms for downstream source discovery
+- `note:` and any extra body lines become the freeform note
+- If no title is provided, Hermes falls back to `Telegram inspiration override`
+- **Albums/media groups are rejected** for this path. Use a single image.
+
+Think of the fields like this:
+
+- `title`: what this override is about
+- `bias`: keywords that tilt discovery or ranking
+- `note`: broader editorial guidance
+
+### Confirmation behavior
+
+When Hermes accepts the photo, it:
+
+1. downloads and caches the image locally
+2. invokes the existing frontpage-engine helper script
+3. writes the override manifest for the next run
+4. replies in Telegram with confirmation
+
+If the caption matches one of the override commands, Hermes consumes the photo for this workflow instead of sending it through the normal photo batching/album pipeline.
+
+### Config hooks
+
+Default frontpage repo directory:
+
+```text
+/Users/nickgeorge-studio/Projects/hermes-frontpage-engine
+```
+
+Optional environment variables:
+
+```bash
+HERMES_FRONTPAGE_ENGINE_DIR=/absolute/path/to/hermes-frontpage-engine
+HERMES_FRONTPAGE_OVERRIDE_MANIFEST=/absolute/path/to/override-manifest.json
+```
+
+Optional `config.yaml` overrides under Telegram platform `extra`:
+
+```yaml
+platforms:
+  telegram:
+    enabled: true
+    extra:
+      frontpage_engine_dir: /absolute/path/to/hermes-frontpage-engine
+      frontpage_override_manifest: /absolute/path/to/override-manifest.json
+```
+
+Environment variables take precedence over `config.yaml` values.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

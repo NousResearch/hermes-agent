@@ -22,7 +22,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity, and Telegram media-triggered workflows like single-photo frontpage overrides.</td></tr>
 <tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
@@ -156,6 +156,26 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+
+## Telegram Photo Caption Overrides
+
+Telegram can do more than plain chat commands. Hermes can intercept a single photo plus a caption command and hand it off to an external workflow before the normal agent turn runs.
+
+One built-in example is a frontpage inspiration override:
+
+```text
+/frontpage urgent trend seed
+bias: election, breaking
+note: Keep source discovery broad.
+```
+
+- Supported caption commands: `/frontpage`, `/frontpage-override`, `/fp`
+- Send exactly one image. Albums are rejected for this flow.
+- First line: command plus optional title
+- `bias:`: comma-separated steering terms passed through to the downstream workflow
+- `note:` plus any extra body lines: freeform guidance
+
+For setup details, config hooks, and exact behavior, see the [Telegram guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram).
 
 ---
 

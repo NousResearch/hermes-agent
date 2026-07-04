@@ -1140,3 +1140,86 @@ class TestModelToolsIntegration:
         assert "discord" not in names
         assert "discord_admin" not in names
         assert "discord_server" not in names
+
+
+# ---------------------------------------------------------------------------
+# Snowflake ID validation
+# ---------------------------------------------------------------------------
+
+class TestSnowflakeValidation:
+    """Regression tests for Discord snowflake ID validation (issue #36652)."""
+
+    def test_valid_snowflake_accepted(self):
+        """Numeric strings of 1-20 digits should pass validation."""
+        from tools.discord_tool import _validate_snowflake
+        # Should not raise
+        _validate_snowflake("123456789012345678", "channel_id")
+        _validate_snowflake("1", "id")
+        _validate_snowflake("99999999999999999999", "id")  # 20 digits
+
+    def test_empty_string_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("", "channel_id")
+
+    def test_slash_in_id_rejected(self):
+        """IDs containing '/' could cause path traversal."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("123/456", "channel_id")
+
+    def test_question_mark_rejected(self):
+        """IDs containing '?' could inject query parameters."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord guild_id"):
+            _validate_snowflake("123?evil=true", "guild_id")
+
+    def test_letters_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord message_id"):
+            _validate_snowflake("abc123", "message_id")
+
+    def test_too_long_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord user_id"):
+            _validate_snowflake("1" * 21, "user_id")  # 21 digits
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_guild_id_returns_error(self, mock_req, monkeypatch):
+        """Invalid IDs should return a JSON error, not crash."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_admin_handler("server_info", guild_id="../../etc")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord guild_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_channel_id_in_fetch_messages(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_core("fetch_messages", channel_id="bad?id=1")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord channel_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_message_id_in_delete(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_admin_handler(
+            "delete_message", channel_id="123456789", message_id="../secret"
+        )
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord message_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_valid_ids_pass_through(self, mock_req, monkeypatch):
+        """Valid snowflake IDs should reach the API call."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "123456789", "name": "test", "type": 0}
+        result = discord_admin_handler("channel_info", channel_id="123456789")
+        data = json.loads(result)
+        assert "error" not in data
+        mock_req.assert_called_once()

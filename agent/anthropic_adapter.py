@@ -1268,6 +1268,29 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         if token:
             return token
 
+    # All entries are in exhaustion cooldown. Fall back to the pool's
+    # last-resort entry (soonest-reset EXHAUSTED entry with a real token) —
+    # a pure read, same as the scan above (no persist, no network call), so
+    # it does not violate this function's read-only contract.
+    #
+    # Without this, every bare-resolve caller (cron's primary auth path,
+    # `hermes models`, `account_usage`, the auxiliary clients) sees "no
+    # credentials at all" the instant the single-entry pool cools down from
+    # a transient 429/401, even though `select()` (used by live chat
+    # sessions) happily returns that exact same token as a last resort.
+    # Observed: cron jobs permanently falling to a broken secondary fallback
+    # provider for the job's entire retry budget, on a token that was fine
+    # a few seconds later — because this resolver never tried it.
+    try:
+        last_resort = pool._last_resort_entry()
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool last-resort entry", exc_info=True)
+        return None
+    if last_resort is not None:
+        token = (getattr(last_resort, "access_token", None) or "").strip()
+        if token:
+            return token
+
     return None
 
 

@@ -497,13 +497,118 @@ class TestResolveAnthropicToken:
 
     def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "«redacted:sk-…»")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"}))
+        claude_json.write_text(json.dumps({"primaryApiKey": "«redacted:sk-…»"}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
+        assert resolve_anthropic_token() == "«redacted:sk-…»"
+
+
+class TestResolveAnthropicTokenLastResort:
+    """When every pool entry is in exhaustion cooldown, the bare resolver must
+
+    fall back to the pool's last-resort entry instead of returning None. A
+    keyless resolve makes bare-resolve callers (cron's primary auth path,
+    ``hermes models``, ``account_usage``, auxiliary clients) see "no
+    credentials at all" for the full cooldown window even though
+    ``CredentialPool.select()`` (the live chat/turn path) already has its own
+    last-resort fallback and would happily return this exact token.
+    """
+
+    def test_falls_back_to_last_resort_entry_when_all_exhausted(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        last_resort_entry = SimpleNamespace(access_token="last-resort-token")
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [],
+            _last_resort_entry=lambda: last_resort_entry,
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "last-resort-token"
+
+    def test_prefers_available_entry_over_last_resort(self, monkeypatch, tmp_path):
+        """An available (non-exhausted) entry must win; _last_resort_entry
+        should not even be consulted when the normal scan finds a token."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        available_entry = SimpleNamespace(auth_type="oauth", access_token="available-token")
+
+        def _last_resort_not_called():
+            raise AssertionError("_last_resort_entry must not be called when an entry is available")
+
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [available_entry],
+            _last_resort_entry=_last_resort_not_called,
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "available-token"
+
+    def test_returns_none_when_no_last_resort_entry_exists(self, monkeypatch, tmp_path):
+        """A pool with zero entries at all (not just exhausted) still returns None."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [],
+            _last_resort_entry=lambda: None,
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() is None
+
+    def test_last_resort_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
+        """A last-resort entry with access_token=None must be skipped, not raise
+        (mirrors test_pool_entry_with_null_access_token_does_not_crash for the
+        normal-scan path)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        broken_last_resort = SimpleNamespace(access_token=None)
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [],
+            _last_resort_entry=lambda: broken_last_resort,
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() is None
+
+    def test_last_resort_lookup_failure_does_not_crash(self, monkeypatch, tmp_path):
+        """A pool whose _last_resort_entry() raises must not crash the resolver
+        or block the (already-exhausted) code path from returning None cleanly."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        def _raise():
+            raise RuntimeError("boom")
+
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [],
+            _last_resort_entry=_raise,
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() is None
 
 
 class TestRefreshOauthToken:

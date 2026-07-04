@@ -109,6 +109,16 @@ class TestDelegateRequirements(unittest.TestCase):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
 
+    def test_schema_description_warns_background_delegation_is_not_durable(self):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        desc = _build_dynamic_schema_overrides()["description"]
+
+        self.assertIn("NOT DURABLE", desc)
+        self.assertIn("parent session closes", desc)
+        self.assertIn("cronjob", desc)
+        self.assertIn("terminal", desc)
+
     def test_schema_overrides_applied_via_get_definitions(self):
         """Registry.get_definitions() must apply dynamic_schema_overrides so
         the model API call sees current values, not the static import-time text.

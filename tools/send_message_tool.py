@@ -1148,15 +1148,23 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         except Exception:
             validate_media_delivery_path = None  # type: ignore
         for media_path, _is_voice in valid_media:
-            if validate_media_delivery_path is not None:
-                safe_path = validate_media_delivery_path(media_path)
-                if not safe_path:
-                    logger.warning(
-                        "Signal: skipping unsafe media path outside allowed roots: %s",
-                        media_path,
-                    )
-                    continue
-                media_path = safe_path
+            # Fail closed: if the validator is unavailable (e.g. import
+            # failure in a minimal install), skip all media rather than
+            # delivering unvalidated paths. Mirrors _send_telegram().
+            if validate_media_delivery_path is None:
+                logger.warning(
+                    "Signal: media path validator unavailable, skipping %s",
+                    media_path,
+                )
+                continue
+            safe_path = validate_media_delivery_path(media_path)
+            if not safe_path:
+                logger.warning(
+                    "Signal: skipping unsafe media path outside allowed roots: %s",
+                    media_path,
+                )
+                continue
+            media_path = safe_path
             if os.path.exists(media_path):
                 attachment_paths.append(media_path)
             else:

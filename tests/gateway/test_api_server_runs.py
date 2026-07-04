@@ -305,6 +305,78 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_disconnect_keeps_queue_for_running_run(self, adapter):
+        """Disconnecting one SSE client must not destroy a still-running queue."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                agent_ready.wait(timeout=3.0)
+                await asyncio.sleep(0.1)
+
+                first_events = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first_events.status == 200
+                await asyncio.sleep(0.05)
+                first_events.close()
+                await asyncio.sleep(0.1)
+
+                assert run_id in adapter._run_streams
+
+                second_events = await cli.get(f"/v1/runs/{run_id}/events")
+                assert second_events.status == 200
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+
+                body = await second_events.text()
+                assert "stream closed" in body or "run.cancelled" in body or "run.failed" in body
+
+    @pytest.mark.asyncio
+    async def test_events_stream_filters_stringified_content_blocks(self, adapter):
+        """SSE deltas should expose only text, not raw content-block reprs."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                captured = {}
+                mock_agent = MagicMock()
+
+                def _run_conversation(user_message=None, conversation_history=None, task_id=None):
+                    stream_cb = captured["stream_delta_callback"]
+                    stream_cb(
+                        "[{'type': 'text', 'text': 'empty message'}, "
+                        "{'type': 'tool_use', 'id': 'call_00', 'name': 'skill_manage'}]"
+                    )
+                    return {"final_response": "done"}
+
+                def _create_agent_side_effect(*args, **kwargs):
+                    captured["stream_delta_callback"] = kwargs["stream_delta_callback"]
+                    return mock_agent
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.side_effect = _create_agent_side_effect
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "message.delta" in body
+                assert "empty message" in body
+                assert "tool_use" not in body
+                assert "run.completed" in body
 
 
     @pytest.mark.asyncio

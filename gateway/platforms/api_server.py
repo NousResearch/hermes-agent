@@ -31,6 +31,7 @@ Requires:
 - aiohttp (already available in the gateway)
 """
 
+import ast
 import asyncio
 import hashlib
 import hmac
@@ -196,6 +197,43 @@ def _normalize_chat_content(
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
     except Exception:
         return ""
+
+
+def _normalize_stream_delta(delta: Any) -> Optional[str]:
+    """Best-effort normalize streamed assistant deltas for SSE clients.
+
+    Most transports already emit plain text chunks. Some edge paths can leak
+    structured content blocks (or their stringified repr) through the
+    ``stream_delta_callback``. In that case, extract only the text parts and
+    drop pure tool metadata so the Web UI doesn't render raw JSON.
+    """
+    if delta is None:
+        return None
+
+    if not isinstance(delta, str):
+        normalized = _normalize_chat_content(delta)
+        return normalized or None
+
+    if not delta:
+        return None
+
+    probe = delta.strip()
+    if probe.startswith(("[", "{")) and "type" in probe:
+        parsed: Any = None
+        try:
+            parsed = json.loads(delta)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(delta)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, (list, dict)):
+            normalized = _normalize_chat_content(parsed)
+            if normalized:
+                return normalized
+            return None
+
+    return delta
 
 
 # Content part type aliases used by the OpenAI Chat Completions and Responses
@@ -4253,14 +4291,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
-            if delta is None:
+            normalized = _normalize_stream_delta(delta)
+            if normalized is None:
                 return
             try:
                 loop.call_soon_threadsafe(q.put_nowait, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
-                    "delta": delta,
+                    "delta": normalized,
                 })
             except Exception:
                 pass
@@ -4526,8 +4565,10 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            status = str(self._run_statuses.get(run_id, {}).get("status", "")).lower()
+            if status in {"completed", "failed", "cancelled"}:
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
 
         return response
 

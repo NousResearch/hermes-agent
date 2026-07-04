@@ -763,7 +763,9 @@ class GatewaySlashCommandsMixin:
             return False
 
     async def _resume_target_allowed(
-        self, source: SessionSource, target_id: str, allow_override: bool = False
+        self, source: SessionSource, target_id: str,
+        allow_override: bool = False,
+        allow_cross_platform: bool = False,
     ) -> bool:
         """Whether *source* may resume the persisted session *target_id*.
 
@@ -791,10 +793,20 @@ class GatewaySlashCommandsMixin:
             row = await self._session_db.get_session(target_id) or {}
         except Exception:
             return False
-        caller_src = source.platform.value if source.platform else None
         row_src = row.get("source")
+        caller_src = source.platform.value if source.platform else None
         if row_src and caller_src and str(row_src) != str(caller_src):
-            return False  # different platform / source
+            # Cross-platform resume: the target session is on a different
+            # platform (e.g. TUI session resumed from Telegram). Allow when:
+            # 1) The caller explicitly opted in via --cross-platform, OR
+            # 2) The target session has no user_id — unowned local session
+            #    with no owner to IDOR against.
+            if not (allow_cross_platform or not row.get("user_id")):
+                return False  # different platform / source
+        # Unowned local sessions (e.g. TUI, no user_id) have no owner
+        # to protect — any authenticated gateway user may resume them.
+        if not row.get("user_id"):
+            return True
         caller_uid = str(getattr(source, "user_id", "") or "")
         row_uid = str(row.get("user_id") or "")
         # Chat/thread origin recorded at session creation (see
@@ -3497,7 +3509,8 @@ class GatewaySlashCommandsMixin:
             return t("gateway.resume.parse_error", error=exc)
         allow_all = "--all" in parts
         allow_cross_room = "--cross-room" in parts
-        name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
+        allow_cross_platform = "--cross-platform" in parts
+        name = " ".join(p for p in parts if p not in {"--all", "--cross-room", "--cross-platform"}).strip()
 
         # Strip common outer brackets/quotes users may type literally from the
         # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
@@ -3587,7 +3600,9 @@ class GatewaySlashCommandsMixin:
                     name=name,
                 )
         elif not await self._resume_target_allowed(
-            source, target_id, allow_override=(allow_all or allow_cross_room)
+            source, target_id,
+            allow_override=(allow_all or allow_cross_room),
+            allow_cross_platform=allow_cross_platform,
         ):
             # IDOR guard: a session id/title is a routing handle, not authority.
             # Bind /resume to the caller's own platform/user/chat on every

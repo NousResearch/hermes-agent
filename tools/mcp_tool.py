@@ -1958,6 +1958,12 @@ class MCPServerTask:
         # accumulation (see #57355).
         _kill_orphaned_mcp_children()
 
+        # A previous stdio transport for this same server may have survived
+        # SDK context teardown and been marked orphaned in the prior
+        # _run_stdio() finally block. Reap it before spawning the replacement
+        # so reconnect churn cannot accumulate one child per attempt.
+        _kill_orphaned_mcp_children(server_name=self.name)
+
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
         new_pids: set = set()
@@ -2048,6 +2054,7 @@ class MCPServerTask:
                                 pgroup_alive = False
                         if pid_alive or pgroup_alive:
                             _orphan_stdio_pids.add(pid)
+                            _orphan_stdio_pid_servers[pid] = self.name
                         else:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
@@ -3241,6 +3248,7 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
+_orphan_stdio_pid_servers: Dict[int, str] = {}
 
 # Process-group IDs of stdio MCP subprocesses, captured at spawn time.
 # The MCP SDK spawns stdio children with ``start_new_session=True`` so each
@@ -5168,7 +5176,10 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
-def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
+def _kill_orphaned_mcp_children(
+    include_active: bool = False,
+    server_name: Optional[str] = None,
+) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 
     Orphans are PIDs that survived their session context exit (SDK teardown
@@ -5187,6 +5198,10 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     first) are reaped alongside the direct child.  Falls back to ``os.kill``
     on Windows and when no pgid is recorded.
 
+    When ``server_name`` is set, only orphaned PIDs known to belong to that
+    MCP server are reaped. This lets stdio reconnects clean up their previous
+    transport without touching unrelated servers.
+
     With ``include_active=True`` also kills every PID in ``_stdio_pids`` —
     used only at final shutdown, after the MCP event loop has stopped and no
     sessions can still be in flight.
@@ -5196,11 +5211,24 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     with _lock:
         pids: Dict[int, str] = {}
         for opid in _orphan_stdio_pids:
-            pids[opid] = "orphan"
-        _orphan_stdio_pids.clear()
+            owner = _orphan_stdio_pid_servers.get(opid, "orphan")
+            if server_name is not None and owner != server_name:
+                continue
+            pids[opid] = owner
+        for opid in pids:
+            _orphan_stdio_pids.discard(opid)
+            _orphan_stdio_pid_servers.pop(opid, None)
         if include_active:
-            pids.update(dict(_stdio_pids))
-            _stdio_pids.clear()
+            active = dict(_stdio_pids)
+            if server_name is not None:
+                active = {
+                    pid: owner
+                    for pid, owner in active.items()
+                    if owner == server_name
+                }
+            pids.update(active)
+            for pid in active:
+                _stdio_pids.pop(pid, None)
         # Snapshot pgids for the pids we're about to kill, then drop the
         # entries so a future spawn can't collide with stale state.
         pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}

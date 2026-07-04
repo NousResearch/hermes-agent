@@ -109,6 +109,7 @@ class TestStdioPidTracking:
         """_kill_orphaned_mcp_children does nothing when no PIDs tracked."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _stdio_pids,
             _lock,
@@ -117,6 +118,7 @@ class TestStdioPidTracking:
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
 
         # Should not raise
         _kill_orphaned_mcp_children()
@@ -125,6 +127,7 @@ class TestStdioPidTracking:
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -133,6 +136,7 @@ class TestStdioPidTracking:
         fake_pid = 999999999
         with _lock:
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         # Should not raise (ProcessLookupError is caught)
         _kill_orphaned_mcp_children()
@@ -144,6 +148,7 @@ class TestStdioPidTracking:
         """SIGTERM-first then SIGKILL after 2s for orphan cleanup."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -151,7 +156,9 @@ class TestStdioPidTracking:
         fake_pid = 424242
         with _lock:
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         fake_sigkill = 9
         monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
@@ -177,6 +184,7 @@ class TestStdioPidTracking:
         """Without SIGKILL, SIGTERM is used for both phases."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -184,7 +192,9 @@ class TestStdioPidTracking:
         fake_pid = 434343
         with _lock:
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
 
@@ -261,6 +271,37 @@ class TestStdioPidTracking:
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
 
+    def test_kill_orphaned_can_filter_by_server_name(self):
+        """Reconnect cleanup reaps only the orphan owned by that MCP server."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
+            _orphan_stdio_pids,
+            _lock,
+        )
+
+        target_pid = 454545
+        other_pid = 464646
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _orphan_stdio_pids.update({target_pid, other_pid})
+            _orphan_stdio_pid_servers[target_pid] = "feishu"
+            _orphan_stdio_pid_servers[other_pid] = "mimir"
+
+        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.mcp_tool.time.sleep") as mock_sleep:
+            _kill_orphaned_mcp_children(server_name="feishu")
+
+        mock_kill.assert_called_once_with(target_pid, signal.SIGTERM)
+        mock_sleep.assert_called_once_with(2)
+        with _lock:
+            assert target_pid not in _orphan_stdio_pids
+            assert target_pid not in _orphan_stdio_pid_servers
+            assert other_pid in _orphan_stdio_pids
+            assert _orphan_stdio_pid_servers[other_pid] == "mimir"
+
 
 # ---------------------------------------------------------------------------
 # Fix 2b: stdio descendant reaping via process group (issue #23799)
@@ -276,10 +317,17 @@ class TestStdioPgroupReaping:
     """_kill_orphaned_mcp_children reaps via killpg when a pgid is tracked."""
 
     def _reset_state(self):
-        from tools.mcp_tool import _stdio_pids, _orphan_stdio_pids, _stdio_pgids, _lock
+        from tools.mcp_tool import (
+            _orphan_stdio_pid_servers,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _stdio_pids,
+            _lock,
+        )
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _stdio_pgids.clear()
 
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
@@ -505,6 +553,7 @@ class TestStdioPgroupReaping:
         # Drive the reaper: register the parent pid + pgid as an orphan.
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _stdio_pgids,
             _stdio_pids,
@@ -513,8 +562,10 @@ class TestStdioPgroupReaping:
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _stdio_pgids.clear()
             _orphan_stdio_pids.add(parent.pid)
+            _orphan_stdio_pid_servers[parent.pid] = "orphan"
             _stdio_pgids[parent.pid] = parent_pgid
         try:
             _kill_orphaned_mcp_children()

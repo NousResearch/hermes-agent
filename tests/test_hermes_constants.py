@@ -415,6 +415,62 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", _fake_open)
         assert is_container() is True
 
+    def test_host_running_containers_not_flagged(self, monkeypatch, tmp_path):
+        """A host that merely runs containers is not itself a container (#58135)."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")  # cgroup v2 — no runtime marker
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            # host root: a real block device, no marker
+            "25 30 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+            # a running container's overlay: mount point is not "/", marker only
+            # in the lowerdir= options
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime "
+            "shared:247 - overlay overlay rw,lowerdir=/var/lib/containerd/"
+            "io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_detects_containerd_root_overlay_lowerdir(self, monkeypatch, tmp_path):
+        """Marker on the process's own root ("/") overlay still counts (#58135)."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1543 1542 0:158 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1."
+            "overlayfs/snapshots/42/fs,upperdir=/run/containerd/x/fs\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)

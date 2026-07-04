@@ -91,9 +91,6 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
-_oauth_port: int | None = None
 # Interactivity gate for OAuth stdin prompts. A ContextVar (NOT threading.local)
 # is required: background MCP discovery sets this on the discovery thread, but
 # the actual connect+OAuth runs on the dedicated `mcp-event-loop` thread via
@@ -519,11 +516,129 @@ def _make_callback_handler() -> tuple[type, dict]:
 
 
 # ---------------------------------------------------------------------------
+# OAuthCallbackServer — bind-first persistent callback server
+# ---------------------------------------------------------------------------
+
+
+class OAuthCallbackServer:
+    """Persistent localhost HTTP server for OAuth callback capture.
+
+    Binds the server at construction time, eliminating the TOCTOU gap
+    between port discovery and server startup (issue #5344, #34260).
+    Runs ``handle_request()`` in a loop until the OAuth callback
+    arrives or the timeout expires.
+
+    Only processes requests to ``/callback``; all other paths receive
+    HTTP 404 so that stray requests (``/favicon.ico``, browser
+    preflight) don't consume the single handler slot.
+
+    Attributes:
+        port: The actual port the server is bound to.
+        _result: Shared dict written by the HTTP handler (and optionally
+            by ``_paste_callback_reader`` for SSH paste fallback).
+    """
+
+    def __init__(self, port: int = 0, timeout: float = 300.0):
+        self._result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
+        self._timeout = timeout
+        self._stop_event = threading.Event()
+        handler_cls = self._make_handler()
+        # bind server at construction time — port consumed immediately
+        self._server = HTTPServer(("127.0.0.1", port), handler_cls)
+        self._server.timeout = 1.0  # handle_request() polls
+        self.port: int = self._server.server_address[1]
+        self._thread: threading.Thread | None = None
+
+    def _make_handler(self) -> type:
+        """Build a per-instance HTTP handler with path filtering."""
+        result = self._result
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                parsed = urlparse(self.path)
+                # Only process /callback; ignore favicon, preflight, etc.
+                if parsed.path != "/callback":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                params = parse_qs(parsed.query)
+                result["auth_code"] = params.get("code", [None])[0]
+                result["state"] = params.get("state", [None])[0]
+                result["error"] = params.get("error", [None])[0]
+                body = (
+                    "<html><body><h2>Authorization Successful</h2>"
+                    "<p>You can close this tab and return to Hermes.</p></body></html>"
+                ) if result["auth_code"] else (
+                    "<html><body><h2>Authorization Failed</h2>"
+                    f"<p>Error: {result['error'] or 'unknown'}</p></body></html>"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body.encode())
+
+            def log_message(self, fmt: str, *args: Any) -> None:
+                logger.debug("OAuth callback: %s", fmt % args)
+
+        return _Handler
+
+    def start(self) -> None:
+        """Start the server in a daemon thread."""
+        self._thread = threading.Thread(target=self._serve_loop, daemon=True)
+        self._thread.start()
+
+    def _serve_loop(self) -> None:
+        """Process requests until callback arrives, timeout, or stop event."""
+        deadline = time.time() + self._timeout
+        while not self._stop_event.is_set() and time.time() < deadline:
+            try:
+                self._server.handle_request()
+            except (ConnectionError, OSError, ValueError):
+                # Client disconnect or socket error — non-fatal
+                pass
+            if self._result["auth_code"] is not None or self._result["error"] is not None:
+                break
+
+    async def wait(self, timeout: float = 300.0) -> tuple[str, str | None]:
+        """Async-poll the result until callback arrives or timeout.
+
+        Returns ``(auth_code, state)``.  Raises :class:`RuntimeError`
+        on authorization error or :class:`OAuthNonInteractiveError` on
+        timeout.
+        """
+        poll_interval = 0.5
+        elapsed = 0.0
+        while elapsed < timeout:
+            if self._result["auth_code"] is not None or self._result["error"] is not None:
+                break
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+        if self._result["error"]:
+            # Let _wait_for_callback handle the user-skip sentinel
+            # (maps it to OAuthNonInteractiveError("user_skipped")).
+            if self._result["error"] == _USER_SKIPPED_SENTINEL:
+                return self._result["auth_code"], self._result["state"]
+            raise RuntimeError(f"OAuth authorization failed: {self._result['error']}")
+        if self._result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received."
+            )
+        return self._result["auth_code"], self._result["state"]
+
+    def close(self) -> None:
+        """Shut down the server and wait for the thread."""
+        self._stop_event.set()
+        self._server.server_close()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
 # Async redirect + callback handlers for OAuthClientProvider
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
+async def _redirect_handler(authorization_url: str, port: int | None = None) -> None:
     """Show the authorization URL to the user.
 
     Opens the browser automatically when possible; always prints the URL
@@ -542,10 +657,11 @@ async def _redirect_handler(authorization_url: str) -> None:
     # opened.  Two ways out: paste the redirect URL back (default fallback,
     # offered by _wait_for_callback on interactive TTYs), or set up an SSH
     # port forward so the redirect tunnels through.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+    actual_port = port
+    if actual_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. After you authorize, the provider redirects to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"    http://127.0.0.1:{actual_port}/callback\n"
             f"  which only the listener on THIS machine can receive. Two options:\n"
             f"\n"
             f"    1. Easiest — when your browser shows a connection error after\n"
@@ -554,7 +670,7 @@ async def _redirect_handler(authorization_url: str) -> None:
             f"       enough to complete the flow.\n"
             f"\n"
             f"    2. Or forward the port first in a separate terminal:\n"
-            f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"         ssh -N -L {actual_port}:127.0.0.1:{actual_port} <user>@<this-host>\n"
             f"       then open the URL above and let it redirect normally.\n"
             f"\n"
             f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
@@ -574,173 +690,127 @@ async def _redirect_handler(authorization_url: str) -> None:
         print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tuple[str, str | None]:
+    """Wait for the OAuth callback to arrive.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
+    Polls the already-bound *server* for the result.  The paste fallback
+    writes directly to ``server._result`` so it races naturally with the
+    HTTP listener — whichever finishes first wins.
 
-    On an interactive TTY, races the HTTP listener against a stdin paste
-    fallback so users without an SSH tunnel can copy the redirect URL (or
-    just the ``code=...&state=...`` query string) from a browser on another
-    machine and paste it back. The HTTP listener wins when the redirect
-    reaches it first; the paste fallback wins when it doesn't.
+    *server* must be provided via ``functools.partial`` from the caller
+    (``build_oauth_auth`` or ``_build_provider``)."""
+    # Poll pre-bound server
+    if server is not None:
+        # Paste fallback: race a stdin reader against the HTTP listener.
+        # Both write to `server._result`, so whichever finishes first wins.
+        if _is_interactive():
+            print(
+                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
+                "portion) and press Enter. Type ``skip`` + Enter to continue "
+                "without this server:",
+                file=sys.stderr, flush=True,
+            )
+            threading.Thread(
+                target=_paste_callback_reader, args=(server._result,), daemon=True
+            ).start()
+        result = await server.wait()
+        if result[1] is None and server._result.get("error") == _USER_SKIPPED_SENTINEL:
+            raise OAuthNonInteractiveError("user_skipped")
+        return result
 
-    Raises:
-        OAuthNonInteractiveError: If the callback times out (no user present
-            to complete the browser auth).
-        RuntimeError: If ``_oauth_port`` has not been set, which would indicate
-            that ``build_oauth_auth`` was skipped — the asserting form below
-            was a silent bug when running Python with ``-O``/``-OO``.
-    """
-    if _oauth_port is None:
-        raise RuntimeError(
-            "OAuth callback port not set — build_oauth_auth must be called "
-            "before _wait_for_oauth_callback"
-        )
-
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
-
-    # Start a temporary server on the known port
-    try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
-
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
-
-    # Optional paste-fallback thread: only on interactive TTYs. Reads one
-    # line from stdin and writes the parsed code/state into the shared
-    # result dict. The HTTP listener and this thread race for the result;
-    # whichever fills it first wins.
-    paste_thread: threading.Thread | None = None
-    if _is_interactive():
-        print(
-            "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
-            "portion) and press Enter. Type ``skip`` + Enter to continue "
-            "without this server:",
-            file=sys.stderr,
-            flush=True,
-        )
-        paste_thread = threading.Thread(
-            target=_paste_callback_reader, args=(result,), daemon=True
-        )
-        paste_thread.start()
-
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
-        while elapsed < timeout:
-            if result["auth_code"] is not None or result["error"] is not None:
-                break
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-    finally:
-        server.server_close()
-
-    if result["error"] == _USER_SKIPPED_SENTINEL:
-        raise OAuthNonInteractiveError("user_skipped")
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
-
-    return result["auth_code"], result["state"]
+    raise RuntimeError(
+        "OAuth callback server not provided — "
+        "caller must pass server via functools.partial"
+    )
 
 
 def _paste_callback_reader(result: dict) -> None:
-    """Read one line from stdin, parse it as an OAuth redirect, write to result.
+    """Read lines from stdin, parse as OAuth redirect, write to result.
 
     Accepts any of:
       - Full redirect URL: ``http://127.0.0.1:37949/callback?code=...&state=...``
       - The provider's own callback URL: ``https://mcp.example.com/callback?code=...&state=...``
       - Just the query string: ``?code=...&state=...`` or ``code=...&state=...``
       - A skip token (``skip``, ``cancel``, ``s``, ``n``, ``no``, ``q``, ``quit``)
-        — exits the OAuth flow cleanly without auth. Caller raises
-        :class:`OAuthNonInteractiveError` so MCP connection setup treats this
-        as a non-fatal "user opted out" and continues without that server.
+        — exits the OAuth flow cleanly without auth.
 
-    Failures to parse, EOF, or interrupts are swallowed — this is best-effort
-    fallback alongside the HTTP listener, which remains the primary path.
+    Invalid pastes (typos, wrong URL, missing code) print a hint and let
+    the user retry.  The loop exits on success, skip, HTTP listener win,
+    or after 5 consecutive parse failures.
+
+    Caller raises :class:`OAuthNonInteractiveError` on skip sentinel so
+    MCP connection setup treats this as a non-fatal "user opted out" and
+    continues without that server.
     """
-    try:
-        line = sys.stdin.readline()
-    except (KeyboardInterrupt, OSError, ValueError):
-        return
-    if not line:
-        return  # EOF
-    line = line.strip()
-    if not line:
-        return
-
-    # Skip if HTTP listener already won.
-    if result.get("auth_code") is not None or result.get("error") is not None:
-        return
-
-    # Skip token: user explicitly opted out of authorization. Mark the
-    # result with a sentinel error string that _wait_for_callback maps
-    # to OAuthNonInteractiveError (already handled by mcp_tool.py as a
-    # non-fatal "skip this server and continue startup" path).
-    if line.lower() in _SKIP_TOKENS:
+    _MAX_RETRIES = 5
+    failures = 0
+    while failures < _MAX_RETRIES:
+        # HTTP listener already won — stop polling stdin.
         if result.get("auth_code") is not None or result.get("error") is not None:
             return
-        result["error"] = _USER_SKIPPED_SENTINEL
-        print(
-            "  OAuth skipped. Run `hermes mcp login <server>` later to "
-            "authenticate, or set ``enabled: false`` on that server in "
-            "config.yaml to disable persistently.",
-            file=sys.stderr,
-        )
+
+        try:
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, OSError, ValueError):
+            return
+        if not line:
+            return  # EOF
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip token: user explicitly opted out.
+        if line.lower() in _SKIP_TOKENS:
+            if result.get("auth_code") is not None or result.get("error") is not None:
+                return
+            result["error"] = _USER_SKIPPED_SENTINEL
+            print(
+                "  OAuth skipped. Run `hermes mcp login <server>` later to "
+                "authenticate, or set ``enabled: false`` on that server in "
+                "config.yaml to disable persistently.",
+                file=sys.stderr,
+            )
+            return
+
+        # Strip a leading "?" if user pasted just a query string.
+        query = line
+        if "?" in line:
+            query = line.split("?", 1)[1]
+        if query.startswith("?"):
+            query = query[1:]
+
+        try:
+            params = parse_qs(query)
+        except (ValueError, TypeError):
+            print(
+                "  Could not parse pasted input as an OAuth redirect — try again.",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        code = params.get("code", [None])[0]
+        state = params.get("state", [None])[0]
+        error = params.get("error", [None])[0]
+
+        if not code and not error:
+            print(
+                "  Pasted input did not contain ``code=`` or ``error=`` — try again.",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        # One more race-check before writing.
+        if result.get("auth_code") is not None or result.get("error") is not None:
+            return
+
+        result["auth_code"] = code
+        result["state"] = state
+        result["error"] = error
+        if code:
+            print("  Got authorization code from paste — completing flow.", file=sys.stderr)
         return
-
-    # Strip a leading "?" if user pasted just a query string.
-    query = line
-    if "?" in line:
-        # Either a full URL or "?code=...". Take everything after the first "?".
-        query = line.split("?", 1)[1]
-    if query.startswith("?"):
-        query = query[1:]
-
-    try:
-        params = parse_qs(query)
-    except (ValueError, TypeError):
-        print(
-            "  Could not parse pasted input as an OAuth redirect — ignoring.",
-            file=sys.stderr,
-        )
-        return
-
-    code = params.get("code", [None])[0]
-    state = params.get("state", [None])[0]
-    error = params.get("error", [None])[0]
-
-    if not code and not error:
-        print(
-            "  Pasted input did not contain ``code=`` or ``error=`` — ignoring.",
-            file=sys.stderr,
-        )
-        return
-
-    # One more race-check before writing.
-    if result.get("auth_code") is not None or result.get("error") is not None:
-        return
-
-    result["auth_code"] = code
-    result["state"] = state
-    result["error"] = error
     if code:
         print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
@@ -766,25 +836,21 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
-    """Pick or validate the OAuth callback port.
+def _configure_callback_port(cfg: dict) -> "OAuthCallbackServer":
+    """Resolve the OAuth callback port and bind the callback server.
 
-    Stores the resolved port into ``cfg['_resolved_port']`` so sibling
-    helpers (and the manager) can read it from the same dict. Returns the
-    resolved port.
-
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing
-    calls to ``_wait_for_callback`` keep working. The legacy global is
-    the root cause of issue #5344 (port collision on concurrent OAuth
-    flows); replacing it with a ContextVar is out of scope for this
-    consolidation PR.
+    Creates and starts an :class:`OAuthCallbackServer` so the port is
+    consumed immediately — no TOCTOU gap between port discovery and
+    actual server startup (issue #34260).  Stores the server in
+    ``cfg['_callback_server']`` and the resolved port in
+    ``cfg['_resolved_port']``.
     """
-    global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
-    cfg["_resolved_port"] = port
-    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
-    return port
+    server = OAuthCallbackServer(port=requested)
+    server.start()
+    cfg["_resolved_port"] = server.port
+    cfg["_callback_server"] = server
+    return server
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
@@ -892,11 +958,13 @@ def build_oauth_auth(
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
+    import functools
+    callback_server = cfg.get("_callback_server")
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
-        callback_handler=_wait_for_callback,
+        redirect_handler=functools.partial(_redirect_handler, port=callback_server.port),
+        callback_handler=functools.partial(_wait_for_callback, server=callback_server),
         timeout=float(cfg.get("timeout", 300)),
     )

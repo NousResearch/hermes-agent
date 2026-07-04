@@ -163,3 +163,59 @@ def test_non_assistant_messages_ignored():
 
     assert repaired == 0
     assert messages == original
+
+
+def test_single_element_array_unwrapped(caplog):
+    """Single-element JSON array containing a dict is unwrapped to the dict."""
+    arr_arg = '[{"mode":"replace","path":"/tmp/foo"}]'
+    messages = [
+        _assistant_message(_tool_call(arguments=arr_arg)),
+        _tool_message(content="ok"),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+        )
+
+    assert repaired == 0
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"mode": "replace", "path": "/tmp/foo"}'
+
+
+def test_multi_element_array_replaced_with_empty_object(caplog):
+    """Multi-element JSON array is non-dict -> fall back to '{}' with marker."""
+    arr_arg = '[{"a":1},{"b":2}]'
+    messages = [
+        _assistant_message(_tool_call(arguments=arr_arg)),
+        _tool_message(content="existing"),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-arr",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert any("session=session-arr" in r.message for r in caplog.records)
+
+
+def test_non_dict_json_types_replaced(caplog):
+    """JSON string, number, boolean, null are non-dict -> fall back to '{}'."""
+    for val in ['"hello"', "42", "true", "null"]:
+        messages = [
+            _assistant_message(_tool_call(arguments=val)),
+            _tool_message(content="ok"),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="run_agent"):
+            repaired = AIAgent._sanitize_tool_call_arguments(
+                messages,
+                logger=logging.getLogger("run_agent"),
+            )
+
+        assert repaired == 1, f"expected repaired=1 for value {val!r}"
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"

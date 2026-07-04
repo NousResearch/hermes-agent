@@ -13,6 +13,11 @@ describe('readToolsFilter', () => {
       include: ['a', 'b']
     })
   })
+
+  it('coerces a scalar-string include/exclude to a single-element array like the backend', () => {
+    expect(readToolsFilter({ tools: { include: 'foo' } })).toEqual({ exclude: undefined, include: ['foo'] })
+    expect(readToolsFilter({ tools: { exclude: 'secret' } })).toEqual({ exclude: ['secret'], include: undefined })
+  })
 })
 
 describe('isToolEnabled', () => {
@@ -30,6 +35,18 @@ describe('isToolEnabled', () => {
     const server = { tools: { exclude: ['b'] } }
     expect(isToolEnabled(server, 'a')).toBe(true)
     expect(isToolEnabled(server, 'b')).toBe(false)
+  })
+
+  it('honors a scalar-string include as a one-tool whitelist', () => {
+    const server = { tools: { include: 'foo' } }
+    expect(isToolEnabled(server, 'foo')).toBe(true)
+    expect(isToolEnabled(server, 'bar')).toBe(false)
+  })
+
+  it('honors a scalar-string exclude as a one-tool denylist', () => {
+    const server = { tools: { exclude: 'secret' } }
+    expect(isToolEnabled(server, 'secret')).toBe(false)
+    expect(isToolEnabled(server, 'other')).toBe(true)
   })
 })
 
@@ -52,6 +69,11 @@ describe('toggleToolInServer', () => {
   it('respects include mode: re-enabling adds back to include', () => {
     const next = toggleToolInServer({ tools: { include: ['b'] } }, 'a')
     expect(next.tools).toEqual({ include: ['b', 'a'] })
+  })
+
+  it('migrates a scalar-string include to an array on toggle without dropping it', () => {
+    const next = toggleToolInServer({ tools: { include: 'foo' } }, 'bar')
+    expect(next.tools).toEqual({ include: ['foo', 'bar'] })
   })
 
   it('preserves sibling tools keys like resources/prompts', () => {

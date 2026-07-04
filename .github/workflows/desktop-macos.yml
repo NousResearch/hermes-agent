@@ -70,6 +70,20 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
+      # electron-builder's BUILT-IN notarize step treats APPLE_API_KEY as a
+      # FILE PATH; handing it the .p8 CONTENT makes notarytool parse the first
+      # line (-----BEGIN PRIVATE KEY-----) as an option → "Invalid option".
+      # Materialize the secret to a file and pass the path — our afterSign
+      # (scripts/notarize.cjs) accepts a path too, so both layers agree.
+      - name: Materialize App Store Connect API key (.p8)
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          head -c 27 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" || head -2 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" || { echo "APPLE_API_KEY secret does not look like a .p8"; exit 1; }
+
       # builder = write-build-stamp + stage-install-script + stage-native-deps
       # + tsc + vite, then electron-builder. afterSign (scripts/notarize.cjs)
       # submits to notarytool with the API-key triple and staples the ticket;
@@ -77,7 +91,7 @@ jobs:
       - name: Build, sign and notarize (${{ matrix.arch }})
         working-directory: apps/desktop
         env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run builder -- --mac dmg zip --${{ matrix.arch }}

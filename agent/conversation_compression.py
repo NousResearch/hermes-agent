@@ -392,15 +392,35 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
 
 
 def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
-    """Preserve a real user turn when a compressor returns assistant/tool-only context."""
+    """Preserve a real user turn when a compressor returns assistant/tool-only context.
+
+    On repeated compaction the protected head decays to the system prompt only,
+    the middle summary can land as ``role="assistant"``, and a tool-heavy tail
+    can be all assistant/tool — so the compacted transcript can legitimately
+    contain zero user messages. Strict chat templates (LM Studio / llama.cpp
+    Jinja) then fail with "No user query found in messages" (#55677).
+
+    The restored turn is appended at the END: the guard only runs when
+    ``compressed`` currently ends with an assistant/tool message (any existing
+    user turn — including a todo-snapshot append — short-circuits the
+    ``any()`` check), so appending a user message never creates consecutive
+    same-role messages. ``_fresh_compaction_message_copy`` copies the message
+    and strips the ``_db_persisted`` marker so the rotation/in-place flush
+    still persists the restored row to the new session (#57491).
+
+    If the pre-compression transcript itself carried no user turn at all
+    (near-impossible — every real conversation opens with a user request —
+    but kept as a defensive backstop), a minimal continuation marker is
+    appended instead so strict templates still see a user message.
+    """
     if any(isinstance(msg, dict) and msg.get("role") == "user" for msg in compressed):
         return
+    from agent.context_compressor import _fresh_compaction_message_copy
+
     for msg in reversed(original_messages):
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
-        restored = dict(msg)
-        restored.pop("_db_persisted", None)
-        compressed.append(restored)
+        compressed.append(_fresh_compaction_message_copy(msg))
         return
     compressed.append({
         "role": "user",

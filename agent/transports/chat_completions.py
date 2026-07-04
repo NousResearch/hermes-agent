@@ -634,9 +634,16 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
+                # Poolside returns an integer tool_call.id (mirrors the integer
+                # finish_reason coercion above); ToolCall.id is typed str | None
+                # and downstream id-pairing (_split_responses_tool_id /
+                # make_tool_result_message) assumes str, so coerce it here.
+                _tc_id = tc.id
+                if isinstance(_tc_id, int):
+                    _tc_id = str(_tc_id)
                 tool_calls.append(
                     ToolCall(
-                        id=tc.id,
+                        id=_tc_id,
                         name=tc.function.name,
                         arguments=tc.function.arguments,
                         provider_data=tc_provider_data or None,

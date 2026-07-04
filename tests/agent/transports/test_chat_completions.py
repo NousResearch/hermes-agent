@@ -778,6 +778,29 @@ class TestChatCompletionsNormalize:
         assert nr.tool_calls[0].name == "terminal"
         assert nr.tool_calls[0].id == "call_123"
 
+    def test_tool_call_integer_id_coerced_to_string(self, transport):
+        """Poolside returns an integer tool_call.id on the non-streaming path.
+        ToolCall.id is typed str | None and downstream id-pairing
+        (_split_responses_tool_id / make_tool_result_message) assumes str, so
+        the transport must coerce it — mirroring the integer finish_reason
+        coercion.  Left as an int, the assistant message's synthetic string id
+        diverges from the paired tool result's raw-int tool_call_id and the
+        next replay turn is rejected with HTTP 400."""
+        tc = SimpleNamespace(
+            id=24,
+            function=SimpleNamespace(name="terminal", arguments='{"command": "ls"}'),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc], reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].id == "24"
+        assert isinstance(nr.tool_calls[0].id, str)
+
     def test_tool_call_extra_content_preserved(self, transport):
         """Gemini 3 thinking models attach extra_content with thought_signature
         on tool_calls.  Without this replay on the next turn, the API rejects

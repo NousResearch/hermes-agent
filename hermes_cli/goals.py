@@ -68,8 +68,12 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
+CONTINUATION_MARKER = (
+    "[Automated goal continuation — Hermes is pursuing your standing goal, not a message you sent]"
+)
+
 CONTINUATION_PROMPT_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
+    f"{CONTINUATION_MARKER}\n"
     "Goal: {goal}\n\n"
     "Continue working toward this goal. Take the next concrete step. "
     "If you believe the goal is complete, state so explicitly and stop. "
@@ -81,7 +85,7 @@ CONTINUATION_PROMPT_TEMPLATE = (
 # to break, what's in scope, and when to stop and ask — so it targets the
 # verification surface instead of declaring victory loosely.
 CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
+    f"{CONTINUATION_MARKER}\n"
     "Goal: {goal}\n\n"
     "Completion contract:\n"
     "{contract_block}\n\n"
@@ -97,7 +101,7 @@ CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
 # to the agent verbatim so it sees what to target on the next turn,
 # and surfaced to the judge so the verdict considers them too.
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
+    f"{CONTINUATION_MARKER}\n"
     "Goal: {goal}\n\n"
     "Additional criteria the user added mid-loop:\n"
     "{subgoals_block}\n\n"

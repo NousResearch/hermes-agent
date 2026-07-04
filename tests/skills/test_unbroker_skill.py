@@ -1388,6 +1388,42 @@ def test_dotenv_env_fills_missing_creds_and_shell_wins():
                     os.environ[k] = v
 
 
+def test_cli_send_lane_reads_creds_from_hermes_home_dotenv():
+    """setup/doctor read creds from $HERMES_HOME/.env; the send/next commands must too.
+
+    With EMAIL creds only in $HERMES_HOME/.env (not exported to the shell) and email_mode
+    programmatic, `next` must route an email-lane broker to an autonomous smtp send, not to
+    the human draft digest. On the pre-fix code cmd_next resolved capabilities from os.environ
+    only, so it saw no SMTP and demoted the lane.
+    """
+    prev = {k: os.environ.get(k) for k in
+            ("HERMES_HOME", "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST", "EMAIL_IMAP_HOST")}
+    with tempfile.TemporaryDirectory() as home, temp_env():
+        os.environ["HERMES_HOME"] = home
+        (Path(home) / ".env").write_text(
+            "EMAIL_ADDRESS=vault@gmail.com\nEMAIL_PASSWORD=app-secret\n"
+            "EMAIL_SMTP_HOST=smtp.gmail.com\nEMAIL_IMAP_HOST=imap.gmail.com\n",
+            encoding="utf-8")
+        try:
+            for k in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST", "EMAIL_IMAP_HOST"):
+                os.environ.pop(k, None)
+            assert emailer.available(os.environ)["smtp"] is False   # shell alone sees nothing
+            config.save_config({"email_mode": "programmatic"})
+            sid = _run(["intake", "--full-name", "Jane Q. Public",
+                        "--email", "jane@example.com", "--consent"])["subject_id"]
+            _run(["record", sid, "whitepages", "found", "--found", "true"])
+            q = _run(["next", sid])
+            sends = [a for a in q["actions"]
+                     if a.get("type") == "optout_email_send" and a.get("send_via") == "smtp"]
+            assert sends and sends[0]["broker_id"] == "whitepages"
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 def test_cdp_cli_check_reports_not_running():
     orig = cdp.endpoint_status
     cdp.endpoint_status = lambda *a, **k: None

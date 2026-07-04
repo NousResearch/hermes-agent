@@ -8,6 +8,7 @@ and MMR diversity reranking. Pluggable backends: sentence-transformers
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import threading
@@ -169,6 +170,7 @@ class KVMemoryProvider(MemoryProvider):
             self._compact_all()
 
         self._initialized = True
+        atexit.register(self.shutdown)
 
         stats = self._db.get_stats()
         logger.info(
@@ -324,7 +326,19 @@ class KVMemoryProvider(MemoryProvider):
         raise NotImplementedError(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
-        """Clean shutdown — close database connection."""
+        """Clean shutdown — close database, unload model, prevent segfault."""
+        # Force-unload the embedding model BEFORE Python interpreter
+        # finalization. SentenceTransformer holds C++ PyTorch objects
+        # that crash if destructed during interpreter shutdown.
+        if self._backend is not None:
+            try:
+                if hasattr(self._backend, '_model') and self._backend._model is not None:
+                    del self._backend._model
+                    self._backend._model = None
+            except Exception:
+                pass
+            self._backend = None
+
         if self._db:
             try:
                 self._db.close()
@@ -332,8 +346,14 @@ class KVMemoryProvider(MemoryProvider):
                 logger.debug("KV-Memory shutdown close failed: %s", e)
         self._db = None
         self._retriever = None
-        self._backend = None
         self._initialized = False
+
+    def __del__(self):
+        """Safety net: attempt cleanup if shutdown() wasn't called."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass
 
     # ── Optional hooks ─────────────────────────────────────────────────
 

@@ -1,6 +1,7 @@
 """Tests for tools/skills_tool.py — skill discovery and viewing."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -556,6 +557,23 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["name"] == "knowledge-brain"
+
+    def test_view_does_not_warn_for_installed_symlinked_skill(self, tmp_path, caplog):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root), caplog.at_level(
+            logging.WARNING, logger="tools.skills_tool"
+        ):
+            raw = skill_view("knowledge-brain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "outside the trusted skills directory" not in caplog.text
 
     def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

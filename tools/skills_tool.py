@@ -1133,16 +1133,26 @@ def skill_view(
             )
 
         # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # (local skills dir + configured external_dirs are all trusted). Accept
+        # both lexical paths under a trusted root and resolved paths under a
+        # trusted root: installed symlinked skills legitimately live at
+        # ~/.hermes/skills/<name>/SKILL.md even when their real target is in a
+        # shared source namespace such as ~/.agents/skills.
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_dirs = [SKILLS_DIR]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_dirs.extend(all_dirs[1:])
         except Exception:
             pass
         for _td in _trusted_dirs:
             try:
-                skill_md.resolve().relative_to(_td)
+                skill_md.relative_to(_td)
+                _outside_skills_dir = False
+                break
+            except ValueError:
+                pass
+            try:
+                skill_md.resolve().relative_to(_td.resolve())
                 _outside_skills_dir = False
                 break
             except ValueError:

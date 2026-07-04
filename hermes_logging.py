@@ -27,11 +27,14 @@ Session context:
     that thread will include ``[session_id]`` for filtering/correlation.
 """
 
+import atexit
 import io
 import logging
 import os
+import queue
 import sys
 import threading
+from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -543,6 +546,117 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._record_stream_stat()
 
 
+# ---------------------------------------------------------------------------
+# Asynchronous file logging — keep the cross-process rotation lock off the loop
+#
+# The rotating file handlers serialize rollover with a cross-process lock (see
+# the module header): when several Hermes processes log to the same file, an
+# ``emit`` can block while another process holds that lock.  When the emitting
+# thread is an asyncio event loop, that block stalls the loop and drops
+# WebSocket clients.  To keep file I/O off the hot path, every file handler is
+# driven by a single ``QueueListener`` on a dedicated thread; loggers only touch
+# an in-memory queue (a non-blocking enqueue).
+# ---------------------------------------------------------------------------
+
+_log_queue: "Optional[queue.SimpleQueue]" = None
+_queue_listener: Optional[QueueListener] = None
+_queued_file_handlers: list = []
+_queue_atexit_registered = False
+
+
+class _NonFormattingQueueHandler(QueueHandler):
+    """``QueueHandler`` for an in-process queue.
+
+    Stdlib ``prepare()`` formats the record and drops ``args``/``exc_info`` so it
+    can be pickled to another process.  Our queue is in-process, so we skip that
+    and pass the raw record through — the target file handlers must apply their
+    own ``RedactingFormatter`` and component filters on the listener thread.
+    """
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        return record
+
+
+def _stop_queue_listener() -> None:
+    """Flush and stop the background log listener (idempotent)."""
+    global _queue_listener
+    listener, _queue_listener = _queue_listener, None
+    if listener is not None:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+
+def _register_queued_handler(handler: logging.Handler) -> None:
+    """Route *handler* through the shared async queue instead of attaching it to
+    *root* directly, so emitting threads never block on file I/O or the
+    cross-process rotation lock.  The ``QueueListener`` applies each handler's
+    own level and filters on its worker thread."""
+    global _log_queue, _queue_listener, _queue_atexit_registered
+    if _log_queue is None:
+        _log_queue = queue.SimpleQueue()
+        qh = _NonFormattingQueueHandler(_log_queue)
+        qh._hermes_queue = True  # type: ignore[attr-defined]
+        # Always funnel through the root logger so records from any logger
+        # (production passes root here; callers may pass a child) reach the
+        # queue via propagation.
+        logging.getLogger().addHandler(qh)
+    _queued_file_handlers.append(handler)
+    # Rebuild the listener with the full target set.  This only happens while
+    # init_logging() adds handlers (2-3 times, queue empty), so stop() returns
+    # immediately.
+    if _queue_listener is not None:
+        _queue_listener.stop()
+    _queue_listener = QueueListener(
+        _log_queue, *_queued_file_handlers, respect_handler_level=True
+    )
+    _queue_listener.start()
+    if not _queue_atexit_registered:
+        # Runs before logging.shutdown (registered earlier at import time), so
+        # the listener stops before its file handlers are closed.
+        atexit.register(_stop_queue_listener)
+        _queue_atexit_registered = True
+
+
+def flush_log_queue() -> None:
+    """Block until all queued records have been written, then resume.
+
+    Draining is done by stopping the listener (which processes every pending
+    record before joining) and restarting it.  Used at shutdown and by tests
+    that read a log file right after emitting to it."""
+    listener = _queue_listener
+    if listener is not None:
+        listener.stop()
+        listener.start()
+
+
+def rotating_file_handlers() -> list:
+    """Return the live rotating file handlers.
+
+    They are attached to the async ``QueueListener`` rather than the root
+    logger, so callers/tests must use this instead of scanning
+    ``logging.getLogger().handlers``."""
+    return list(_queued_file_handlers)
+
+
+def _reset_queued_handlers() -> None:
+    """Tear down the async logging queue + listener (test-isolation helper)."""
+    global _log_queue
+    _stop_queue_listener()
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if getattr(h, "_hermes_queue", False):
+            root.removeHandler(h)
+    for h in list(_queued_file_handlers):
+        try:
+            h.close()
+        except Exception:
+            pass
+    _queued_file_handlers.clear()
+    _log_queue = None
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -563,7 +677,7 @@ def _add_rotating_handler(
         for gateway.log).
     """
     resolved = path.resolve()
-    for existing in logger.handlers:
+    for existing in _queued_file_handlers:
         if (
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
@@ -579,7 +693,9 @@ def _add_rotating_handler(
     handler.setFormatter(formatter)
     if log_filter is not None:
         handler.addFilter(log_filter)
-    logger.addHandler(handler)
+    # Route through the async queue instead of ``logger.addHandler(handler)`` so
+    # the rotation-lock wait never runs on the caller's (often event-loop) thread.
+    _register_queued_handler(handler)
 
 
 def _read_logging_config():

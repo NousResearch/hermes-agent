@@ -7,13 +7,25 @@ from pathlib import Path
 from typing import Optional
 
 
+def _platform_default_hermes_home() -> Path:
+    """Return the platform-native default Hermes home path."""
+    try:
+        from hermes_constants import _get_platform_default_hermes_home  # local import to avoid cycles
+        return _get_platform_default_hermes_home()
+    except Exception:
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if os.name == "nt" and local_appdata:
+            return Path(local_appdata) / "hermes"
+        return Path.home() / ".hermes"
+
+
 def _hermes_home_path() -> Path:
     """Resolve the active HERMES_HOME (profile-aware) without circular imports."""
     try:
         from hermes_constants import get_hermes_home  # local import to avoid cycles
         return get_hermes_home()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        return _platform_default_hermes_home()
 
 
 def _hermes_root_path() -> Path:
@@ -22,7 +34,7 @@ def _hermes_root_path() -> Path:
         from hermes_constants import get_default_hermes_root  # local import to avoid cycles
         return get_default_hermes_root()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        return _platform_default_hermes_home()
 
 
 def build_write_denied_paths(home: str) -> set[str]:

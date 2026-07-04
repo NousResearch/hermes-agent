@@ -99,3 +99,60 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestHermesHomeInProfileHint:
+    """The active-profile hint must use platform-aware paths, never ~/.hermes."""
+
+    def _stable_with_mocked_root(self, agent, fake_root="/fake/hermes/root",
+                                 profile="default"):
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+            patch(
+                "agent.system_prompt.get_default_hermes_root",
+                return_value=fake_root,
+            ),
+            patch(
+                "agent.file_safety._resolve_active_profile_name",
+                return_value=profile,
+            ),
+        ):
+            return build_system_prompt_parts(agent)["stable"]
+
+    def test_default_profile_uses_fake_root(self):
+        agent = _make_agent()
+        stable = self._stable_with_mocked_root(agent, profile="default")
+        assert "/fake/hermes/root/profiles/<name>/" in stable
+
+    def test_named_profile_uses_fake_root(self):
+        agent = _make_agent()
+        stable = self._stable_with_mocked_root(
+            agent, fake_root="/custom/hermes/home", profile="coder"
+        )
+        assert "/custom/hermes/home/profiles/coder/" in stable
+
+    def test_named_profile_shows_default_areas(self):
+        agent = _make_agent()
+        stable = self._stable_with_mocked_root(
+            agent, fake_root="/root/path", profile="architect"
+        )
+        assert "/root/path/profiles/architect/" in stable
+        assert "/root/path/skills/" in stable
+        assert "/root/path/plugins/" in stable
+        assert "/root/path/cron/" in stable
+        assert "/root/path/memories/" in stable
+
+    def test_no_tilde_hermes_in_output_default(self):
+        agent = _make_agent()
+        stable = self._stable_with_mocked_root(agent, profile="default")
+        assert "~/.hermes" not in stable
+
+    def test_no_tilde_hermes_in_output_named(self):
+        agent = _make_agent()
+        stable = self._stable_with_mocked_root(
+            agent, fake_root="/home/user/.hermes", profile="work"
+        )
+        assert "~/.hermes" not in stable

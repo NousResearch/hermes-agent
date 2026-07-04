@@ -2563,12 +2563,13 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
     When installing a system service via sudo, get_hermes_home() resolves to
     root's home.  This translates it to the target user's equivalent path:
-      /root/.hermes                    → /home/alice/.hermes
-      /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
-      /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
+      /root/.hermes                    -> /home/alice/.hermes
+      /root/.hermes/profiles/coder     -> /home/alice/.hermes/profiles/coder
+      /opt/custom-hermes               -> /opt/custom-hermes  (kept as-is)
     """
+    from hermes_constants import _get_platform_default_hermes_home
     current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    current_default = _get_platform_default_hermes_home().resolve()
     target_default = Path(target_home_dir) / ".hermes"
 
     # Default ~/.hermes → remap to target user's default

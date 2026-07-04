@@ -1614,7 +1614,8 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    from hermes_constants import _get_platform_default_hermes_home
+    hermes_home = os.environ.get("HERMES_HOME") or str(_get_platform_default_hermes_home())
     try:
         # Helper writes logs to stderr; we ask bash to print `command -v node`
         # on stdout once ensure_node succeeds. Subshell PATH edits don't leak

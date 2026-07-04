@@ -14,11 +14,19 @@ from typing import Any, Dict, List, Optional, Set
 
 try:
     from hermes_constants import get_hermes_home
-except ImportError:
+except Exception:  # pragma: no cover
     import os as _os
+    import sys as _sys
+
     def get_hermes_home() -> Path:  # type: ignore[misc]
         val = (_os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        if val:
+            return Path(val)
+        if _sys.platform == "win32":
+            local_appdata = _os.environ.get("LOCALAPPDATA", "").strip()
+            base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+            return base / "hermes"
+        return Path.home() / ".hermes"
 
 try:
     from fastapi import APIRouter

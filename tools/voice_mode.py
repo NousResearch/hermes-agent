@@ -849,11 +849,22 @@ WHISPER_HALLUCINATIONS = {
     "amara.org",
     "www.mooji.org",
     "ご視聴ありがとうございました",
+    # Korean subtitle-credit hallucinations (common with short/silent Discord audio)
+    "시청해주셔서 감사합니다",
+    "시청해 주셔서 감사합니다",
+    "자막 제공 및 자막을 사용하였습니다",
+    "자막 제공 및 자막을 사용하였습니다. 감사합니다",
+    "한글자막 by 한효주",
 }
 
 # Regex patterns for repetitive hallucinations (e.g. "Thank you. Thank you. Thank you.")
 _HALLUCINATION_REPEAT_RE = re.compile(
     r'^(?:thank you|thanks|bye|you|ok|okay|the end|\.|\s|,|!)+$',
+    flags=re.IGNORECASE,
+)
+
+_HALLUCINATION_SUBTITLE_RE = re.compile(
+    r'(?:자막\s*(?:제공|사용|제작)|한글\s*자막|시청해\s*주셔서\s*감사|구독과\s*좋아요)',
     flags=re.IGNORECASE,
 )
 
@@ -868,6 +879,8 @@ def is_whisper_hallucination(transcript: str) -> bool:
         return True
     # Repetitive patterns (e.g. "Thank you. Thank you. Thank you. you")
     if _HALLUCINATION_REPEAT_RE.match(cleaned):
+        return True
+    if _HALLUCINATION_SUBTITLE_RE.search(cleaned):
         return True
     return False
 

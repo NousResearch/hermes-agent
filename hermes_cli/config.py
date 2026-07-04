@@ -2333,6 +2333,9 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Echo raw Discord voice transcripts into the linked text channel.
+        # Set false to keep voice input active without cluttering public channels.
+        "voice_transcript_echo": True,
         # DEPRECATED / no-op. Any uploaded file is now always cached and
         # surfaced to the agent regardless of file type — authorization to
         # message the agent is the gate, not the extension. Kept so existing
@@ -2735,6 +2738,10 @@ DEFAULT_CONFIG = {
         "scale_to_zero": {
             "idle_timeout_minutes": 5,
         },
+        # Send an acknowledgment when a new message arrives while a gateway
+        # session is already running. Legacy env override:
+        # HERMES_GATEWAY_BUSY_ACK_ENABLED.
+        "busy_ack_enabled": True,
 
         # Auto-resume restart-loop breaker (#30719, defense-3). When the
         # gateway is killed mid-turn (SIGTERM) and revived by a supervisor

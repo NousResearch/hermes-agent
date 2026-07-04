@@ -388,3 +388,20 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+# Project-level hermes metadata. Distinct from [project] (which is the
+# packaging metadata consumed by setuptools / PyPI) and from [tool.<tool>]
+# tables consumed by their respective tools. This table is read by
+# hermes-agent internals (install.ps1 stage driver, hermes_bootstrap's
+# dual-venv detector) and by future contributors / IDE tooling.
+[tool.hermes]
+# Canonical virtualenv directory. Every install path MUST converge here;
+# any sibling "venv/" must be a junction/symlink, never an independent
+# pyvenv.cfg source. Pair with hermes_bootstrap.detect_dual_venv_drift
+# (Stage 1) and scripts/install.ps1::Ensure-Single-Venv-Junction
+# (Stage 2) for enforcement.
+canonical-venv = ".venv"
+# Compat aliases that resolve to the canonical venv via a reparse point
+# (junction on Windows, symlink on POSIX). Not real venvs. The install
+# pipeline's Ensure-Single-Venv-Junction stage creates these junctions.
+compat-aliases = ["venv"]

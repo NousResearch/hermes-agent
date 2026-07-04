@@ -82,7 +82,6 @@ from agent.evolution.atropos_export import (
     ATROPOS_FORMAT_VERSION,
     export_run,
     export_all_runs,
-    export_benchmark_dataset,
     export_run_to_jsonl,
     get_export_stats,
 )
@@ -140,7 +139,6 @@ __all__ = [
     "ATROPOS_FORMAT_VERSION",
     "export_run",
     "export_all_runs",
-    "export_benchmark_dataset",
     "export_run_to_jsonl",
     "get_export_stats",
 ]

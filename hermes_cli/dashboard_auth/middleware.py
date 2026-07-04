@@ -185,6 +185,13 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    # Password-only providers do not have an OAuth initiation endpoint.
+    # Let /login render the username/password form instead of auto-SSO
+    # redirecting to /auth/login?provider=basic, which would call
+    # start_login() and raise NotImplementedError.
+    if getattr(provider, "supports_password", False):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

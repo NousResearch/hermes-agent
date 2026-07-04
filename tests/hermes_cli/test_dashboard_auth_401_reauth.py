@@ -406,6 +406,30 @@ class TestAutoSsoRedirect:
         assert r.headers["location"].startswith("/login")
         assert "/auth/login" not in r.headers["location"]
 
+    def test_single_password_provider_renders_login_not_oauth(self, gated_app):
+        """Password-only auth has no OAuth start_login flow. With only a
+        basic/password provider registered, unauthenticated HTML loads must
+        fall back to /login so the password form can POST to
+        /auth/password-login instead of bouncing to /auth/login?provider=basic.
+        """
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+        class _PasswordStub(StubAuthProvider):
+            name = "basic"
+            display_name = "Username & Password"
+            supports_password = True
+
+            def start_login(self, *, redirect_uri: str):  # pragma: no cover
+                raise AssertionError("password provider must not start OAuth")
+
+        clear_providers()
+        register_provider(_PasswordStub())
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

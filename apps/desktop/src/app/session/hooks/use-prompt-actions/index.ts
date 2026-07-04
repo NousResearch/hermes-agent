@@ -11,20 +11,16 @@ import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
 import { clearClarifyRequest } from '@/store/clarify'
-import {
-  $composerAttachments,
-  type ComposerAttachment,
-  setComposerAttachmentUploadState,
-  updateComposerAttachment
-} from '@/store/composer'
+import { type ComposerAttachment, setComposerAttachmentUploadState, updateComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $connection } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
+import { MAIN_PANE_VIEW, type PaneSessionView } from '../../../chat/pane-view'
 import type {
   ClientSessionState,
   FileAttachResponse,
@@ -171,6 +167,10 @@ interface PromptActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+  /** The pane view this instance drives. Defaults to the main bundle — i.e.
+   *  the pre-split global atoms — so every existing caller is unchanged; the
+   *  split pane passes its own factory-created bundle. */
+  view?: PaneSessionView
 }
 
 /** Everything a slash handler needs about the invocation it's serving. */
@@ -194,7 +194,8 @@ export function usePromptActions({
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
   sttEnabled,
-  updateSessionState
+  updateSessionState,
+  view = MAIN_PANE_VIEW
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -257,7 +258,7 @@ export function usePromptActions({
 
         if (inFlight) {
           await inFlight
-          attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
+          attachment = view.$composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
         }
 
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
@@ -274,7 +275,7 @@ export function usePromptActions({
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            updateComposerAttachment(nextAttachment)
+            updateComposerAttachment(nextAttachment, view.$composerAttachments)
           }
 
           synced.push(nextAttachment)
@@ -287,7 +288,7 @@ export function usePromptActions({
 
       return synced
     },
-    [requestGateway]
+    [requestGateway, view]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already
@@ -304,24 +305,27 @@ export function usePromptActions({
     async (sessionId: string, attachment: ComposerAttachment) => {
       const remote = $connection.get()?.mode === 'remote'
 
-      setComposerAttachmentUploadState(attachment.id, 'uploading')
+      setComposerAttachmentUploadState(attachment.id, 'uploading', view.$composerAttachments)
 
       try {
         // Update-only: if the user removed the chip while this was uploading,
         // don't resurrect it — just drop the staged result on the floor.
-        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+        updateComposerAttachment(
+          await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }),
+          view.$composerAttachments
+        )
       } catch (err) {
         // Leave the chip in place so submit-time sync can retry (or the user can
         // remove it) and flag the card; also toast so a hard failure (unreadable
         // file, gateway perms) isn't swallowed while the user keeps typing.
-        setComposerAttachmentUploadState(attachment.id, 'error')
+        setComposerAttachmentUploadState(attachment.id, 'error', view.$composerAttachments)
         notifyError(err, copy.dropFiles)
       }
     },
-    [copy.dropFiles, requestGateway]
+    [copy.dropFiles, requestGateway, view]
   )
 
-  const composerAttachments = useStore($composerAttachments)
+  const composerAttachments = useStore(view.$composerAttachments)
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -357,7 +361,8 @@ export function usePromptActions({
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
-    updateSessionState
+    updateSessionState,
+    view
   })
 
   // Queue a handoff of this session to a messaging platform and watch it to
@@ -461,7 +466,7 @@ export function usePromptActions({
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = options?.attachments ?? view.$composerAttachments.get()
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
@@ -472,7 +477,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [executeSlashCommand, submitPromptText, view]
   )
 
   const transcribeVoiceAudio = useCallback(
@@ -494,10 +499,10 @@ export function usePromptActions({
 
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
-      setBusy(false)
+      view.setBusy(false)
     }
 
-    setAwaitingResponse(false)
+    view.setAwaitingResponse(false)
 
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
@@ -506,7 +511,7 @@ export function usePromptActions({
 
     if (!sessionId) {
       releaseBusy()
-      setMessages(finalizeMessages($messages.get()))
+      view.setMessages(finalizeMessages(view.$messages.get()))
 
       return
     }
@@ -573,7 +578,8 @@ export function usePromptActions({
     copy.stopFailed,
     requestGateway,
     selectedStoredSessionIdRef,
-    updateSessionState
+    updateSessionState,
+    view
   ])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
@@ -612,11 +618,11 @@ export function usePromptActions({
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
-      if (!activeSessionId || $busy.get()) {
+      if (!activeSessionId || view.$busy.get()) {
         return
       }
 
-      const messages = $messages.get()
+      const messages = view.$messages.get()
       const parentIndex = parentId ? messages.findIndex(message => message.id === parentId) : messages.length - 1
 
       const userIndex =
@@ -687,7 +693,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState, view]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
@@ -746,7 +752,7 @@ export function usePromptActions({
         throw new Error('No active session to restore.')
       }
 
-      const messages = $messages.get()
+      const messages = view.$messages.get()
       const idIndex = messages.findIndex(m => m.id === messageId && m.role === 'user')
 
       const fallbackIndex =
@@ -781,8 +787,8 @@ export function usePromptActions({
 
       clearNotifications()
       setMutableRef(busyRef, true)
-      setBusy(true)
-      setAwaitingResponse(true)
+      view.setBusy(true)
+      view.setAwaitingResponse(true)
       updateSessionState(sessionId, state => ({
         ...state,
         busy: true,
@@ -794,15 +800,15 @@ export function usePromptActions({
       }))
 
       try {
-        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, busyRef.current || view.$busy.get())
       } catch (err) {
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
         // history so the UI doesn't desync from what's persisted — leaving it
         // truncated is what made subsequent sends look duplicative.
         setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
+        view.setBusy(false)
+        view.setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({
           ...state,
           busy: false,
@@ -812,7 +818,7 @@ export function usePromptActions({
         throw err
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState, view]
   )
 
   const editMessage = useCallback(
@@ -825,7 +831,7 @@ export function usePromptActions({
         return
       }
 
-      const messages = $messages.get()
+      const messages = view.$messages.get()
       const sourceIndex = messages.findIndex(m => m.id === sourceId)
       const source = messages[sourceIndex]
 
@@ -852,8 +858,8 @@ export function usePromptActions({
 
       clearNotifications()
       setMutableRef(busyRef, true)
-      setBusy(true)
-      setAwaitingResponse(true)
+      view.setBusy(true)
+      view.setAwaitingResponse(true)
       updateSessionState(sessionId, state => ({
         ...state,
         busy: true,
@@ -872,7 +878,7 @@ export function usePromptActions({
           sessionId,
           text,
           isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
-          busyRef.current || $busy.get()
+          busyRef.current || view.$busy.get()
         )
       } catch (err) {
         let surfaced = err
@@ -892,13 +898,13 @@ export function usePromptActions({
         // UI stays in sync with what's persisted instead of stranding a partial
         // timeline.
         setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
+        view.setBusy(false)
+        view.setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState, view]
   )
 
   const handleThreadMessagesChange = useCallback(

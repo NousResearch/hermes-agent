@@ -22,7 +22,8 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
-import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { openSessionInSplitPane } from '@/store/split'
+import { canOpenSessionWindow, isSecondaryWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -127,6 +128,22 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               void openSessionInNewWindow(sessionId)
+            }
+          }
+        ]
+      : []),
+    // Secondary windows (pop-outs, watch windows) never host the split pane.
+    // Opening an already-visible session just focuses the pane showing it
+    // (openSplitPane's same-session guard).
+    ...(!isSecondaryWindow()
+      ? [
+          {
+            disabled: !sessionId,
+            icon: 'split-horizontal',
+            label: r.openInSplit,
+            onSelect: () => {
+              triggerHaptic('selection')
+              openSessionInSplitPane(sessionId, profile)
             }
           }
         ]

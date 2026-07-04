@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { notifyError } from '@/store/notifications'
-import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import { onComposerVoiceToggleRequest } from '../focus'
@@ -45,6 +45,10 @@ export function useComposerVoice({
   sessionId
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
+  // Pane bundle: replies are read from THIS pane's transcript, and the
+  // window-global voice-toggle hotkey lands only in the active pane.
+  const view = usePaneView()
+  const { $messages } = view
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
 
@@ -122,7 +126,19 @@ export function useComposerVoice({
     }
   }, [conversation, disabled, voiceConversationActive])
 
-  useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
+  // Active-pane gate: with the split open BOTH composers subscribe to the
+  // broadcast toggle, so an ungated handler would start/stop two recorders
+  // against two sessions on one hotkey press. Single-pane isActive() is
+  // always true — today's behavior exactly.
+  useEffect(
+    () =>
+      onComposerVoiceToggleRequest(() => {
+        if (view.isActive()) {
+          toggleVoiceConversation()
+        }
+      }),
+    [toggleVoiceConversation, view]
+  )
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

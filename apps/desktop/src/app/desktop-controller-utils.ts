@@ -39,3 +39,50 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
     )
   })
 }
+
+// ── Open-in-active-pane dispatcher (split pane) ─────────────────────────────
+
+export type OpenSessionDispatchAction =
+  /** Focus the split pane — it already shows the session. */
+  | { kind: 'focus-split' }
+  /** Focus the main pane — it already shows the session. */
+  | { kind: 'focus-main' }
+  /** Point the split pane at the session (pane-local open; URL untouched). */
+  | { kind: 'open-in-split' }
+  /** Route through the URL — exactly the pre-split navigate() path. */
+  | { kind: 'navigate' }
+
+/**
+ * Where a session-open lands with the split pane in play. Pure so the
+ * duplicate-session invariant ("the same session may never be open in both
+ * panes — opening a duplicate focuses the pane that already shows it") is unit
+ * testable. With the split closed the answer is always `navigate`, which is
+ * byte-for-byte today's behavior.
+ */
+export function resolveOpenSessionDispatch(args: {
+  activePaneId: 'main' | 'split'
+  mainSelectedStoredSessionId: null | string
+  splitOpen: boolean
+  splitStoredSessionId: null | string
+  storedSessionId: string
+}): OpenSessionDispatchAction {
+  const { activePaneId, mainSelectedStoredSessionId, splitOpen, splitStoredSessionId, storedSessionId } = args
+
+  if (!splitOpen) {
+    return { kind: 'navigate' }
+  }
+
+  if (splitStoredSessionId === storedSessionId) {
+    return { kind: 'focus-split' }
+  }
+
+  if (activePaneId === 'split') {
+    if (mainSelectedStoredSessionId === storedSessionId) {
+      return { kind: 'focus-main' }
+    }
+
+    return { kind: 'open-in-split' }
+  }
+
+  return { kind: 'navigate' }
+}

@@ -6,7 +6,8 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $approvalRequest } from '@/store/prompts'
-import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-scroll'
+
+import { usePaneView } from './pane-view'
 
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
@@ -30,6 +31,9 @@ import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-
  */
 export function ScrollToBottomButton() {
   const { t } = useI18n()
+  // Pane-scoped: this button jumps ITS pane's viewport (single-pane = the
+  // module singleton instance, unchanged).
+  const { $threadJumpButtonVisible, requestScrollToBottom } = usePaneView()
   const visible = useStore($threadJumpButtonVisible)
   const request = useStore($approvalRequest)
   // Scrolled away while an approval is pending → the inline Run/Reject bar is

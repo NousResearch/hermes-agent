@@ -827,6 +827,8 @@ export interface Translations {
     goToSession: string
     branches: string
     startInBranch: (branch: string) => string
+    splitRight: string
+    closeSplit: string
     commandCenter: string
     appearance: string
     settings: string
@@ -1380,6 +1382,7 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      openInSplit: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string

@@ -2,6 +2,8 @@ import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
 import { setResumeExhaustedSessionId } from '@/store/session'
+import { $activePaneId, $splitOpen, $splitPaneSession, closeSplitPane } from '@/store/split'
+import { isSecondaryWindow } from '@/store/windows'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
@@ -113,6 +115,18 @@ export function useRouteResume({
     }
 
     if (routedSessionId) {
+      // Same-session-never-in-both-panes vs. the router itself: every
+      // dispatcher entry point enforces the invariant, but history navigation
+      // (Back/Forward) bypasses it and can land the URL on the session the
+      // split pane holds. The URL wins — close the split rather than
+      // double-mounting one session in two panes. Secondary windows share the
+      // persisted split state without rendering the split, so they must not
+      // clobber it. Split closed → the condition is never true (single-pane
+      // path untouched).
+      if (!isSecondaryWindow() && $splitOpen.get() && $splitPaneSession.get()?.storedId === routedSessionId) {
+        closeSplitPane()
+      }
+
       const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(routedSessionId)
 
       const alreadyActive =
@@ -153,9 +167,16 @@ export function useRouteResume({
       return
     }
 
+    // Pane gate: while the SPLIT pane is focused, the identity singletons
+    // mirror ITS session (split-mirror.ts), so a main pane sitting on a fresh
+    // /new draft would read as "left the draft" and get spuriously reset.
+    // Defer the check until the main pane is active again — the mirror
+    // teardown rewrites the id atoms, which re-runs this effect. Single-pane
+    // the active pane is always 'main', so this is inert.
     if (
       isNewChatRoute(locationPathname) &&
       !creatingSessionRef.current &&
+      $activePaneId.get() === 'main' &&
       (selectedStoredSessionId || activeSessionId || !freshDraftReady) &&
       !rawHashLooksLikeSession()
     ) {

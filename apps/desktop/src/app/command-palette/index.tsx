@@ -18,6 +18,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Columns2,
   Cpu,
   Download,
   Egg,
@@ -59,8 +60,10 @@ import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { requestStartWorkSession } from '@/store/projects'
+import { $splitOpen, closeSplitPane, dispatchOpenSession, openSplitPane } from '@/store/split'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
+import { isSecondaryWindow } from '@/store/windows'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -296,6 +299,7 @@ export function CommandPalette() {
   const open = useStore($commandPaletteOpen)
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
+  const splitOpen = useStore($splitOpen)
   const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
@@ -354,6 +358,18 @@ export function CommandPalette() {
   }, [open, pendingPage])
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
+
+  // Session opens route through the active-pane dispatcher (they land in the
+  // focused chat pane; a duplicate focuses the pane already showing it). The
+  // navigate() fallback only runs before DesktopController registers it.
+  const openSession = useCallback(
+    (sessionId: string) => () => {
+      if (!dispatchOpenSession(sessionId)) {
+        navigate(sessionRoute(sessionId))
+      }
+    },
+    [navigate]
+  )
 
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.
@@ -476,7 +492,31 @@ export function CommandPalette() {
             keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
             label: t.starmap.title,
             run: go(STARMAP_ROUTE)
-          }
+          },
+          // Secondary windows (pop-outs, watch windows) never host the split.
+          ...(!isSecondaryWindow()
+            ? [
+                splitOpen
+                  ? {
+                      action: 'view.toggleSplit',
+                      icon: Columns2,
+                      id: 'view-close-split',
+                      keywords: ['split', 'pane', 'panel', 'close', 'side by side'],
+                      label: cc.closeSplit,
+                      run: () => closeSplitPane()
+                    }
+                  : {
+                      action: 'view.toggleSplit',
+                      icon: Columns2,
+                      id: 'view-split-right',
+                      keywords: ['split', 'pane', 'panel', 'right', 'side by side'],
+                      label: cc.splitRight,
+                      run: () => {
+                        openSplitPane()
+                      }
+                    }
+              ]
+            : [])
         ]
       },
       ...branchGroup,
@@ -576,7 +616,7 @@ export function CommandPalette() {
         ]
       }
     ]
-  }, [go, settingsSectionLabel, t, worktrees])
+  }, [go, settingsSectionLabel, splitOpen, t, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -600,7 +640,7 @@ export function CommandPalette() {
             id: `goto-${directId}`,
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
-            run: go(sessionRoute(directId))
+            run: openSession(directId)
           }
         ]
       })
@@ -681,7 +721,7 @@ export function CommandPalette() {
           id: `session-${session.id}`,
           keywords: ['chat', 'session', ...(session.preview ? [session.preview] : [])],
           label: session.title,
-          run: go(sessionRoute(session.id))
+          run: openSession(session.id)
         }))
       })
     }
@@ -731,6 +771,7 @@ export function CommandPalette() {
     configFieldLabel,
     go,
     mcpServers,
+    openSession,
     resolvedMode,
     search,
     sessions,

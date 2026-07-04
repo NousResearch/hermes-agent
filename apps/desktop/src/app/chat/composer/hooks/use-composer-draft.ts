@@ -1,8 +1,9 @@
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import { cloneAttachments, DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
@@ -45,6 +46,11 @@ export function useComposerDraft({
 }: UseComposerDraftArgs) {
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
+  // The pane bundle: this composer's attachments atom + the active-pane gate
+  // for the window-global insert/focus bus. Single-pane these are the module
+  // singletons and the gate is always true — today's behavior exactly.
+  const view = usePaneView()
+  const { $composerAttachments } = view
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -132,25 +138,35 @@ export function useComposerDraft({
     [paintDraft]
   )
 
+  // Mount/focusKey/enable auto-focus, gated to the ACTIVE pane. Ungated, the
+  // split's ChatBar would steal focus on mount (boot restore of a persisted
+  // split), on its pane-local session swaps (focusKey), and on gateway
+  // reconnects (inputDisabled flips) — and the focusin would bubble into the
+  // split wrapper's onFocusCapture, activating the pane, installing the
+  // identity mirror, and swapping the gateway profile without any user
+  // gesture. Single-pane isActive() is always true — today's behavior.
   useEffect(() => {
-    if (!inputDisabled) {
+    if (!inputDisabled && view.isActive()) {
       focusInput()
     }
-  }, [focusInput, focusKey, focusRequestId, inputDisabled])
+  }, [focusInput, focusKey, focusRequestId, inputDisabled, view])
 
   useEffect(() => {
     if (inputDisabled) {
       return undefined
     }
 
+    // Active-pane gate: with the split open, BOTH mounted composers subscribe
+    // as 'main', so global requests (deep-link blueprint, terminal Cmd+L,
+    // review pane) must land only in the pane the user is working in.
     const offFocus = onComposerFocusRequest(target => {
-      if (target === 'main') {
+      if (target === 'main' && view.isActive()) {
         setFocusRequestId(id => id + 1)
       }
     })
 
     const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
-      if (target === 'main') {
+      if (target === 'main' && view.isActive()) {
         appendExternalText(text, mode)
       }
     })
@@ -159,10 +175,13 @@ export function useComposerDraft({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, inputDisabled])
+  }, [appendExternalText, inputDisabled, view])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
+  const stashAt = useCallback(
+    (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+      stashSessionDraft(scope, text, attachments),
+    [$composerAttachments]
+  )
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     $composerAttachments.set(cloneAttachments(attachments))
@@ -237,7 +256,7 @@ export function useComposerDraft({
       unsubscribe()
       window.clearTimeout(draftPersistTimerRef.current)
     }
-  }, [composerRuntime, queueEditRef])
+  }, [composerRuntime, queueEditRef, stashAt])
 
   const insertText = (text: string) => {
     const base = draftRef.current
@@ -275,11 +294,11 @@ export function useComposerDraft({
 
   useEffect(() => {
     return onComposerInsertRefsRequest(({ refs, target }) => {
-      if (target === 'main') {
+      if (target === 'main' && view.isActive()) {
         insertInlineRefsRef.current(refs)
       }
     })
-  }, [])
+  }, [view])
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
@@ -322,7 +341,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [syncDraftFromEditor])
+  }, [stashAt, syncDraftFromEditor])
 
   return {
     activeQueueSessionKeyRef,

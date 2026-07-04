@@ -4,24 +4,11 @@ import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
-import {
-  $currentCwd,
-  $sessions,
-  setCurrentBranch,
-  setCurrentCwd,
-  setCurrentFastMode,
-  setCurrentModel,
-  setCurrentPersonality,
-  setCurrentProvider,
-  setCurrentReasoningEffort,
-  setCurrentServiceTier,
-  setCurrentUsage,
-  setSessions,
-  setYoloActive
-} from '@/store/session'
+import { $currentCwd, $sessions, setSessions } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
+import { MAIN_PANE_VIEW, type PaneSessionView } from '../../../chat/pane-view'
 import type { ClientSessionState } from '../../../types'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
@@ -190,7 +177,10 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
   return (session?.message_count ?? 0) > 0
 }
 
-function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
+// Exported for the split pane's tagged boot probe (split-pane.tsx), which
+// fetches the row with an EXPLICIT profile and must land it in $sessions the
+// same way resolveStoredSession does, so the follow-up resume finds it cached.
+export function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
   setSessions(prev => [
@@ -257,7 +247,13 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
+// Both projections below write the CALLING pane's view bundle. The default is
+// the main bundle — the exact global setters this file imported pre-split — so
+// existing callers are byte-identical; the split pane passes its own view.
+export function applyRuntimeInfo(
+  info: SessionRuntimeInfo | undefined,
+  view: PaneSessionView = MAIN_PANE_VIEW
+): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
@@ -271,66 +267,69 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   }
 
   if (typeof info.model === 'string') {
-    setCurrentModel(info.model)
+    view.setCurrentModel(info.model)
     sessionState.model = info.model
   }
 
   if (typeof info.provider === 'string') {
-    setCurrentProvider(info.provider)
+    view.setCurrentProvider(info.provider)
     sessionState.provider = info.provider
   }
 
   if (info.cwd) {
-    setCurrentCwd(info.cwd)
+    view.setCurrentCwd(info.cwd)
     sessionState.cwd = info.cwd
   }
 
   if (info.branch !== undefined) {
-    setCurrentBranch(info.branch || '')
+    view.setCurrentBranch(info.branch || '')
     sessionState.branch = info.branch || ''
   }
 
   if (typeof info.personality === 'string') {
     const personality = normalizePersonalityValue(info.personality)
-    setCurrentPersonality(personality)
+    view.setCurrentPersonality(personality)
     sessionState.personality = personality
   }
 
   if (typeof info.reasoning_effort === 'string') {
-    setCurrentReasoningEffort(info.reasoning_effort)
+    view.setCurrentReasoningEffort(info.reasoning_effort)
     sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
-    setCurrentServiceTier(info.service_tier)
+    view.setCurrentServiceTier(info.service_tier)
     sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
-    setCurrentFastMode(info.fast)
+    view.setCurrentFastMode(info.fast)
     sessionState.fast = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
-    setYoloActive(info.yolo)
+    view.setYoloActive(info.yolo)
     sessionState.yolo = info.yolo
   }
 
   if (info.usage) {
-    setCurrentUsage(current => ({ ...current, ...info.usage }))
+    view.setCurrentUsage(current => ({ ...current, ...info.usage }))
   }
 
   return sessionState
 }
 
-export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
-  setCurrentModel(stored?.model || '')
-  setCurrentProvider('')
-  setCurrentReasoningEffort('')
-  setCurrentServiceTier('')
-  setCurrentFastMode(false)
-  setYoloActive(false)
-  setCurrentPersonality('')
+export function applyStoredSessionPreviewRuntimeInfo(
+  stored: { model?: null | string } | undefined,
+  view: PaneSessionView = MAIN_PANE_VIEW
+) {
+  view.setCurrentModel(stored?.model || '')
+  view.setCurrentProvider('')
+  view.setCurrentReasoningEffort('')
+  view.setCurrentServiceTier('')
+  view.setCurrentFastMode(false)
+  view.setYoloActive(false)
+  view.setCurrentPersonality('')
 }
 
 // A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /

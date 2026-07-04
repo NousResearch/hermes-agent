@@ -38,6 +38,7 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { $splitPaneSession } from '@/store/split'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -58,6 +59,32 @@ const bootRetryDelay = (attempt: number): number => {
   const base = BOOT_RETRY_DELAYS_MS[Math.min(attempt, BOOT_RETRY_DELAYS_MS.length - 1)]
 
   return Math.round(base * (0.8 + Math.random() * 0.4))
+}
+
+/**
+ * Profiles whose background socket must survive pruning: any profile with a
+ * running (working) or blocked (needs-input) session, plus the split pane's
+ * session profile — an idle split session must keep its socket so its next
+ * stream/steer doesn't die with a reaped backend (design §4.4). Exported for
+ * tests; reads the stores directly so the subscriptions below can share it.
+ */
+export function keptGatewayProfiles(): Set<string> {
+  const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+  const keep = new Set<string>()
+
+  for (const session of $sessions.get()) {
+    if (live.has(session.id)) {
+      keep.add(normalizeProfileKey(session.profile))
+    }
+  }
+
+  const splitSession = $splitPaneSession.get()
+
+  if (splitSession) {
+    keep.add(normalizeProfileKey(splitSession.profile))
+  }
+
+  return keep
 }
 
 interface GatewayBootOptions {
@@ -363,31 +390,31 @@ export function useGatewayBoot({
 
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.
+    // The split pane's backend is touched explicitly too: its socket may not
+    // exist yet (restore pending), and the backend must not idle-reap first.
     const keepaliveTimer = setInterval(() => {
       touchActiveGatewayBackend()
       touchSecondaryGateways()
+      const splitSession = $splitPaneSession.get()
+
+      if (splitSession) {
+        void desktop.touchBackend?.(normalizeProfileKey(splitSession.profile)).catch(() => undefined)
+      }
     }, 60_000)
 
     // Bound concurrency cost to live work: keep a background socket only while
-    // its profile has a running (working) or blocked (needs-input) session.
-    // Once that profile goes idle its socket is dropped and its backend is free
-    // to idle-reap. The active profile is always spared.
+    // its profile has a running (working) or blocked (needs-input) session —
+    // or holds the split pane's session. Once a profile drops out of that set
+    // its socket is closed and its backend is free to idle-reap. The active
+    // profile is always spared.
     const recomputeKeptGateways = () => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      const keep = new Set<string>()
-
-      for (const session of $sessions.get()) {
-        if (live.has(session.id)) {
-          keep.add(normalizeProfileKey(session.profile))
-        }
-      }
-
-      pruneSecondaryGateways(keep)
+      pruneSecondaryGateways(keptGatewayProfiles())
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
+    const offSplitPane = $splitPaneSession.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -523,6 +550,7 @@ export function useGatewayBoot({
       offWorking()
       offAttention()
       offActiveProfile()
+      offSplitPane()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()

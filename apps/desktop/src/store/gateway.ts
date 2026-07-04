@@ -185,15 +185,32 @@ function createSecondary(profile: string): Secondary {
   return entry
 }
 
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+// The socket that serves `profile`, WITHOUT touching the active pointer. For
+// operations that must run against a specific profile's backend while another
+// profile stays active — e.g. restoring the split pane's session at boot, or
+// keeping a background pane's socket alive. Null when the profile has no
+// primary claim and no live secondary (use ensureProfileSocketOpen to mint one).
+export function gatewayForProfile(profile: string | null | undefined): HermesGateway | null {
   const key = normKey(profile)
 
   if (key === primaryProfile) {
-    setActive(key)
+    return primaryGateway
+  }
 
-    return
+  return secondaries.get(key)?.gateway ?? null
+}
+
+// Open (or reuse) `profile`'s socket WITHOUT making it the active gateway —
+// the open-only body of ensureGatewayForProfile. Background-pane plumbing
+// (split boot restore, keepalive) needs the socket live but must never steal
+// the active pointer, `$gatewayState`, or `$connection` from the pane the user
+// is looking at. The primary's lifecycle is owned by use-gateway-boot, so it
+// passes through untouched.
+export async function ensureProfileSocketOpen(profile: string | null | undefined): Promise<HermesGateway | null> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return primaryGateway
   }
 
   let entry = secondaries.get(key)
@@ -213,6 +230,18 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     } catch {
       scheduleReconnect(entry)
     }
+  }
+
+  return entry.gateway
+}
+
+// Make `profile` the active gateway, lazily opening its socket if needed. The
+// primary is a no-op fast path. Background sockets are never closed here.
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  if (key !== primaryProfile) {
+    await ensureProfileSocketOpen(key)
   }
 
   setActive(key)

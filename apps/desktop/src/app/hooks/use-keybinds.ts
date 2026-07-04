@@ -41,7 +41,8 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
-import { openNewSessionInNewWindow } from '@/store/windows'
+import { dispatchOpenSession, toggleSplitPane } from '@/store/split'
+import { isSecondaryWindow, openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
@@ -86,8 +87,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     profileSwitchHandlers[`profile.switch.${slot}`] = () => switchProfileToSlot(slot)
   }
 
+  // Session jumps route through the open-in-active-pane dispatcher (⌃Tab
+  // switcher + ⌃1..9 slots land in whichever pane is focused; duplicates focus
+  // the pane already showing the session). The navigate() fallback only runs
+  // before DesktopController registers the dispatcher — same path as before.
   const goToSession = (sessionId: null | string) => {
-    if (sessionId) {
+    if (sessionId && !dispatchOpenSession(sessionId)) {
       navigate(sessionRoute(sessionId))
     }
   }
@@ -179,6 +184,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.prevTerminal': () => $terminalTakeover.get() && cycleTerminal(-1),
     'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
+    // Secondary windows (pop-outs, watch windows) never host the split pane.
+    'view.toggleSplit': () => !isSecondaryWindow() && toggleSplitPane(),
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 

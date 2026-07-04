@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef } from 'react'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearComposerAttachments, clearSessionDraft, type ComposerAttachment } from '@/store/composer'
@@ -71,6 +72,11 @@ export function useComposerSubmit({
   setComposerText,
   stashAt
 }: UseComposerSubmitArgs) {
+  // Pane bundle: sends clear THIS pane's attachments; external submit requests
+  // land only in the active pane (both mounted composers subscribe as 'main').
+  const view = usePaneView()
+  const { $composerAttachments } = view
+
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
@@ -96,11 +102,11 @@ export function useComposerSubmit({
   useEffect(
     () =>
       onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
+        if (target === 'main' && !inputDisabled && view.isActive()) {
           dispatchSubmitRef.current(text)
         }
       }),
-    [inputDisabled]
+    [inputDisabled, view]
   )
 
   const submitDraft = () => {
@@ -159,7 +165,7 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      clearComposerAttachments()
+      clearComposerAttachments($composerAttachments)
       dispatchSubmit(text, submittedAttachments)
     }
 

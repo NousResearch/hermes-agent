@@ -1,9 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { playSpeechText } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
-import { $messages } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 
@@ -39,6 +39,8 @@ export function useAutoSpeakReplies({
   sessionId
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
+  // Pane bundle: re-arm on THIS pane's transcript updates.
+  const { $messages } = usePaneView()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
 
@@ -75,5 +77,5 @@ export function useAutoSpeakReplies({
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => stops.forEach(f => f())
-  }, [enabled, sessionId])
+  }, [$messages, enabled, sessionId])
 }

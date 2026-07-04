@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
+import { usePaneView } from '@/app/chat/pane-view'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
@@ -60,6 +61,8 @@ export function useComposerQueue({
   sessionId
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
+  // Pane bundle: queued sends clear THIS pane's attachments atom.
+  const { $composerAttachments } = usePaneView()
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
@@ -173,11 +176,11 @@ export function useComposerQueue({
     }
 
     clearDraft()
-    clearComposerAttachments()
+    clearComposerAttachments($composerAttachments)
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef])
+  }, [$composerAttachments, activeQueueSessionKey, attachments, clearDraft, draftRef])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

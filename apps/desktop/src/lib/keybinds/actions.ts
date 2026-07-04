@@ -112,6 +112,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
+  // ⌘⇧\ — the split-pane sibling of ⌘\: same backslash "divider" mnemonic,
+  // shifted. Toggles the second chat pane (never in secondary windows).
+  { id: 'view.toggleSplit', category: 'view', defaults: ['mod+shift+\\'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]

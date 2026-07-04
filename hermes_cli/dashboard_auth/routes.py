@@ -192,6 +192,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Provider does not support interactive login: {provider!r}",
         )
+    if getattr(p, "supports_password", False):
+        login_url = f"{_prefix(request)}/login"
+        safe_next = _validate_post_login_target(next)
+        if safe_next:
+            from urllib.parse import quote
+
+            login_url = f"{login_url}?next={quote(safe_next, safe='')}"
+        return RedirectResponse(url=login_url, status_code=302)
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))

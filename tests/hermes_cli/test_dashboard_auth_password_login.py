@@ -216,6 +216,55 @@ class TestProviderListFlag:
 
 
 # ---------------------------------------------------------------------------
+# Gate middleware: password providers must render /login, not auto-SSO
+# ---------------------------------------------------------------------------
+
+
+class TestPasswordProviderGateRedirect:
+    def test_password_only_provider_does_not_auto_sso(self, gated_app):
+        resp = gated_app.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "/auth/login" not in resp.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# /auth/login — password providers must not enter OAuth start_login
+# ---------------------------------------------------------------------------
+
+
+class TestAuthLoginPasswordProvider:
+    def test_direct_auth_login_redirects_to_login(self, gated_app):
+        resp = gated_app.get("/auth/login?provider=testpw", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+    def test_direct_auth_login_preserves_safe_next(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2F",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
+    def test_direct_auth_login_drops_unsafe_next(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2F%2Fevil.example%2F",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+    def test_direct_auth_login_can_render_login_page(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2F",
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert 'data-provider="testpw"' in resp.text
+
+
+# ---------------------------------------------------------------------------
 # /auth/password-login — end-to-end through the real middleware
 # ---------------------------------------------------------------------------
 

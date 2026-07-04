@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 
-import { sameCronSignature } from './desktop-controller-utils'
+import { sameCronSignature, shouldPollMessagingSessions } from './desktop-controller-utils'
 
 const session = (id: string, title: string | null): SessionInfo => ({ id, title }) as SessionInfo
 
@@ -27,5 +27,44 @@ describe('sameCronSignature', () => {
     const a = [session('a', 't'), session('b', 't')]
     const b = [session('b', 't'), session('a', 't')]
     expect(sameCronSignature(a, b)).toBe(false)
+  })
+})
+
+describe('shouldPollMessagingSessions', () => {
+  const base = {
+    activeIsMessaging: false,
+    gatewayPlatforms: null,
+    messagingSessionCount: 0,
+    messagingViewOpen: false
+  }
+
+  it('is false when nothing indicates messaging is in use', () => {
+    expect(shouldPollMessagingSessions(base)).toBe(false)
+  })
+
+  it('is true while the messaging view is open', () => {
+    expect(shouldPollMessagingSessions({ ...base, messagingViewOpen: true })).toBe(true)
+  })
+
+  it('is true when a messaging session is already loaded', () => {
+    expect(shouldPollMessagingSessions({ ...base, messagingSessionCount: 1 })).toBe(true)
+  })
+
+  it('is true when the active session is a messaging thread', () => {
+    expect(shouldPollMessagingSessions({ ...base, activeIsMessaging: true })).toBe(true)
+  })
+
+  it('is true when status reports a configured gateway platform', () => {
+    expect(
+      shouldPollMessagingSessions({
+        ...base,
+        gatewayPlatforms: {
+          telegram: {
+            state: 'connected',
+            updated_at: '2026-07-04T00:00:00+00:00'
+          }
+        }
+      })
+    ).toBe(true)
   })
 })

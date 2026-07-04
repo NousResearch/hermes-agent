@@ -1250,3 +1250,52 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestFeishuEnvOverrideRespectsExplicitEnabled:
+    """Feishu env overrides must not force-enable when config explicitly sets enabled=false."""
+
+    def test_feishu_env_vars_respect_explicit_disabled(self, monkeypatch):
+        """When config.yaml has feishu.enabled: false, env vars must NOT override it."""
+        monkeypatch.setenv("FEISHU_APP_ID", "test_app_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+        config = GatewayConfig(platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=False,
+                extra={"_enabled_explicit": True},
+            ),
+        })
+        _apply_env_overrides(config)
+        assert not config.platforms[Platform.FEISHU].enabled
+
+    def test_feishu_env_vars_enable_when_not_explicitly_disabled(self, monkeypatch):
+        """When config has no explicit enabled setting, env vars should enable Feishu."""
+        monkeypatch.setenv("FEISHU_APP_ID", "test_app_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+        config = GatewayConfig(platforms={})
+        _apply_env_overrides(config)
+        assert config.platforms[Platform.FEISHU].enabled
+
+    def test_feishu_env_vars_populate_extra_fields(self, monkeypatch):
+        """Env vars should populate app_id, app_secret, domain, connection_mode."""
+        monkeypatch.setenv("FEISHU_APP_ID", "my_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "my_secret")
+        monkeypatch.setenv("FEISHU_DOMAIN", "lark")
+        monkeypatch.setenv("FEISHU_CONNECTION_MODE", "long_polling")
+        config = GatewayConfig(platforms={})
+        _apply_env_overrides(config)
+        extra = config.platforms[Platform.FEISHU].extra
+        assert extra["app_id"] == "my_id"
+        assert extra["app_secret"] == "my_secret"
+        assert extra["domain"] == "lark"
+        assert extra["connection_mode"] == "long_polling"
+
+    def test_feishu_env_vars_enable_when_config_has_no_enabled_key(self, monkeypatch):
+        """When feishu config exists but has no enabled key, env vars should enable."""
+        monkeypatch.setenv("FEISHU_APP_ID", "test_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+        config = GatewayConfig(platforms={
+            Platform.FEISHU: PlatformConfig(),  # enabled defaults to False
+        })
+        _apply_env_overrides(config)
+        assert config.platforms[Platform.FEISHU].enabled

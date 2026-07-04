@@ -563,13 +563,17 @@ async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, mon
 
     reset_manager_for_tests()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
 
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("supabase", "https://mcp.supabase.com/mcp", None)
+    assert provider is not None
+    redirect_uris = provider.context.client_metadata.redirect_uris
+    assert redirect_uris is not None
     provider.context.client_info = OAuthClientInformationFull.model_validate({
         "client_id": "client-id",
         "client_secret": "secret",
-        "redirect_uris": [str(provider.context.client_metadata.redirect_uris[0])],
+        "redirect_uris": [str(redirect_uris[0])],
         "token_endpoint_auth_method": "none",
     })
 
@@ -577,5 +581,5 @@ async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, mon
     body = parse_qs(request.content.decode())
 
     assert body["client_secret"] == ["secret"]
+    assert provider.context.client_info is not None
     assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
-

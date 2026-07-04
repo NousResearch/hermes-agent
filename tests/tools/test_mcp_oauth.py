@@ -264,11 +264,15 @@ class TestBuildOAuthAuth:
         from urllib.parse import parse_qs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        redirect_uris = provider.context.client_metadata.redirect_uris
+        assert redirect_uris is not None
         provider.context.client_info = OAuthClientInformationFull.model_validate({
             "client_id": "client-id",
             "client_secret": "secret",
-            "redirect_uris": [str(provider.context.client_metadata.redirect_uris[0])],
+            "redirect_uris": [str(redirect_uris[0])],
             "token_endpoint_auth_method": "none",
         })
 
@@ -277,6 +281,7 @@ class TestBuildOAuthAuth:
 
         assert body["client_id"] == ["client-id"]
         assert body["client_secret"] == ["secret"]
+        assert provider.context.client_info is not None
         assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
 
     @pytest.mark.asyncio
@@ -284,7 +289,9 @@ class TestBuildOAuthAuth:
         import httpx
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
         response = httpx.Response(201, json={
             "access_token": "access-token",
             "token_type": "Bearer",
@@ -293,11 +300,12 @@ class TestBuildOAuthAuth:
 
         await provider._handle_token_response(response)
 
-        assert provider.context.current_tokens.access_token == "access-token"
+        tokens = provider.context.current_tokens
+        assert tokens is not None
+        assert tokens.access_token == "access-token"
         token_path = tmp_path / "mcp-tokens" / "supabase.json"
         assert token_path.exists()
         assert json.loads(token_path.read_text())["access_token"] == "access-token"
-
 
 # ---------------------------------------------------------------------------
 # Utility functions
@@ -1287,7 +1295,7 @@ def test_build_oauth_auth_wires_configured_redirect_uri_into_handler(monkeypatch
             captured.update(kwargs)
 
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
-         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "HermesOAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
          patch.object(mcp_oauth, "_maybe_preregister_client"), \
          patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
@@ -1324,7 +1332,7 @@ def test_build_oauth_auth_handler_redirect_uri_none_when_unset(monkeypatch, caps
             captured.update(kwargs)
 
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
-         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "HermesOAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
          patch.object(mcp_oauth, "_maybe_preregister_client"), \
          patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:

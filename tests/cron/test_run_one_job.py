@@ -66,6 +66,40 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_return_result_success_snapshot(monkeypatch):
+    """return_result=True exposes the success snapshot without changing the pipeline."""
+    calls = _patch_pipeline(monkeypatch)
+
+    result = s.run_one_job({"id": "j2r", "name": "t"}, return_result=True)
+
+    assert result == {
+        "processed": True,
+        "success": True,
+        "status": "ok",
+        "error": None,
+        "delivery_error": None,
+    }
+    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
+    assert calls[-1] == ("mark", "j2r", True)
+
+
+def test_run_one_job_return_result_failed_snapshot(monkeypatch):
+    """return_result=True distinguishes a processed failed job from an exception."""
+    calls = _patch_pipeline(monkeypatch, success=False, final="", error="boom")
+
+    result = s.run_one_job({"id": "j5r", "name": "t"}, return_result=True)
+
+    assert result == {
+        "processed": True,
+        "success": False,
+        "status": "error",
+        "error": "boom",
+        "delivery_error": None,
+    }
+    assert "deliver" in [c[0] for c in calls]
+    assert [c for c in calls if c[0] == "mark"][0] == ("mark", "j5r", False)
+
+
 def test_run_one_job_silent_skips_delivery(monkeypatch):
     """A [SILENT] final response saves output + marks the run but does NOT
     deliver."""

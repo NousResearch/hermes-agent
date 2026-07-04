@@ -627,14 +627,25 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                     "error": "Job is already being fired by the scheduler; not run again."}
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
-        # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        # also clears the fire claim).  Ask for a structured status snapshot so
+        # repeat-limited one-shot jobs that are removed by mark_job_run can still
+        # report the real run outcome instead of relying only on a post-run
+        # get_job() re-read.
+        run_result = run_one_job(job, return_result=True)
         refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        if isinstance(run_result, dict):
+            processed = bool(run_result.get("processed", False))
+            ok = bool(run_result.get("success", False))
+            error = run_result.get("error")
+        else:
+            # Back-compat fallback for tests or older scheduler implementations.
+            processed = bool(run_result)
+            ok = refreshed.get("last_status") == "ok"
+            error = refreshed.get("last_error")
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": error,
         }
 
     except Exception as e:

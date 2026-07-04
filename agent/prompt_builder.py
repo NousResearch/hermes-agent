@@ -187,6 +187,23 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# Used instead of SKILLS_GUIDANCE when config.yaml's agent.skill_auto_patch
+# is False. Same "save new skills" behavior, but a skill_manage patch call
+# requires the user to explicitly ask for that change in the current turn —
+# noticing a skill is outdated is not by itself authorization to edit it,
+# and neither is the user being satisfied with a task's output.
+SKILLS_GUIDANCE_CONFIRM = (
+    "After completing a complex task (5+ tool calls), fixing a tricky error, "
+    "or discovering a non-trivial workflow, save the approach as a "
+    "skill with skill_manage so you can reuse it next time.\n"
+    "When using a skill and finding it outdated, incomplete, or wrong, tell "
+    "the user what you found — but only call skill_manage(action='patch') "
+    "when the user explicitly asks you to modify/update/fix the skill in "
+    "the current turn. Noticing an issue is not authorization to fix it, "
+    "and neither is the user being happy with the task's output; wait for "
+    "an explicit instruction to change the skill file itself."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

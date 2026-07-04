@@ -1549,6 +1549,12 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Skill self-patching guidance toggle.  Default True (existing behavior:
+    # model may call skill_manage(action='patch') on its own initiative).
+    # False switches the injected guidance to require an explicit user
+    # instruction before any skill_manage patch call in the current turn.
+    agent._skill_auto_patch = bool(_agent_section.get("skill_auto_patch", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

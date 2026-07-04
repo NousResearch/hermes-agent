@@ -1838,17 +1838,34 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(
+    provider: str,
+    *,
+    explicit_api_key: str | None = None,
+    explicit_base_url: str | None = None,
+    target_model: str | None = None,
+    max_tokens: int | None = None,
+) -> dict:
+    """Resolve runtime credentials for a specific provider.
+
+    Used by channel overrides and topic→profile routing.  Optional explicit
+    values let a mapped profile's own ``model:`` block act as the runtime source
+    without swapping ``HERMES_HOME`` away from the default profile.
+    """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(
+            requested=provider,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            target_model=target_model,
+        )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
-    return {
+    resolved = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -1857,6 +1874,9 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    if max_tokens is not None:
+        resolved["max_tokens"] = max_tokens
+    return resolved
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -3633,8 +3653,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` →
-        global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        mapped topic profile ``model:`` → global config/env
+        (``_resolve_gateway_model(user_config)`` and default provider resolution).
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -3685,6 +3705,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime_model,
             )
             model = runtime_model
+
+        # Topic→profile routing: the mapped profile's model/provider config is
+        # the source of truth for its runtime (e.g. Codex topic -> codex-acp),
+        # while memory/sessions/skills remain shared from the default home.
+        # Explicit channel_overrides below can still beat this profile default.
+        profile_name = self._load_source_profile(source) if source is not None else None
+        if profile_name:
+            profile_model, profile_runtime = self._load_profile_model_runtime_config(profile_name)
+            if profile_model:
+                logger.debug(
+                    "Topic profile model override: profile=%s %s -> %s",
+                    profile_name,
+                    model,
+                    profile_model,
+                )
+                model = profile_model
+            if profile_runtime:
+                logger.debug(
+                    "Topic profile runtime override: profile=%s provider=%s",
+                    profile_name,
+                    profile_runtime.get("provider"),
+                )
+                runtime_kwargs = profile_runtime
 
         cfg = getattr(self, "config", None)
         if cfg and source is not None:
@@ -4852,6 +4895,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return pdir if pdir.is_dir() else None
         except OSError:
             return None
+
+    @classmethod
+    def _load_profile_model_runtime_config(
+        cls,
+        profile_name: str,
+    ) -> tuple[Optional[str], Optional[dict]]:
+        """Load model/provider runtime from a mapped profile's ``config.yaml``.
+
+        Topic→profile routing is intentionally an overlay, not a full
+        ``HERMES_HOME`` swap: memory, sessions, skills and user profile stay in
+        the default home.  The mapped profile's own ``model:`` block still needs
+        to control the model harness/provider (e.g. ``codex-acp`` for the Codex
+        topic), otherwise the role overlay runs on the global provider.
+        """
+        pdir = cls._profile_dir(profile_name)
+        if pdir is None:
+            return None, None
+        config_path = pdir / "config.yaml"
+        try:
+            if not config_path.exists():
+                return None, None
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            logger.debug("Could not load profile config from %s", config_path, exc_info=True)
+            return None, None
+        if not isinstance(cfg, dict):
+            return None, None
+
+        model_cfg = cfg.get("model") or {}
+        model: Optional[str] = None
+        provider: Optional[str] = None
+        explicit_api_key: Optional[str] = None
+        explicit_base_url: Optional[str] = None
+        api_mode: Optional[str] = None
+        max_tokens: Optional[int] = None
+
+        if isinstance(model_cfg, str):
+            model = model_cfg.strip() or None
+        elif isinstance(model_cfg, dict):
+            model = str(
+                model_cfg.get("default")
+                or model_cfg.get("model")
+                or model_cfg.get("name")
+                or ""
+            ).strip() or None
+            provider = str(model_cfg.get("provider") or "").strip() or None
+            explicit_api_key = str(model_cfg.get("api_key") or "").strip() or None
+            explicit_base_url = str(model_cfg.get("base_url") or "").strip() or None
+            api_mode = str(
+                model_cfg.get("api_mode")
+                or model_cfg.get("openai_runtime")
+                or ""
+            ).strip() or None
+            _mt = model_cfg.get("max_tokens")
+            if isinstance(_mt, int) and _mt > 0:
+                max_tokens = _mt
+
+        runtime_kwargs: Optional[dict] = None
+        if provider:
+            runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                provider,
+                explicit_api_key=explicit_api_key,
+                explicit_base_url=explicit_base_url,
+                target_model=model,
+                max_tokens=max_tokens,
+            )
+            if api_mode:
+                runtime_kwargs["api_mode"] = api_mode
+
+        return model, runtime_kwargs
 
     @classmethod
     def _load_profile_reasoning_config(cls, profile_name: str) -> dict | None:

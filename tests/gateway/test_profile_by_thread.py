@@ -4,9 +4,11 @@ A Telegram thread/topic can be mapped to a named Hermes profile via
 ``telegram.profile_by_thread``.  When a live (non-Kanban) turn arrives in
 that topic, the gateway resolves:
 
-  * reasoning effort  — from the mapped profile's own ``config.yaml``
+  * model/provider     — from the mapped profile's own ``config.yaml``
+                        (so a Codex topic can use the Codex ACP harness)
+  * reasoning effort   — from the mapped profile's own ``config.yaml``
                         (single source of truth lives in the profile)
-  * identity / role   — from the mapped profile's ``SOUL.md``, injected as an
+  * identity / role    — from the mapped profile's ``SOUL.md``, injected as an
                         authoritative role overlay into the ephemeral prompt
 
 Memory, USER profile, sessions and skills stay shared from the default home —
@@ -59,13 +61,22 @@ def _make_runner():
     return runner
 
 
-def _seed_profile(hermes_home, name, *, effort=None, soul=None):
+def _seed_profile(hermes_home, name, *, effort=None, soul=None, model=None, provider=None):
     """Create profiles/<name>/ with optional config.yaml + SOUL.md."""
     pdir = hermes_home / "profiles" / name
     pdir.mkdir(parents=True, exist_ok=True)
+    config_lines = []
+    if model is not None or provider is not None:
+        config_lines.append("model:")
+        if model is not None:
+            config_lines.append(f"  default: {model}")
+        if provider is not None:
+            config_lines.append(f"  provider: {provider}")
     if effort is not None:
+        config_lines.extend(["agent:", f"  reasoning_effort: {effort}"])
+    if config_lines:
         (pdir / "config.yaml").write_text(
-            f"agent:\n  reasoning_effort: {effort}\n", encoding="utf-8"
+            "\n".join(config_lines) + "\n", encoding="utf-8"
         )
     if soul is not None:
         (pdir / "SOUL.md").write_text(soul, encoding="utf-8")
@@ -172,6 +183,125 @@ class TestLoadSourceProfile:
         runner = _make_runner()
         source = _make_event_source(chat_id="-100999", thread_id="2")
         assert runner._load_source_profile(source) == "engineer"
+
+
+# ---------------------------------------------------------------------------
+# model/provider runtime resolves from the mapped profile's own config
+# ---------------------------------------------------------------------------
+
+
+class TestProfileRuntime:
+    def test_model_provider_come_from_profile_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        _write_root_config(
+            hermes_home,
+            "model:\n"
+            "  default: root-model\n"
+            "  provider: openrouter\n"
+            "telegram:\n"
+            "  profile_by_thread:\n"
+            "    '2': codex\n",
+        )
+        _seed_profile(
+            hermes_home,
+            "codex",
+            model="codex-acp",
+            provider="codex-acp",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "root-key",
+            },
+        )
+
+        resolved_provider_calls = []
+
+        def fake_provider(provider, **kwargs):
+            resolved_provider_calls.append((provider, kwargs))
+            return {
+                "provider": provider,
+                "api_mode": "acp",
+                "base_url": "acp://codex",
+                "api_key": "profile-key",
+                "command": "codex-acp",
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs_for_provider",
+            fake_provider,
+        )
+
+        runner = _make_runner()
+        source = _make_event_source(thread_id="2")
+        model, runtime = runner._resolve_session_agent_runtime(
+            source=source,
+            user_config=gateway_run._load_gateway_config(),
+        )
+
+        assert model == "codex-acp"
+        assert runtime["provider"] == "codex-acp"
+        assert runtime["api_mode"] == "acp"
+        assert runtime["command"] == "codex-acp"
+        assert resolved_provider_calls == [
+            (
+                "codex-acp",
+                {
+                    "explicit_api_key": None,
+                    "explicit_base_url": None,
+                    "target_model": "codex-acp",
+                    "max_tokens": None,
+                },
+            )
+        ]
+
+    def test_unmapped_thread_keeps_global_runtime(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        _write_root_config(
+            hermes_home,
+            "model:\n"
+            "  default: root-model\n"
+            "  provider: openrouter\n"
+            "telegram:\n"
+            "  profile_by_thread:\n"
+            "    '2': codex\n",
+        )
+        _seed_profile(
+            hermes_home,
+            "codex",
+            model="codex-acp",
+            provider="codex-acp",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "root-key",
+            },
+        )
+
+        runner = _make_runner()
+        source = _make_event_source(thread_id="999")
+        model, runtime = runner._resolve_session_agent_runtime(
+            source=source,
+            user_config=gateway_run._load_gateway_config(),
+        )
+
+        assert model == "root-model"
+        assert runtime["provider"] == "openrouter"
 
 
 # ---------------------------------------------------------------------------

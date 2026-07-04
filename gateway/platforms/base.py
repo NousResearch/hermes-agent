@@ -1124,7 +1124,7 @@ def _media_delivery_strict_mode() -> bool:
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     denied = [Path(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES]
-    home = Path(os.path.expanduser("~"))
+    home = _media_delivery_home()
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
     # The active Hermes profile and shared Hermes root both contain control
@@ -1180,6 +1180,19 @@ def _media_delivery_denied_paths() -> List[Path]:
     return denied
 
 
+def _media_delivery_home() -> Path:
+    """Return the live home directory used for media-delivery denylist checks.
+
+    On Windows, ``os.path.expanduser("~")`` prefers USERPROFILE over HOME.
+    Tests and containerized gateway processes often override HOME only, so read
+    HOME explicitly first and fall back to expanduser for normal desktop use.
+    """
+    raw_home = os.environ.get("HOME")
+    if raw_home:
+        return Path(raw_home)
+    return Path(os.path.expanduser("~"))
+
+
 def _path_under_denied_prefix(resolved: Path) -> bool:
     """Return True if ``resolved`` lives under a deny-listed system path.
 
@@ -1195,7 +1208,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     credential location or another user's home.
     """
     try:
-        home = Path(os.path.expanduser("~")).resolve(strict=False)
+        home = _media_delivery_home().resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         home = None
     for denied in _media_delivery_denied_paths():
@@ -3093,6 +3106,10 @@ class BasePlatformAdapter(ABC):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        multi_select: bool = False,
+        min_selections: int = 0,
+        max_selections: Optional[int] = None,
+        allow_other: bool = True,
     ) -> SendResult:
         """Send a clarify prompt to the user.
 
@@ -3125,10 +3142,27 @@ class BasePlatformAdapter(ABC):
         """
         if choices:
             lines = [f"❓ {question}", ""]
+            if multi_select:
+                suffix = ", or your own answer" if allow_other else ""
+                lines.append(
+                    "Multiple selections allowed: reply with numbers/letters "
+                    f"like `1,3` or `A+C`, or option text{suffix}."
+                )
+                lines.append("")
             for i, choice in enumerate(choices, start=1):
-                lines.append(f"  {i}. {choice}")
+                prefix = f"{i}."
+                if multi_select:
+                    letter = chr(ord("A") + i - 1)
+                    prefix = f"{i}/{letter}."
+                lines.append(f"  {prefix} {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            if multi_select:
+                suffix = ", option text, or your own answer" if allow_other else " or option text"
+                lines.append(f"Reply with one or more numbers/letters{suffix}.")
+            elif allow_other:
+                lines.append("Reply with the number, the option text, or your own answer.")
+            else:
+                lines.append("Reply with the number or the option text.")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
@@ -3631,6 +3665,8 @@ class BasePlatformAdapter(ABC):
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
+                if "\x00" in path:
+                    continue
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
                 except (OSError, RuntimeError, ValueError):

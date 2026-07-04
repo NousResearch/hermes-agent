@@ -41,17 +41,25 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
-  // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
-  // coerce the unknown tab to the default view otherwise. Preserve `server=` so
-  // an old bookmark still lands on (and highlights) the selected server.
+  // Skills/MCP moved out of Settings into Capabilities (/skills). Keep old
+  // `/settings?tab=skills|mcp` deep links working — `useRouteEnumParam` would
+  // silently coerce unknown tabs to the default view otherwise. Preserve MCP
+  // `server=` so an old bookmark still highlights the selected server.
   useEffect(() => {
     const params = new URLSearchParams(search)
+    const legacyTab = params.get('tab')
 
-    if (params.get('tab') === 'mcp') {
-      const server = params.get('server')
-      const suffix = server ? `&server=${encodeURIComponent(server)}` : ''
-      navigate(`${SKILLS_ROUTE}?tab=mcp${suffix}`, { replace: true })
+    if (legacyTab === 'skills' || legacyTab === 'mcp') {
+      const targetParams = new URLSearchParams({ tab: legacyTab })
+
+      if (legacyTab === 'mcp') {
+        const server = params.get('server')
+        if (server) {
+          targetParams.set('server', server)
+        }
+      }
+
+      navigate(`${SKILLS_ROUTE}?${targetParams.toString()}`, { replace: true })
     }
   }, [navigate, search])
 

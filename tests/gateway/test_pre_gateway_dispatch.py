@@ -61,6 +61,42 @@ def _make_runner(platform: Platform):
 
 
 @pytest.mark.asyncio
+async def test_eval_gate_skip_short_circuits_before_plugin(monkeypatch):
+    """Built-in eval gate can block before plugin/auth dispatch."""
+    _clear_auth_env(monkeypatch)
+    from agent.eval_gate import EvalGateDecision
+
+    plugin_called = {"value": False}
+
+    def _fake_eval(event, config):
+        return EvalGateDecision(
+            surface="gateway",
+            audit_id="gateway:test",
+            actual_decision="reject",
+            enforce=True,
+            passed=False,
+            reason="test gate block",
+            action={},
+        )
+
+    def _fake_hook(name, **kwargs):
+        plugin_called["value"] = True
+        return []
+
+    monkeypatch.setattr("agent.eval_gate.evaluate_gateway_event", _fake_eval)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+
+    result = await runner._handle_message(_make_event("hi"))
+
+    assert result is None
+    assert plugin_called["value"] is False
+    adapter.send.assert_not_awaited()
+    runner.pairing_store.generate_code.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_hook_skip_short_circuits_dispatch(monkeypatch):
     """A plugin returning {'action': 'skip'} drops the message before auth."""
     _clear_auth_env(monkeypatch)

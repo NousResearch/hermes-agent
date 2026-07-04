@@ -1762,4 +1762,3 @@ class TestShareConsentGate:
 
         mock_upload.assert_not_called()
         assert "Aborted" not in capsys.readouterr().out
-

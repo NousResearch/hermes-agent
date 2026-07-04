@@ -28,6 +28,7 @@ guarantee.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from typing import Sequence
 
@@ -37,6 +38,7 @@ __all__ = [
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
+    "windows_hide_popen_kwargs",
     "windows_detach_popen_kwargs",
 ]
 
@@ -185,7 +187,7 @@ def windows_detach_flags_without_breakaway() -> int:
 
 def windows_hide_flags() -> int:
     """Return Win32 creationflags that merely hide the child's console
-    window without detaching the child.  0 on non-Windows.
+    window without detaching the child. 0 on non-Windows.
 
     Use for short-lived console apps spawned as part of a larger
     operation (``taskkill``, ``where``, version probes) where we want no
@@ -193,12 +195,29 @@ def windows_hide_flags() -> int:
 
     The key difference from :func:`windows_detach_flags`: NO
     ``DETACHED_PROCESS`` — the child still inherits stdio handles so
-    ``capture_output=True`` works.  ``DETACHED_PROCESS`` would sever
+    ``capture_output=True`` works. ``DETACHED_PROCESS`` would sever
     stdio and break stdout capture.
     """
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
+
+
+def windows_hide_popen_kwargs() -> dict:
+    """Return Popen kwargs that suppress visible console windows on Windows.
+
+    ``CREATE_NO_WINDOW`` is usually enough for console subprocesses, but on
+    some Windows Terminal/default-terminal-host setups a visible terminal can
+    still flash or remain attached for child process trees. Pair the creation
+    flag with ``STARTUPINFO``/``SW_HIDE`` as a belt-and-braces hint while
+    preserving stdout/stderr pipes (unlike ``DETACHED_PROCESS``).
+    """
+    if not IS_WINDOWS:
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0  # SW_HIDE
+    return {"creationflags": windows_hide_flags(), "startupinfo": startupinfo}
 
 
 def windows_detach_popen_kwargs() -> dict:

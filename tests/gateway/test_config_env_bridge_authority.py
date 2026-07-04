@@ -56,8 +56,27 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     )
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
-    # Keep PATH / PYTHONPATH so venv imports resolve.
-    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
+    # Keep PATH / PYTHONPATH so venv imports resolve. On Windows, socket/Winsock
+    # initialization also depends on core OS env such as SystemRoot/WINDIR; a
+    # nearly-empty subprocess env can make importing gateway.run fail before the
+    # config bridge is exercised.
+    for k in (
+        "PATH",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "HOME",
+        "SystemRoot",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+    ):
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
 

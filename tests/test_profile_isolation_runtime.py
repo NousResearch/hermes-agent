@@ -138,9 +138,8 @@ class TestRichSentStorePathResolution:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         import gateway.rich_sent_store as rss
 
-        b_seen = _under_override(prof_b, lambda: rss._store_path())
-        assert b_seen.startswith(str(prof_b))
-        assert b_seen.endswith("state/rich_sent_index.json")
+        b_seen = _under_override(prof_b, lambda: Path(rss._store_path()))
+        assert b_seen == prof_b / "state" / "rich_sent_index.json"
 
 
 # ---------------------------------------------------------------------------

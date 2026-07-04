@@ -279,3 +279,175 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     assert "url" not in captured_token, (
         "token exchange must NOT happen when state mismatches"
     )
+
+
+def _http_error(url: str, code: int, retry_after: str | None = None):
+    """Build a real ``urllib.error.HTTPError`` with optional Retry-After."""
+    import io
+    import urllib.error
+    from email.message import Message
+
+    headers = Message()
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError(url, code, "error", headers, io.BytesIO(b""))
+
+
+def _run_login_with_urlopen(monkeypatch, tmp_path, fake_urlopen):
+    """Drive ``run_hermes_oauth_login_pure()`` end-to-end against the given
+    ``urlopen`` stub, echoing the CSRF state back so the guard passes.
+    Returns ``(result, sleeps)`` where ``sleeps`` records ``time.sleep`` calls.
+    """
+    import builtins
+    import time
+    import urllib.request
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured_url: Dict[str, str] = {}
+    _patch_oauth_flow(
+        monkeypatch,
+        callback_code="placeholder",
+        capture_auth_url=captured_url,
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    sleeps: list = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    return run_hermes_oauth_login_pure(), sleeps
+
+
+def test_login_token_exchange_retries_on_429(monkeypatch, tmp_path):
+    """A transient HTTP 429 from the token endpoint must be retried (honoring
+    ``Retry-After``) instead of failing the exchange outright.
+
+    The authorization code the user pasted is single-use: if the exchange
+    gives up on a transient rate limit, the code is burned and the user has
+    to redo the whole browser round-trip. The Codex device-code login already
+    retries 429s with capped backoff; the Anthropic login path must match.
+    """
+    attempts: list = []
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempts.append(req.full_url)
+        if len(attempts) == 1:
+            raise _http_error(req.full_url, 429, retry_after="3")
+        body = json.dumps(
+            {
+                "access_token": "sk-ant-test-access",
+                "refresh_token": "sk-ant-test-refresh",
+                "expires_in": 3600,
+            }
+        ).encode()
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return body
+
+        return _FakeResponse()
+
+    result, sleeps = _run_login_with_urlopen(monkeypatch, tmp_path, fake_urlopen)
+
+    assert result is not None, "a single transient 429 must not fail the login"
+    assert attempts == [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://platform.claude.com/v1/oauth/token",
+    ], "the 429'd endpoint must be retried, not skipped to the fallback host"
+    assert sleeps == [3], "backoff must honor the server's Retry-After header"
+
+
+def test_login_429_exhausts_retries_then_falls_back(monkeypatch, tmp_path):
+    """Persistent 429s at the primary host must exhaust the capped retry
+    budget and then fall through to the legacy console host — preserving the
+    endpoint-fallback semantics the host list was introduced for.
+    """
+    attempts: list = []
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempts.append(req.full_url)
+        if req.full_url.startswith("https://platform.claude.com"):
+            raise _http_error(req.full_url, 429)
+        body = json.dumps(
+            {
+                "access_token": "sk-ant-test-access",
+                "refresh_token": "sk-ant-test-refresh",
+                "expires_in": 3600,
+            }
+        ).encode()
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return body
+
+        return _FakeResponse()
+
+    result, sleeps = _run_login_with_urlopen(monkeypatch, tmp_path, fake_urlopen)
+
+    assert result is not None, "login should still succeed via the console fallback"
+    assert attempts == ["https://platform.claude.com/v1/oauth/token"] * 4 + [
+        "https://console.anthropic.com/v1/oauth/token"
+    ], "4 capped attempts at the primary host, then the fallback host"
+    # Exponential backoff 2^1..2^3; no sleep after the final failed attempt.
+    assert sleeps == [2, 4, 8]
+
+
+def test_login_non_429_http_error_is_not_retried(monkeypatch, tmp_path):
+    """Non-429 HTTP errors (e.g. the 404 from the dead console host) must NOT
+    be retried — they fail fast to the next endpoint exactly as before.
+    """
+    attempts: list = []
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempts.append(req.full_url)
+        if req.full_url.startswith("https://platform.claude.com"):
+            raise _http_error(req.full_url, 404)
+        body = json.dumps(
+            {
+                "access_token": "sk-ant-test-access",
+                "refresh_token": "sk-ant-test-refresh",
+                "expires_in": 3600,
+            }
+        ).encode()
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return body
+
+        return _FakeResponse()
+
+    result, sleeps = _run_login_with_urlopen(monkeypatch, tmp_path, fake_urlopen)
+
+    assert result is not None, "login should succeed via the console fallback"
+    assert attempts == [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
+    ], "a non-429 HTTP error must move straight to the next host, no retries"
+    assert sleeps == [], "no backoff sleeps for non-429 errors"

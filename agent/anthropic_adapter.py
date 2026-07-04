@@ -1464,6 +1464,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        import urllib.error
         import urllib.request
 
         exchange_data = json.dumps({
@@ -1492,14 +1493,36 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 },
                 method="POST",
             )
-            try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    result = json.loads(resp.read().decode())
+            # Anthropic rate-limits the token endpoint (HTTP 429) when login
+            # is attempted repeatedly from the same IP. Retry with capped
+            # backoff (honoring Retry-After) instead of burning the user's
+            # single-use authorization code — mirrors the Codex login flow.
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        result = json.loads(resp.read().decode())
+                    break
+                except urllib.error.HTTPError as exc:
+                    last_error = exc
+                    if exc.code != 429:
+                        logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                        break
+                    retry_after = (exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+                    try:
+                        delay = int(retry_after) if retry_after else 2 ** attempt
+                    except ValueError:
+                        delay = 2 ** attempt
+                    delay = max(1, min(delay, 60))
+                    if attempt < max_attempts:
+                        print(f"Anthropic is rate-limiting login requests (429); retrying in {delay}s...")
+                        time.sleep(delay)
+                except Exception as exc:
+                    last_error = exc
+                    logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                    break
+            if result is not None:
                 break
-            except Exception as exc:
-                last_error = exc
-                logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
-                continue
 
         if result is None:
             raise last_error if last_error is not None else ValueError(

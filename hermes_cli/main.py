@@ -1726,6 +1726,17 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
+        # Prefer a Hermes-managed (bundled) Node.js over anything on PATH.
+        # The Windows desktop app ships its own Node.js under HERMES_HOME/node;
+        # using the system Node (via shutil.which) causes version mismatch and
+        # terminal flashing when the system Node differs from the bundled one.
+        try:
+            from hermes_constants import find_node_executable
+            managed = find_node_executable(bin)
+            if managed:
+                return managed
+        except Exception:
+            pass
         path = shutil.which(bin)
         if not path and bin == "node":
             try:

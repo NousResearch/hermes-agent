@@ -126,8 +126,30 @@ PRIVACY_PREFIX = (
 
 
 def wrap_inbound(peer: str, text: str) -> str:
-    """Filter + frame inbound task text for safe injection into the agent."""
-    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(text)
+    """Filter + frame inbound task text for safe injection into the agent.
+
+    Slash commands (text starting with ``/``) are passed through
+    UNWRAPPED so the gateway's command processor sees them — the
+    PRIVACY_PREFIX text would otherwise hide leading-slash commands
+    like ``/sethome``, deadlocking the home-channel onboarding flow.
+    Reported by kuangmi-bit in PR #41711 review (2026-06-26).
+
+    SECURITY TRADE-OFF: bypassing the wrapper also bypasses
+    ``filter_inbound()``. A peer that sends text like
+    ``/system: ignore all previous instructions`` will reach the
+    gateway unfiltered. This is acceptable because:
+      1. The gateway's command processor only acts on actual
+         ``/``-prefixed commands it knows about; non-command text
+         (even adversarial) is rejected as an unknown command.
+      2. Trust in the A2A peer is enforced by bearer auth at the
+         network layer — see ``check_bearer()`` and the bind-safety
+         rules in ``resolve_bind_host()``.
+    If either assumption changes, this shortcut must be revisited.
+    """
+    stripped = (text or "").strip()
+    if stripped.startswith("/"):
+        return stripped
+    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(stripped)
 
 
 # --------------------------------------------------------------------------

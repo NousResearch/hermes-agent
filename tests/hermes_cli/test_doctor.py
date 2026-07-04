@@ -290,6 +290,26 @@ def test_run_doctor_warns_when_docker_disk_cap_is_unenforceable(
     assert "requires overlay2 on XFS with pquota" in out
 
 
+def test_terminal_backend_and_disk_for_doctor_reads_config_yaml(
+    monkeypatch, tmp_path
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  container_disk: 51200\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_CONTAINER_DISK", raising=False)
+
+    assert doctor_mod._terminal_backend_and_disk_for_doctor() == ("docker", 51200)
+
+
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

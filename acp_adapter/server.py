@@ -1116,7 +1116,8 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        parent_session_id = kwargs.get("parent_session_id") or None
+        state = self.session_manager.create_session(cwd=cwd, parent_session_id=parent_session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)

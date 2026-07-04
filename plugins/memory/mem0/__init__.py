@@ -61,6 +61,12 @@ _DEFAULT_DESTRUCTIVE = {
 # Anything else (notably "off") = recall-only.
 _CAPTURE_ON = ("auto", "on", "true", "1")
 
+# Upper bound on rows the post-write scrub fetches for one capture_idem. Must be high enough that a
+# long turn extracting many memories can't hide a secret-bearing row beyond the fetched page and then
+# complete unscanned (Greptile P1). A single turn realistically yields a handful of facts; 500 is a
+# safe ceiling well above any real extraction.
+_CAPTURE_SCRUB_MAX_ROWS = 500
+
 # W3-TEMPORAL defaults (all overridable via $HERMES_HOME/mem0.json).
 # tz = the calendar-day reference zone for "the 20th"/"yesterday" (PT, matching the
 # digest's DST-correct PT-day bounds). overfetch = how many candidates to pull from
@@ -246,7 +252,11 @@ class _DirectRestMem0Client:
         # lands under this client's user/agent, never globally on the shared store (B4).
         scoped = self._scope({"user_id": kwargs.get("user_id"), "agent_id": kwargs.get("agent_id")})
         body.update(scoped)
-        for key in ("metadata", "infer", "run_id"):
+        # prompt = the salience gate (server-side extraction custom_instructions); model_chain =
+        # A-full per-call model fallback. Both MUST reach the wire or auto-capture extracts with the
+        # server default + no gate. (They were previously dropped — the server ignores unknown keys,
+        # so an old server simply falls back to its default, which is safe.)
+        for key in ("metadata", "infer", "run_id", "prompt", "model_chain"):
             if key in kwargs and kwargs[key] is not None:
                 body[key] = kwargs[key]
         return self._request("POST", "/memories", body=body)
@@ -1129,35 +1139,184 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
         self._prefetch_thread.start()
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        # Recall-only mode: skip per-turn auto-capture. Explicit mem0_conclude
-        # writes and prefetch/search recall still work. Uses the shared
-        # capture_is_on() so the "what counts as on" set has ONE definition.
-        if not capture_is_on(self._capture):
-            return
-        if self._is_breaker_open():
-            return
+    def _live_capture(self) -> str:
+        """Re-resolve the capture flag from the LIVE source (env > mem0.json `capture` > default),
+        so a flip is honored WITHOUT a provider restart and WITHOUT lag (fixes the flip-lag footgun).
 
-        def _sync():
+        Cache invalidation is by mem0.json MTIME + the env var, not a time window: the hot path only
+        does a cheap stat(), and re-reads/parses the file only when it actually changed. So an
+        operator's auto<->off flip is picked up on the very next capture decision — no rollback lag
+        (Greptile P1) — while steady-state calls stay cheap. On any error, falls back to the
+        init-time self._capture. Also updates self._capture so interlock + logs stay consistent."""
+        try:
+            from hermes_constants import get_hermes_home
+            cfg_path = get_hermes_home() / "mem0.json"
             try:
-                client = self._get_client()
-                messages = [
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": assistant_content},
-                ]
-                client.add(messages, **self._write_filters(write_kind="auto"))
+                mtime = cfg_path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            env_val = os.environ.get("MEM0_CAPTURE")
+            sig = (mtime, env_val)
+            if sig == getattr(self, "_live_capture_sig", None) and getattr(self, "_live_capture_val", None) is not None:
+                return self._live_capture_val
+            cfg_capture = None
+            if mtime and cfg_path.exists():
+                cfg_capture = json.loads(cfg_path.read_text(encoding="utf-8")).get("capture")
+            value, source = resolve_capture(env_val, cfg_capture)
+            self._live_capture_val = value
+            self._live_capture_sig = sig
+            # keep the frozen fields in sync so the interlock / logs reflect the live decision
+            self._capture, self._capture_source = value, source
+            return value
+        except Exception:
+            return self._capture
+
+    def _get_capture_pipeline(self):
+        """Lazy-build the A-lite capture pipeline (queue + drain worker + gate-version guard +
+        cross-process bgr interlock). Composed, not inlined — see capture_pipeline.py. Built once,
+        degrade-safe: on any construction error, returns None and capture stays off (INV-3)."""
+        pipe = getattr(self, "_capture_pipeline", None)
+        if pipe is not None:
+            # If capture was OFF at build time (worker not started) and has since been flipped ON,
+            # an idle agent may have inherited un-drained rows that never got a start signal
+            # (Greptile P1). Re-check on every access so a live enable activates the drain+reaper.
+            try:
+                pipe.maybe_start_pending()
+            except Exception:
+                pass
+            return pipe
+        try:
+            from . import capture_pipeline, capture_scrub
+
+            def _add(messages, kwargs) -> int:
+                # Returns the number of memories the server extracted+wrote for this turn, so the
+                # drainer knows whether to EXPECT rows in the post-write scrub read. FAIL-CLOSED
+                # (Greptile P1): if the response shape is anything we can't confidently parse as an
+                # explicit empty result, return 1 (assume >=1 written) so the scrub REQUIRES rows —
+                # an unknown success shape must never let an empty read be read as "nothing written".
+                resp = self._get_client().add(messages, **kwargs)
                 self._record_success()
-            except Exception as e:
-                self._record_failure()
-                logger.warning("Mem0 sync failed: %s", e)
+                try:
+                    if isinstance(resp, dict) and "results" in resp:
+                        return len(resp["results"] or [])
+                    if isinstance(resp, list):
+                        return len(resp)
+                except Exception:
+                    pass
+                return 1   # unknown/opaque success shape -> assume a write happened (require_rows)
 
-        # Wait for any previous sync before starting a new one
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
+            def _recall_idem(key: str) -> int:
+                # NOTE: must RAISE on transient failure (do NOT swallow to 0). The drain worker
+                # treats an idem-check error as "unknown" and requeues fail-closed, so a transient
+                # search fault never causes a duplicate re-add (Greptile P1).
+                resp = self._get_client().search_meta_filtered(
+                    "", {"capture_idem": key}, top_k=_CAPTURE_SCRUB_MAX_ROWS)
+                rows = self._unwrap_results(resp)
+                return len(rows)
 
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
-        self._sync_thread.start()
+            def _get_written(key: str):
+                # Must RAISE on transient failure: the drainer's post-write scrub fails CLOSED
+                # (requeues) if it cannot read the rows it just wrote, so a secret is never left
+                # recallable behind a completed queue row (Greptile P1). Fetch a HIGH ceiling of
+                # rows for the idem key — NOT one page.
+                # COMPLETENESS GUARD (Greptile P1): if the result HITS the cap, we cannot prove we
+                # saw every row (mem0 may have extracted more, or the backend may cap top_k). Rather
+                # than scan a partial set and complete the item — leaving a possible secret beyond
+                # the window — RAISE, which routes into the fail-closed scrub-requeue. In practice a
+                # single turn yields a handful of facts, so this never trips; it just makes "assumed
+                # complete" impossible.
+                resp = self._get_client().search_meta_filtered(
+                    "", {"capture_idem": key}, top_k=_CAPTURE_SCRUB_MAX_ROWS)
+                rows = self._unwrap_results(resp)
+                if len(rows) >= _CAPTURE_SCRUB_MAX_ROWS:
+                    raise RuntimeError(
+                        f"capture scrub read hit the {_CAPTURE_SCRUB_MAX_ROWS}-row cap for "
+                        f"capture_idem={key!r}; cannot prove the page is complete — failing closed")
+                return [{"id": r.get("id", ""), "memory": r.get("memory", "")}
+                        for r in rows]
+
+            def _forget(mid: str):
+                # Must RAISE on failure (Greptile P1): the drain worker's scrub fails CLOSED and
+                # requeues if a forget of a secret-bearing memory doesn't land. Swallowing here would
+                # let the row be marked done with the secret still recallable.
+                self._get_client().update(mid, text=f"{_FORGOTTEN_PREFIX} [secret-scrubbed]",
+                                          metadata={"forgotten": True, "capture_scrubbed": True})
+
+            pipe = capture_pipeline.CapturePipeline(
+                # LIVE capture source (Greptile P1 — flip-lag footgun): resolve the capture flag at
+                # DECISION TIME from the same precedence resolver, not the value frozen at init, so a
+                # live capture flip (off<->on) is honored without a provider restart.
+                capture_on_fn=lambda: capture_is_on(self._live_capture()),
+                add_fn=_add,
+                recall_idem_fn=_recall_idem,
+                scrub_fn=lambda facts: capture_scrub.filter_facts(facts),
+                forget_fn=_forget,
+                get_written_fn=_get_written,
+                write_filters=self._write_filters(write_kind="auto"),
+                model=str(self._config.get("capture_model", "gpt-5.4-mini")),
+                breaker_open_fn=self._is_breaker_open,
+                alert_fn=lambda m: logger.warning("MEM0-CAPTURE-ALERT %s", m),
+            )
+            self._capture_pipeline = pipe
+            return pipe
+        except Exception as e:
+            logger.warning("mem0 capture pipeline unavailable (capture disabled): %s", e)
+            self._capture_pipeline = None
+            return None
+
+    def _auto_capture_active(self) -> bool:
+        """True only when the FOREGROUND per-turn capture path would ACTUALLY write — i.e. capture is
+        configured on AND a certified capture pipeline is available (gate assets present + version
+        matches). This must mirror EXACTLY the condition under which sync_turn enqueues, so the D-7
+        interlock never suppresses the background writer (mem0_remember) in a state where the
+        foreground path is ALSO not writing (Greptile P1): capture=auto but gate missing/mismatched
+        would otherwise drop the fact on the floor from BOTH paths.
+
+        The interlock is cross-process (foreground session vs background-review fork are separate
+        processes); the shared, decision-time signals are the persisted capture flag and the shipped,
+        version-pinned gate assets, both resolved identically in either process. Degrade-safe: any
+        error -> False (interlock does not block the background writer)."""
+        try:
+            if not capture_is_on(self._live_capture()):
+                return False
+            pipe = self._get_capture_pipeline()
+            return bool(pipe is not None and pipe._certified)
+        except Exception:
+            return False
+
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        """Enqueue the completed turn for durable, salience-gated, server-side auto-capture.
+
+        A-lite: the ONLY synchronous step is a tiny durable enqueue (INV-3, never blocks the turn);
+        the background drain worker does the slow server-side extraction (mem0 runs the salience gate
+        as custom_instructions) + retry + secret-scrub. Capture only fires when capture_is_on AND the
+        certified gate version matches (D-11). Degrade-safe: any failure leaves the turn untouched.
+        Reads the LIVE capture flag (self._live_capture) so an off->on/on->off flip takes effect
+        without a restart (flip-lag footgun).
+        """
+        if not capture_is_on(self._live_capture()):
+            return
+        pipe = self._get_capture_pipeline()
+        if pipe is None:
+            return
+        try:
+            # a stable per-turn ordinal so the idempotency key is deterministic across retries
+            self._capture_turn_ordinal = getattr(self, "_capture_turn_ordinal", 0) + 1
+            pipe.enqueue_turn(user_content, assistant_content,
+                              session_id=session_id or "default",
+                              turn_ordinal=self._capture_turn_ordinal)
+        except Exception as e:
+            logger.warning("mem0 sync_turn enqueue failed (turn not captured): %s", e)
+
+    def capture_stats(self) -> Dict[str, Any]:
+        """Observability for the daily digest: certified?, gate version, queue depth, drain counters."""
+        pipe = getattr(self, "_capture_pipeline", None)
+        if pipe is None:
+            return {"capture": self._capture, "pipeline": "not-built"}
+        try:
+            return {"capture": self._capture, **pipe.stats()}
+        except Exception as e:
+            return {"capture": self._capture, "error": str(e)[:120]}
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         schemas = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
@@ -1281,6 +1440,16 @@ class Mem0MemoryProvider(MemoryProvider):
             fact = args.get("fact", "")
             if not fact:
                 return tool_error("Missing required parameter: fact")
+            # D-7 CROSS-PROCESS INTERLOCK (Greptile P1 — now ENFORCED, not just defined):
+            # when foreground per-turn auto-capture is genuinely ACTIVE, the background-review writer
+            # must NOT also write, or the two writers race overlapping facts. Key on the pipeline's
+            # real activity (certified gate AND capture on), NOT merely the configured capture value —
+            # so mem0_remember still writes when auto-capture isn't actually running (no certified
+            # pipeline). Read at DECISION TIME so a live capture flip is honored without a restart.
+            if self._auto_capture_active():
+                logger.info("mem0_remember suppressed: auto-capture is ACTIVE (D-7 interlock)")
+                return json.dumps({"status": "skipped",
+                                   "reason": "auto-capture active; background write suppressed (D-7 interlock)"})
             try:
                 result = self._dedup_then_write(client, fact)
                 self._record_success()

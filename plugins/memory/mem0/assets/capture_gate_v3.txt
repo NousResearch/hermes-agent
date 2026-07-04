@@ -1,0 +1,55 @@
+CAPTURE SALIENCE GATE v3 (mem0 auto-capture custom_instructions) — 2026-07-03
+
+This store is a personal assistant's LONG-TERM memory. Apply a HIGH salience bar. Every stored memory
+must be a DURABLE fact about the USER or their STABLE ENVIRONMENT that will still be true and useful
+months from now — NOT a record of what happened in this conversation.
+
+## THE ONE TEST
+Before emitting a memory, ask: "Would this still be worth knowing in three months, with this whole
+conversation forgotten?" If it only makes sense as "what the user said/asked/wanted/agreed to THIS
+turn," it is session exhaust — DROP IT.
+
+## DO NOT store this-turn conversation events (the #1 thing to suppress)
+Never emit a memory whose content is about the current exchange itself, even if phrased as a "user"
+fact. ALL of these are session exhaust — DROP:
+- "User is asking / wants to know / is investigating <this-turn question>"
+- "User asked the assistant to <do X> / to build/fix/spec/run <X>"
+- "User agreed / replied yes / approved / declined / confirmed <this-turn offer>"
+- "User wants the assistant to <this-turn action>" or "User wants <X> documented/built/verified"
+- "User is deciding between <options presented this turn>"
+- "User asked for an update / checked whether <the assistant did something>"
+A durable preference is "User prefers X"; a transient event is "User asked for X this turn" — keep the
+former, drop the latter. If the only evidence is that they requested it once in this conversation, it is
+NOT yet a standing preference.
+
+## Also DO NOT store the assistant's work-narration
+Drop anything about what the assistant did/plans this turn: built, ran, tested, diagnosed, reviewed,
+committed, pushed, deployed, restarted, verified, reported, estimated, spent; status/progress/ETA/cost/
+tokens/CPU/latency; PR/issue/commit/SHA/branch/phase-state/test-counts/green-red; background-process IDs,
+temp paths, ephemeral debugging observations; restatements of what the assistant said/planned/enumerated.
+
+## DO store durable facts about the USER or their STABLE ENVIRONMENT
+Extract these (they pass THE ONE TEST):
+- a genuine standing preference, taste, or style ("prefers concise replies", "likes dark mode")
+- a standing decision/directive/policy the user has SET as ongoing ("from now on, always X")
+- a correction to a previously-held belief about the user or their setup
+- durable environment/topology: an account, device, service, host, IP, path, tool, repo, port, or how
+  things are wired/depend on each other — the infrastructure facts that persist
+- a credential POINTER (that a secret exists / where it lives) — NEVER the secret value itself
+- a long-lived plan, goal, or constraint that outlives this conversation
+
+IMPORTANT — a durable fact buried in a narration-heavy turn STILL COUNTS. If the user, while discussing
+this-turn work, reveals a stable topology/preference/decision (e.g. "my pipecat voice hub runs on ACE-AI
+at 192.168.1.176", "Greptile is a required PR gate for me", "GitHub from ACE-AI must use SSH over 443"),
+EXTRACT that durable fact even though the surrounding turn is narration. Don't let a busy turn cause you
+to miss the one persistent fact in it. Attribute it to the USER/their environment, phrased so it stands
+alone without the conversation.
+
+## Secrets
+NEVER store a secret VALUE (API key, token, password, private key, bot token, connection string). If a
+durable fact references a credential, record only that it exists and where it lives.
+
+## Output
+When in doubt about whether something is a THIS-TURN event vs a standing fact, prefer to DROP it — but do
+NOT drop a clearly-durable topology/preference/decision just because the turn was busy. Return
+{"memory": []} if the turn contains only conversation events and work-narration.

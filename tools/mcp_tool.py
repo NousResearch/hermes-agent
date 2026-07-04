@@ -2036,6 +2036,96 @@ class MCPServerTask:
             "(e.g. https://host/mcp, not https://host/)."
         )
 
+    async def _run_sse(
+        self,
+        url: str,
+        headers: dict,
+        connect_timeout,
+        ssl_verify,
+        client_cert,
+        _oauth_auth,
+        sampling_kwargs: dict,
+    ) -> None:
+        """Connect to the MCP server using SSE transport.
+
+        Shared by the explicit ``transport: sse`` config path and the
+        automatic fallback when Streamable HTTP returns 400.
+        """
+        if sse_client is None:
+            raise ImportError(
+                f"MCP server '{self.name}' requires SSE transport but "
+                "mcp.client.sse.sse_client is not available. "
+                "Upgrade the mcp package to get SSE support."
+            )
+        # sse_read_timeout governs how long sse_client will wait between
+        # events on the SSE stream. Using the tool_timeout (default 60s)
+        # here is wrong: SSE servers commonly hold the stream idle for
+        # minutes between events, so a 60s read timeout drops the
+        # connection after the first slow stretch. 300s matches the
+        # Streamable HTTP code path's httpx read timeout below. Original
+        # observation from @amiller in PR #5981 (Router Teamwork,
+        # Supermemory on Cloudflare Workers idle-disconnect at ~60s).
+        _sse_kwargs: dict = {
+            "url": url,
+            "headers": headers or None,
+            "timeout": float(connect_timeout),
+            "sse_read_timeout": 300.0,
+        }
+        if _oauth_auth is not None:
+            # Pass OAuth auth through to sse_client so SSE MCP servers
+            # behind OAuth 2.1 PKCE work. Previously built but never
+            # forwarded — SSE OAuth would silently fail with 401s.
+            _sse_kwargs["auth"] = _oauth_auth
+        if client_cert is not None or ssl_verify is not True:
+            # SSE transport doesn't expose verify/cert as kwargs, so route
+            # them through an httpx_client_factory that wraps the SDK's
+            # defaults (follow_redirects=True) and adds our TLS settings.
+            # The SDK calls the factory with (headers, auth, timeout); we
+            # forward all of those and layer verify/cert on top.
+            import httpx as _httpx_mod
+
+            _cert_for_factory = client_cert
+            _verify_for_factory = ssl_verify
+
+            def _mcp_http_client_factory(
+                headers=None, timeout=None, auth=None,
+            ):
+                kwargs: dict = {
+                    "follow_redirects": True,
+                    "verify": _verify_for_factory,
+                }
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
+                else:
+                    kwargs["timeout"] = _httpx_mod.Timeout(30.0, read=300.0)
+                if headers is not None:
+                    kwargs["headers"] = headers
+                if auth is not None:
+                    kwargs["auth"] = auth
+                if _cert_for_factory is not None:
+                    kwargs["cert"] = _cert_for_factory
+                return _httpx_mod.AsyncClient(**kwargs)
+
+            _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
+        async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
+            async with ClientSession(
+                read_stream, write_stream, **sampling_kwargs
+            ) as session:
+                self.initialize_result = await session.initialize()
+                self.session = session
+                await self._discover_tools()
+                self._ready.set()
+                # Session is live again: clear any breaker state from a
+                # prior outage so the first call after recovery isn't
+                # gated on a stale consecutive-failure count (#16788).
+                _reset_server_error(self.name)
+                reason = await self._wait_for_lifecycle_event()
+                if reason == "reconnect":
+                    logger.info(
+                        "MCP server '%s': reconnect requested — "
+                        "tearing down SSE session", self.name,
+                    )
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
         if not _MCP_HTTP_AVAILABLE:
@@ -2082,118 +2172,80 @@ class MCPServerTask:
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
-        # mcp_servers entry in config.yaml.
+        # mcp_servers entry in config.yaml, or used as automatic fallback when
+        # Streamable HTTP returns 400 (e.g. SSE-only servers like WigAI).
         if config.get("transport") == "sse":
-            if sse_client is None:
-                raise ImportError(
-                    f"MCP server '{self.name}' requires SSE transport but "
-                    "mcp.client.sse.sse_client is not available. "
-                    "Upgrade the mcp package to get SSE support."
-                )
-            # sse_read_timeout governs how long sse_client will wait between
-            # events on the SSE stream. Using the tool_timeout (default 60s)
-            # here is wrong: SSE servers commonly hold the stream idle for
-            # minutes between events, so a 60s read timeout drops the
-            # connection after the first slow stretch. 300s matches the
-            # Streamable HTTP code path's httpx read timeout below. Original
-            # observation from @amiller in PR #5981 (Router Teamwork,
-            # Supermemory on Cloudflare Workers idle-disconnect at ~60s).
-            _sse_kwargs: dict = {
-                "url": url,
-                "headers": headers or None,
-                "timeout": float(connect_timeout),
-                "sse_read_timeout": 300.0,
-            }
-            if _oauth_auth is not None:
-                # Pass OAuth auth through to sse_client so SSE MCP servers
-                # behind OAuth 2.1 PKCE work. Previously built but never
-                # forwarded — SSE OAuth would silently fail with 401s.
-                _sse_kwargs["auth"] = _oauth_auth
-            if client_cert is not None or ssl_verify is not True:
-                # SSE transport doesn't expose verify/cert as kwargs, so route
-                # them through an httpx_client_factory that wraps the SDK's
-                # defaults (follow_redirects=True) and adds our TLS settings.
-                # The SDK calls the factory with (headers, auth, timeout); we
-                # forward all of those and layer verify/cert on top.
-                import httpx as _httpx_mod
-
-                _cert_for_factory = client_cert
-                _verify_for_factory = ssl_verify
-
-                def _mcp_http_client_factory(
-                    headers=None, timeout=None, auth=None,
-                ):
-                    kwargs: dict = {
-                        "follow_redirects": True,
-                        "verify": _verify_for_factory,
-                    }
-                    if timeout is not None:
-                        kwargs["timeout"] = timeout
-                    else:
-                        kwargs["timeout"] = _httpx_mod.Timeout(30.0, read=300.0)
-                    if headers is not None:
-                        kwargs["headers"] = headers
-                    if auth is not None:
-                        kwargs["auth"] = auth
-                    if _cert_for_factory is not None:
-                        kwargs["cert"] = _cert_for_factory
-                    return _httpx_mod.AsyncClient(**kwargs)
-
-                _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
-            async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
-                async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
-                ) as session:
-                    self.initialize_result = await session.initialize()
-                    self.session = session
-                    await self._discover_tools()
-                    self._ready.set()
-                    # Session is live again: clear any breaker state from a
-                    # prior outage so the first call after recovery isn't
-                    # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
-                    reason = await self._wait_for_lifecycle_event()
-                    if reason == "reconnect":
-                        logger.info(
-                            "MCP server '%s': reconnect requested — "
-                            "tearing down SSE session", self.name,
-                        )
+            await self._run_sse(url, headers, connect_timeout, ssl_verify,
+                                client_cert, _oauth_auth, sampling_kwargs)
             return
 
-        if _MCP_NEW_HTTP:
-            # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
-            # matching the SDK's own create_mcp_http_client defaults.
-            import httpx
+        # Try Streamable HTTP transport first. Some MCP servers (e.g. WigAI)
+        # only implement the older SSE transport and return 400 Bad Request
+        # when they receive a Streamable HTTP initialize request. Fall back
+        # to SSE automatically so users don't need to set ``transport: sse``.
+        _streamable_http_400 = False
+        try:
+            if _MCP_NEW_HTTP:
+                # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
+                # matching the SDK's own create_mcp_http_client defaults.
+                import httpx
 
-            _original_url = httpx.URL(url)
+                _original_url = httpx.URL(url)
 
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
+                async def _strip_auth_on_cross_origin_redirect(response):
+                    """Strip Authorization headers when redirected to a different origin."""
+                    if response.is_redirect and response.next_request:
+                        target = response.next_request.url
+                        if (target.scheme, target.host, target.port) != (
+                            _original_url.scheme, _original_url.host, _original_url.port,
+                        ):
+                            response.next_request.headers.pop("authorization", None)
+                            response.next_request.headers.pop("Authorization", None)
+
+                client_kwargs: dict = {
+                    "follow_redirects": True,
+                    "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
+                    "verify": ssl_verify,
+                    "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                }
+                if headers:
+                    client_kwargs["headers"] = headers
+                if _oauth_auth is not None:
+                    client_kwargs["auth"] = _oauth_auth
+                if client_cert is not None:
+                    client_kwargs["cert"] = client_cert
+
+                # Caller owns the client lifecycle — the SDK skips cleanup when
+                # http_client is provided, so we wrap in async-with.
+                async with httpx.AsyncClient(**client_kwargs) as http_client:
+                    async with streamable_http_client(url, http_client=http_client) as (
+                        read_stream, write_stream, _get_session_id,
                     ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
-
-            client_kwargs: dict = {
-                "follow_redirects": True,
-                "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
-                "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
-            }
-            if headers:
-                client_kwargs["headers"] = headers
-            if _oauth_auth is not None:
-                client_kwargs["auth"] = _oauth_auth
-            if client_cert is not None:
-                client_kwargs["cert"] = client_cert
-
-            # Caller owns the client lifecycle — the SDK skips cleanup when
-            # http_client is provided, so we wrap in async-with.
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (
+                        async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                            self.initialize_result = await session.initialize()
+                            self.session = session
+                            await self._discover_tools()
+                            self._ready.set()
+                            # Session is live again: clear any breaker state from
+                            # a prior outage so the first call after recovery
+                            # isn't gated on a stale failure count (#16788).
+                            _reset_server_error(self.name)
+                            reason = await self._wait_for_lifecycle_event()
+                            if reason == "reconnect":
+                                logger.info(
+                                    "MCP server '%s': reconnect requested — "
+                                    "tearing down HTTP session", self.name,
+                                )
+            else:
+                # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+                _http_kwargs: dict = {
+                    "headers": headers,
+                    "timeout": float(connect_timeout),
+                    "verify": ssl_verify,
+                }
+                if _oauth_auth is not None:
+                    _http_kwargs["auth"] = _oauth_auth
+                async with streamablehttp_client(url, **_http_kwargs) as (
                     read_stream, write_stream, _get_session_id,
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
@@ -2201,43 +2253,39 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
-                        # Session is live again: clear any breaker state from
-                        # a prior outage so the first call after recovery
-                        # isn't gated on a stale failure count (#16788).
+                        # Session is live again: clear any breaker state from a
+                        # prior outage so the first call after recovery isn't
+                        # gated on a stale consecutive-failure count (#16788).
                         _reset_server_error(self.name)
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
                             logger.info(
                                 "MCP server '%s': reconnect requested — "
-                                "tearing down HTTP session", self.name,
+                                "tearing down legacy HTTP session", self.name,
                             )
-        else:
-            # Deprecated API (mcp < 1.24.0): manages httpx client internally.
-            _http_kwargs: dict = {
-                "headers": headers,
-                "timeout": float(connect_timeout),
-                "verify": ssl_verify,
-            }
-            if _oauth_auth is not None:
-                _http_kwargs["auth"] = _oauth_auth
-            async with streamablehttp_client(url, **_http_kwargs) as (
-                read_stream, write_stream, _get_session_id,
-            ):
-                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                    self.initialize_result = await session.initialize()
-                    self.session = session
-                    await self._discover_tools()
-                    self._ready.set()
-                    # Session is live again: clear any breaker state from a
-                    # prior outage so the first call after recovery isn't
-                    # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
-                    reason = await self._wait_for_lifecycle_event()
-                    if reason == "reconnect":
-                        logger.info(
-                            "MCP server '%s': reconnect requested — "
-                            "tearing down legacy HTTP session", self.name,
-                        )
+        except Exception as exc:
+            import httpx as _httpx_mod
+            if (isinstance(exc, _httpx_mod.HTTPStatusError)
+                    and exc.response.status_code == 400):
+                # Server rejected the Streamable HTTP request — likely an
+                # SSE-only endpoint.  Mark for SSE fallback only on the
+                # initial connect (before _ready is set) so reconnects
+                # don't silently switch transports on a server that
+                # genuinely rejected a valid request.
+                if not self._ready.is_set():
+                    _streamable_http_400 = True
+                    logger.warning(
+                        "MCP server '%s': Streamable HTTP returned 400, "
+                        "falling back to SSE transport", self.name,
+                    )
+                else:
+                    raise
+            else:
+                raise
+
+        if _streamable_http_400:
+            await self._run_sse(url, headers, connect_timeout, ssl_verify,
+                                client_cert, _oauth_auth, sampling_kwargs)
 
     async def _discover_tools(self):
         """Discover tools from the connected session.

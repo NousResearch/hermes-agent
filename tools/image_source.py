@@ -277,16 +277,26 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
             f"session is available to read it",
             src=src, origin="container")
 
+    # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
+    # so a huge file (or /dev/zero) can't stream unbounded base64 into host
+    # memory — the +1 byte lets us distinguish "exactly at the cap" from
+    # "over the cap" after decode. The input redirect (< path) avoids argv
+    # entirely, so leading-dash paths can't be parsed as options; base64
+    # -w0 is GNU-only, so pipe through tr -d for BusyBox.
     # env.execute is a blocking backend exec; keep it off the event loop so a
     # multi-MB base64 read doesn't stall every other coroutine.
+    qp = shlex.quote(str(p))
     res = await asyncio.to_thread(
-        env.execute, f"base64 -- {shlex.quote(str(p))} | tr -d '\\n'")
+        env.execute,
+        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
     if res.get("returncode", 1) != 0:
         raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
     try:
         data = base64.b64decode(res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+    if len(data) > _MAX_INGEST_BYTES:
+        raise SourceTooLarge("image exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src)
 
 

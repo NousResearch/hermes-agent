@@ -41,6 +41,7 @@ TRUSTED_REPOS = {
     "openai/skills",
     "anthropics/skills",
     "huggingface/skills",
+    "obra/superpowers",
     # NVIDIA-verified skills: each entry ships a signed `skill.oms.sig`
     # and a governance `skill-card.md` (sync pipeline drops anything
     # missing the signature or card). Catalog details:
@@ -555,6 +556,45 @@ INVISIBLE_CHARS = {
 }
 
 
+_FALSE_POSITIVE_CONTEXT_MARKERS = (
+    "no need to include",
+    "save tokens",
+    "anti-pattern",
+    "violation)",
+)
+
+_AGENT_CONFIG_WRITE_RE = re.compile(
+    r"\b(write|edit|create|append|overwrite|modify|update|patch|tee|cat)\b.*"
+    r"(AGENTS\.md|CLAUDE\.md|GEMINI\.md|\.cursorrules|\.clinerules)",
+    re.IGNORECASE,
+)
+
+
+def _should_suppress_finding(pattern_id: str, line: str, rel_path: str) -> bool:
+    """Suppress known documentation-only false positives without hiding real writes."""
+    stripped = line.strip()
+    lower = stripped.lower()
+
+    if pattern_id == "dns_exfil" and lower.startswith("echo "):
+        # Echoing a retry command string is not executing a DNS lookup.
+        return True
+
+    if pattern_id == "context_exfil" and any(marker in lower for marker in _FALSE_POSITIVE_CONTEXT_MARKERS):
+        return True
+
+    if pattern_id == "agent_config_mod":
+        # Plain references to agent config filenames are common in skills that
+        # explain precedence or documentation structure. Keep a finding when the
+        # same line actually instructs a write/edit/create operation.
+        return _AGENT_CONFIG_WRITE_RE.search(stripped) is None
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Scan functions
+
+
 # ---------------------------------------------------------------------------
 # Scanning functions
 # ---------------------------------------------------------------------------
@@ -591,6 +631,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
             if (pid, i) in seen:
                 continue
             if re.search(pattern, line, re.IGNORECASE):
+                if _should_suppress_finding(pid, line, rel_path):
+                    continue
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:

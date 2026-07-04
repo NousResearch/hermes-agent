@@ -1679,6 +1679,95 @@ function Install-Venv {
     Write-Success "Virtual environment ready (Python $PythonVersion)"
 }
 
+function Ensure-Single-Venv-Junction {
+    # Collapse venv/ -> .venv/ via a Windows directory junction (POSIX symlink).
+    # ADDS nothing on single-venv installs and on existing junction installs.
+    # Only acts when venv/ is a *materialized* dir AND .venv/ also exists --
+    # i.e. dual-venv drift has been detected on disk.
+    #
+    # This stage runs *after* Install-Venv and Install-Dependencies complete.
+    # Install-Venv's body is not touched (its taskkill + Get-CimInstance
+    # sweep + retry-remove logic handles the .pyd-file-locking cases that
+    # arise when recreating venv/; replacing it in-place would break that).
+    # See .plans/001-step2-revision-junction-after-install.md for the
+    # additive design rationale (AGENTS.md "Fixes that destroy the feature
+    # they secure" rule).
+
+    if ($NoVenv) { return }
+    if ($env:HERMES_ALLOW_DUAL_VENV -eq "1") {
+        Write-Info "Ensure-Single-Venv-Junction: skipped (HERMES_ALLOW_DUAL_VENV=1)"
+        return
+    }
+
+    Push-Location $InstallDir
+
+    $bare = "venv"
+    $dot  = ".venv"
+
+    # Already-junction or symlink: nothing to do.
+    if (Test-Path $bare) {
+        $bareAttr = (Get-Item $bare).Attributes
+        if ($bareAttr -band [System.IO.FileAttributes]::ReparsePoint) {
+            Write-Info "Ensure-Single-Venv-Junction: $bare already a reparse point, no-op"
+            Pop-Location
+            return
+        }
+    }
+
+    # .venv must exist before we can junction into it.
+    if (-not (Test-Path $dot)) {
+        Write-Info "Ensure-Single-Venv-Junction: $dot not present, skipping (single-venv install)"
+        Pop-Location
+        return
+    }
+
+    # Both must contain a real pyvenv.cfg for this to be drift. If one is a
+    # junction, skip (junction-resolved cfg is excluded by the python-side
+    # detector too -- see hermes_bootstrap.detect_dual_venv_drift).
+    $bareCfg = Join-Path $bare "pyvenv.cfg"
+    $dotCfg  = Join-Path $dot  "pyvenv.cfg"
+    if (-not (Test-Path $bareCfg)) {
+        Write-Info "Ensure-Single-Venv-Junction: $bare/pyvenv.cfg absent, no drift to collapse"
+        Pop-Location
+        return
+    }
+    if (-not (Test-Path $dotCfg)) {
+        Write-Info "Ensure-Single-Venv-Junction: $dot/pyvenv.cfg absent, no drift to collapse"
+        Pop-Location
+        return
+    }
+
+    # Drift confirmed. Replace materialized venv/ with a junction.
+    # The kill-processes + retry-remove logic from Install-Venv does NOT
+    # re-run here: by the time we get to this stage, Install-Venv has
+    # already completed (so the just-built venv isn't holding any
+    # imported .pyd in this same powershell.exe process), and any
+    # running hermes.exe that was using the old venv was stopped by
+    # Install-Venv's taskkill sweep above.
+    Write-Info "Ensure-Single-Venv-Junction: collapsing $bare -> junction -> $dot"
+
+    # Idempotent: if junction already exists, Remove-Item on a junction
+    # is a no-op on the target (only the link itself). Safe.
+    Remove-Item -Recurse -Force $bare -ErrorAction SilentlyContinue
+    if (Test-Path $bare) {
+        Start-Sleep -Milliseconds 500
+        Remove-Item -Recurse -Force $bare
+    }
+
+    if ($env:OS -eq "Windows_NT") {
+        # Junction: cannot traverse, doesn't follow symlinks, transparent
+        # to .pth editable installs and to Windows file APIs.
+        New-Item -ItemType Junction -Path $bare -Target $dot | Out-Null
+    } else {
+        # POSIX: directory symlink
+        New-Item -ItemType SymbolicLink -Path $bare -Target $dot | Out-Null
+    }
+
+    Write-Success "Ensure-Single-Venv-Junction: $bare now a junction to $dot"
+
+    Pop-Location
+}
+
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
@@ -3182,7 +3271,7 @@ function Stage-Node             {
 function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
-function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
+function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies; Ensure-Single-Venv-Junction }
 function Stage-NodeDeps         { Install-NodeDeps }
 function Stage-Desktop          { Install-Desktop }
 function Stage-Path             { Set-PathVariable }

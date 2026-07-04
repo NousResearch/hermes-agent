@@ -1875,11 +1875,15 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
 def _kanban_require_result_for_verify_cli() -> bool:
     """Check the board config for ``kanban.require_result_for_verify``.
 
+    Reads from the board-level (root) config, not from the profile-scoped
+    config, so all workers see the same policy.
+
     Best-effort: returns False when config is unavailable (test / minimal envs).
     """
     try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
+        from hermes_cli.kanban_db import _load_kanban_board_config
+        from hermes_cli.config import cfg_get
+        cfg = _load_kanban_board_config()
         return bool(cfg_get(cfg, "kanban", "require_result_for_verify"))
     except Exception:
         return False

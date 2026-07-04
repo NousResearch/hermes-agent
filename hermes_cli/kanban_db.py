@@ -191,16 +191,76 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
 
+def _load_kanban_board_config():
+    """Load config from the kanban board root, NOT from the profile-scoped config.
+
+    Kanban configuration (``require_result_for_verify``,
+    ``require_verdict_for_release``, etc.) is board-level — it must be
+    read from the shared root ``config.yaml`` (e.g. ``~/.hermes/config.yaml``)
+    so that all workers (profile-scoped or default) see the same policy.
+
+    Dispatched workers run with ``HERMES_HOME`` pointing to their profile
+    directory, so a bare ``load_config()`` would read the profile-scoped
+    ``config.yaml`` which may lack kanban settings.  This helper
+    temporarily resets ``HERMES_HOME`` to the default root so
+    ``load_config()`` reads the shared board-level config.
+
+    Best-effort: returns an empty dict when the root config is unavailable
+    so existing behaviour is preserved in test / minimal environments.
+    """
+    import os
+    try:
+        from hermes_cli.profiles import _get_default_hermes_home
+        root_home = str(_get_default_hermes_home())
+    except Exception:
+        return {}
+    # Temporarily point HERMES_HOME at the root so load_config() reads the
+    # shared board-level config rather than the profile-scoped one.
+    orig = os.environ.get("HERMES_HOME")
+    if orig == root_home:
+        # Already reading from the root — no env dance needed.
+        try:
+            from hermes_cli.config import load_config
+            return load_config() or {}
+        except Exception:
+            return {}
+    os.environ["HERMES_HOME"] = root_home
+    # Invalidate the in-process config cache for the root path so a
+    # previous profile-scoped load doesn't poison the result.  Without
+    # this, a process that loaded profile config first would see a
+    # cache miss (different path keys) and this is a no-op; but when
+    # the profile-scoped path also happens to map to the same resolved
+    # path (e.g. HERMES_HOME already IS the root), the stale cache
+    # entry from the first load would otherwise persist.
+    try:
+        from hermes_cli.config import invalidate_config_cache
+        root_config_path = os.path.join(root_home, "config.yaml")
+        invalidate_config_cache(root_config_path)
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+    finally:
+        if orig is not None:
+            os.environ["HERMES_HOME"] = orig
+        else:
+            os.environ.pop("HERMES_HOME", None)
+
+
 def _kanban_require_result_for_verify() -> bool:
     """Return True when the board config requires evidence in kanban_complete.
 
-    Reads ``kanban.require_result_for_verify`` from config.yaml. Best-effort:
-    when config can't be loaded (tests, minimal environments) the gate is
-    permissive (returns False) so existing behaviour is preserved.
+    Reads ``kanban.require_result_for_verify`` from the board-level
+    config.yaml (root), not from the profile-scoped config.
+    Best-effort: returns False when config is unavailable so existing
+    behaviour is preserved in test / minimal environments.
     """
     try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
+        from hermes_cli.config import cfg_get
+        cfg = _load_kanban_board_config()
         return bool(cfg_get(cfg, "kanban", "require_result_for_verify"))
     except Exception:
         return False
@@ -209,13 +269,14 @@ def _kanban_require_result_for_verify() -> bool:
 def _kanban_require_verdict_for_release() -> bool:
     """Return True when verdict-aware parent gating is enabled.
 
-    Reads ``kanban.require_verdict_for_release`` from config.yaml.
+    Reads ``kanban.require_verdict_for_release`` from the board-level
+    config.yaml (root), not from the profile-scoped config.
     Best-effort: returns False when config is unavailable so existing
     behaviour is preserved.
     """
     try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
+        from hermes_cli.config import cfg_get
+        cfg = _load_kanban_board_config()
         return bool(cfg_get(cfg, "kanban", "require_verdict_for_release"))
     except Exception:
         return False

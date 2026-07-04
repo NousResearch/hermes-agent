@@ -6289,6 +6289,36 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def invalidate_config_cache(config_path: Optional[str] = None) -> None:
+    """Invalidate the in-process config caches for *config_path*.
+
+    When *config_path* is ``None`` (the default), all cached entries
+    for every path are cleared.  Pass a specific absolute path to clear
+    only that entry.
+
+    Use this when the config file has been written externally (e.g. by a
+    sidecar process, a manual edit, or an atomic swap) and you want the
+    next ``load_config()`` / ``load_config_readonly()`` call to re-read
+    from disk unconditionally, regardless of what ``st_mtime_ns`` says.
+
+    The ``_load_kanban_board_config`` helper in ``kanban_db`` calls the
+    path-specific form so that the kanban board root config is always
+    fresh when checking evidence-gate flags — no restart required.
+
+    Thread-safe (acquires ``_CONFIG_LOCK``).  Safe to call when config
+    has never been loaded (silently succeeds).
+    """
+    with _CONFIG_LOCK:
+        if config_path is None:
+            _LOAD_CONFIG_CACHE.clear()
+            _LAST_EXPANDED_CONFIG_BY_PATH.clear()
+            _RAW_CONFIG_CACHE.clear()
+        else:
+            _LOAD_CONFIG_CACHE.pop(config_path, None)
+            _LAST_EXPANDED_CONFIG_BY_PATH.pop(config_path, None)
+            _RAW_CONFIG_CACHE.pop(config_path, None)
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,

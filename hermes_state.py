@@ -4740,10 +4740,70 @@ class SessionDB:
         except OSError:
             pass
 
+    def _expand_compression_lineage(self, conn, session_ids: List[str]) -> List[str]:
+        """Expand *session_ids* to every member of their compression chains.
+
+        The dashboard sessions list surfaces one row per logical
+        conversation: compression roots are projected forward to their
+        latest continuation, and the surfaced row carries the *tip's* id
+        (see :meth:`list_sessions_rich`). Deleting only that tip row leaves
+        the root behind, and the next list re-projects the root onto the
+        previous link — the "deleted" conversation reappears (#57543).
+
+        Walks compression-continuation edges in BOTH directions from the
+        given ids: backward to the chain root, and forward through every
+        continuation — including stale sibling continuations (e.g.
+        ``ws_orphan_reap`` leftovers), which would otherwise be orphaned
+        into brand-new visible top-level rows by the delete itself. The
+        edge definition matches :meth:`get_compression_tip` and the
+        list-projection CTE: parent ended with ``reason='compression'``,
+        child is not a branch / delegate / tool session. Branch and
+        delegate children are deliberately NOT pulled in — a branch is its
+        own conversation, and delegates are handled by the existing
+        cascade in the delete paths.
+
+        Runs inside the caller's write transaction (*conn*). The walk is
+        defensively bounded like :meth:`get_compression_tip` — chains
+        deeper than that are pathological and shouldn't happen in practice.
+        """
+        child_filter = (
+            "json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+            "AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+            "AND COALESCE(child.source, '') != 'tool'"
+        )
+        seen = set(session_ids)
+        frontier = list(session_ids)
+        for _ in range(100):
+            if not frontier:
+                break
+            placeholders = ",".join("?" * len(frontier))
+            forward = conn.execute(
+                f"SELECT child.id FROM sessions parent "
+                f"JOIN sessions child ON child.parent_session_id = parent.id "
+                f"WHERE parent.id IN ({placeholders}) "
+                f"AND parent.end_reason = 'compression' AND {child_filter}",
+                frontier,
+            ).fetchall()
+            backward = conn.execute(
+                f"SELECT parent.id FROM sessions child "
+                f"JOIN sessions parent ON parent.id = child.parent_session_id "
+                f"WHERE child.id IN ({placeholders}) "
+                f"AND parent.end_reason = 'compression' AND {child_filter}",
+                frontier,
+            ).fetchall()
+            frontier = [
+                row["id"]
+                for row in [*forward, *backward]
+                if row["id"] not in seen
+            ]
+            seen.update(frontier)
+        return list(seen)
+
     def delete_session(
         self,
         session_id: str,
         sessions_dir: Optional[Path] = None,
+        include_compression_chain: bool = False,
     ) -> bool:
         """Delete a session and all its messages.
 
@@ -4754,7 +4814,29 @@ class SessionDB:
         When *sessions_dir* is provided, also removes on-disk transcript
         files (``.json`` / ``.jsonl`` / ``request_dump_*``) for every deleted
         session. Returns True if the session was found and deleted.
+
+        With ``include_compression_chain=True``, the whole compression
+        chain the session belongs to is deleted with it (root and every
+        continuation). This is the variant the dashboard delete endpoints
+        use: the sessions list shows one row per logical conversation
+        (carrying the chain *tip's* id), so deleting only the single row
+        would leave the rest of the chain to resurface on the next list
+        (#57543). Default is False so callers that operate on a single
+        physical session (e.g. CLI ``/exit --delete``) keep the historic
+        contract.
         """
+        if include_compression_chain:
+            # Route through the bulk primitive, which owns the chain
+            # expansion. Its return value counts the *requested* ids that
+            # existed, so `> 0` is exactly "the session was found".
+            return (
+                self.delete_sessions(
+                    [session_id],
+                    sessions_dir=sessions_dir,
+                    include_compression_chain=True,
+                )
+                > 0
+            )
         removed_delegate_ids: List[str] = []
 
         def _do(conn):
@@ -4827,6 +4909,7 @@ class SessionDB:
         self,
         session_ids: List[str],
         sessions_dir: Optional[Path] = None,
+        include_compression_chain: bool = False,
     ) -> int:
         """Delete every session in *session_ids* in a single transaction.
 
@@ -4847,10 +4930,19 @@ class SessionDB:
           outside the DB transaction when *sessions_dir* is provided,
           matching :meth:`prune_sessions` and
           :meth:`delete_empty_sessions`.
+        * With ``include_compression_chain=True``, each selected id is
+          expanded to its full compression chain (root + every
+          continuation) before deleting — see
+          :meth:`_expand_compression_lineage`. The dashboard rows carry
+          chain-tip ids, so without the expansion a "deleted"
+          conversation resurfaces as the previous chain link on the next
+          list reload (#57543).
 
-        Returns the count of sessions that actually existed and were
-        deleted (may be less than ``len(session_ids)`` if some IDs were
-        already gone).
+        Returns the count of *requested* sessions that actually existed
+        and were deleted (may be less than ``len(session_ids)`` if some
+        IDs were already gone). Chain members pulled in by the expansion
+        do NOT inflate the count — the caller's toast should match the
+        rows the user selected, not internal chain bookkeeping.
         """
         if not session_ids:
             return 0
@@ -4876,8 +4968,12 @@ class SessionDB:
             if not existing:
                 return 0
 
-            existing_placeholders = ",".join("?" * len(existing))
-            removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
+            targets = existing
+            if include_compression_chain:
+                targets = self._expand_compression_lineage(conn, existing)
+
+            target_placeholders = ",".join("?" * len(targets))
+            removed_delegate_ids.extend(_delete_delegate_children(conn, targets))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
@@ -4885,18 +4981,21 @@ class SessionDB:
             # exactly this.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({existing_placeholders})",
-                existing,
+                f"WHERE parent_session_id IN ({target_placeholders})",
+                targets,
             )
             conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
-                existing,
+                f"DELETE FROM messages WHERE session_id IN ({target_placeholders})",
+                targets,
             )
             conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
-                existing,
+                f"DELETE FROM sessions WHERE id IN ({target_placeholders})",
+                targets,
             )
-            removed_ids.extend(existing)
+            removed_ids.extend(targets)
+            # Count the ids the caller asked for, not the expanded chain —
+            # the dashboard toast should say "3 deleted" when the user
+            # selected 3 rows, however many physical links those rows had.
             return len(existing)
 
         count = self._execute_write(_do)

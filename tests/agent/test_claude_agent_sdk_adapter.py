@@ -9,6 +9,7 @@ consumes unchanged.
 
 import asyncio
 import types
+import uuid
 
 import pytest
 
@@ -151,6 +152,35 @@ def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_even
         tool=lambda name, desc, schema: (lambda fn: {"name": name, "schema": schema, "fn": fn}),
         create_sdk_mcp_server=lambda *, name, version, tools: {"name": name, "tools": tools},
     )
+
+    class _FakeSDKClient:
+        """Client-shaped wrapper over ``fake.query`` (read dynamically, so
+        tests that monkeypatch ``fake.query`` keep working)."""
+
+        def __init__(self, options=None):
+            self._options = options
+            self._prompt = None
+            self.interrupted = False
+
+        async def connect(self):
+            pass
+
+        async def query(self, prompt):
+            self._prompt = prompt
+
+        async def receive_response(self):
+            async for message in fake.query(prompt=self._prompt, options=self._options):
+                if self.interrupted:
+                    return
+                yield message
+
+        async def interrupt(self):
+            self.interrupted = True
+
+        async def disconnect(self):
+            pass
+
+    fake.ClaudeSDKClient = _FakeSDKClient
     return fake
 
 
@@ -1025,3 +1055,163 @@ def test_workflow_task_failure_marks_result(monkeypatch):
     adp.create_claude_agent_message(agent, _api_kwargs())
     # A terminal TaskUpdated(failed) resolves the chip and marks the failure.
     assert completes and completes[0].startswith("[failed]")
+
+
+# ---------------------------------------------------------------------------
+# Durable session identity (resume survives a gateway restart, no store file)
+# ---------------------------------------------------------------------------
+def test_derived_session_id_stable_and_cwd_scoped():
+    a = adp._derive_sdk_session_id("hermes-1", "/proj")
+    # Deterministic: same Hermes session + cwd always derives the same UUID.
+    assert a == adp._derive_sdk_session_id("hermes-1", "/proj")
+    uuid.UUID(a)  # valid UUID for the CLI's --session-id
+    # Scoped: another cwd or another Hermes session derives a different one.
+    assert a != adp._derive_sdk_session_id("hermes-1", "/elsewhere")
+    assert a != adp._derive_sdk_session_id("hermes-2", "/proj")
+    assert adp._derive_sdk_session_id(None, "/proj") is None
+
+
+def test_resume_survives_new_agent(monkeypatch):
+    """A fresh agent object (what a gateway restart produces) re-derives the
+    SDK session id and resumes it when its transcript exists — no store."""
+    # First turn: no transcript yet → the session is CREATED under the
+    # derived id (pinned via --session-id), not resumed.
+    monkeypatch.setattr(adp, "_sdk_transcript_exists", lambda *a, **k: False)
+    capture1 = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok", "session_id": "sess-abc"},
+                          capture=capture1)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(session_id="hermes-1")
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    cwd = getattr(agent, "_claude_sdk_session_cwd")
+    derived = adp._derive_sdk_session_id("hermes-1", cwd)
+    assert getattr(capture1["options"], "resume", None) is None
+    assert capture1["options"].session_id == derived
+
+    # Restart: new agent object, same Hermes session, transcript on disk →
+    # the same derived id is resumed with full context.
+    monkeypatch.setattr(adp, "_sdk_transcript_exists", lambda *a, **k: True)
+    capture2 = {}
+    fake2 = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                           result_kwargs={"result": "ok", "session_id": "sess-abc"},
+                           capture=capture2)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake2)
+    fresh = _agent(session_id="hermes-1")  # new object, same Hermes session
+    adp.create_claude_agent_message(fresh, _api_kwargs())
+    assert capture2["options"].resume == derived
+    assert getattr(capture2["options"], "session_id", None) is None
+
+
+def test_stale_resume_retries_fresh(monkeypatch):
+    """A resume id the CLI no longer knows (transcript pruned) is retried
+    once as a fresh session under the SAME derived id."""
+    monkeypatch.setattr(adp, "_sdk_transcript_exists", lambda *a, **k: True)
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "fresh ok", "session_id": "sess-new"},
+                          capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    calls = {"n": 0}
+    real_query = fake.query
+
+    async def _failing_resume_query(*, prompt, options):
+        calls["n"] += 1
+        if getattr(options, "resume", None):
+            raise RuntimeError(
+                f"No conversation found with session ID: {options.resume}"
+            )
+        async for m in real_query(prompt=prompt, options=options):
+            yield m
+
+    fake.query = _failing_resume_query
+    fresh = _agent(session_id="hermes-1")
+    msg = adp.create_claude_agent_message(fresh, _api_kwargs())
+    assert calls["n"] == 2
+    assert any(getattr(b, "text", None) == "fresh ok" for b in msg.content)
+    # The retry created the session under the same derived id.
+    cwd = getattr(fresh, "_claude_sdk_session_cwd")
+    assert capture["options"].session_id == adp._derive_sdk_session_id("hermes-1", cwd)
+
+
+def test_session_id_collision_falls_back_to_resume(monkeypatch):
+    """--session-id of an id the CLI already knows (existence check guessed
+    wrong) is retried once as a resume of that id."""
+    monkeypatch.setattr(adp, "_sdk_transcript_exists", lambda *a, **k: False)
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("resumed ok")],
+                          result_kwargs={"result": "resumed ok", "session_id": "sess-abc"},
+                          capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    calls = {"n": 0}
+    real_query = fake.query
+
+    async def _colliding_create_query(*, prompt, options):
+        calls["n"] += 1
+        if getattr(options, "session_id", None):
+            raise RuntimeError(
+                f"Session ID {options.session_id} is already in use."
+            )
+        async for m in real_query(prompt=prompt, options=options):
+            yield m
+
+    fake.query = _colliding_create_query
+    agent = _agent(session_id="hermes-1")
+    msg = adp.create_claude_agent_message(agent, _api_kwargs())
+    assert calls["n"] == 2
+    assert any(getattr(b, "text", None) == "resumed ok" for b in msg.content)
+    cwd = getattr(agent, "_claude_sdk_session_cwd")
+    assert capture["options"].resume == adp._derive_sdk_session_id("hermes-1", cwd)
+
+
+def test_transient_error_does_not_retry_or_wipe_session(monkeypatch):
+    """A non-session-identity error on a resumed turn surfaces immediately:
+    no silent re-run of a possibly side-effectful turn, and the session id
+    (= conversation context) is NOT discarded."""
+    monkeypatch.setattr(adp, "_sdk_transcript_exists", lambda *a, **k: True)
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok", "session_id": "sess-abc"})
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    calls = {"n": 0}
+
+    async def _transient_failure(*, prompt, options):
+        calls["n"] += 1
+        raise RuntimeError("upstream connect error: connection reset by peer")
+        yield  # pragma: no cover — makes this an async generator
+
+    fake.query = _transient_failure
+    agent = _agent(session_id="hermes-1")
+    with pytest.raises(RuntimeError):
+        adp.create_claude_agent_message(agent, _api_kwargs())
+    assert calls["n"] == 1
+
+
+def test_late_interrupt_after_result_keeps_completed_turn(monkeypatch):
+    """A /stop that lands after the final ResultMessage doesn't discard the
+    completed turn — the CLI transcript already recorded it, so dropping it
+    would fork Hermes' history from the SDK session."""
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("done")],
+                          result_kwargs={"result": "done", "session_id": "sess-abc"})
+
+    real_query = fake.query
+    stop = {"flag": False}
+
+    async def _slow_tail_query(*, prompt, options):
+        async for m in real_query(prompt=prompt, options=options):
+            yield m
+        # /stop arrives only now — after the final ResultMessage was already
+        # delivered — and the stream stays open long enough for the 0.25s
+        # watcher to forward it as a (pointless) interrupt.
+        stop["flag"] = True
+        await asyncio.sleep(0.6)
+
+    fake.query = _slow_tail_query
+    collected = asyncio.run(
+        adp._collect_query(fake, "hi", fake.ClaudeAgentOptions(),
+                           interrupt_check=lambda: stop["flag"])
+    )
+    assert collected["text"] == "done"
+    assert collected["session_id"] == "sess-abc"

@@ -59,8 +59,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.transports.hermes_tool_exposure import (
@@ -86,6 +88,11 @@ _HYBRID_SERVER = "hermes"
 # alias are listed for cross-version compatibility. Override per config via
 # model.claude_agent_sdk.builtin_tools ([] restores the strip-everything legacy).
 _SDK_ORCHESTRATION_TOOLS = ("Workflow", "Agent", "Task", "TodoWrite", "Skill")
+
+# After a native interrupt the CLI normally answers with a final ResultMessage,
+# ending the message loop. If it hangs instead, the transport is force-closed
+# after this many seconds so a turn cannot outlive a /stop.
+_INTERRUPT_GRACE_S = 15.0
 
 # Prefix on the display label of a tool run by a nested SDK subagent (spawned
 # via the `Agent`/`Task` tool). Keeps subagent activity visible on UI/CLI
@@ -278,6 +285,75 @@ def build_auth_env(agent) -> Dict[str, str]:
         env["ANTHROPIC_BASE_URL"] = base_url.strip().rstrip("/")
 
     return env
+
+
+# ---------------------------------------------------------------------------
+# Durable SDK-session identity (survives gateway restarts).
+#
+# ``agent._claude_sdk_session_id`` dies with the process (or an agent-cache
+# eviction), and only the last user message is sent to the SDK — so the SDK
+# session is the ONLY carrier of conversation context. Instead of persisting
+# a Hermes-session -> SDK-session map on disk, the SDK session id is DERIVED
+# (UUIDv5) from Hermes' own persistent ``agent.session_id`` + cwd and pinned
+# on the CLI with ``--session-id`` when the session is first created. Plain
+# ``--resume`` keeps the session id stable across turns, so after a restart
+# the next turn re-derives the same id and resumes it — nothing to store,
+# nothing to drift, and no cross-process races between the gateway/CLI/
+# worktree processes that share HERMES_HOME.
+# ---------------------------------------------------------------------------
+_SDK_SESSION_NS = uuid.UUID("6c1f6dfa-3f5e-4a54-9e19-5c6f1f0a8d21")
+
+# The CLI's two session-identity errors; anything else is NOT retried.
+_STALE_RESUME_MARKER = "No conversation found with session ID"
+_SESSION_IN_USE_MARKER = "is already in use"
+
+
+def _derive_sdk_session_id(hermes_session_id: Any, cwd: str) -> Optional[str]:
+    """Deterministic SDK session id for this Hermes session + cwd.
+
+    Scoped to the cwd because the CLI keys transcripts by directory — the
+    same Hermes session working from another project dir gets its own SDK
+    session instead of a failing (or wrong-project) resume."""
+    if not hermes_session_id:
+        return None
+    return str(uuid.uuid5(_SDK_SESSION_NS, f"{hermes_session_id}\n{cwd}"))
+
+
+def _sdk_transcript_exists(sdk_session_id: str, cwd: str, env: Optional[Dict[str, str]] = None) -> bool:
+    """Best-effort check that the CLI has a transcript for this session id.
+
+    The CLI stores transcripts at ``<config>/projects/<encoded-cwd>/<id>.jsonl``
+    where ``<config>`` is $CLAUDE_CONFIG_DIR or ~/.claude and ``<encoded-cwd>``
+    replaces every non-alphanumeric character with ``-``. Only a fast-path
+    hint for choosing resume-vs-create — a wrong guess is corrected by the
+    error-gated retry in ``create_claude_agent_message``."""
+    try:
+        config_dir = (env or {}).get("CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
+        base = Path(config_dir) if config_dir else Path.home() / ".claude"
+        encoded = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+        return (base / "projects" / encoded / f"{sdk_session_id}.jsonl").is_file()
+    except Exception:
+        return False
+
+
+def _swap_session_mode(opt_kwargs: Dict[str, Any], exc: Exception) -> bool:
+    """Flip resume<->create when ``exc`` is a CLI session-identity error.
+
+    ``--resume`` of an id the CLI no longer knows fails with
+    ``No conversation found with session ID …`` → create the session fresh
+    under the same id. ``--session-id`` of an id that already exists fails
+    with ``Session ID … is already in use.`` → resume it instead. Returns
+    True when it swapped (the turn should be retried once); any other error
+    is left alone so real failures surface instead of silently discarding
+    conversation context."""
+    blob = f"{exc}\n{getattr(exc, 'stderr', '') or ''}"
+    if opt_kwargs.get("resume") and _STALE_RESUME_MARKER in blob:
+        opt_kwargs["session_id"] = opt_kwargs.pop("resume")
+        return True
+    if opt_kwargs.get("session_id") and _SESSION_IN_USE_MARKER in blob:
+        opt_kwargs["resume"] = opt_kwargs.pop("session_id")
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -836,12 +912,15 @@ async def _collect_query(
     bridge: Optional[_StreamBridge] = None,
     interrupt_check=None,
 ) -> Dict[str, Any]:
-    """Run ``query(prompt, options)`` and collect text, usage and session id.
+    """Run the turn through ``ClaudeSDKClient`` and collect text, usage and
+    session id.
 
-    ``interrupt_check`` polls Hermes' /stop flag between SDK messages: one-shot
-    ``query()`` has no native interrupt (that needs ``ClaudeSDKClient`` +
-    streaming input), but raising out of the async-for closes the generator,
-    which tears down the CLI transport — so a stop lands within one message.
+    ``interrupt_check`` polls Hermes' /stop flag. A background watcher forwards
+    it as the client's native ``interrupt()``, so a stop lands mid-tool. With
+    the previous one-shot ``query()`` a stop could only land between SDK
+    messages, and a long tool call emits none — /stop had to wait the whole
+    tool call out (and raising out of the async-for tore down the transport
+    uncleanly).
     """
     AssistantMessage = sdk.AssistantMessage
     ResultMessage = sdk.ResultMessage
@@ -871,76 +950,151 @@ async def _collect_query(
     stop_reason: Optional[str] = None
     errors: List[str] = []
 
-    async for message in sdk.query(prompt=prompt, options=options):
-        if interrupt_check is not None and interrupt_check():
-            raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
-        if StreamEvent is not None and isinstance(message, StreamEvent):
-            # Live progress only — never part of the collected result. Subagent
-            # streams (parent_tool_use_id set) are still surfaced, but the bridge
-            # shows only their TOOL activity (marked as subagent work); their
-            # text/thinking is suppressed so it doesn't interleave with the
-            # top-level response.
-            if bridge is not None:
+    client_cls = getattr(sdk, "ClaudeSDKClient", None)
+    if client_cls is None:
+        raise RuntimeError(
+            "The installed claude-agent-sdk has no ClaudeSDKClient (too old). "
+            "Install the pinned version: pip install 'claude-agent-sdk==0.2.110'."
+        )
+    client = client_cls(options=options)
+    await client.connect()
+    interrupted = False
+    got_result = False
+
+    async def _watch_interrupt():
+        # Forward Hermes' /stop flag as the client's native interrupt. The
+        # message loop below can see no traffic for the whole duration of a
+        # long tool call, so checking between messages is not enough.
+        nonlocal interrupted
+        while True:
+            await asyncio.sleep(0.25)
+            if interrupt_check():
+                interrupted = True
                 try:
-                    bridge.handle(
-                        getattr(message, "event", None) or {},
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
+                    await client.interrupt()
                 except Exception:
-                    logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
-            continue
-        if _task_types and isinstance(message, _task_types):
-            # Background task / workflow-agent progress — surface as its own chip
-            # lifecycle, never part of the collected top-level result.
-            if bridge is not None:
+                    # The interrupt never reached the CLI (transport wedged) —
+                    # don't sit out a grace period waiting for a wind-down
+                    # that can't come; tear down now.
+                    logger.debug("claude_agent_sdk: interrupt request failed", exc_info=True)
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    return
+                # The CLI normally answers an interrupt with a final
+                # ResultMessage, ending the message loop; if it hangs
+                # instead, force-close so a turn cannot outlive a /stop.
+                await asyncio.sleep(_INTERRUPT_GRACE_S)
                 try:
-                    bridge.handle_task(message)
+                    await client.disconnect()
                 except Exception:
-                    logger.debug("claude_agent_sdk: task bridge error", exc_info=True)
-            continue
-        if UserMessage is not None and isinstance(message, UserMessage):
-            # Tool results echoing back into the SDK loop — resolve the
-            # matching tool chip (never part of the collected result).
-            if bridge is not None:
-                content = getattr(message, "content", None)
-                for block in content if isinstance(content, list) else []:
-                    if ToolResultBlock is not None and isinstance(block, ToolResultBlock):
-                        try:
-                            bridge.handle_tool_result(
-                                getattr(block, "tool_use_id", "") or "",
-                                getattr(block, "content", None),
-                                getattr(block, "is_error", None),
-                            )
-                        except Exception:
-                            logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
-            continue
-        if isinstance(message, AssistantMessage):
-            # A subagent's own assistant turns (parent_tool_use_id set) are its
-            # internal reasoning — not the top-level response. Its tool activity
-            # is surfaced live via the stream bridge; keep its text/thinking out
-            # of the collected result so it can't leak into the final message.
-            if getattr(message, "parent_tool_use_id", None):
+                    pass
+                return
+
+    watcher = (
+        asyncio.create_task(_watch_interrupt()) if interrupt_check is not None else None
+    )
+    try:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if interrupted or (interrupt_check is not None and interrupt_check()):
+                # Fast path between messages; the watcher covers mid-tool.
+                # If the watcher set the flag it already sent the native
+                # interrupt — don't send a second one.
+                if not interrupted:
+                    interrupted = True
+                    try:
+                        await client.interrupt()
+                    except Exception:
+                        logger.debug("claude_agent_sdk: interrupt request failed", exc_info=True)
+                break
+            if StreamEvent is not None and isinstance(message, StreamEvent):
+                # Live progress only — never part of the collected result. Subagent
+                # streams (parent_tool_use_id set) are still surfaced, but the bridge
+                # shows only their TOOL activity (marked as subagent work); their
+                # text/thinking is suppressed so it doesn't interleave with the
+                # top-level response.
+                if bridge is not None:
+                    try:
+                        bridge.handle(
+                            getattr(message, "event", None) or {},
+                            parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
+                        )
+                    except Exception:
+                        logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
                 continue
-            for block in getattr(message, "content", []) or []:
-                if TextBlock is not None and isinstance(block, TextBlock):
-                    assistant_text.append(block.text or "")
-                elif ThinkingBlock is not None and isinstance(block, ThinkingBlock):
-                    thinking_text.append(getattr(block, "thinking", "") or "")
-                elif getattr(block, "type", None) == "text":
-                    assistant_text.append(getattr(block, "text", "") or "")
-                elif getattr(block, "type", None) == "thinking":
-                    thinking_text.append(getattr(block, "thinking", "") or "")
-        elif isinstance(message, ResultMessage):
-            result_text = getattr(message, "result", None)
-            usage = getattr(message, "usage", None)
-            total_cost = getattr(message, "total_cost_usd", None)
-            session_id = getattr(message, "session_id", None)
-            is_error = bool(getattr(message, "is_error", False))
-            subtype = getattr(message, "subtype", None)
-            stop_reason = getattr(message, "stop_reason", None)
-            errs = getattr(message, "errors", None)
-            if isinstance(errs, list):
-                errors = [str(e) for e in errs]
+            if _task_types and isinstance(message, _task_types):
+                # Background task / workflow-agent progress — surface as its own chip
+                # lifecycle, never part of the collected top-level result.
+                if bridge is not None:
+                    try:
+                        bridge.handle_task(message)
+                    except Exception:
+                        logger.debug("claude_agent_sdk: task bridge error", exc_info=True)
+                continue
+            if UserMessage is not None and isinstance(message, UserMessage):
+                # Tool results echoing back into the SDK loop — resolve the
+                # matching tool chip (never part of the collected result).
+                if bridge is not None:
+                    content = getattr(message, "content", None)
+                    for block in content if isinstance(content, list) else []:
+                        if ToolResultBlock is not None and isinstance(block, ToolResultBlock):
+                            try:
+                                bridge.handle_tool_result(
+                                    getattr(block, "tool_use_id", "") or "",
+                                    getattr(block, "content", None),
+                                    getattr(block, "is_error", None),
+                                )
+                            except Exception:
+                                logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
+                continue
+            if isinstance(message, AssistantMessage):
+                # A subagent's own assistant turns (parent_tool_use_id set) are its
+                # internal reasoning — not the top-level response. Its tool activity
+                # is surfaced live via the stream bridge; keep its text/thinking out
+                # of the collected result so it can't leak into the final message.
+                if getattr(message, "parent_tool_use_id", None):
+                    continue
+                for block in getattr(message, "content", []) or []:
+                    if TextBlock is not None and isinstance(block, TextBlock):
+                        assistant_text.append(block.text or "")
+                    elif ThinkingBlock is not None and isinstance(block, ThinkingBlock):
+                        thinking_text.append(getattr(block, "thinking", "") or "")
+                    elif getattr(block, "type", None) == "text":
+                        assistant_text.append(getattr(block, "text", "") or "")
+                    elif getattr(block, "type", None) == "thinking":
+                        thinking_text.append(getattr(block, "thinking", "") or "")
+            elif isinstance(message, ResultMessage):
+                got_result = True
+                result_text = getattr(message, "result", None)
+                usage = getattr(message, "usage", None)
+                total_cost = getattr(message, "total_cost_usd", None)
+                session_id = getattr(message, "session_id", None)
+                is_error = bool(getattr(message, "is_error", False))
+                subtype = getattr(message, "subtype", None)
+                stop_reason = getattr(message, "stop_reason", None)
+                errs = getattr(message, "errors", None)
+                if isinstance(errs, list):
+                    errors = [str(e) for e in errs]
+    except Exception:
+        # The forced teardown after an interrupt can surface as a transport
+        # error; never mask errors on the normal path.
+        if not interrupted:
+            raise
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    if interrupted and not got_result:
+        raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
+    # A /stop that landed after the final ResultMessage interrupts nothing —
+    # the turn already completed, and the CLI transcript recorded it. Return
+    # the result so Hermes' history can't diverge from the SDK session.
 
     # ResultMessage.result is only populated on the `success` subtype; on error
     # subtypes fall back to the collected assistant text so the user still sees
@@ -1030,8 +1184,23 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     # resuming a session created under a different project dir would fail (or
     # continue in the wrong project); start fresh instead.
     resume = getattr(agent, "_claude_sdk_session_id", None)
-    if resume and getattr(agent, "_claude_sdk_session_cwd", None) == cwd:
+    if resume and getattr(agent, "_claude_sdk_session_cwd", None) != cwd:
+        resume = None
+    if resume:
         opt_kwargs["resume"] = resume
+    else:
+        # Fresh agent object (first turn, gateway restart, or agent-cache
+        # eviction): the SDK session id is derived from Hermes' persistent
+        # session id, so no stored mapping is needed — resume the derived id
+        # if its transcript exists, otherwise create the session under it.
+        # The existence check is only a hint; a wrong guess is corrected by
+        # the error-gated retry below.
+        derived = _derive_sdk_session_id(getattr(agent, "session_id", None), cwd)
+        if derived:
+            if _sdk_transcript_exists(derived, cwd, env):
+                opt_kwargs["resume"] = derived
+            else:
+                opt_kwargs["session_id"] = derived
 
     # Respect Hermes' reasoning settings instead of the CLI's own defaults —
     # AnthropicTransport.build_kwargs already mapped the user's reasoning
@@ -1123,29 +1292,47 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         getattr(agent, "log_prefix", ""), mode, model, len(prompt), mcp_note,
     )
 
-    try:
-        collected = _run_async(
-            _collect_query(
-                sdk,
-                prompt,
-                options,
-                bridge=bridge if bridge.active else None,
-                # One-shot query() has no native interrupt; polling Hermes'
-                # /stop flag between SDK messages and raising closes the
-                # generator, which tears down the CLI transport.
-                interrupt_check=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+    collected: Dict[str, Any] = {}
+    for attempt in (0, 1):
+        try:
+            collected = _run_async(
+                _collect_query(
+                    sdk,
+                    prompt,
+                    options,
+                    bridge=bridge if bridge.active else None,
+                    # Hermes' /stop flag, forwarded as the client's native
+                    # interrupt by a watcher inside _collect_query, so a stop
+                    # lands mid-tool instead of after the running tool call.
+                    interrupt_check=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+                )
             )
-        )
-    except InterruptedError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        _friendly = _classify_sdk_error(exc)
-        if _friendly:
-            raise RuntimeError(_friendly) from exc
-        raise
+        except InterruptedError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Retry once, ONLY on the CLI's two session-identity errors
+            # (stale resume id → create fresh under the same id; id already
+            # in use → resume it). Both fail at spawn, before any streaming,
+            # so the bridge has no half-emitted state to double up. Any other
+            # error surfaces immediately — retrying a transient failure here
+            # would silently rerun a possibly side-effectful turn.
+            if attempt == 0 and _swap_session_mode(opt_kwargs, exc):
+                logger.warning(
+                    "claude_agent_sdk: session-id mismatch (%s); retrying with %s",
+                    exc,
+                    "resume" if opt_kwargs.get("resume") else "a fresh session",
+                )
+                agent._claude_sdk_session_id = None
+                options = _build_options(sdk, opt_kwargs)
+                continue
+            _friendly = _classify_sdk_error(exc)
+            if _friendly:
+                raise RuntimeError(_friendly) from exc
+            raise
+        break
 
-    # Persist the session id so the next Hermes turn continues the SDK's
-    # own conversation context.
+    # Remember the session id so the next Hermes turn in this process resumes
+    # directly. After a restart it is re-derived — no store needed.
     new_session = collected.get("session_id")
     if new_session:
         agent._claude_sdk_session_id = new_session

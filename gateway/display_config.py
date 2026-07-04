@@ -47,6 +47,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    # Runtime/lifecycle notices (compression, retry/backoff, fallback, provider
+    # status). Public-facing operational agents should opt this off per profile
+    # and only deliver final business-safe assistant answers.
+    "runtime_notices": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -71,6 +75,7 @@ _TIER_HIGH = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "runtime_notices": True,
 }
 
 _TIER_MEDIUM = {
@@ -81,6 +86,7 @@ _TIER_MEDIUM = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "runtime_notices": True,
 }
 
 _TIER_LOW = {
@@ -91,6 +97,9 @@ _TIER_LOW = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    # Keep lifecycle notices default-enabled for back-compat even on quiet
+    # platforms; public/customer-facing agents opt out explicitly per profile.
+    "runtime_notices": True,
 }
 
 _TIER_MINIMAL = {
@@ -101,6 +110,9 @@ _TIER_MINIMAL = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    # Programmatic/raw surfaces such as webhooks must keep diagnostics unless
+    # a profile explicitly disables runtime_notices.
+    "runtime_notices": True,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -240,6 +252,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "runtime_notices",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

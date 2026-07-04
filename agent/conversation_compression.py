@@ -50,6 +50,77 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+CONTEXT_LIMIT_STATUS_MARKER = "Context limit approaching"
+CONTEXT_LIMIT_WARNING_RATIO = 0.90
+
+
+def _pct(numerator: int, denominator: int) -> int:
+    if denominator <= 0:
+        return 0
+    return max(0, min(100, round((numerator / denominator) * 100)))
+
+
+def format_context_limit_status(
+    current_tokens: int,
+    threshold_tokens: int,
+    context_length: int = 0,
+) -> str:
+    """Render a short user-facing warning as context nears compression.
+
+    Messaging platforms do not have the CLI/TUI status bar, so this string is
+    intentionally standalone and plaintext. Keep
+    ``CONTEXT_LIMIT_STATUS_MARKER`` intact if rewording so gateways/frontends can
+    recognize the lifecycle event without brittle full-string matching.
+    """
+    threshold_pct = _pct(current_tokens, threshold_tokens)
+    remaining = max(threshold_tokens - current_tokens, 0)
+    ctx_suffix = ""
+    if context_length > 0:
+        ctx_suffix = f" ({_pct(current_tokens, context_length)}% of model context)"
+    return (
+        f"⚠️ {CONTEXT_LIMIT_STATUS_MARKER} — ~{current_tokens:,} tokens, "
+        f"{threshold_pct}% of the ~{threshold_tokens:,} compression threshold"
+        f"{ctx_suffix}. About {remaining:,} tokens before compaction."
+    )
+
+
+def maybe_emit_context_limit_status(agent: Any, current_tokens: Optional[int]) -> None:
+    """Emit a deduped lifecycle status when a session is close to compaction.
+
+    The normal CLI status bar already shows context pressure continuously, but
+    Slack/Discord/etc. users otherwise only learn about it once compression has
+    started. This helper sends a visible status when the request is at least
+    90% of the compression threshold, then dedupes by 5% bands so tool loops do
+    not spam chat on every iteration.
+    """
+    try:
+        if not getattr(agent, "compression_enabled", False):
+            return
+        tokens = int(current_tokens or 0)
+        if tokens <= 0:
+            return
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is None:
+            return
+        threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+        if threshold <= 0:
+            return
+        # Once the threshold has been crossed, the explicit compaction status is
+        # clearer and is emitted by compress_context().
+        if tokens >= threshold:
+            return
+        ratio = tokens / threshold
+        if ratio < CONTEXT_LIMIT_WARNING_RATIO:
+            return
+        band = int(ratio * 100) // 5
+        key = (getattr(agent, "session_id", "") or "", threshold, band)
+        if getattr(agent, "_last_context_limit_status_key", None) == key:
+            return
+        agent._last_context_limit_status_key = key
+        context_length = int(getattr(compressor, "context_length", 0) or 0)
+        agent._emit_status(format_context_limit_status(tokens, threshold, context_length))
+    except Exception:
+        logger.debug("context-limit status emission failed", exc_info=True)
 
 
 def _compression_lock_holder(agent: Any) -> str:

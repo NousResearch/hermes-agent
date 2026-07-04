@@ -28,7 +28,10 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.conversation_compression import conversation_history_after_compression
+from agent.conversation_compression import (
+    conversation_history_after_compression,
+    maybe_emit_context_limit_status,
+)
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -1051,6 +1054,7 @@ def run_conversation(
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()
             continue
+        maybe_emit_context_limit_status(agent, request_pressure_tokens)
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None

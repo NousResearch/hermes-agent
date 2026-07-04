@@ -28,7 +28,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.conversation_compression import conversation_history_after_compression
+from agent.conversation_compression import (
+    conversation_history_after_compression,
+    maybe_emit_context_limit_status,
+)
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -427,6 +430,8 @@ def build_turn_context(
                 agent._mute_post_response = False
                 if not _compressor.should_compress(_preflight_tokens):
                     break
+        else:
+            maybe_emit_context_limit_status(agent, _preflight_tokens)
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""

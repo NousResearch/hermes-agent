@@ -91,6 +91,49 @@ def test_review_diff_shows_change_and_synthesizes_untracked(client, repo):
     assert "print(1)" in untracked  # all-add diff for a file git doesn't track yet
 
 
+def test_git_review_does_not_disclose_untracked_env_file(client, repo):
+    secret = repo / ".env"
+    secret.write_text("OPENAI_API_KEY=sk-secret\n")
+
+    status = client.get("/api/git/status", params={"path": str(repo)}).json()
+    assert status["added"] == 3
+
+    listed = client.get("/api/git/review/list", params={"path": str(repo)}).json()
+    listed_files = {f["path"]: f for f in listed["files"]}
+    assert listed_files[".env"]["added"] == 0
+
+    review_diff = client.get(
+        "/api/git/review/diff", params={"path": str(repo), "file": ".env"}
+    ).json()["diff"]
+    assert review_diff == ""
+    assert "sk-secret" not in review_diff
+
+    file_diff = client.get(
+        "/api/git/file-diff", params={"path": str(repo), "file": ".env"}
+    ).json()["diff"]
+    assert file_diff == ""
+    assert "sk-secret" not in file_diff
+
+    commit_context = client.get(
+        "/api/git/review/commit-context", params={"path": str(repo)}
+    ).json()["diff"]
+    assert ".env" not in commit_context
+    assert "sk-secret" not in commit_context
+
+
+def test_git_commit_context_omits_tracked_env_diff(client, repo):
+    tracked_secret = repo / ".env"
+    tracked_secret.write_text("OPENAI_API_KEY=old\n")
+    _git(repo, "add", ".env")
+    _git(repo, "commit", "-qm", "track env")
+    tracked_secret.write_text("OPENAI_API_KEY=sk-new-secret\n")
+
+    body = client.get("/api/git/review/commit-context", params={"path": str(repo)}).json()
+
+    assert ".env" not in body["diff"]
+    assert "sk-new-secret" not in body["diff"]
+
+
 def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert client.post("/api/git/review/stage", json={"path": str(repo), "file": "a.txt"}).json() == {"ok": True}
     staged = client.get("/api/git/status", params={"path": str(repo)}).json()

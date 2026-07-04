@@ -96,9 +96,22 @@ def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
     return counts
 
 
+def _is_read_protected_path(cwd: str, rel: str) -> bool:
+    """Return True when a git review file path targets a credential store."""
+    try:
+        from agent.file_safety import get_read_block_error
+    except Exception:
+        return False
+    raw = Path(str(rel or ""))
+    target = raw if raw.is_absolute() else Path(cwd) / raw
+    return get_read_block_error(str(target)) is not None
+
+
 def _untracked_insertions(cwd: str, rel: str) -> int:
     """Line count of an untracked file (newlines + a final unterminated line),
     so the review tree can show +N for new files. Binary / oversized → 0."""
+    if _is_read_protected_path(cwd, rel):
+        return 0
     try:
         target = Path(cwd) / rel
         st = target.stat()
@@ -308,6 +321,8 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
     if not _is_dir(cwd):
         return ""
+    if _is_read_protected_path(cwd, file_path):
+        return ""
     if scope == "branch":
         base = _branch_base(cwd)
         return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
@@ -327,6 +342,8 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
     """Working-tree-vs-HEAD diff for one file (the preview's diff view). Unlike
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
     if not _is_dir(cwd):
+        return ""
+    if _is_read_protected_path(cwd, file_path):
         return ""
     head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
     if head.strip():
@@ -397,12 +414,25 @@ def review_commit_context(cwd: str) -> dict:
     entries = list(_walk_entries(raw))
 
     has_staged = any(_entry_staged(tag, xy) for tag, xy, _ in entries)
-    diff = _git_out(cwd, ["diff", "--cached"]) if has_staged else _git_out(cwd, ["diff", "HEAD"])
+    tracked_paths = [
+        path
+        for tag, _xy, path in entries
+        if tag != "?" and not _is_read_protected_path(cwd, path)
+    ]
+    if tracked_paths:
+        diff_args = ["diff", "--cached"] if has_staged else ["diff", "HEAD"]
+        diff = _git_out(cwd, [*diff_args, "--", *tracked_paths])
+    else:
+        diff = ""
     if len(diff) > _COMMIT_CONTEXT_DIFF_MAX_CHARS:
         omitted = len(diff) - _COMMIT_CONTEXT_DIFF_MAX_CHARS
         diff = f"{diff[:_COMMIT_CONTEXT_DIFF_MAX_CHARS]}\n# diff truncated: {omitted} chars omitted\n"
 
-    untracked = [path for tag, _xy, path in entries if tag == "?"]
+    untracked = [
+        path
+        for tag, _xy, path in entries
+        if tag == "?" and not _is_read_protected_path(cwd, path)
+    ]
     if untracked:
         visible = untracked[:_COMMIT_CONTEXT_UNTRACKED_MAX]
         note = "\n# New (untracked) files:\n" + "".join(f"#   {p}\n" for p in visible)

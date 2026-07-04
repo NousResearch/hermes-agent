@@ -36,9 +36,17 @@ TRANSITIONS: dict[str, set[str]] = {
     # broker is now processing the removal (their stated window). confirmed_removed still requires a
     # verifying re-scan, never the submission flow's own say-so.
     "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued", "blocked"},
-    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked"},
+    # awaiting_processing -> reappeared: the verifying re-scan after the processing window found the
+    # listing still up (the removal did not take). That is the same "still listed" outcome as a
+    # reappearance, so it routes back through `reappeared` to be re-filed.
+    "awaiting_processing": {"confirmed_removed", "reappeared", "human_task_queued", "blocked"},
     "confirmed_removed": {"reappeared", "confirmed_removed"},
-    "reappeared": {"found", "indirect_exposure"},
+    # reappeared: a listing that came back (or a submission whose processing did not clear it). The
+    # re-scan already confirmed it is present, so it is re-actioned exactly like a fresh `found` --
+    # re-file the opt-out (-> action_selected / submitted), route to a human, mark blocked, or
+    # reclassify on a closer re-scan (-> found / not_found / indirect_exposure).
+    "reappeared": {"found", "not_found", "indirect_exposure", "action_selected", "submitted",
+                   "human_task_queued", "blocked"},
     "human_task_queued": {
         "found", "indirect_exposure", "action_selected", "submitted", "verification_pending",
         "awaiting_processing", "confirmed_removed", "blocked",

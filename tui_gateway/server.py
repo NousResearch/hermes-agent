@@ -226,6 +226,7 @@ _LONG_HANDLERS = frozenset(
         "session.compress",
         "session.list",
         "session.resume",
+        "session.usage",
         "shell.exec",
         "skills.manage",
         "slash.exec",
@@ -6527,6 +6528,43 @@ def _(rid, params: dict) -> dict:
         if agent is not None
         else {"calls": 0, "input": 0, "output": 0, "total": 0}
     )
+    provider = getattr(agent, "provider", None) if agent is not None else None
+    base_url = getattr(agent, "base_url", None) if agent is not None else None
+    api_key = getattr(agent, "api_key", None) if agent is not None else None
+    if provider:
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                try:
+                    snapshot = _pool.submit(
+                        fetch_account_usage,
+                        provider,
+                        base_url=base_url,
+                        api_key=api_key,
+                    ).result(timeout=10.0)
+                except (concurrent.futures.TimeoutError, Exception):
+                    snapshot = None
+            account_lines = render_account_usage_lines(snapshot)
+            if account_lines:
+                usage["account_lines"] = account_lines
+        except Exception:
+            pass
+
+    # Rate limits from provider headers, when available.
+    if agent is not None:
+        try:
+            rl_state = agent.get_rate_limit_state()
+        except Exception:
+            rl_state = None
+        if rl_state and getattr(rl_state, "has_data", False):
+            try:
+                from agent.rate_limit_tracker import format_rate_limit_display
+
+                usage["rate_limit_lines"] = format_rate_limit_display(rl_state).splitlines()
+            except Exception:
+                pass
+
     # Nous credits block — agent-independent (a portal fetch), so it shows even
     # with zero API calls or on a resumed session. The TUI /usage panel renders
     # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
@@ -13220,11 +13258,102 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     return ""
 
 
+def _format_usage_slash_output(session: dict) -> str:
+    """Format /usage without requiring the slash-worker's live CLI agent."""
+    agent = session.get("agent")
+    usage = (
+        _get_usage(agent)
+        if agent is not None
+        else {"calls": 0, "input": 0, "output": 0, "total": 0}
+    )
+    account_lines: list[str] = []
+    credits: list[str] = []
+
+    provider = getattr(agent, "provider", None) if agent is not None else None
+    base_url = getattr(agent, "base_url", None) if agent is not None else None
+    api_key = getattr(agent, "api_key", None) if agent is not None else None
+    if provider:
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                try:
+                    snapshot = _pool.submit(
+                        fetch_account_usage,
+                        provider,
+                        base_url=base_url,
+                        api_key=api_key,
+                    ).result(timeout=10.0)
+                except (concurrent.futures.TimeoutError, Exception):
+                    snapshot = None
+            account_lines = render_account_usage_lines(snapshot)
+        except Exception:
+            account_lines = []
+
+    try:
+        from agent.account_usage import nous_credits_lines
+
+        credits = nous_credits_lines()
+    except Exception:
+        credits = []
+
+    lines: list[str] = []
+    if not usage.get("calls"):
+        lines.append("No API calls yet" if (account_lines or credits) else "no API calls yet")
+        if account_lines:
+            lines.extend(["", *account_lines])
+        if credits:
+            lines.extend(["", "Nous credits", *credits])
+        return "\n".join(lines).strip()
+
+    if agent is not None:
+        try:
+            rl_state = agent.get_rate_limit_state()
+        except Exception:
+            rl_state = None
+        if rl_state and getattr(rl_state, "has_data", False):
+            try:
+                from agent.rate_limit_tracker import format_rate_limit_display
+
+                lines.append(format_rate_limit_display(rl_state))
+                lines.append("")
+            except Exception:
+                pass
+
+    def f(value) -> str:
+        return f"{int(value or 0):,}"
+
+    lines.extend(
+        [
+            "Usage",
+            f"Model: {usage.get('model', '')}",
+            f"Input tokens: {f(usage.get('input'))}",
+            f"Output tokens: {f(usage.get('output'))}",
+            f"Total tokens: {f(usage.get('total'))}",
+            f"API calls: {f(usage.get('calls'))}",
+        ]
+    )
+    if usage.get("context_max"):
+        lines.append(
+            "Context: "
+            f"{f(usage.get('context_used'))} / {f(usage.get('context_max'))} "
+            f"({usage.get('context_percent', 0)}%)"
+        )
+    if usage.get("compressions"):
+        lines.append(f"Compressions: {usage.get('compressions')}")
+    if account_lines:
+        lines.extend(["", *account_lines])
+    if credits:
+        lines.extend(["", "Nous credits", *credits])
+    return "\n".join(lines)
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    assert session is not None
 
     cmd = params.get("command", "").strip()
     if not cmd:
@@ -13239,6 +13368,12 @@ def _(rid, params: dict) -> dict:
     _cmd_parts = _cmd_text.split(maxsplit=1)
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
+
+    # Only bare /usage is rendered from the live gateway session. Subcommands
+    # still go through HermesCLI so /usage reset [--force] and the established
+    # unknown-subcommand error keep their existing behavior.
+    if _cmd_base == "usage" and not _cmd_arg:
+        return _ok(rid, {"output": _format_usage_slash_output(session)})
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         # Route directly to command.dispatch instead of returning an error

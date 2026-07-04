@@ -501,8 +501,20 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # a placeholder so the reference knows a non-text turn
                 # happened.
                 text = "[user sent non-text content (e.g. an image attachment)]"
-            if text.strip():
-                last_user_content = text
+            if not text.strip():
+                # Genuinely empty user turn (content="" / None). It carries
+                # nothing advisory, and strict providers (Kimi/Moonshot, ZAI,
+                # and others that enforce non-empty user content) reject it
+                # with 400 "message ... with role 'user' must not be empty" —
+                # the same way the assistant branch below drops turns with no
+                # parts. Lenient providers (DeepSeek) accept the empty turn,
+                # which is why a MoA fan-out would fail on one reference and
+                # pass on another for the identical rendered view. The
+                # advisory view is already not strictly alternating (adjacent
+                # assistant turns occur in every tool loop), so dropping a
+                # contentless turn is safe.
+                continue
+            last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
             parts: list[str] = []

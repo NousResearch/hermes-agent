@@ -38,16 +38,51 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def _write_utf8(path: Path, payload: dict) -> None:
-    """Write JSON as UTF-8, mirroring _save_auth_store's encoding."""
+    """Write JSON as UTF-8 with non-ASCII chars as real UTF-8 bytes.
+
+    Uses ``ensure_ascii=False`` so the file actually contains non-ASCII bytes
+    (the trigger for the Windows cp1252 bug). The default ``ensure_ascii=True``
+    would escape them to ``\\uXXXX`` ASCII, hiding the bug.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.fixture
+def windows_default_encoding(monkeypatch):
+    """Simulate the Windows locale default for ``Path.read_text()``.
+
+    On Windows, ``locale.getpreferredencoding()`` is ``cp1252``, so a bare
+    ``read_text()`` decodes UTF-8 bytes as cp1252 and raises
+    ``UnicodeDecodeError`` on any non-ASCII byte. POSIX test runners default to
+    UTF-8, so the bug is invisible there — this fixture makes a no-encoding
+    ``read_text()`` behave like Windows (cp1252), while leaving calls that pass
+    an explicit encoding untouched. That lets the regression tests actually
+    catch the bug on any platform.
+    """
+    real_read_text = Path.read_text
+
+    def _windows_read_text(self, *args, **kwargs):
+        if "encoding" not in kwargs and not args:
+            # No explicit encoding → force the Windows default.
+            kwargs["encoding"] = "cp1252"
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _windows_read_text)
+
+
 
 
 # --- the bug: a non-ASCII label must survive save → load -------------------
 
 class TestAuthStoreEncodingRoundTrip:
-    def test_load_reads_utf8_with_non_ascii_label(self, hermes_home):
-        """A UTF-8 store with a CJK/emoji label loads intact (not wiped)."""
+    def test_load_reads_utf8_with_non_ascii_label(self, hermes_home, windows_default_encoding):
+        """A UTF-8 store with a CJK/emoji label loads intact (not wiped).
+
+        Under the Windows-default-encoding fixture, a no-encoding read_text()
+        raises UnicodeDecodeError on the non-ASCII bytes and the broad except
+        wipes the store — so this test catches the bug on any platform.
+        """
         store = {
             "version": auth.AUTH_STORE_VERSION,
             "providers": {
@@ -67,7 +102,7 @@ class TestAuthStoreEncodingRoundTrip:
         assert "openai-codex" in loaded["providers"]
         assert loaded["providers"]["openai-codex"]["label"] == "工作账号 🔥"
 
-    def test_load_does_not_corrupt_store_on_non_ascii(self, hermes_home):
+    def test_load_does_not_corrupt_store_on_non_ascii(self, hermes_home, windows_default_encoding):
         """The pre-fix bug wiped the store to empty on a UnicodeDecodeError.
 
         After the fix, loading a valid UTF-8 store must never produce the empty
@@ -146,3 +181,63 @@ class TestExplicitEncodingPassed:
         for call in spy.call_args_list:
             assert "encoding" in call.kwargs, "codex read_text() must pass encoding"
             assert "utf-8" in str(call.kwargs["encoding"]).lower()
+
+
+# --- sibling readers of the same ~/.hermes/auth.json in other modules -------
+#
+# _load_auth_store lives in hermes_cli/auth.py, but several other modules read
+# the same ~/.hermes/auth.json directly. They had the same UTF-8-vs-cp1252
+# asymmetry on Windows — these tests pin the sibling reads too.
+
+class TestAuthJsonSiblingReaders:
+    def test_has_xai_credentials_reads_non_ascii_store(self, hermes_home, windows_default_encoding, monkeypatch):
+        """tools/xai_http.has_xai_credentials must read a non-ASCII auth.json.
+
+        Pre-fix, a UTF-8 store with a non-ASCII label raised UnicodeDecodeError
+        here (cp1252 default on Windows), the broad except swallowed it, and
+        xAI OAuth silently looked absent.
+        """
+        # No XAI_API_KEY env → force the auth.json code path.
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        store = {
+            "version": auth.AUTH_STORE_VERSION,
+            "providers": {
+                "xai-oauth": {
+                    # CJK label → UTF-8 bytes (e.g. 0xE5..) that cp1252 cannot
+                    # decode, so a no-encoding read raises UnicodeDecodeError.
+                    "label": "工作账号",
+                    "tokens": {"access_token": "tok"},
+                }
+            },
+        }
+        _write_utf8(hermes_home / "auth.json", store)
+
+        from tools.xai_http import has_xai_credentials
+
+        assert has_xai_credentials() is True
+
+    def test_auxiliary_nous_provider_reads_non_ascii_store(self, hermes_home, windows_default_encoding, monkeypatch):
+        """agent/auxiliary_client's Nous-provider lookup reads the same store.
+
+        The lookup returns None on any read failure, silently disabling Nous as
+        the auxiliary (vision/summarization) provider. A non-ASCII label must
+        not trigger that path.
+        """
+        store = {
+            "version": auth.AUTH_STORE_VERSION,
+            "active_provider": "nous",
+            "providers": {"nous": {"agent_key": "k", "label": "工作账号"}},
+        }
+        _write_utf8(hermes_home / "auth.json", store)
+
+        import agent.auxiliary_client as aux
+
+        # _read_nous_auth consults the credential pool FIRST and returns early
+        # when a pool entry exists, never reaching the auth.json read. Force the
+        # pool-absent path so the auth.json code under test actually runs.
+        monkeypatch.setattr(aux, "_select_pool_entry", lambda _provider: (False, None))
+
+        provider = aux._read_nous_auth()
+        assert provider is not None
+        assert provider.get("agent_key") == "k"
+

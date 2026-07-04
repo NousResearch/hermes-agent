@@ -2102,7 +2102,7 @@ def _read_nous_auth() -> Optional[dict]:
     try:
         if not _AUTH_JSON_PATH.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_AUTH_JSON_PATH.read_text(encoding="utf-8-sig"))
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})

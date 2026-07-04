@@ -524,6 +524,7 @@ def classify_api_error(
     """Classify an API error into a structured recovery recommendation.
 
     Priority-ordered pipeline:
+      0. Plugin ``classify_api_error`` hooks (first valid result wins)
       1. Special-case provider-specific patterns (thinking sigs, tier gates)
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
@@ -606,6 +607,41 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    # ── 0. Plugin classifiers (first valid result wins) ─────────────
+    #
+    # Consulted BEFORE the built-in pipeline so a provider plugin can both
+    # add classifications the core patterns miss and correct ones they get
+    # wrong for its provider (see the ``classify_api_error`` entry in
+    # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
+    # exceptions are isolated inside invoke_hook and malformed returns are
+    # dropped by the helper, so a broken plugin can never break
+    # classification — the guard here only covers import/dispatch failure.
+    try:
+        from hermes_cli.plugins import get_plugin_error_classification
+        plugin_classification = get_plugin_error_classification(
+            provider=provider,
+            model=model,
+            status_code=status_code,
+            error_type=error_type,
+            error_code=error_code,
+            error_message=error_msg,
+            error_body=body,
+            error=error,
+            approx_tokens=approx_tokens,
+            context_length=context_length,
+            num_messages=num_messages,
+        )
+    except Exception as exc:
+        logger.debug("Plugin error classification unavailable: %s", exc)
+        plugin_classification = None
+    if plugin_classification is not None:
+        reason = plugin_classification.pop("reason")
+        logger.info(
+            "API error classified by plugin hook: %s (provider=%s, status=%s)",
+            reason.value, provider, status_code,
+        )
+        return _result(reason, **plugin_classification)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 

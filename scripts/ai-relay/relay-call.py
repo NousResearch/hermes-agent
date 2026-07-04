@@ -157,8 +157,10 @@ def load_relay_env(cwd: Path):
     load_env_file(Path.home()/".hermes"/".env")
     load_env_file(cwd/".hermes"/".env")
 
-AUTH_RE = re.compile(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables", re.I)
+AUTH_RE = re.compile(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables|not authenticated|disabled .*access|subscription access|use an anthropic api key|organization has disabled", re.I)
 QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|too many request|usage limit|insufficient", re.I)
+# ข้อความ auth ที่ชัดเจนมาก (คำตอบปกติไม่มีทางพูด) · ถือเป็นล็อกอินพัง แม้ CLI จะ exit 0 · กันเอา error มาเป็นคำตอบ
+STRONG_AUTH_RE = re.compile(r"you are not authenticated|organization has disabled|subscription access for claude|use an anthropic api key instead", re.I)
 
 # ---- จัดประเภท error จาก exit code + stdout/stderr (เป็นที่เดียวที่ตีความ) ----
 def classify(exit_code, stdout, stderr):
@@ -168,6 +170,9 @@ def classify(exit_code, stdout, stderr):
     if exit_code == 127:
         return "not_found"
     if exit_code == 0:
+        # บาง CLI (เช่น claude เมื่อ org ปิดสิทธิ์) พิมพ์ error ยาวแต่ exit 0 · กันเอา error มาเป็นคำตอบ
+        if STRONG_AUTH_RE.search(out) or STRONG_AUTH_RE.search(err):
+            return "auth"
         if len(out.strip()) < 40 and AUTH_RE.search(err):
             return "auth"
         return "ok"

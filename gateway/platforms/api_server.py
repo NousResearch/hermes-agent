@@ -17,6 +17,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
+- POST /v1/runs/{run_id}/messages  - steer a running agent
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -1509,6 +1510,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+                "run_messages": {"method": "POST", "path": "/v1/runs/{run_id}/messages"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
@@ -4382,6 +4384,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+                    if pending_steer:
+                        q.put_nowait({
+                            "event": "pending_steer_leftover",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "text": str(pending_steer),
+                        })
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
@@ -4530,6 +4540,74 @@ class APIServerAdapter(BasePlatformAdapter):
             self._run_streams_created.pop(run_id, None)
 
         return response
+
+    async def _handle_run_message(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/messages - steer a live run."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        agent = self._active_run_agents.get(run_id)
+        task = self._active_run_tasks.get(run_id)
+        if agent is None and task is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        mode = str(body.get("mode", "steer") or "steer").strip().lower()
+        if mode != "steer":
+            return web.json_response(
+                _openai_error("Invalid message mode; expected: steer", code="invalid_message_mode"),
+                status=400,
+            )
+
+        message = str(body.get("message") or body.get("input") or "").strip()
+        if not message:
+            return web.json_response(
+                _openai_error("Missing 'message' field", code="missing_message"),
+                status=400,
+            )
+        if agent is None or not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(f"Run does not support steer: {run_id}", code="steer_not_supported"),
+                status=409,
+            )
+
+        try:
+            accepted = bool(agent.steer(message))
+        except Exception as exc:
+            logger.exception("[api_server] steer failed for run %s", run_id)
+            return web.json_response(_openai_error(_redact_api_error_text(exc)), status=500)
+        if not accepted:
+            return web.json_response(
+                _openai_error(f"Run rejected steer: {run_id}", code="steer_rejected"),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="message.steered")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait({
+                    "event": "message.steered",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
+        return web.json_response({
+            "object": "hermes.run.message",
+            "run_id": run_id,
+            "mode": "steer",
+            "status": "steered",
+        })
 
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
@@ -4796,6 +4874,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_post("/v1/runs/{run_id}/messages", self._handle_run_message)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay

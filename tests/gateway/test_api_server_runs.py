@@ -48,6 +48,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_post("/v1/runs/{run_id}/messages", adapter._handle_run_message)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
@@ -305,6 +306,33 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_returns_pending_steer_leftover(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "done",
+                    "pending_steer": "no two",
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "pending_steer_leftover" in body
+                assert "no two" in body
+                assert body.index("pending_steer_leftover") < body.index("run.completed")
+
 
 
     @pytest.mark.asyncio
@@ -439,6 +467,79 @@ class TestRunEvents:
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/runs/run_any/events")
+        assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/runs/{run_id}/messages - steer a running agent
+# ---------------------------------------------------------------------------
+
+
+class TestRunMessages:
+    @pytest.mark.asyncio
+    async def test_steer_running_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+                mock_agent.steer = MagicMock(return_value=True)
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                agent_ready.wait(timeout=3.0)
+                steer_resp = await cli.post(
+                    f"/v1/runs/{run_id}/messages",
+                    json={"message": "check the logs", "mode": "steer"},
+                )
+                data = await steer_resp.json()
+
+                assert steer_resp.status == 200
+                assert data["status"] == "steered"
+                mock_agent.steer.assert_called_once_with("check the logs")
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+                assert status["last_event"] == "message.steered"
+
+                interrupted.set()
+
+    @pytest.mark.asyncio
+    async def test_steer_nonexistent_run_returns_404(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/run_missing/messages",
+                json={"message": "hello", "mode": "steer"},
+            )
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_steer_mode(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_mode"
+        adapter._active_run_agents[run_id] = MagicMock()
+        adapter._active_run_tasks[run_id] = MagicMock()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/messages",
+                json={"message": "hello", "mode": "queue"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_message_mode"
+
+    @pytest.mark.asyncio
+    async def test_steer_requires_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/run_any/messages",
+                json={"message": "hello", "mode": "steer"},
+            )
         assert resp.status == 401
 
 

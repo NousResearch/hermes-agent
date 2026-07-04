@@ -387,7 +387,13 @@ function groupModels(
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    const currentModel = current.model.trim()
+    const currentProvider = provider.slug === current.provider && currentModel
+    let allFamilies = collapseModelFamilies(provider.models ?? [])
+
+    if (currentProvider && !allFamilies.some(family => family.id === currentModel || family.fastId === currentModel)) {
+      allFamilies = [{ fastId: null, id: currentModel }, ...allFamilies]
+    }
 
     if (allFamilies.length === 0) {
       continue
@@ -417,10 +423,9 @@ function groupModels(
     // Always include the active model — but keep every row in the provider's
     // stable curated order (filter `allFamilies`, never reorder), so selecting
     // a model can't shuffle the list.
-    const activeId =
-      provider.slug === current.provider && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
-        : undefined
+    const activeId = currentProvider
+      ? allFamilies.find(family => family.id === currentModel || family.fastId === currentModel)?.id
+      : undefined
 
     const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 

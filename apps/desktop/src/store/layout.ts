@@ -178,6 +178,92 @@ export function restoreWorktree(id: string): void {
   }
 }
 
+let applyingExternalPinnedSessions = false
+let externalPinnedSessionsReady = false
+let externalPinnedSessionsUnsubscribe: (() => void) | null = null
+
+function externalPinnedSessionsBridge() {
+  if (typeof window === 'undefined') {
+    return undefined
+  }
+
+  return window.hermesDesktop?.pinnedSessions
+}
+
+function normalizePinnedSessionIds(ids: unknown): string[] {
+  if (!Array.isArray(ids)) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const out: string[] = []
+
+  for (const item of ids) {
+    const id = typeof item === 'string' ? item.trim() : ''
+
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+
+  return out
+}
+
+function applyExternalPinnedSessions(ids: unknown) {
+  const next = normalizePinnedSessionIds(ids)
+
+  if (arraysEqual($pinnedSessionIds.get(), next)) {
+    return
+  }
+
+  applyingExternalPinnedSessions = true
+
+  try {
+    $pinnedSessionIds.set(next)
+  } finally {
+    applyingExternalPinnedSessions = false
+  }
+}
+
+export async function syncExternalPinnedSessions(): Promise<void> {
+  const bridge = externalPinnedSessionsBridge()
+
+  if (!bridge || externalPinnedSessionsUnsubscribe) {
+    return
+  }
+
+  try {
+    const snapshot = await bridge.get()
+    externalPinnedSessionsReady = true
+
+    if (snapshot?.exists) {
+      applyExternalPinnedSessions(snapshot.ids)
+    }
+
+    externalPinnedSessionsUnsubscribe = bridge.onChanged(payload => {
+      if (payload?.exists) {
+        applyExternalPinnedSessions(payload.ids)
+      }
+    })
+  } catch {
+    // External pin sync is optional. localStorage remains the fallback.
+  }
+}
+
+$pinnedSessionIds.subscribe(ids => {
+  if (applyingExternalPinnedSessions || !externalPinnedSessionsReady) {
+    return
+  }
+
+  const bridge = externalPinnedSessionsBridge()
+
+  if (bridge) {
+    void bridge.set([...ids]).catch(() => undefined)
+  }
+})
+void syncExternalPinnedSessions()
+
 export function setSidebarWidth(width: number) {
   const bounded = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_DEFAULT_WIDTH, width))
   setPaneWidthOverride(CHAT_SIDEBAR_PANE_ID, bounded)

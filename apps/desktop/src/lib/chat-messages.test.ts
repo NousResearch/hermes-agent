@@ -82,6 +82,19 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
   })
 
+  it('hides loaded skill payloads from user message display', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          '[IMPORTANT: The "ulw" skill is auto-loaded by the Hermes Desktop FLT/ULW/ULR mode toggles. Follow its instructions for this turn.]\n\n# huge skill body\n\nThe user has provided the following instruction alongside the skill invocation: agent fleet 상태 확인 부탁해',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('agent fleet 상태 확인 부탁해')
+  })
+
   it('renders MEDIA tags as assistant attachment links', () => {
     const [message] = toChatMessages([
       {

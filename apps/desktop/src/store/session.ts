@@ -9,6 +9,46 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
+const SESSION_NUMBER_RE = /^#(\d+)\b/
+
+function sessionSortActivity(session: SessionInfo): number {
+  return session.last_active || session.started_at || 0
+}
+
+export function sessionTitleNumber(session: SessionInfo): number | null {
+  const title = session.title?.trim() || ''
+  const match = SESSION_NUMBER_RE.exec(title)
+
+  if (!match) {
+    return null
+  }
+
+  const parsed = Number.parseInt(match[1], 10)
+
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export function sortSessionsByNumber(sessions: SessionInfo[]): SessionInfo[] {
+  return [...sessions].sort((a, b) => {
+    const an = sessionTitleNumber(a)
+    const bn = sessionTitleNumber(b)
+
+    if (an !== null && bn !== null && an !== bn) {
+      return an - bn
+    }
+
+    if (an !== null && bn === null) {
+      return -1
+    }
+
+    if (an === null && bn !== null) {
+      return 1
+    }
+
+    return sessionSortActivity(b) - sessionSortActivity(a)
+  })
+}
+
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
@@ -20,6 +60,9 @@ const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const AGENT_FLEET_MODE_KEY = 'hermes.desktop.mode.agent-fleet'
+const ULTRAWORK_MODE_KEY = 'hermes.desktop.mode.ultrawork'
+const ULTRARESEARCH_MODE_KEY = 'hermes.desktop.mode.ultraresearch'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -265,6 +308,9 @@ export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+export const $agentFleetActive = atom(storedBoolean(AGENT_FLEET_MODE_KEY, false))
+export const $ultraworkActive = atom(storedBoolean(ULTRAWORK_MODE_KEY, false))
+export const $ultraresearchActive = atom(storedBoolean(ULTRARESEARCH_MODE_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -329,6 +375,21 @@ export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($curr
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+}
+
+export const setAgentFleetActive = (next: Updater<boolean>) => {
+  updateAtom($agentFleetActive, next)
+  persistBoolean(AGENT_FLEET_MODE_KEY, $agentFleetActive.get())
+}
+
+export const setUltraworkActive = (next: Updater<boolean>) => {
+  updateAtom($ultraworkActive, next)
+  persistBoolean(ULTRAWORK_MODE_KEY, $ultraworkActive.get())
+}
+
+export const setUltraresearchActive = (next: Updater<boolean>) => {
+  updateAtom($ultraresearchActive, next)
+  persistBoolean(ULTRARESEARCH_MODE_KEY, $ultraresearchActive.get())
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

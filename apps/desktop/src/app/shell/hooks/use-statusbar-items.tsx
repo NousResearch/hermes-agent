@@ -15,12 +15,18 @@ import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import {
   $activeSessionId,
+  $agentFleetActive,
   $busy,
   $connection,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
+  $ultraresearchActive,
+  $ultraworkActive,
   $yoloActive,
+  setAgentFleetActive,
+  setUltraresearchActive,
+  setUltraworkActive,
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
@@ -73,6 +79,9 @@ export function useStatusbarItems({
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
   const terminalTakeover = useStore($terminalTakeover)
+  const agentFleetActive = useStore($agentFleetActive)
+  const ultraworkActive = useStore($ultraworkActive)
+  const ultraresearchActive = useStore($ultraresearchActive)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentUsage = useStore($currentUsage)
@@ -128,6 +137,7 @@ export function useStatusbarItems({
   )
 
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
+  const showUltraModeToggles = showYoloToggle
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -383,6 +393,48 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        className: cn('px-1', agentFleetActive && 'bg-(--chrome-action-hover) text-foreground'),
+        hidden: !showUltraModeToggles,
+        icon: agentFleetActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'agent-fleet',
+        label: 'FLT',
+        onSelect: () => setAgentFleetActive(current => !current),
+        title: agentFleetActive ? copy.agentFleetOn : copy.agentFleetOff,
+        variant: 'action'
+      },
+      {
+        className: cn('px-1', ultraworkActive && 'bg-(--chrome-action-hover) text-foreground'),
+        hidden: !showUltraModeToggles,
+        icon: ultraworkActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'ultrawork',
+        label: 'ULW',
+        onSelect: () => setUltraworkActive(current => !current),
+        title: ultraworkActive ? copy.ultraworkOn : copy.ultraworkOff,
+        variant: 'action'
+      },
+      {
+        className: cn('px-1', ultraresearchActive && 'bg-(--chrome-action-hover) text-foreground'),
+        hidden: !showUltraModeToggles,
+        icon: ultraresearchActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'ultraresearch',
+        label: 'ULR',
+        onSelect: () => setUltraresearchActive(current => !current),
+        title: ultraresearchActive ? copy.ultraresearchOn : copy.ultraresearchOff,
+        variant: 'action'
+      },
+      {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
         icon: yoloActive ? (
@@ -419,10 +471,14 @@ export function useStatusbarItems({
       currentUsage,
       requestGateway,
       sessionStartedAt,
+      showUltraModeToggles,
       showYoloToggle,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,
+      agentFleetActive,
+      ultraresearchActive,
+      ultraworkActive,
       yoloActive
     ]
   )

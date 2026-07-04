@@ -375,6 +375,10 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// File-backed session pins bridge. The renderer still owns the visible sidebar
+// state/localStorage, but external automation can update this JSON file and the
+// running Desktop process will push the new ids into the renderer immediately.
+const DESKTOP_PINNED_SESSIONS_PATH = path.join(app.getPath('userData'), 'pinned-sessions.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -388,6 +392,13 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+// Startup readiness is different from normal API calls: after a rebuild or
+// cold Windows launch, the dashboard can bind its port before /api/status is
+// responsive. Keep the overall boot window generous, but make each probe short
+// so one slow request does not consume a third of the whole startup budget.
+const BACKEND_READY_TIMEOUT_MS = 90_000
+const BACKEND_READY_PROBE_TIMEOUT_MS = 2_000
+const BACKEND_READY_POLL_MS = 500
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -3878,17 +3889,20 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+async function waitForHermes(baseUrl, token, options = {}) {
+  const timeoutMs = options.timeoutMs ?? BACKEND_READY_TIMEOUT_MS
+  const probeTimeoutMs = options.probeTimeoutMs ?? BACKEND_READY_PROBE_TIMEOUT_MS
+  const pollMs = options.pollMs ?? BACKEND_READY_POLL_MS
+  const deadline = Date.now() + timeoutMs
   let lastError = null
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: probeTimeoutMs })
       return
     } catch (error) {
       lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, pollMs))
     }
   }
 
@@ -4775,6 +4789,76 @@ function writeActiveDesktopProfile(name) {
   writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
 
   return value || null
+}
+
+function sanitizePinnedSessionIds(value) {
+  const rawIds = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.ids)
+      ? value.ids
+      : []
+  const seen = new Set()
+  const ids = []
+
+  for (const item of rawIds) {
+    const id = typeof item === 'string' ? item.trim() : ''
+
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+
+  return ids
+}
+
+function readDesktopPinnedSessions() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_PINNED_SESSIONS_PATH, 'utf8')
+    return { exists: true, ids: sanitizePinnedSessionIds(JSON.parse(raw)), path: DESKTOP_PINNED_SESSIONS_PATH }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      rememberLog(`[pins] failed to read ${DESKTOP_PINNED_SESSIONS_PATH}: ${error?.message || error}`)
+    }
+
+    return { exists: false, ids: [], path: DESKTOP_PINNED_SESSIONS_PATH }
+  }
+}
+
+function writeDesktopPinnedSessions(ids) {
+  const nextIds = sanitizePinnedSessionIds(ids)
+
+  fs.mkdirSync(path.dirname(DESKTOP_PINNED_SESSIONS_PATH), { recursive: true })
+  writeFileAtomic(
+    DESKTOP_PINNED_SESSIONS_PATH,
+    JSON.stringify({ ids: nextIds, updated_at: new Date().toISOString(), source: 'desktop' }, null, 2)
+  )
+
+  return { exists: true, ids: nextIds, path: DESKTOP_PINNED_SESSIONS_PATH }
+}
+
+function broadcastPinnedSessionsChanged() {
+  const payload = readDesktopPinnedSessions()
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('hermes:pinnedSessions:changed', payload)
+    }
+  }
+}
+
+let pinnedSessionsWatcherStarted = false
+
+function ensurePinnedSessionsWatcher() {
+  if (pinnedSessionsWatcherStarted) return
+
+  pinnedSessionsWatcherStarted = true
+  fs.mkdirSync(path.dirname(DESKTOP_PINNED_SESSIONS_PATH), { recursive: true })
+  fs.watchFile(DESKTOP_PINNED_SESSIONS_PATH, { interval: 750 }, (curr, prev) => {
+    if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) {
+      broadcastPinnedSessionsChanged()
+    }
+  })
 }
 
 // Sanitize a connection config into the renderer-facing shape. With no
@@ -6344,6 +6428,16 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:pinnedSessions:get', async () => {
+  ensurePinnedSessionsWatcher()
+  return readDesktopPinnedSessions()
+})
+ipcMain.handle('hermes:pinnedSessions:set', async (_event, ids) => {
+  ensurePinnedSessionsWatcher()
+  const result = writeDesktopPinnedSessions(ids)
+  broadcastPinnedSessionsChanged()
+  return result
+})
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

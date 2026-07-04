@@ -8,7 +8,7 @@ This module provides:
 Usage:
     # Start the gateway
     python -m gateway.run
-    
+
     # Or from CLI
     python cli.py --gateway
 """
@@ -2980,7 +2980,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
-        
+
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
@@ -4550,7 +4550,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
-        
+
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
         the top-level prefill_messages_file key in ~/.hermes/config.yaml.
         agent.prefill_messages_file is accepted as a legacy fallback.
@@ -4584,7 +4584,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """Load ephemeral system prompt from config or env var.
-        
+
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
         agent.system_prompt in ~/.hermes/config.yaml.
         """
@@ -5927,21 +5927,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
-        # that triggered the /restart command closing its console.
+        # current_pid, waits for our exit, then runs the HQ Admin Helper
+        # gateway_restart action when available.  That path cooperates with
+        # the durable Windows Scheduled Task owner and avoids the generic
+        # `hermes gateway restart` race.  Non-HQ installs fall back to the
+        # stock CLI restart command.
         if sys.platform == "win32":
             import textwrap
             from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            admin_invoker = _hermes_home / "scripts" / "invoke_hermes_admin_helper.ps1"
+            use_admin_helper = admin_invoker.exists()
+            if use_admin_helper:
+                cmd_argv = [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(admin_invoker),
+                    "-Action",
+                    "gateway_restart",
+                    "-TimeoutSeconds",
+                    "120",
+                ]
+            else:
+                cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            fallback_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
                 from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
                 pid = int(sys.argv[1])
                 restart_after_s = float(sys.argv[2])
-                cmd = sys.argv[3:]
+                use_admin_helper = sys.argv[3] == '1'
+                raw_args = sys.argv[4:]
+                try:
+                    split_at = raw_args.index('--fallback--')
+                    cmd = raw_args[:split_at]
+                    fallback_cmd = raw_args[split_at + 1:]
+                except ValueError:
+                    cmd = raw_args
+                    fallback_cmd = []
                 deadline = time.monotonic() + restart_after_s
 
                 def _alive(p):
@@ -5975,12 +6002,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _alive(pid):
                         break
                     time.sleep(0.2)
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=windows_detach_flags_without_breakaway(),
-                )
+                flags = windows_detach_flags_without_breakaway()
+
+                def _launch(command):
+                    subprocess.Popen(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=flags,
+                    )
+
+                if use_admin_helper:
+                    try:
+                        completed = subprocess.run(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=flags,
+                            timeout=150,
+                        )
+                        if completed.returncode == 0:
+                            sys.exit(0)
+                    except Exception:
+                        pass
+                    if fallback_cmd:
+                        _launch(fallback_cmd)
+                else:
+                    _launch(cmd)
                 """
             ).strip()
             watcher_env = os.environ.copy()
@@ -6011,7 +6059,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
             subprocess.Popen(
-                [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
+                [
+                    watcher_python,
+                    "-c",
+                    watcher,
+                    str(current_pid),
+                    str(restart_after_s),
+                    "1" if use_admin_helper else "0",
+                    *cmd_argv,
+                    "--fallback--",
+                    *fallback_argv,
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=watcher_env,
@@ -6159,7 +6217,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._launch_detached_restart_command()
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart helper: %s", e)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(1.5)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         # _run_restart is a short-lived self-terminating task (calls stop()
@@ -6449,7 +6507,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
-        
+
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
@@ -6553,7 +6611,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         if await self._abort_startup_if_shutdown_requested():
             return True
-        
+
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
@@ -6643,7 +6701,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             self._request_clean_exit(reason)
             return True
-        
+
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
         # does this via an explicit call in hermes_cli/main.py; the
@@ -6712,7 +6770,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Discover and load event hooks
         self.hooks.discover_and_load()
 
-        
+
         # Recover background processes from checkpoint (crash recovery)
         try:
             from tools.process_registry import process_registry
@@ -6770,7 +6828,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if await self._abort_startup_if_shutdown_requested():
@@ -6778,7 +6836,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
@@ -6793,7 +6851,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("No adapter available for %s", _pval)
                 continue
-            
+
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
@@ -6802,7 +6860,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
-            
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -6975,7 +7033,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 logger.warning("No messaging platforms enabled.")
                 logger.info("Gateway will continue running for cron job execution.")
-        
+
         # Update delivery router with adapters
         if await self._abort_startup_if_shutdown_requested():
             return True
@@ -6984,7 +7042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._update_runtime_status("running")
-        
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
@@ -6992,10 +7050,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
-        
+
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
-        
+
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
@@ -7004,7 +7062,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
-        
+
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.
         notified = await self._send_update_notification()
@@ -7138,7 +7196,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         asyncio.create_task(self._drain_control_watcher())
 
         logger.info("Press Ctrl+C to stop")
-        
+
         return True
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
@@ -8355,8 +8413,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
@@ -8410,7 +8468,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
             return WhatsAppCloudAdapter(config)
-        
+
         elif platform == Platform.SIGNAL:
             from gateway.platforms.signal import SignalAdapter, check_signal_requirements
             if not check_signal_requirements():
@@ -8545,7 +8603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -8594,7 +8652,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
 
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
+        # Fire the built-in eval gate, then the pre_gateway_dispatch plugin hook,
+        # for user-originated messages. Both run BEFORE auth so they can evaluate
+        # the dispatch boundary itself rather than a partially-started session.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
@@ -8602,6 +8662,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
+            try:
+                from agent.eval_gate import dispatch_hook_result as _eval_dispatch_hook_result
+                from agent.eval_gate import evaluate_gateway_event as _evaluate_gateway_event
+                from hermes_cli.config import load_config as _load_eval_gate_config
+
+                _eval_gate = _eval_dispatch_hook_result(
+                    _evaluate_gateway_event(event, _load_eval_gate_config() or {})
+                )
+                if _eval_gate.get("action") == "skip":
+                    logger.warning(
+                        "eval_gate pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        _eval_gate.get("reason"),
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None
+            except Exception as _eval_gate_exc:
+                logger.warning("eval_gate pre_gateway_dispatch invocation failed: %s", _eval_gate_exc)
+
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -8688,7 +8767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -8797,6 +8876,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                logger.info(
+                    "Gateway rejected invalid clarify text response (session=%s, id=%s)",
+                    _quick_key, _pending_clarify.clarify_id,
+                )
+                return _clarify_mod.format_invalid_text_response_message(_pending_clarify)
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
@@ -9399,7 +9483,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
-        
+
         if canonical == "help":
             return await self._handle_help_command(event)
 
@@ -9409,7 +9493,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
-        
+
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
@@ -9427,10 +9511,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
-        
+
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
+
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -9525,7 +9609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
-        
+
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
@@ -9548,7 +9632,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 detail=_undo_detail,
                 execute=_do_undo,
             )
-        
+
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
@@ -9838,7 +9922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
-        
+
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
@@ -10420,7 +10504,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
-        
+
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at
@@ -10438,13 +10522,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        
+
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         persist_user_message = None
@@ -10457,7 +10541,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
@@ -10561,7 +10645,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -10960,7 +11044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pb_err,
                 )
                 context_prompt += _intro_note
-        
+
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
@@ -10983,7 +11067,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"or ignore to skip."
                 )
                 await self._deliver_platform_notice(source, notice)
-        
+
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state
         # into context so the agent knows who is in the channel and who
@@ -11290,7 +11374,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
-            
+
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -11334,7 +11418,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the time we reach here the approval has already been resolved.  The
             # old post-loop pop_pending + approval_hint code was removed in favour
             # of the blocking approach that mirrors CLI's synchronous input().
-            
+
             # Save the full conversation to the transcript, including tool calls.
             # This preserves the complete agent loop (tool_calls, tool results,
             # intermediate reasoning) so sessions can be resumed with full context
@@ -11420,7 +11504,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             ts = time.time()  # Unix epoch float — consistent with DB storage
-            
+
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
@@ -11438,7 +11522,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "timestamp": ts,
                     }
                 )
-            
+
             # The agent already persisted these messages to SQLite via
             # _flush_messages_to_session_db(), so skip the DB write here
             # to prevent the duplicate-write bug (#860 / #42039). This holds
@@ -11554,7 +11638,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
-            
+
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
@@ -11638,7 +11722,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             return response
-            
+
         except Exception as e:
             # Stop typing indicator on error too
             try:
@@ -16301,13 +16385,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
-        
+
         Returns the full result dict from run_conversation, including:
           - "final_response": str (the text to send back)
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
-        
+
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
@@ -16331,7 +16415,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
+
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
@@ -16587,7 +16671,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -16662,7 +16746,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
                 return
-            
+
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
@@ -16699,7 +16783,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
-            
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -16711,9 +16795,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_progress_msg[0] = msg
             repeat_count[0] = 0
-            
+
             progress_queue.put(msg)
-        
+
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
         #
@@ -17124,13 +17208,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
-        
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
-        
+
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
         _hooks_ref = self.hooks
@@ -17249,7 +17333,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
             # Combine platform context, YAML channel_prompts hint for this chat,
             # channel_overrides system_prompt (or global ephemeral), and gateway
             # ephemeral prompt from _get_system_prompt_for_channel.
@@ -17707,7 +17790,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # explaining that no response arrived (so the agent can adapt
             # rather than hang forever).
             # ------------------------------------------------------------------
-            def _clarify_callback_sync(question: str, choices) -> str:
+            def _clarify_callback_sync(
+                question: str,
+                choices,
+                *,
+                multi_select: bool = False,
+                min_selections: int = 0,
+                max_selections = None,
+                allow_other: bool = True,
+            ) -> str:
                 from tools import clarify_gateway as _clarify_mod
                 import uuid as _uuid
 
@@ -17720,6 +17811,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key or "",
                     question=question,
                     choices=list(choices) if choices else None,
+                    multi_select=multi_select,
+                    min_selections=min_selections,
+                    max_selections=max_selections,
+                    allow_other=allow_other,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -17740,6 +17835,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
+                        multi_select=multi_select,
+                        min_selections=min_selections,
+                        max_selections=max_selections,
+                        allow_other=allow_other,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -17779,7 +17878,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
-            
+
             # Convert history to agent format.
             # Two cases:
             #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
@@ -17819,12 +17918,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, len(agent_history), len(_selected),
                     )
                     agent_history = _selected
-            
+
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = _collect_history_media_paths(agent_history)
-            
+
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
@@ -18159,7 +18258,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
+
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -18304,7 +18403,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -18342,7 +18441,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
@@ -18412,7 +18511,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # True preserves the skip-db behaviour for the standard runtime.
                 "agent_persisted": (result_holder[0].get("agent_persisted", True) if result_holder[0] else True),
             }
-        
+
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the
         # sender drains BOTH tool-progress lines and _thinking scratch bubbles.
@@ -18441,7 +18540,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await asyncio.sleep(0.05)
 
         stream_task = asyncio.create_task(_start_stream_consumer())
-        
+
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
         async def track_agent():
@@ -18466,9 +18565,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents[session_key] = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
-        
+
         tracking_task = asyncio.create_task(track_agent())
-        
+
         # Monitor for interrupts from the adapter (new messages arriving).
         # This is the PRIMARY interrupt path for regular text messages —
         # Level 1 (base.py) catches them before _handle_message() is reached,
@@ -18559,7 +18658,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raise
                 except Exception as _mon_err:
                     logger.debug("monitor_for_interrupt error (will retry): %s", _mon_err)
-        
+
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
         # Periodic "still working" notifications for long-running tasks.
@@ -18902,7 +19001,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
+
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None
@@ -19226,7 +19325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
-            
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key:
@@ -19240,7 +19339,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._draining:
                 self._update_runtime_status("draining")
-            
+
             # Wait for cancelled tasks
             for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
@@ -19566,11 +19665,11 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
-    
+
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
-    
+
     Args:
         config: Optional gateway configuration override.
         replace: If True, kill any existing gateway instance before starting.
@@ -19769,7 +19868,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
-    
+
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service
     # managers can revive the process. Planned stop paths write a marker
@@ -19874,7 +19973,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
-    
+
     loop = asyncio.get_running_loop()
 
     # Install a loop-level exception handler that swallows transient
@@ -20012,7 +20111,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
-    
+
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
     # historical in-process 60s ticker; an external provider (e.g. chronos)
@@ -20041,7 +20140,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
-    
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -20056,7 +20155,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
+
     # Stop cron scheduler + housekeeping cleanly
     cron_stop.set()
     try:
@@ -20118,20 +20217,19 @@ def main():
         pass
 
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    
+
     args = parser.parse_args()
-    
+
     config = None
     if args.config:
         import yaml
         with open(args.config, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
-    
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
     # PID file + runtime lock released) before it returns OR raises SystemExit

@@ -147,13 +147,13 @@ describe('PaneShell composition', () => {
     expect($paneStates.get().files?.open).toBe(true)
   })
 
-  it('uses widthOverride from the store when set', () => {
+  it('uses widthOverride from the store when the pane is resizable', () => {
     setPaneOpen('files', true)
     setPaneWidthOverride('files', 320)
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>

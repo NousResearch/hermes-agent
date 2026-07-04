@@ -130,11 +130,14 @@ export interface Translations {
       description: string
       remoteTitle: string
       remoteDescription: string
+      connectionLostTitle: string
+      connectionLostDescription: string
       retry: string
       repairInstall: string
       useLocalGateway: string
       openLogs: string
       repairHint: string
+      connectionLostHint: string
       remoteSignInHint: string
       hideRecentLogs: string
       showRecentLogs: string
@@ -268,6 +271,7 @@ export interface Translations {
       apiKeys: string
       keysTools: string
       keysSettings: string
+      skills: string
       mcp: string
       archivedChats: string
       about: string
@@ -1712,6 +1716,12 @@ export interface Translations {
       openContextUsage: string
       session: string
       runtimeSessionElapsed: string
+      agentFleetOn: string
+      agentFleetOff: string
+      ultraworkOn: string
+      ultraworkOff: string
+      ultraresearchOn: string
+      ultraresearchOff: string
       yoloOn: string
       yoloOff: string
       modelNone: string
@@ -1902,11 +1912,19 @@ export interface Translations {
       notReady: string
       gatewayDisconnected: string
       sendFailed: string
+      responsePendingTitle: string
+      responsePendingMessage: string
+      responseExpiredTitle: string
+      responseExpiredMessage: string
       loadingQuestion: string
       other: string
       placeholder: string
       skip: string
       continueLabel: string
+      selected: string
+      selectedCount: (count: number) => string
+      multiSelectHint: string
+      selectSelected: string
     }
     tool: {
       code: string
@@ -1977,6 +1995,7 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    promptSubmitTimedOut: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string

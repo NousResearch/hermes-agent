@@ -62,6 +62,11 @@ declare global {
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
+      pinnedSessions: {
+        get: () => Promise<DesktopPinnedSessions>
+        set: (ids: string[]) => Promise<DesktopPinnedSessions>
+        onChanged: (callback: (payload: DesktopPinnedSessions) => void) => () => void
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -382,6 +387,12 @@ export interface DesktopActiveProfile {
   // The desktop's stored profile preference, or null when unset (legacy launch
   // that defers to the sticky active_profile / default).
   profile: string | null
+}
+
+export interface DesktopPinnedSessions {
+  exists: boolean
+  ids: string[]
+  path: string
 }
 
 export interface DesktopConnectionConfig {

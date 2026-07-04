@@ -811,4 +811,3 @@ async def test_schedule_polling_recovery_tracks_background_task():
     assert adapter._polling_error_task in adapter._background_tasks
     await adapter._polling_error_task
     adapter._handle_polling_network_error.assert_awaited_once()
-

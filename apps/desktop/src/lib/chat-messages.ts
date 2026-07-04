@@ -132,6 +132,25 @@ export function chatMessageText(message: ChatMessage): string {
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const SKILL_USER_INSTRUCTION_MARKER = 'The user has provided the following instruction alongside the skill invocation:'
+const SKILL_RUNTIME_NOTE_MARKER = '\n\n[Runtime note:'
+
+function visibleSkillInstruction(text: string): string | null {
+  const index = text.lastIndexOf(SKILL_USER_INSTRUCTION_MARKER)
+
+  if (index < 0) {
+    return null
+  }
+
+  let instruction = text.slice(index + SKILL_USER_INSTRUCTION_MARKER.length)
+  const runtimeIndex = instruction.indexOf(SKILL_RUNTIME_NOTE_MARKER)
+
+  if (runtimeIndex >= 0) {
+    instruction = instruction.slice(0, runtimeIndex)
+  }
+
+  return instruction.trim() || null
+}
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -174,6 +193,12 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
 
   if (role !== 'user') {
     return textContent
+  }
+
+  const skillInstruction = visibleSkillInstruction(textContent)
+
+  if (skillInstruction) {
+    return skillInstruction.replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
   }
 
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)

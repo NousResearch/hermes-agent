@@ -5,9 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
-const getMessagingPlatforms = vi.fn()
-const updateMessagingPlatform = vi.fn()
-const openExternalLink = vi.fn()
+import { MessagingView } from './index'
+
+const { getMessagingPlatforms, openExternalLink, updateMessagingPlatform } = vi.hoisted(() => ({
+  getMessagingPlatforms: vi.fn(),
+  openExternalLink: vi.fn(),
+  updateMessagingPlatform: vi.fn()
+}))
 
 vi.mock('@/hermes', () => ({
   getMessagingPlatforms: () => getMessagingPlatforms(),
@@ -52,8 +56,6 @@ afterEach(() => {
 })
 
 async function renderMessaging() {
-  const { MessagingView } = await import('./index')
-
   return render(
     <MemoryRouter>
       <MessagingView />

@@ -188,8 +188,13 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     """
 
     def _run(self, script):
+        import shutil
         import subprocess
-        return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
+        bash = shutil.which("bash")
+        if not bash:
+            import pytest
+            pytest.skip("bash required")
+        return subprocess.run([bash, "-c", script], capture_output=True, text=True)
 
     def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
         import shutil

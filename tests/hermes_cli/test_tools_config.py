@@ -147,6 +147,47 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_print_tools_list_marks_enabled_but_unavailable_toolset(capsys, monkeypatch):
+    """`hermes tools list` distinguishes configured from actually usable.
+
+    The important user-facing case is computer_use enabled on Windows: the
+    config row is enabled, but the runtime schema is gated out by check_fn.
+    """
+    from hermes_cli import tools_config
+
+    monkeypatch.setattr(
+        tools_config,
+        "_toolset_unavailable_reason",
+        lambda ts: "enabled but unavailable on this platform (win32)" if ts == "computer_use" else None,
+    )
+
+    tools_config._print_tools_list({"computer_use"}, {}, "cli")
+
+    out = capsys.readouterr().out
+    assert "⚠ enabled but unavailable" in out
+    assert "computer_use" in out
+    assert "enabled but unavailable on this platform (win32)" in out
+
+
+def test_toolset_status_label_keeps_disabled_toolsets_disabled(monkeypatch):
+    from hermes_cli import tools_config
+
+    called = False
+
+    def _unexpected(_ts):
+        nonlocal called
+        called = True
+        return "should not be called"
+
+    monkeypatch.setattr(tools_config, "_toolset_unavailable_reason", _unexpected)
+
+    status, detail = tools_config._toolset_status_label("computer_use", set())
+
+    assert "disabled" in status
+    assert detail is None
+    assert called is False
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},

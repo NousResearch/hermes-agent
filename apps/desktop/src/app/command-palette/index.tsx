@@ -57,6 +57,7 @@ import {
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
+import { sortSessionsByNumber } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
 import { luminance } from '@/themes/color'
@@ -327,8 +328,15 @@ export function CommandPalette() {
       : []
   }, [configQuery.data])
 
-  const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
-  const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
+  const sessions = useMemo(
+    () => sortSessionsByNumber(sessionsQuery.data?.sessions ?? []).map(toSessionEntry),
+    [sessionsQuery.data]
+  )
+
+  const archivedSessions = useMemo(
+    () => sortSessionsByNumber(archivedQuery.data?.sessions ?? []).map(toSessionEntry),
+    [archivedQuery.data]
+  )
 
   // Reset the query/sub-page on close so it reopens clean.
   useEffect(() => {

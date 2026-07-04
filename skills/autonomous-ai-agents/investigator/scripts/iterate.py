@@ -56,6 +56,8 @@ _NBQ_CANDIDATES = [os.path.join(_HOME, "skills", "autonomous-ai-agents", name, "
                    for name in ("next-best-questions", "information-gain")]
 _INFOGAIN = os.environ.get("INFOGAIN_SCRIPTS_DIR") or next(
     (p for p in _NBQ_CANDIDATES if os.path.isdir(p)), _NBQ_CANDIDATES[0])
+_INFOGAIN_ERR = ("investigator requires the next-best-questions skill (infogain.py) to rank "
+                 f"questions. Looked in {_INFOGAIN!r}. Set INFOGAIN_SCRIPTS_DIR or HERMES_HOME.")
 sys.path.insert(0, _INFOGAIN)
 if _HERE not in sys.path:  # answerer.py lives beside this file
     sys.path.insert(0, _HERE)
@@ -65,8 +67,6 @@ try:
     _HAVE_INFOGAIN = True
 except ImportError as _ie:  # graceful: import-safe without it; rank() raises instead
     _HAVE_INFOGAIN = False
-    _INFOGAIN_ERR = ("investigator requires the next-best-questions skill (infogain.py) to rank "
-                     f"questions. Looked in {_INFOGAIN!r}. Set INFOGAIN_SCRIPTS_DIR or HERMES_HOME.")
 
 # The answerer/responder seam (ask-skill dispatch, stdout salvage, answer artifacts) lives in
 # answerer.py; re-export its names so existing by-name users (tests, external callers) keep
@@ -175,7 +175,8 @@ def _load_journal(run_dir, problem):
         _append_journal(run_dir, {"schema": 1, "kind": "header", "problem_fp": fp(problem)})
         return [], set()
     tombs = [r for r in records[1:]
-             if r.get("question") and r.get("status") in ("ANSWERED", "NOT_FOUND")]
+             if r.get("question") and r.get("status") in ("ANSWERED", "NOT_FOUND")
+             and r.get("evidence") is not None]
     return tombs, {fp(t["question"]) for t in tombs}
 
 
@@ -209,7 +210,7 @@ def _tombstone(q, found, text, via="research", rationale=None):
             if not isinstance(answer, dict):
                 continue
             stakes = answer.get("stakes", None)
-            if stakes is not None:
+            if isinstance(stakes, (int, float)) and not isinstance(stakes, bool):
                 stakes_values.append(stakes)
     metadata = {
         "value": q.get("value", None),
@@ -238,6 +239,7 @@ STOP_CONVERGED = "converged"
 def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, seed_evidence=None,
             triager=None, judge=None, refiner=None):
     cfg = {**DEFAULTS, **(cfg or {})}
+    cfg["k"] = max(1, int(cfg["k"]))
     answerer = answerer or grounded_answer
     responder = responder or respond
     refiner = refiner or refine_prompt
@@ -262,7 +264,7 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
     next_questions = []  # the final round's above-floor-but-unattempted leftovers
     for rnd in range(cfg["max_rounds"]):
         rounds = rnd + 1
-        evidence = seeds + [t["evidence"] for t in tombstones]
+        evidence = seeds + [t.get("evidence", "") for t in tombstones]
         ranked = rank(problem, evidence, rank_cfg)
         for r in ranked:
             question = r.get("question", "")
@@ -276,9 +278,16 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
                 if run_dir:
                     _append_journal(run_dir, tomb)
                 answered.add(fp(question))
-        evidence = seeds + [t["evidence"] for t in tombstones]  # context grows immediately
+        evidence = seeds + [t.get("evidence", "") for t in tombstones]  # context grows immediately
         above = [r for r in ranked
                  if r.get("value", 0.0) >= cfg["floor"] and fp(r.get("question", "")) not in answered]
+        seen_above, deduped_above = set(), []
+        for r in above:
+            question_fp = fp(qtext_of(r))
+            if question_fp not in seen_above:
+                seen_above.add(question_fp)
+                deduped_above.append(r)
+        above = deduped_above
         if not above:
             stop_reason = f"{STOP_CONVERGED} (no question above floor)"
             next_questions = []  # converged: nothing above floor remains unattempted
@@ -314,12 +323,12 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
             answered.add(fp(qtext_of(q)))
             if run_dir:
                 _append_journal(run_dir, tomb)
-            evidence = seeds + [t["evidence"] for t in tombstones]  # context grows immediately
+            evidence = seeds + [t.get("evidence", "") for t in tombstones]  # context grows immediately
             progress(f"  {'✓' if found else '∅'} {q.get('question', '')[:60]}")
     else:
         stop_reason = "max_rounds reached"
 
-    evidence_final = seeds + [t["evidence"] for t in tombstones]
+    evidence_final = seeds + [t.get("evidence", "") for t in tombstones]
     gaps = [t for t in tombstones if t["status"] == "NOT_FOUND"]
 
     def gap_value(tomb):
@@ -328,7 +337,7 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
 
     ranked_gaps = sorted(gaps, key=gap_value, reverse=True)
     surfaced_gaps = [t for t in ranked_gaps if gap_value(t) >= cfg["key_gap_threshold"]]
-    if ranked_gaps and ranked_gaps[0] not in surfaced_gaps:
+    if ranked_gaps and gap_value(ranked_gaps[0]) < cfg["key_gap_threshold"]:
         surfaced_gaps.append(ranked_gaps[0])
     unresolved_key_questions = []
     seen_gap_questions = set()
@@ -352,16 +361,23 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
         responder_cfg = ({**cfg, "tombstones": tombstones,
                           "unresolved_key_questions": unresolved_key_questions}
                          if cfg.get("stakes_aware_respond") else cfg)
-        final = responder(refined_prompt, evidence_final, responder_cfg)
+        responder_problem = (problem if isinstance(refined_prompt, str)
+                             and refined_prompt.startswith("(no refined prompt:")
+                             else refined_prompt)
+        final = responder(responder_problem, evidence_final, responder_cfg)
     elif output_mode != "prompt":
         responder_cfg = ({**cfg, "tombstones": tombstones,
                           "unresolved_key_questions": unresolved_key_questions}
                          if cfg.get("stakes_aware_respond") else cfg)
         final = responder(problem, evidence_final, responder_cfg)
-    if run_dir and refined_prompt is not None:
-        with open(os.path.join(run_dir, REFINED_PROMPT_FILE), "w", encoding="utf-8") as fh:
-            fh.write(refined_prompt)
-    artificial_cap = k_capped or stop_reason == "max_rounds reached"
+    if run_dir:
+        refined_path = os.path.join(run_dir, REFINED_PROMPT_FILE)
+        if refined_prompt is not None:
+            with open(refined_path, "w", encoding="utf-8") as fh:
+                fh.write(refined_prompt)
+        elif os.path.exists(refined_path):
+            os.remove(refined_path)
+    artificial_cap = k_capped or bool(next_questions)
     return {
         "problem": problem, "final": final, "refined_prompt": refined_prompt,
         "tombstones": tombstones,
@@ -390,7 +406,7 @@ def validate_selection(problem, which, k, cfg=None, answerer=None, responder=Non
     answerer = answerer or grounded_answer
     responder = responder or respond
     progress = progress or (lambda m: None)
-    if which == "baseline":
+    if which == "baseline" or k <= 0:
         sel = []
     else:
         ranked = rank(problem, [], _rank_cfg())
@@ -457,6 +473,8 @@ def main(argv=None):
                         "--validate.")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
+    if args.k < 1:
+        p.error("--k must be at least 1")
 
     def _int_env(name, cli_val, default):
         if cli_val is not None:            # CLI flag wins
@@ -491,6 +509,8 @@ def main(argv=None):
                             else os.environ.get("INVESTIGATOR_STAKES_AWARE_RESPOND", "off"))
     output_setting = (args.output if args.output is not None
                       else os.environ.get("INVESTIGATOR_OUTPUT", "prompt"))
+    if output_setting not in {"prompt", "response", "both"}:
+        p.error(f"INVESTIGATOR_OUTPUT must be prompt, response, or both (got {output_setting!r})")
     triage = triage_setting.lower() == "on"
     stakes_aware_respond = stakes_aware_setting.lower() == "on"
     triage_model = (args.triage_model or os.environ.get("INVESTIGATOR_TRIAGE_MODEL")
@@ -498,9 +518,17 @@ def main(argv=None):
     judge_model = (args.judge_model or os.environ.get("INVESTIGATOR_JUDGE_MODEL")
                    or DEFAULTS["judge_model"])
     max_rounds = _int_env("INVESTIGATOR_MAX_ROUNDS", args.max_rounds, DEFAULTS["max_rounds"])
+    if max_rounds < 1:
+        p.error("max_rounds must be at least 1")
     max_assumes = _int_env("INVESTIGATOR_MAX_ASSUMES", args.max_assumes, DEFAULTS["max_assumes"])
     key_gap_threshold = _float_env("INVESTIGATOR_KEY_GAP_THRESHOLD", args.key_gap_threshold,
                                    DEFAULTS["key_gap_threshold"])
+    if max_assumes < 0:
+        p.error("max_assumes must be at least 0")
+    if not 0.0 <= key_gap_threshold <= 1.0:
+        p.error("key_gap_threshold must be between 0.0 and 1.0")
+    if not 0.0 <= args.floor <= 1.0:
+        p.error("--floor must be between 0.0 and 1.0")
     cfg = apply_capability({"k": args.k, "max_rounds": max_rounds, "floor": args.floor,
                             "key_gap_threshold": key_gap_threshold,
                             "run_dir": args.run_dir, "triage": triage,

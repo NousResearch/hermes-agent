@@ -14966,23 +14966,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             break
                     if adapter and source.chat_id:
                         try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                                message_id=message_id,
-                            )
+                            send_meta = {"thread_id": source.thread_id} if source.thread_id else None
                             logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                "Process %s finished — notifying user via %s chat=%s thread=%s",
                                 session_id,
-                                session_key,
+                                source.platform.value if source.platform else "?",
                                 source.chat_id,
                                 source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
+                            await adapter.send(source.chat_id, synth_text, metadata=send_meta)
                         except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
+                            logger.error("Agent notify delivery error: %s", e)
                     break
 
                 # --- Normal text-only notification ---

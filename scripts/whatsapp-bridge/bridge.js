@@ -550,6 +550,16 @@ async function startSocket() {
 const app = express();
 app.use(express.json());
 
+// Extension seam: lets an out-of-tree wrapper (platforms.whatsapp.extra.bridge_script)
+// register extra routes against the live Express app and the current Baileys socket
+// without editing this core file. Getters return live values across reconnects.
+globalThis.__hermesWaBridge = {
+  app,
+  getSock: () => sock,
+  enqueueSend,
+  get connectionState() { return connectionState; },
+};
+
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
 // the same machine could be tricked into fetching from an attacker

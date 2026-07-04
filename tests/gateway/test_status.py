@@ -1560,3 +1560,112 @@ class TestGatewayBusyDerivation:
             assert status.derive_gateway_drainable(
                 gateway_running=True, gateway_state=state
             ) is False, state
+
+
+class TestStartBlockedAccounting:
+    """Crash-loop observability: record_start_blocked + count_recent_start_blocks.
+
+    A refused gateway start (another instance already holds the PID file / lock)
+    is recorded to a small ring under HERMES_HOME and emits a canonical
+    ``gateway.start_blocked`` log token. The dashboard ``/api/status`` handler —
+    a separate process sharing HERMES_HOME — reads the ring to surface a rolling
+    count, so a wedged-but-looping box (live gateway + a supervisor respawning a
+    losing starter) stops reading as cleanly healthy.
+    """
+
+    def test_healthy_box_has_no_file_and_counts_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # No start ever blocked: the file must not exist and count is 0.
+        assert not (tmp_path / "gateway_start_blocks.json").exists()
+        assert status.count_recent_start_blocks() == 0
+        assert status.count_recent_start_blocks(300) == 0
+
+    def test_record_creates_ring_and_count_reflects_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        n = status.record_start_blocked("already_running", pid=4242)
+        assert n == 1
+        ring = tmp_path / "gateway_start_blocks.json"
+        assert ring.exists()
+        payload = json.loads(ring.read_text())
+        assert isinstance(payload["entries"], list)
+        assert payload["entries"][0]["reason"] == "already_running"
+        assert payload["entries"][0]["pid"] == 4242
+        assert isinstance(payload["entries"][0]["ts"], (int, float))
+
+        # A second block accumulates and the rolling count tracks it.
+        assert status.record_start_blocked("runtime_lock_held") == 2
+        assert status.count_recent_start_blocks(300) == 2
+
+    def test_unknown_reason_is_recorded_namespaced_not_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.record_start_blocked("totally_made_up")
+        payload = json.loads((tmp_path / "gateway_start_blocks.json").read_text())
+        # A miswired caller is visible (namespaced), never silently dropped.
+        assert payload["entries"][0]["reason"] == "other:totally_made_up"
+        assert status.count_recent_start_blocks() == 1
+
+    def test_count_excludes_entries_outside_window(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import time as _time
+
+        now = _time.time()
+        ring = tmp_path / "gateway_start_blocks.json"
+        # Hand-write a ring: one recent (60s ago), one old (600s ago).
+        ring.write_text(json.dumps({"entries": [
+            {"ts": now - 600, "reason": "already_running"},
+            {"ts": now - 60, "reason": "already_running"},
+        ]}))
+        # 5-minute window sees only the recent one.
+        assert status.count_recent_start_blocks(300) == 1
+        # A wider 20-minute window sees both.
+        assert status.count_recent_start_blocks(1200) == 2
+
+    def test_record_self_prunes_beyond_retention(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import time as _time
+
+        now = _time.time()
+        ring = tmp_path / "gateway_start_blocks.json"
+        # Seed an entry older than the 1h retention; recording must drop it.
+        ring.write_text(json.dumps({"entries": [
+            {"ts": now - status._START_BLOCKS_RETENTION_S - 10, "reason": "already_running"},
+        ]}))
+        n = status.record_start_blocked("already_running")
+        # Old entry pruned, only the fresh one remains.
+        assert n == 1
+        payload = json.loads(ring.read_text())
+        assert len(payload["entries"]) == 1
+
+    def test_ring_is_capped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for _ in range(status._START_BLOCKS_MAX_ENTRIES + 25):
+            status.record_start_blocked("already_running")
+        payload = json.loads((tmp_path / "gateway_start_blocks.json").read_text())
+        assert len(payload["entries"]) == status._START_BLOCKS_MAX_ENTRIES
+
+    def test_count_degrades_on_corrupt_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ring = tmp_path / "gateway_start_blocks.json"
+        ring.write_text("{ this is not json ]")
+        # Unreadable ring degrades to 0, never raises on the public probe path.
+        assert status.count_recent_start_blocks(300) == 0
+
+    def test_count_clamps_non_positive_and_bad_window(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.record_start_blocked("already_running")
+        assert status.count_recent_start_blocks(0) == 0
+        assert status.count_recent_start_blocks(-5) == 0
+        # Non-int window falls back to the default window (entry is recent).
+        assert status.count_recent_start_blocks("garbage") == 1
+
+    def test_emits_canonical_log_token(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="gateway.status"):
+            status.record_start_blocked("already_running", pid=99)
+        # Exact-match token telemetry keys off, plus stable key=value fields.
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("gateway.start_blocked" in m for m in msgs)
+        assert any("reason=already_running" in m and "pid=99" in m and "version=" in m for m in msgs)

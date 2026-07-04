@@ -266,6 +266,22 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
+        # Crash-loop counter is always present; healthy box reports 0.
+        assert "gateway_restarts_5m" in data
+        assert data["gateway_restarts_5m"] == 0
+
+    def test_get_status_surfaces_start_block_crashloop_count(self):
+        """A live gateway being hammered by refused restarts must surface a
+        non-zero ``gateway_restarts_5m`` even though ``gateway_running`` is True —
+        the blind spot a point-in-time probe otherwise misses."""
+        from gateway import status as gw_status
+
+        gw_status.record_start_blocked("already_running", pid=4242)
+        gw_status.record_start_blocked("already_running", pid=4242)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["gateway_restarts_5m"] == 2
 
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control

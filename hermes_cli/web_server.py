@@ -79,6 +79,7 @@ from hermes_cli.memory_providers import (
     get_memory_provider,
 )
 from gateway.status import (
+    count_recent_start_blocks,
     derive_gateway_busy,
     derive_gateway_drainable,
     get_running_pid,
@@ -2321,6 +2322,16 @@ async def get_status(profile: Optional[str] = None):
             # Module not importable yet (early startup) — leave as [].
             pass
 
+        # Refused-start (crash-loop) counter over the last 5 minutes.  A live
+        # gateway plus a supervisor that keeps respawning a second `gateway
+        # run` produces a tight loop where each loser refuses to start and
+        # exits; the original gateway stays up, so ``gateway_running`` reads
+        # healthy and the loop is otherwise invisible to this probe.  Surfacing
+        # the count here lets uptime/fleet monitors flag a wedged-but-looping
+        # box (confirmed prod case: probe healthy while looping ~24k times/24h).
+        # Cheap missing-file stat on a healthy single-gateway box.
+        gateway_restarts_5m = count_recent_start_blocks(300)
+
         # Always-public liveness + auth-gate shape. Safe for external uptime
         # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
         # bootstrap, and anyone who can curl the host — i.e. exactly the audience
@@ -2336,6 +2347,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway_platforms,
             "gateway_exit_reason": gateway_exit_reason,
             "gateway_updated_at": gateway_updated_at,
+            "gateway_restarts_5m": gateway_restarts_5m,
             "active_agents": active_agents,
             "gateway_busy": gateway_busy,
             "gateway_drainable": gateway_drainable,

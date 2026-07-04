@@ -19581,6 +19581,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         acquire_gateway_runtime_lock,
         get_running_pid,
         get_process_start_time,
+        record_start_blocked,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
@@ -19695,6 +19696,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 pass
         else:
             hermes_home = str(get_hermes_home())
+            record_start_blocked("already_running", pid=existing_pid)
             logger.error(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
                 "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
@@ -19921,15 +19923,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Telegram polling, Discord gateway sockets, etc. The loser exits
     # cleanly before touching any external service.
     import atexit
-    from gateway.status import write_pid_file, remove_pid_file, get_running_pid
+    from gateway.status import write_pid_file, remove_pid_file, get_running_pid, record_start_blocked
     _current_pid = get_running_pid()
     if _current_pid is not None and _current_pid != os.getpid():
+        record_start_blocked("startup_race", pid=_current_pid)
         logger.error(
             "Another gateway instance (PID %d) started during our startup. "
             "Exiting to avoid double-running.", _current_pid
         )
         return False
     if not acquire_gateway_runtime_lock():
+        record_start_blocked("runtime_lock_held")
         logger.error(
             "Gateway runtime lock is already held by another instance. Exiting."
         )
@@ -19938,6 +19942,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         write_pid_file()
     except FileExistsError:
         release_gateway_runtime_lock()
+        record_start_blocked("pid_file_race")
         logger.error(
             "PID file race lost to another gateway instance. Exiting."
         )

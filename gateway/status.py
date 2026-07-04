@@ -804,6 +804,171 @@ def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]
     return _read_json_file(path or _get_runtime_status_path())
 
 
+# ---------------------------------------------------------------------------
+# Start-blocked accounting (crash-loop observability)
+#
+# When a gateway start is refused because another instance already holds the
+# PID file / runtime lock, the losing process logs an error and exits.  Under a
+# service supervisor (systemd Restart=, s6, Fly machine restart) that refused
+# starter is respawned immediately, producing a tight crash-loop: a box whose
+# *live* gateway is fine but is being hammered by a second would-be gateway
+# that can never win.  A point-in-time ``/api/status`` probe reports such a box
+# as healthy (``gateway_running: true``) because the original gateway IS up —
+# the loop is invisible to the probe.  Confirmed in production 2026-06 on
+# ``girt-numbat-4665``: probe healthy while emitting ~24k "Gateway already
+# running" lines/24h.
+#
+# Two observability gaps are closed here:
+#   1. The crash-loop was only detectable by an ``ILIKE '%already running%'``
+#      scan over free-text log messages — fragile (message wording can drift)
+#      and expensive (full-text scan).  ``record_start_blocked`` emits a single
+#      canonical, exact-match token ``gateway.start_blocked`` plus stable
+#      ``reason=`` / ``pid=`` / ``version=`` key=value pairs, so fleet telemetry
+#      can count loops with an exact substring match and attribute them to a
+#      version cohort.
+#   2. The probe couldn't see the loop at all.  ``record_start_blocked``
+#      persists a small ring of recent block timestamps to a file under
+#      HERMES_HOME; the dashboard ``/api/status`` handler — a SEPARATE process
+#      sharing the same HERMES_HOME — reads it via ``count_recent_start_blocks``
+#      and surfaces a rolling count, so a wedged-but-looping box stops reading
+#      as cleanly healthy.
+# ---------------------------------------------------------------------------
+
+_START_BLOCKS_FILE = "gateway_start_blocks.json"
+# Cap the persisted ring so a sustained loop can't grow the file unbounded.
+_START_BLOCKS_MAX_ENTRIES = 128
+# Drop entries older than this when recording, so the file self-prunes without
+# a separate sweeper.  An hour comfortably covers the 5-minute window the probe
+# reports while still bounding growth.
+_START_BLOCKS_RETENTION_S = 3600
+# Default window the probe reports on.
+START_BLOCKS_DEFAULT_WINDOW_S = 300
+
+# Stable reason tokens.  Telemetry matches on these exact strings, so treat the
+# set as a contract — add new tokens, don't reword existing ones.
+START_BLOCK_REASONS = frozenset(
+    {
+        "already_running",  # a live gateway holds the PID file before we start
+        "runtime_lock_held",  # could not acquire the cross-process runtime lock
+        "pid_file_race",  # lost the O_CREAT|O_EXCL PID-file race
+        "startup_race",  # another gateway appeared during our async startup
+    }
+)
+
+
+def _get_start_blocks_path() -> Path:
+    """Return the persisted start-blocked ring file path (sibling of PID file)."""
+    return _get_pid_path().with_name(_START_BLOCKS_FILE)
+
+
+def record_start_blocked(reason: str, *, pid: Optional[int] = None) -> int:
+    """Record a refused gateway start and emit a canonical structured log line.
+
+    ``reason`` should be one of :data:`START_BLOCK_REASONS`; unknown values are
+    still recorded (logged with ``reason=other:<value>``) so a miswired caller
+    is visible rather than silently dropped.
+
+    ``pid`` is the PID of the gateway that won (the live instance we collided
+    with), when known — useful for confirming the loop is colliding with a
+    single stable winner.
+
+    Persists a timestamped entry to a small ring file under HERMES_HOME so the
+    dashboard ``/api/status`` handler (a separate process) can observe the loop,
+    and emits one ``gateway.start_blocked`` log token for exact-match telemetry.
+
+    Returns the number of start-blocks recorded within the retention window
+    (including this one), or ``0`` if persistence failed.
+    """
+    canonical_reason = reason if reason in START_BLOCK_REASONS else f"other:{reason}"
+    now = datetime.now(timezone.utc).timestamp()
+
+    recorded_count = 0
+    path = _get_start_blocks_path()
+    try:
+        payload = _read_json_file(path) or {}
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+        # Self-prune: drop anything outside the retention window, then cap.
+        cutoff = now - _START_BLOCKS_RETENTION_S
+        entries = [
+            e
+            for e in entries
+            if isinstance(e, dict)
+            and isinstance(e.get("ts"), (int, float))
+            and e["ts"] >= cutoff
+        ]
+        entry: dict[str, Any] = {"ts": now, "reason": canonical_reason}
+        if pid is not None:
+            entry["pid"] = pid
+        entries.append(entry)
+        if len(entries) > _START_BLOCKS_MAX_ENTRIES:
+            entries = entries[-_START_BLOCKS_MAX_ENTRIES:]
+        _write_json_file(path, {"entries": entries})
+        recorded_count = len(entries)
+    except Exception:
+        # Persistence is best-effort observability — never let it break startup.
+        recorded_count = 0
+
+    # Single canonical, exact-match-greppable token.  Hermes logs are plain-text
+    # (RotatingFileHandler), so the "structured field" is realized as stable
+    # key=value pairs inside the message — ``gateway.start_blocked`` is the
+    # exact substring telemetry keys off, replacing the fragile
+    # ``ILIKE '%already running%'`` scan, and ``version=`` makes crash-loops
+    # attributable to a release cohort.
+    try:
+        import logging as _logging
+
+        from hermes_cli import __version__ as _hermes_version
+    except Exception:
+        _hermes_version = "unknown"
+        import logging as _logging  # type: ignore[no-redef]
+
+    pid_field = pid if pid is not None else ""
+    _logging.getLogger("gateway.status").error(
+        "gateway.start_blocked reason=%s pid=%s version=%s",
+        canonical_reason,
+        pid_field,
+        _hermes_version,
+    )
+    return recorded_count
+
+
+def count_recent_start_blocks(
+    window_seconds: int = START_BLOCKS_DEFAULT_WINDOW_S,
+) -> int:
+    """Return the number of refused gateway starts recorded within ``window_seconds``.
+
+    Reads the persisted ring written by :func:`record_start_blocked`.  Returns
+    ``0`` when the file is absent, unreadable, or holds no recent entries — a
+    healthy single-gateway box never writes it, so the common case is a cheap
+    missing-file stat.  Safe for the public ``/api/status`` liveness probe.
+    """
+    try:
+        window = int(window_seconds)
+    except (TypeError, ValueError):
+        window = START_BLOCKS_DEFAULT_WINDOW_S
+    if window <= 0:
+        return 0
+
+    payload = _read_json_file(_get_start_blocks_path())
+    if not isinstance(payload, dict):
+        return 0
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return 0
+
+    cutoff = datetime.now(timezone.utc).timestamp() - window
+    count = 0
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        ts = e.get("ts")
+        if isinstance(ts, (int, float)) and ts >= cutoff:
+            count += 1
+    return count
+
+
 def parse_active_agents(raw: Any) -> int:
     """Coerce a persisted ``active_agents`` value to a clamped non-negative int.
 

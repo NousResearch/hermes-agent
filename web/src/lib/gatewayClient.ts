@@ -25,6 +25,18 @@ import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
 export type { ConnectionState, GatewayEvent, GatewayEventName };
 
+// This client's source label, threaded to the backend on session-originating
+// RPCs so turns from the in-browser dashboard chat are attributed to
+// "dashboard" rather than the shared "tui" default (the dashboard, the Electron
+// desktop app, and the Ink TUI all drive the same JSON-RPC server). The backend
+// sanitizes it (see tui_gateway.server._sanitize_client_source).
+const CLIENT_SOURCE = "dashboard";
+
+// RPC methods that MINT or (RE)ATTACH a session and therefore build an agent
+// whose platform should carry the client label. Other methods (steer, title,
+// prompt.submit, …) act on an existing session and ignore a `source` field.
+const SESSION_ORIGIN_METHODS = new Set(["session.create", "session.resume"]);
+
 export class GatewayClient extends JsonRpcGatewayClient {
   constructor() {
     super({
@@ -33,6 +45,24 @@ export class GatewayClient extends JsonRpcGatewayClient {
       notConnectedErrorMessage: "gateway not connected",
       requestIdPrefix: "w",
     });
+  }
+
+  // Tag session-originating calls with this client so the backend records the
+  // turn's platform/source as "dashboard" instead of the shared "tui" default.
+  // Only stamps when the caller hasn't set an explicit source (e.g. the sidebar
+  // sidecar session deliberately sends source:"tool"), and only on the methods
+  // that mint/attach a session — every other RPC ignores the field.
+  request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const outbound =
+      SESSION_ORIGIN_METHODS.has(method) && params.source === undefined
+        ? { ...params, source: CLIENT_SOURCE }
+        : params;
+    return super.request<T>(method, outbound, timeoutMs, signal);
   }
 
   async connect(token?: string): Promise<void> {

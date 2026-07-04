@@ -170,9 +170,12 @@ claude -p "ตอบคำว่า OK เท่านั้น" 2>&1 | redact
 จากนั้นทดสอบทาง AI Relay:
 
 ```bash
+# รูปแบบจริงของ relay-call (ยืนยันจากโค้ด): ต้องมี --tool --task-id --prompt-file --cwd
+# --prompt-file ถ้าไม่ใช่ path ไฟล์จริง จะใช้ข้อความนั้นเป็น prompt เลย · ชื่อ tool = fable / opus (ไม่ใช่ opus-4.8)
+mkdir -p /tmp/relay-close-test && cd /tmp/relay-close-test
 MARKER="AUTO_ROTATE_PROOF_$(date +%Y%m%d-%H%M%S)"
-relay-call fable "ตอบคำว่า OK เท่านั้น $MARKER" 2>&1 | redact
-relay-call opus-4.8 "ตอบคำว่า OK เท่านั้น" 2>&1 | redact
+relay-call --tool fable --task-id CLOSE-P2  --prompt-file "ตอบคำว่า OK เท่านั้น $MARKER" --cwd /tmp/relay-close-test 2>&1 | redact
+relay-call --tool opus  --task-id CLOSE-P2B --prompt-file "ตอบคำว่า OK เท่านั้น" --cwd /tmp/relay-close-test 2>&1 | redact
 ```
 
 ผลที่ถือว่าผ่าน:
@@ -182,32 +185,23 @@ relay-call opus-4.8 "ตอบคำว่า OK เท่านั้น" 2>&1 
 
 ### 2.6 พิสูจน์ว่า Fable สลับไป Opus อัตโนมัติจริง
 
-ห้ามใช้ผลจาก `relay-call opus-4.8` ตรง ๆ เป็นหลักฐานว่า Fable สลับอัตโนมัติ เพราะนั่นเป็นการเรียก Opus โดยตรง ให้พิสูจน์จาก ledger ของคำสั่ง `relay-call fable` เท่านั้น
+ห้ามใช้ผลจาก `relay-call --tool opus` ตรง ๆ เป็นหลักฐานว่า Fable สลับอัตโนมัติ เพราะนั่นเป็นการเรียก Opus โดยตรง ให้พิสูจน์จาก ledger ของคำสั่ง `relay-call --tool fable` เท่านั้น
 
 ```bash
-# ยืนยันแล้ว: relay-call เขียน ledger ที่ <โฟลเดอร์ที่รัน>/.hermes/ai-relay/calls-<branch>.md
-# ถ้ารันนอก git หรือไม่มี branch = calls-nobranch.md (เช่น /tmp/relay-vps-test/.hermes/ai-relay/calls-nobranch.md)
-# หมายเหตุ: ไฟล์นี้เป็นตาราง markdown ไม่ใช่ JSON — jq ข้างล่างใช้ได้เฉพาะถ้า ledger เป็น json บรรทัดต่อบรรทัด · ถ้าเป็นตาราง ให้ใช้ grep "$MARKER" แทน
-LEDGER_FILE="<ledger file ที่ relay-call เขียนจริง · ตามรูปแบบด้านบน>"
-tail -n 80 "$LEDGER_FILE" \
-  | jq -c --arg marker "$MARKER" 'select(tostring | contains($marker)) | {time, command, rotated_from, tried, result, error}' \
-  2>&1 | redact
+# ยืนยันแล้ว: relay-call เขียน ledger เป็น "ตาราง markdown" ที่ <โฟลเดอร์ที่รัน>/.hermes/ai-relay/calls-<branch>.md
+# รันจาก /tmp/relay-close-test (ไม่ใช่ git) → ไฟล์คือ calls-nobranch.md
+# เป็นตาราง ไม่ใช่ JSON → ใช้ grep ไม่ใช่ jq
+LEDGER_FILE="/tmp/relay-close-test/.hermes/ai-relay/calls-nobranch.md"
+grep "$MARKER" "$LEDGER_FILE" 2>&1 | redact
+# ถ้า marker ไม่ติดใน ledger ให้ดูแถวล่าสุดแทน:
+tail -n 5 "$LEDGER_FILE" 2>&1 | redact
 ```
 
-ผลที่ถือว่าผ่าน:
-- แถว ledger ต้องเป็นคำสั่งที่เริ่มจาก `relay-call fable`
-- ช่อง `rotated_from` ต้องระบุว่าเริ่มจาก `fable`
-- ช่อง `tried` ต้องเห็นลำดับที่ลอง `fable` แล้วต่อด้วย `opus-4.8`
-- ผลลัพธ์สุดท้ายต้องได้ `OK` หรือสถานะสำเร็จ
+ผลที่ถือว่าผ่าน (อ่านจากตาราง ช่อง `tool` / `rotated_from`):
+- แถวที่ได้มาจากการเรียก `--tool fable`
+- ช่อง `rotated_from` ต้องมีคำว่า `fable` (แปลว่าเริ่มที่ fable แล้วสลับ)
+- ช่อง `tool` สุดท้ายเป็น `opus` (สลับไป Opus สำเร็จ) · ช่อง status เป็น `ok`
 - error ที่ส่งเข้าแชทหรือ ledger ต้องผ่าน `redact`
-
-ถ้า ledger ไม่เก็บ marker ใน prompt ให้ใช้เวลาของคำสั่งแทน และส่งเฉพาะแถวล่าสุดช่วงเวลานั้นแบบปิด token:
-
-```bash
-tail -n 20 "$LEDGER_FILE" \
-  | jq -c '{time, command, rotated_from, tried, result, error}' \
-  2>&1 | redact
-```
 
 ### 2.7 ทางถอยเพื่อกู้ Hermes gateway
 

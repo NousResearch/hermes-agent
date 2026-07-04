@@ -109,7 +109,10 @@ def build_top_level_parser():
             "response text to stdout. No banner, no spinner, no tool "
             "previews, no session_id line. Tools, memory, rules, and "
             "AGENTS.md in the CWD are loaded as normal; approvals are "
-            "auto-bypassed. Intended for scripts / pipes."
+            "auto-bypassed. Intended for scripts / pipes. Combine with "
+            "--resume <id> to chain turns onto one session (an id that "
+            "doesn't exist yet is created on first use), or --continue to "
+            "chain onto the most recent / named session."
         ),
     )
     # --model / --provider are accepted at the top level so they can pair

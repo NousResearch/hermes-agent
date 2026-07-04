@@ -1138,6 +1138,39 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             return None
 
 
+def _resolve_oneshot_resume(args) -> Optional[str]:
+    """Resolve --resume / --continue for oneshot (-z) mode.
+
+    ``--resume`` is passed through verbatim: oneshot supports create-on-
+    first-use session ids (callers like the Smith Crafts OS gateway mint
+    their own stable id and pass it on every turn), so no existence check
+    happens here — hermes_cli.oneshot loads whatever history the id has.
+    ``--continue`` resolves exactly like interactive chat: by name when a
+    value is given, otherwise the most recent CLI session; an unresolvable
+    ``--continue`` is an error (there is nothing sensible to chain onto).
+    """
+    resume = (getattr(args, "resume", None) or "").strip() or None
+    if resume:
+        return resume
+    cont = getattr(args, "continue_last", None)
+    if not cont:
+        return None
+    if isinstance(cont, str):
+        resolved = _resolve_session_by_name_or_id(cont)
+        if not resolved:
+            sys.stderr.write(
+                f"hermes -z: no session found matching '{cont}'. "
+                "Use 'hermes sessions list' to see available sessions.\n"
+            )
+            sys.exit(2)
+        return resolved
+    last_id = _resolve_last_session(source="cli")
+    if not last_id:
+        sys.stderr.write("hermes -z: no previous CLI session found to continue.\n")
+        sys.exit(2)
+    return last_id
+
+
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recently-used session ID for a source."""
     db = None
@@ -12444,6 +12477,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                resume=_resolve_oneshot_resume(args),
             )
         )
 
@@ -13877,6 +13911,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                resume=_resolve_oneshot_resume(args),
             )
         )
 

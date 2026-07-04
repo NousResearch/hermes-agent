@@ -1271,3 +1271,27 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+
+def test_run_git_auto_gc_invokes_git_gc_auto():
+    """Post-update maintenance runs ``git gc --auto`` to bound .git growth (#58172)."""
+    from hermes_cli import main as hm
+
+    with patch.object(hm.subprocess, "run") as mock_run:
+        hm._run_git_auto_gc(["git"], "/repo")
+
+    assert mock_run.call_count == 1
+    args, kwargs = mock_run.call_args
+    assert args[0] == ["git", "gc", "--auto"]
+    assert kwargs["cwd"] == "/repo"
+    # Must never raise / abort the update on a nonzero gc exit.
+    assert kwargs["check"] is False
+
+
+def test_run_git_auto_gc_swallows_os_error():
+    """A git launch failure must not propagate and fail the update."""
+    from hermes_cli import main as hm
+
+    with patch.object(hm.subprocess, "run", side_effect=OSError("git missing")):
+        # Should return cleanly rather than raising.
+        assert hm._run_git_auto_gc(["git"], "/repo") is None

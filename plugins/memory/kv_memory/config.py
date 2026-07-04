@@ -26,7 +26,7 @@ class KVMemoryConfig:
 
     # ── Retrieval ─────────────────────────────────────────────────
     top_k: int = 5                   # number of results to return
-    min_similarity: float = 0.5      # minimum cosine similarity threshold
+    min_similarity: float = 0.0      # minimum cosine similarity threshold (0 = return all results)
     temporal_decay_half_life: float = 7.0  # days; 0 = no decay
     causal_boost: float = 0.1        # boost for same-session / linked-session results
     diversity_lambda: float = 1.0    # MMR relevance weight (1.0 = pure relevance, <1.0 = diversity)

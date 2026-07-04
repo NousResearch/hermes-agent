@@ -388,6 +388,32 @@ def _compute_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Track only the toolsets the caller explicitly enabled. This lets a
+    # disabled composite toolset remove its own unique tools without
+    # stripping a leaf toolset that was also requested directly.
+    explicitly_enabled_toolsets: set = set()
+    if enabled_toolsets is not None:
+        for toolset_name in effective_enabled_toolsets:
+            if validate_toolset(toolset_name):
+                explicitly_enabled_toolsets.add(toolset_name)
+            elif toolset_name in _LEGACY_TOOLSET_MAP:
+                for tool_name in _LEGACY_TOOLSET_MAP[toolset_name]:
+                    canonical_toolset = TOOL_TO_TOOLSET_MAP.get(tool_name)
+                    if canonical_toolset:
+                        explicitly_enabled_toolsets.add(canonical_toolset)
+
+    def _tool_is_protected_from_disable(tool_name: str, disabled_toolset_name: str) -> bool:
+        canonical_toolset = TOOL_TO_TOOLSET_MAP.get(tool_name)
+        if not canonical_toolset:
+            return False
+        # Preserve explicitly enabled leaf toolsets when disabling a
+        # different composite toolset. If the same toolset is disabled,
+        # keep the existing "disable wins" behavior.
+        return (
+            canonical_toolset in explicitly_enabled_toolsets
+            and canonical_toolset != disabled_toolset_name
+        )
+
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
@@ -417,14 +443,24 @@ def _compute_tool_definitions(
                         )
                 else:
                     resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    to_remove = {
+                        tool_name for tool_name in resolved
+                        if not _tool_is_protected_from_disable(tool_name, toolset_name)
+                    }
+                    tools_to_include.difference_update(to_remove)
+                    resolved = sorted(to_remove)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(legacy_tools)
+                to_remove = {
+                    tool_name for tool_name in legacy_tools
+                    if not _tool_is_protected_from_disable(tool_name, toolset_name)
+                }
+                tools_to_include.difference_update(to_remove)
+                resolved = sorted(to_remove)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

@@ -459,8 +459,69 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("1e3") == 1000
 
 class TestDisabledToolsetsPlatformBundle:
-    """Regression test for #33924: disabling a platform bundle (hermes-*)
-    must not remove core tools from other enabled toolsets."""
+    """Regression tests for disabled-toolset subtraction.
+
+    #33924 covered hermes-* bundle preservation. #58281 extends that
+    # behavior: disabling the coding posture bundle must not strip
+    # explicitly enabled leaf toolsets.
+    """
+
+    def test_disabling_coding_preserves_explicit_terminal_and_file_tools(self):
+        """Disabling coding should not remove separately enabled terminal/file tools."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["coding", "terminal", "file"],
+            disabled_toolsets=["coding"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+
+        expected_present = {
+            "terminal",
+            "process",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+        }
+        expected_absent = {
+            "web_search",
+            "web_extract",
+            "read_terminal",
+            "close_terminal",
+            "vision_analyze",
+            "skills_list",
+            "skill_view",
+            "skill_manage",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_back",
+            "browser_press",
+            "browser_get_images",
+            "browser_vision",
+            "browser_console",
+            "browser_cdp",
+            "browser_dialog",
+            "todo",
+            "memory",
+            "session_search",
+            "clarify",
+            "execute_code",
+            "delegate_task",
+        }
+
+        assert expected_present <= names, (
+            f"Explicit terminal/file tools were lost after disabling coding: "
+            f"{expected_present - names}"
+        )
+        assert expected_absent.isdisjoint(names), (
+            f"Coding-only tools should have been removed: "
+            f"{expected_absent & names}"
+        )
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
         """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""

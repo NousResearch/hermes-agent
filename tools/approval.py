@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import ast
 import fnmatch
 import functools
 import logging
@@ -20,6 +21,7 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+from urllib.parse import urlencode, urlsplit
 from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
@@ -1812,6 +1814,211 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _get_trusted_readonly_http_prefixes() -> list[str]:
+    """Return profile-configured URL prefixes for trusted read-only probes."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        raw = cfg_get(
+            config,
+            "approvals",
+            "trusted_readonly_http_prefixes",
+            default=[],
+        )
+    except Exception:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    prefixes: list[str] = []
+    for item in raw:
+        prefix = str(item or "").strip()
+        if not prefix:
+            continue
+        parsed = urlsplit(prefix)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            prefixes.append(prefix.rstrip("/"))
+    return prefixes
+
+
+_PYTHON_HEREDOC_RE = re.compile(
+    r"""^\s*
+        (?:(?:cd)\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)\s*)?
+        python[23]?(?:\s+-)?\s+<<\s*['"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['"]?\s*
+        \n(?P<body>.*)\n(?P=tag)\s*$
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+_READONLY_HTTP_SAFE_IMPORTS = {
+    "json",
+    "urllib",
+    "urllib.parse",
+    "urllib.request",
+}
+_READONLY_HTTP_BLOCKED_NAMES = {
+    "__import__",
+    "compile",
+    "eval",
+    "exec",
+    "input",
+    "open",
+}
+_READONLY_HTTP_BLOCKED_ATTRS = {
+    "chmod",
+    "chown",
+    "delete",
+    "exec",
+    "mkdir",
+    "open",
+    "popen",
+    "post",
+    "put",
+    "remove",
+    "rename",
+    "request",
+    "rmdir",
+    "run",
+    "send",
+    "system",
+    "unlink",
+    "write",
+    "writelines",
+}
+
+
+def _ast_qualname(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _ast_qualname(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _readonly_literal_value(node: ast.AST, env: dict[str, object]) -> object:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        values = [_readonly_literal_value(elt, env) for elt in node.elts]
+        if all(isinstance(value, str) for value in values):
+            return values
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _readonly_literal_value(node.left, env)
+        right = _readonly_literal_value(node.right, env)
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+    if (
+        isinstance(node, ast.Call)
+        and _ast_qualname(node.func).endswith("urllib.parse.urlencode")
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        try:
+            value = ast.literal_eval(node.args[0])
+        except Exception:
+            return None
+        if isinstance(value, dict):
+            return urlencode(value)
+    return None
+
+
+def _url_matches_trusted_prefix(url: str, prefixes: list[str]) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    for prefix in prefixes:
+        base = prefix.rstrip("/")
+        if url == base or url.startswith(base + "/") or url.startswith(base + "?"):
+            return True
+    return False
+
+
+def _trusted_readonly_http_probe(command: str) -> tuple[bool, str | None]:
+    """Approve tightly-scoped Python urllib GET probes to configured URLs.
+
+    This exists for local maintenance preflights that are read-only but trip
+    the generic "script execution via heredoc" rule. It is intentionally
+    profile-scoped and URL-prefix-scoped.
+    """
+    prefixes = _get_trusted_readonly_http_prefixes()
+    if not prefixes:
+        return False, None
+    match = _PYTHON_HEREDOC_RE.match(command)
+    if not match:
+        return False, None
+    body = match.group("body")
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return False, None
+
+    env: dict[str, object] = {}
+    urls: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _READONLY_HTTP_SAFE_IMPORTS:
+                    return False, None
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module not in _READONLY_HTTP_SAFE_IMPORTS:
+                return False, None
+        elif isinstance(node, ast.Assign):
+            value = _readonly_literal_value(node.value, env)
+            if value is not None:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        env[target.id] = value
+        elif isinstance(node, ast.For):
+            value = _readonly_literal_value(node.iter, env)
+            if (
+                isinstance(node.target, ast.Name)
+                and isinstance(value, list)
+                and all(isinstance(item, str) for item in value)
+            ):
+                env[node.target.id] = value
+        elif isinstance(node, ast.Call):
+            qualname = _ast_qualname(node.func)
+            attr = qualname.rsplit(".", 1)[-1]
+            if attr.startswith("__"):
+                return False, None
+            if (
+                qualname in _READONLY_HTTP_BLOCKED_NAMES
+                or attr in _READONLY_HTTP_BLOCKED_ATTRS
+            ):
+                return False, None
+            if attr == "urlopen":
+                if not node.args:
+                    return False, None
+                # urllib.request.urlopen(url, data=...) switches to POST.
+                if len(node.args) > 1:
+                    return False, None
+                for kw in node.keywords:
+                    if kw.arg in {"data", "method"}:
+                        return False, None
+                value = _readonly_literal_value(node.args[0], env)
+                if isinstance(value, str):
+                    urls.append(value)
+                elif (
+                    isinstance(value, list)
+                    and all(isinstance(item, str) for item in value)
+                ):
+                    urls.extend(value)
+                else:
+                    return False, None
+
+    if not urls:
+        return False, None
+    if not all(_url_matches_trusted_prefix(url, prefixes) for url in urls):
+        return False, None
+    return True, "trusted read-only HTTP preflight"
+
+
+
 def _strip_shell_comments(command: str) -> str:
     """Strip shell-style comments from a command before LLM assessment.
 
@@ -2247,6 +2454,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    is_trusted_probe, trusted_probe_desc = _trusted_readonly_http_probe(command)
+    if is_trusted_probe:
+        return {
+            "approved": True,
+            "message": None,
+            "trusted_readonly_http": True,
+            "description": trusted_probe_desc,
+        }
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

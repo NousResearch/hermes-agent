@@ -2414,6 +2414,10 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # URL prefixes for profile-scoped read-only Python urllib preflights
+        # that should bypass script-execution prompts. Only literal GETs to
+        # these prefixes are allowed; POST/data and unsafe imports still block.
+        "trusted_readonly_http_prefixes": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

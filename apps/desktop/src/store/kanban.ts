@@ -44,6 +44,17 @@ export const $kanbanSelectedTaskId = atom<null | string>(null)
 // overlapping fetches when the interval outpaces a slow backend).
 export const $kanbanRefreshing = atom(false)
 
+// Live /events socket health (set by app/kanban/live-events). While true the
+// board view stretches its poll to a slow safety net; while false it falls
+// back to the fast interval.
+export const $kanbanLiveConnected = atom(false)
+
+/** The board's event cursor — what a live /events subscribe passes as ?since=
+ *  so no events are missed between the last fetch and the handshake. */
+export function kanbanLatestEventId(): number {
+  return $kanbanBoard.get()?.latest_event_id ?? 0
+}
+
 export function setKanbanActiveBoard(slug: null | string): void {
   const next = slug || null
 

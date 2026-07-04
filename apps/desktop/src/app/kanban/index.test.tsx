@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -7,13 +7,21 @@ import {
   $kanbanBoard,
   $kanbanBoardError,
   $kanbanBoards,
+  $kanbanLiveConnected,
   $kanbanRefreshing,
   $kanbanSelectedTaskId,
   KANBAN_COLUMNS
 } from '@/store/kanban'
 import type { KanbanBoardPayload, KanbanCard } from '@/types/kanban'
 
+import { startKanbanLiveEvents, stopKanbanLiveEvents } from './live-events'
+
 import { KanbanView } from './index'
+
+vi.mock('./live-events', () => ({
+  startKanbanLiveEvents: vi.fn(),
+  stopKanbanLiveEvents: vi.fn()
+}))
 
 function card(id: string, status: string, extra: Partial<KanbanCard> = {}): KanbanCard {
   return {
@@ -85,6 +93,7 @@ describe('KanbanView', () => {
       value: { api }
     })
     window.localStorage.clear()
+    $kanbanLiveConnected.set(false)
     $kanbanBoards.set([])
     $kanbanActiveBoard.set(null)
     $kanbanBoard.set(null)
@@ -155,5 +164,60 @@ describe('KanbanView', () => {
     expect(await screen.findByText('Do the thing')).toBeTruthy()
     expect(screen.getByText('On it')).toBeTruthy()
     expect(screen.getByText('Run history')).toBeTruthy()
+  })
+
+  it('starts the live event stream on mount and stops it on unmount', async () => {
+    const { unmount } = render(<KanbanView onClose={() => undefined} />)
+
+    expect(await screen.findByText('Task t_alpha')).toBeTruthy()
+    expect(startKanbanLiveEvents).toHaveBeenCalledWith(null)
+
+    vi.mocked(stopKanbanLiveEvents).mockClear()
+    unmount()
+    expect(stopKanbanLiveEvents).toHaveBeenCalled()
+  })
+
+  it('reopens the live stream pinned to the new board on board switch', async () => {
+    render(<KanbanView onClose={() => undefined} />)
+
+    expect(await screen.findByText('Task t_alpha')).toBeTruthy()
+    vi.mocked(startKanbanLiveEvents).mockClear()
+
+    act(() => {
+      $kanbanActiveBoard.set('ops')
+    })
+
+    await waitFor(() => expect(startKanbanLiveEvents).toHaveBeenCalledWith('ops'))
+  })
+
+  it('tears the live stream down while hidden and reopens it on show', async () => {
+    render(<KanbanView onClose={() => undefined} />)
+
+    expect(await screen.findByText('Task t_alpha')).toBeTruthy()
+
+    let visibility: DocumentVisibilityState = 'visible'
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility
+    })
+
+    try {
+      vi.mocked(stopKanbanLiveEvents).mockClear()
+      visibility = 'hidden'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(stopKanbanLiveEvents).toHaveBeenCalled()
+
+      vi.mocked(startKanbanLiveEvents).mockClear()
+      visibility = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(startKanbanLiveEvents).toHaveBeenCalledWith(null)
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState')
+    }
   })
 })

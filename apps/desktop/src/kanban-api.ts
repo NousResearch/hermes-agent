@@ -1,5 +1,7 @@
 import type {
   KanbanAssignee,
+  KanbanAttachment,
+  KanbanAttachmentUploadResponse,
   KanbanBoardPayload,
   KanbanBoardsResponse,
   KanbanCreateTaskPayload,
@@ -14,6 +16,7 @@ import type {
 export type {
   KanbanAssignee,
   KanbanAttachment,
+  KanbanAttachmentUploadResponse,
   KanbanBoardInfo,
   KanbanBoardPayload,
   KanbanBoardsResponse,
@@ -136,6 +139,46 @@ export async function getKanbanAssignees(board?: null | string): Promise<KanbanA
 export function getKanbanTaskLog(taskId: string, board?: null | string, tailBytes = 20_000): Promise<KanbanTaskLog> {
   return window.hermesDesktop.api<KanbanTaskLog>({
     path: kanbanPath(`/tasks/${encodeURIComponent(taskId)}/log?tail=${tailBytes}`, board)
+  })
+}
+
+// Attachment bytes ride a dedicated binary IPC (hermes:kanban:attachment:*):
+// the hermes:api pipe is JSON-only, and the blob must cross the same authed
+// HTTP channel as REST in remote mode. Both throw a plain Error when the
+// preload bridge predates the channel (old app shell + new renderer).
+
+function kanbanAttachmentBridge(): NonNullable<(typeof window.hermesDesktop)['kanbanAttachment']> {
+  const bridge = window.hermesDesktop.kanbanAttachment
+
+  if (!bridge) {
+    throw new Error('Attachment transfer requires an updated desktop app.')
+  }
+
+  return bridge
+}
+
+/** GET /attachments/:id → saved into the OS Downloads dir; resolves with the
+ *  written path (collision-resolved, so it may differ from the filename). */
+export function downloadKanbanAttachment(
+  attachment: Pick<KanbanAttachment, 'filename' | 'id'>,
+  board?: null | string
+): Promise<{ path: string }> {
+  return kanbanAttachmentBridge().download({
+    path: kanbanPath(`/attachments/${attachment.id}`, board),
+    filename: attachment.filename
+  })
+}
+
+/** Multipart POST /tasks/:id/attachments from a local file path. */
+export function uploadKanbanAttachment(
+  taskId: string,
+  filePath: string,
+  board?: null | string
+): Promise<KanbanAttachmentUploadResponse> {
+  return kanbanAttachmentBridge().upload<KanbanAttachmentUploadResponse>({
+    path: kanbanPath(`/tasks/${encodeURIComponent(taskId)}/attachments`, board),
+    filePath,
+    uploadedBy: 'desktop'
   })
 }
 

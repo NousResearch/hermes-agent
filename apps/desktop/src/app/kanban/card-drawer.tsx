@@ -7,7 +7,16 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { type Translations, useI18n } from '@/i18n'
-import { addKanbanComment, getKanbanAssignees, getKanbanTask, getKanbanTaskLog, updateKanbanTask } from '@/kanban-api'
+import {
+  addKanbanComment,
+  downloadKanbanAttachment,
+  getKanbanAssignees,
+  getKanbanTask,
+  getKanbanTaskLog,
+  parseKanbanApiError,
+  updateKanbanTask,
+  uploadKanbanAttachment
+} from '@/kanban-api'
 import { cn } from '@/lib/utils'
 import {
   $kanbanActiveBoard,
@@ -18,7 +27,7 @@ import {
   setKanbanSelectedTaskId
 } from '@/store/kanban'
 import { notify, notifyError } from '@/store/notifications'
-import type { KanbanRun, KanbanTaskDetail, KanbanUpdateTaskPayload } from '@/types/kanban'
+import type { KanbanAttachment, KanbanRun, KanbanTaskDetail, KanbanUpdateTaskPayload } from '@/types/kanban'
 
 import { PanelBlock, PanelPill, type PanelPillTone, PanelSectionLabel } from '../overlays/panel'
 
@@ -80,6 +89,8 @@ export function KanbanCardDrawer({ onClose, taskId }: KanbanCardDrawerProps) {
   const [saving, setSaving] = useState(false)
   const [commentDraft, setCommentDraft] = useState('')
   const [sendingComment, setSendingComment] = useState(false)
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<null | number>(null)
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
 
   const reload = useCallback(async () => {
     try {
@@ -163,6 +174,74 @@ export function KanbanCardDrawer({ onClose, taskId }: KanbanCardDrawerProps) {
       notifyError(error, k.commentFailed)
     } finally {
       setSendingComment(false)
+    }
+  }
+
+  async function downloadAttachment(attachment: KanbanAttachment) {
+    if (downloadingAttachmentId !== null) {
+      return
+    }
+
+    setDownloadingAttachmentId(attachment.id)
+
+    try {
+      const { path } = await downloadKanbanAttachment(attachment, $kanbanActiveBoard.get())
+
+      notify({
+        kind: 'success',
+        message: k.attachmentDownloaded(attachment.filename),
+        action: window.hermesDesktop.revealPath
+          ? { label: k.attachmentReveal, onClick: () => void window.hermesDesktop.revealPath?.(path) }
+          : undefined
+      })
+    } catch (error) {
+      notify({
+        kind: 'error',
+        title: k.attachmentDownloadFailed,
+        message: parseKanbanApiError(error).detail || k.attachmentDownloadFailed
+      })
+    } finally {
+      setDownloadingAttachmentId(null)
+    }
+  }
+
+  async function addAttachments() {
+    if (uploadingAttachment) {
+      return
+    }
+
+    const paths = await window.hermesDesktop.selectPaths({ multiple: true, title: k.addAttachment })
+
+    if (paths.length === 0) {
+      return
+    }
+
+    setUploadingAttachment(true)
+
+    let uploaded = 0
+
+    try {
+      for (const filePath of paths) {
+        await uploadKanbanAttachment(taskId, filePath, $kanbanActiveBoard.get())
+        uploaded += 1
+      }
+
+      notify({ kind: 'success', message: k.attachmentUploaded(uploaded) })
+    } catch (error) {
+      // Size/type rejections carry the backend's FastAPI detail (e.g. the
+      // 25 MB cap message) — surface it verbatim instead of a generic failure.
+      notify({
+        kind: 'error',
+        title: k.attachmentUploadFailed,
+        message: parseKanbanApiError(error).detail || k.attachmentUploadFailed
+      })
+    } finally {
+      setUploadingAttachment(false)
+    }
+
+    if (uploaded > 0) {
+      await reload()
+      void refreshKanbanBoard()
     }
   }
 
@@ -383,21 +462,40 @@ export function KanbanCardDrawer({ onClose, taskId }: KanbanCardDrawerProps) {
               ) : (
                 <div className="space-y-px">
                   {detail.attachments.map(attachment => (
-                    <div
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-[0.7rem] text-foreground/85"
+                    <button
+                      aria-label={k.downloadAttachment(attachment.filename)}
+                      className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-[0.7rem] text-foreground/85 transition-colors hover:bg-foreground/8 disabled:opacity-60"
+                      disabled={downloadingAttachmentId !== null}
                       key={attachment.id}
+                      onClick={() => void downloadAttachment(attachment)}
+                      type="button"
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <Codicon className="shrink-0 text-muted-foreground/55" name="file" size="0.75rem" />
+                        <Codicon
+                          className="shrink-0 text-muted-foreground/55"
+                          name={downloadingAttachmentId === attachment.id ? 'loading' : 'file'}
+                          size="0.75rem"
+                          spinning={downloadingAttachmentId === attachment.id}
+                        />
                         <span className="truncate">{attachment.filename}</span>
                       </span>
                       <span className="shrink-0 text-[0.62rem] tabular-nums text-muted-foreground/50">
                         {formatBytes(attachment.size)}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
+              <Button
+                className="gap-1.5"
+                disabled={uploadingAttachment}
+                onClick={() => void addAttachments()}
+                size="sm"
+                variant="outline"
+              >
+                <Codicon name={uploadingAttachment ? 'loading' : 'add'} size="0.7rem" spinning={uploadingAttachment} />
+                {uploadingAttachment ? k.attachmentUploading : k.addAttachment}
+              </Button>
             </section>
 
             <section className="space-y-1.5">

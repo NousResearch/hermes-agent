@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  getKanbanEventsWsUrl: options => ipcRenderer.invoke('hermes:kanban:events-ws-url', options),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),
   petOverlay: {
@@ -46,6 +47,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
+  kanbanAttachment: {
+    download: request => ipcRenderer.invoke('hermes:kanban:attachment:download', request),
+    upload: request => ipcRenderer.invoke('hermes:kanban:attachment:upload', request)
+  },
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),

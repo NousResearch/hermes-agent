@@ -122,6 +122,10 @@ export interface KanbanAttachment {
   created_at: number
 }
 
+export interface KanbanAttachmentUploadResponse {
+  attachment: KanbanAttachment | null
+}
+
 export interface KanbanRun {
   id: number
   task_id: string

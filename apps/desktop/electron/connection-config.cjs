@@ -79,6 +79,38 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
 }
 
 /**
+ * Build the kanban /events stream URL. Same WS gate as /api/ws (credential in
+ * the query string: `token` in loopback/token mode, single-use `ticket` on an
+ * OAuth-gated gateway), plus the stream's own params: `since` seeds the event
+ * cursor (omitted at <= 0 so the server starts from "now"), `board` pins the
+ * board at the handshake (the UI reconnects to switch boards).
+ *
+ * @param {string} baseUrl
+ * @param {['token'|'ticket', string]} authParam
+ * @param {{ since?: number, board?: string|null }} [options]
+ */
+function buildKanbanEventsWsUrl(baseUrl, authParam, options = {}) {
+  const parsed = new URL(baseUrl)
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+  const params = new URLSearchParams()
+
+  params.set(authParam[0] === 'ticket' ? 'ticket' : 'token', String(authParam[1] ?? ''))
+
+  const since = Math.floor(Number(options.since))
+  if (Number.isFinite(since) && since > 0) {
+    params.set('since', String(since))
+  }
+
+  const board = String(options.board ?? '').trim()
+  if (board) {
+    params.set('board', board)
+  }
+
+  return `${wsScheme}://${parsed.host}${prefix}/api/plugins/kanban/events?${params.toString()}`
+}
+
+/**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
  *
@@ -270,6 +302,7 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildKanbanEventsWsUrl,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,

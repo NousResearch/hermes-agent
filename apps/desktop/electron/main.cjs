@@ -55,6 +55,12 @@ const {
   macTitleBarOverlayHeight
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
+const {
+  attachmentSizeError: kanbanAttachmentSizeError,
+  buildKanbanAttachmentMultipart,
+  MAX_KANBAN_ATTACHMENT_BYTES,
+  resolveDownloadTarget: resolveKanbanDownloadTarget
+} = require('./kanban-attachments.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
@@ -107,6 +113,7 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildKanbanEventsWsUrl,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
@@ -3385,6 +3392,111 @@ function fetchPublicJson(url, options = {}) {
   })
 }
 
+// Binary-capable authed request against the Hermes backend, for payloads the
+// JSON-only fetchJson / 'hermes:api' pipe can't carry (kanban attachment blobs
+// and multipart uploads). Same auth split as the REST path: OAuth gateways go
+// through the OAuth session partition so the HttpOnly cookie attaches; token /
+// local modes send the static session-token header. HTTP errors reject as
+// `Error("<status>: <body>")` so the renderer's parseKanbanApiError can
+// surface FastAPI detail text unchanged.
+function fetchBackendBuffer(connection, requestPath, options = {}) {
+  const url = `${connection.baseUrl}${requestPath}`
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+  if (connection.authMode === 'oauth') {
+    return new Promise((resolve, reject) => {
+      const sess = getOauthSession()
+      if (!sess) {
+        reject(new Error('OAuth session partition is unavailable.'))
+        return
+      }
+      const request = electronNet.request({
+        method: options.method || 'GET',
+        url,
+        session: sess,
+        useSessionCookies: true,
+        redirect: 'follow'
+      })
+      if (options.contentType) request.setHeader('Content-Type', options.contentType)
+
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        try {
+          request.abort()
+        } catch {
+          // already finished
+        }
+        reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      request.on('response', res => {
+        const chunks = []
+        res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          if (timedOut) return
+          clearTimeout(timer)
+          const buffer = Buffer.concat(chunks)
+          const statusCode = res.statusCode || 500
+          if (statusCode >= 400) {
+            reject(new Error(`${statusCode}: ${buffer.toString('utf8')}`))
+            return
+          }
+          resolve({ buffer, contentType: String(res.headers['content-type'] || '') })
+        })
+      })
+      request.on('error', error => {
+        if (timedOut) return
+        clearTimeout(timer)
+        reject(error)
+      })
+      if (options.body) request.write(options.body)
+      request.end()
+    })
+  }
+
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+    const client = parsed.protocol === 'https:' ? https : http
+
+    const req = client.request(
+      parsed,
+      {
+        method: options.method || 'GET',
+        headers: {
+          'X-Hermes-Session-Token': connection.token,
+          ...(options.contentType ? { 'Content-Type': options.contentType } : {}),
+          ...(options.body ? { 'Content-Length': String(options.body.length) } : {})
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks)
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${buffer.toString('utf8') || res.statusMessage}`))
+            return
+          }
+          resolve({ buffer, contentType: String(res.headers['content-type'] || '') })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    if (options.body) req.write(options.body)
+    req.end()
+  })
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath || '').toLowerCase()
 
@@ -4632,6 +4744,22 @@ async function freshGatewayWsUrl(profile) {
   }
   // Local/token: the cached wsUrl already carries the (long-lived) token.
   return connection.wsUrl
+}
+
+// Mint a fresh URL for the kanban /events stream. Always the PRIMARY backend:
+// kanban is HOME-scoped (the board is the shared cross-profile coordination
+// bus), so like the kanban REST calls it never routes to a pool profile.
+// Fresh per call for the same reason as freshGatewayWsUrl — OAuth WS tickets
+// are single-use with a ~30s TTL, so the renderer mints immediately before
+// every connect/reconnect.
+async function freshKanbanEventsWsUrl(options = {}) {
+  const connection = await ensureBackend(null)
+  const params = { since: options?.since, board: options?.board }
+  if (connection.authMode === 'oauth') {
+    const ticket = await mintGatewayWsTicket(connection.baseUrl)
+    return buildKanbanEventsWsUrl(connection.baseUrl, ['ticket', ticket], params)
+  }
+  return buildKanbanEventsWsUrl(connection.baseUrl, ['token', connection.token], params)
 }
 
 function encryptDesktopSecret(value) {
@@ -6103,6 +6231,7 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   return { ok: true }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
+ipcMain.handle('hermes:kanban:events-ws-url', async (_event, options) => freshKanbanEventsWsUrl(options))
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
@@ -6540,6 +6669,49 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     body: request?.body,
     timeoutMs
   })
+})
+
+// Kanban attachments move real bytes, which the JSON-only 'hermes:api' pipe
+// can't carry. Download: authed GET → collision-resolved save under the OS
+// Downloads dir (the renderer toasts with a reveal action). Upload: main reads
+// the picked file (the renderer only ever holds a path) and multipart-POSTs it
+// per the backend contract. Kanban is HOME-scoped, so both always target the
+// primary backend — never a pool profile.
+ipcMain.handle('hermes:kanban:attachment:download', async (_event, request) => {
+  const connection = await ensureBackend(null)
+  const { buffer } = await fetchBackendBuffer(connection, String(request?.path || ''), {
+    timeoutMs: 120_000
+  })
+  const target = resolveKanbanDownloadTarget(app.getPath('downloads'), String(request?.filename || ''), fs.existsSync)
+  await fs.promises.mkdir(path.dirname(target), { recursive: true })
+  await fs.promises.writeFile(target, buffer)
+  return { path: target }
+})
+
+ipcMain.handle('hermes:kanban:attachment:upload', async (_event, request) => {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(String(request?.filePath || ''), {
+    purpose: 'Kanban attachment'
+  })
+  // Pre-check the backend's 25 MB cap with the same 413 detail it would
+  // return, instead of buffering a huge file just to have it rejected.
+  if (stat.size > MAX_KANBAN_ATTACHMENT_BYTES) {
+    throw kanbanAttachmentSizeError()
+  }
+  const connection = await ensureBackend(null)
+  const { body, contentType } = buildKanbanAttachmentMultipart({
+    contentType: mimeTypeForPath(resolvedPath),
+    fileBuffer: await fs.promises.readFile(resolvedPath),
+    filename: path.basename(resolvedPath),
+    uploadedBy: request?.uploadedBy ? String(request.uploadedBy) : 'desktop'
+  })
+  const { buffer } = await fetchBackendBuffer(connection, String(request?.path || ''), {
+    body,
+    contentType,
+    method: 'POST',
+    timeoutMs: 120_000
+  })
+  const text = buffer.toString('utf8')
+  return text ? JSON.parse(text) : null
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {

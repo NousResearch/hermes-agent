@@ -26,6 +26,7 @@ import {
   $kanbanBoard,
   $kanbanBoardError,
   $kanbanBoards,
+  $kanbanLiveConnected,
   $kanbanSelectedTaskId,
   isAllowedDrop,
   KANBAN_COLUMNS,
@@ -42,13 +43,16 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 import { KanbanCardDrawer } from './card-drawer'
+import { startKanbanLiveEvents, stopKanbanLiveEvents } from './live-events'
 import { NewCardDialog } from './new-card-dialog'
 
-// Live updates via polling (WS /events plumbing is out of scope for v1): the
-// board payload's latest_event_id is the change cursor, so an unchanged poll
-// keeps the previous atom identity and re-renders nothing. Paused while the
-// window is hidden, same as the cron/messaging pollers.
+// Live updates ride the kanban /events WebSocket (live-events.ts); polling is
+// the fallback and the safety net. While the socket is down the board polls
+// fast; while it is healthy the poll stretches to a slow backstop (the
+// payload's latest_event_id cursor keeps unchanged polls render-free either
+// way). Paused while the window is hidden, same as the cron/messaging pollers.
 const BOARD_POLL_INTERVAL_MS = 4_000
+const BOARD_LIVE_POLL_INTERVAL_MS = 60_000
 
 const PRIORITY_TONE: Record<string, string> = {
   high: 'bg-destructive/10 text-destructive',
@@ -87,6 +91,7 @@ function KanbanBoardContent() {
   const board = useStore($kanbanBoard)
   const boardError = useStore($kanbanBoardError)
   const selectedTaskId = useStore($kanbanSelectedTaskId)
+  const liveConnected = useStore($kanbanLiveConnected)
 
   const [nudging, setNudging] = useState(false)
   const [newCardOpen, setNewCardOpen] = useState(false)
@@ -110,7 +115,7 @@ function KanbanBoardContent() {
       }
     }
 
-    const intervalId = window.setInterval(tick, BOARD_POLL_INTERVAL_MS)
+    const intervalId = window.setInterval(tick, liveConnected ? BOARD_LIVE_POLL_INTERVAL_MS : BOARD_POLL_INTERVAL_MS)
 
     document.addEventListener('visibilitychange', tick)
 
@@ -118,7 +123,28 @@ function KanbanBoardContent() {
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', tick)
     }
-  }, [])
+  }, [liveConnected])
+
+  // Live socket lifecycle: connected only while the board is mounted AND the
+  // window is visible; a board switch tears down and reopens with the new
+  // ?board (the stream pins the board at the handshake).
+  useEffect(() => {
+    const sync = () => {
+      if (document.visibilityState === 'visible') {
+        startKanbanLiveEvents(activeBoard)
+      } else {
+        stopKanbanLiveEvents()
+      }
+    }
+
+    sync()
+    document.addEventListener('visibilitychange', sync)
+
+    return () => {
+      document.removeEventListener('visibilitychange', sync)
+      stopKanbanLiveEvents()
+    }
+  }, [activeBoard])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 

@@ -25,7 +25,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
 from . import protocol, security
 
@@ -170,6 +170,8 @@ def a2a_call(args: dict, **_: Any) -> str:
         "params": {"message": protocol.text_message("user", safe_message)},
     }
     if context_id:
+        # A2A spec: contextId at top level of params (not just inside message)
+        rpc_body["params"]["contextId"] = context_id
         rpc_body["params"]["message"]["contextId"] = context_id
 
     security.audit("outbound", agent, rpc_body["id"], safe_message)
@@ -245,7 +247,9 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
 # Tool schemas + registration
 # --------------------------------------------------------------------------
 
-_SCHEMAS = {
+_FunctionSchema = TypedDict("_FunctionSchema", {"name": str, "description": str}, total=False)
+_ToolSchema = TypedDict("_ToolSchema", {"type": str, "function": _FunctionSchema}, total=False)
+_SCHEMAS: dict[str, _ToolSchema] = {
     "a2a_discover": {
         "type": "function",
         "function": {

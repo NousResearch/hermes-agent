@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -543,6 +544,268 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._record_stream_stat()
 
 
+# ---------------------------------------------------------------------------
+# Non-blocking emit (fix for gateway.log asyncio freeze — see comment below)
+# ---------------------------------------------------------------------------
+
+# Shared executor used by ``_NonBlockingRotatingFileHandler`` to push the
+# actual write/flush off the calling (asyncio / agent) thread.  A single
+# process-wide executor keeps the cost bounded: 2 workers is enough to absorb
+# a slow disk without ever blocking more than one or two concurrent log emits.
+# Daemon threads ensure we never keep the process alive at shutdown; the
+# atexit hook below gives pending emits a chance to drain first.
+_log_emit_executor: Optional[ThreadPoolExecutor] = None
+_log_emit_executor_lock = threading.Lock()
+# Default emit timeout: short enough that a wedged disk write can't freeze the
+# gateway's event loop for more than half a second, but long enough that the
+# normal hot-cache write path (sub-millisecond) always completes on the worker
+# thread before we'd ever consider giving up. Operators can override at
+# process start via the ``HERMES_LOG_EMIT_TIMEOUT_S`` env var.
+_LOG_EMIT_DEFAULT_TIMEOUT_S = 0.5
+
+
+def _get_log_emit_executor() -> ThreadPoolExecutor:
+    """Return the process-wide emit executor, creating it lazily.
+
+    Lazy creation avoids spinning up worker threads for short-lived CLI
+    invocations that never emit a single record (most ``hermes`` commands).
+
+    On Python 3.11+, ``concurrent.futures.thread._python_exit`` (registered
+    with ``atexit``) shuts down every live ``ThreadPoolExecutor`` when the
+    interpreter starts to exit.  Late stragglers — tests with helper threads
+    that outlive the test fn, or workers spawned just before a SIGTERM —
+    then race against that shutdown and see ``RuntimeError: cannot schedule
+    new futures after shutdown``.  We absorb that by transparently
+    re-creating the executor the next time ``emit()`` is invoked.
+    """
+    global _log_emit_executor
+    while True:
+        executor = _log_emit_executor
+        if executor is None:
+            with _log_emit_executor_lock:
+                if _log_emit_executor is None:
+                    new = ThreadPoolExecutor(
+                        max_workers=2,
+                        thread_name_prefix="hermes-log-emit",
+                    )
+                    _log_emit_executor = new
+                    return new
+            continue  # raced; loop and re-read
+        # If stdlib's _python_exit has marked this executor as shut down,
+        # swap it for a fresh one.  We can't directly read the private
+        # ``_shutdown`` flag, but ``submit`` after shutdown raises
+        # ``RuntimeError``, so we probe lazily on the next emit.
+        return executor
+
+
+# NOTE: we intentionally do NOT register an ``atexit`` hook to call
+# ``executor.shutdown(wait=True)``.  ``ThreadPoolExecutor`` defaults to daemon
+# threads, so the worker pool is torn down automatically when the interpreter
+# exits — pending in-flight emits are simply cut off, which is fine because:
+#
+#   1.  Any test, hook, or worker that races against interpreter shutdown has
+#       no useful recovery path anyway — the process is about to die.
+#   2.  A naive ``shutdown(wait=True)`` inside ``atexit`` can preempt late
+#       stragglers that are still trying to submit() (e.g. reproduction
+#       tests that spawn helper threads), producing noisy
+#       ``RuntimeError: cannot schedule new futures after shutdown``
+#       tracebacks in stderr AFTER pytest has already declared the run
+#       successful.  That noise hides real failures.
+#
+# If we ever need an explicit drain (e.g. for a synchronous shutdown path
+# in the gateway), it should live on a different trigger (SIGTERM handler,
+# ``hermes gateway restart`` cleanup, etc.) and cap the wait at
+# ``_LOG_EMIT_DEFAULT_TIMEOUT_S`` so it can never block shutdown itself.
+
+
+class _NonBlockingRotatingFileHandler(_ManagedRotatingFileHandler):
+    """Rotating handler whose ``emit()`` runs on a background thread.
+
+    Why this exists
+    ---------------
+    ``_ManagedRotatingFileHandler`` writes synchronously to disk from the
+    calling thread.  In the gateway, that calling thread is the asyncio
+    event loop itself: ``gateway.run`` emits an ``INFO`` line on every
+    inbound Telegram message, every outbound response, and every clarify
+    intercept.  When the disk stalls (NFS server, full volume, AV scanner
+    holding the file, USB disk glitch) ``flush()`` blocks the event loop,
+    and **Telegram stops being polled** — even though the gateway process
+    is alive and ``launchd`` is happy.  This is the documented
+    ``telegram-clarify-deadlock`` pattern.
+
+    The queue-based fix (``logging.handlers.QueueHandler`` /
+    ``QueueListener``) is the architecturally clean answer, but it is also
+    a bigger change: it has to wrap every handler in setup_logging(), add
+    listener lifecycle + shutdown, and handle the ``None``-lock semantics
+    of the queue listener's drain thread.  Instead, this subclass takes
+    the minimal route: it runs the parent's ``emit()`` on a background
+    thread and gives it a short deadline.  If the deadline expires the
+    record is dropped (logged once to ``sys.stderr`` for ops visibility)
+    and the caller — the asyncio loop or the tool executor — is free to
+    keep going.
+
+    Operational knobs
+    -----------------
+    * ``HERMES_LOG_EMIT_TIMEOUT_S`` — emit deadline in seconds (float).
+      Defaults to ``0.5``.  ``0`` disables the timeout (records are
+      submitted to the executor but the caller never waits; still
+      non-blocking on the caller's thread, with the trade-off that
+      ordering is best-effort and ordering can drift between concurrent
+      handlers).
+    * ``HERMES_LOG_BLOCKING=1`` — escape hatch: bypass this subclass
+      entirely and use the synchronous parent.  Useful when diagnosing
+      ordering issues or running under tools whose threads do not
+      survive ``atexit`` drain.
+    """
+
+    _drop_count_attr = "_hermes_log_dropped_total"
+    _warned_timeout_attr = "_hermes_log_timeout_warned"
+    _EMIT_TIMEOUT_WARN_INTERVAL = 50  # warn every N dropped records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Submit ``record`` to the emit executor, with a deadline.
+
+        The deadline is what converts "disk stall freezes the event loop"
+        into "disk stall drops a record and the event loop keeps running".
+        If the deadline fires before the future completes we cancel it and
+        silently drop the record; the caller's coroutine never blocks.
+        ``emit()`` synchronously running inside a Python coroutine is
+        *always* dangerous, so this method must remain non-blocking.
+
+        We tolerate ``RuntimeError`` from ``submit()`` (the executor was
+        shut down by stdlib's ``_python_exit`` atexit hook during interpreter
+        shutdown) by lazily swapping in a fresh executor on the next call.
+        """
+        timeout_s = _LOG_EMIT_DEFAULT_TIMEOUT_S
+        try:
+            env_val = os.environ.get("HERMES_LOG_EMIT_TIMEOUT_S")
+            if env_val is not None and env_val.strip() != "":
+                timeout_s = float(env_val)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            executor = _get_log_emit_executor()
+            future: Future = executor.submit(super().emit, record)
+        except RuntimeError:
+            # Executor was shut down (likely stdlib's _python_exit atexit
+            # hook firing during interpreter shutdown).  Replace it with a
+            # fresh one and retry once.  If the retry also fails we drop
+            # the record — we're shutting down anyway, and a final stderr
+            # flood would be worse than a missing log line.
+            self._reinit_executor_after_shutdown()
+            try:
+                executor = _get_log_emit_executor()
+                future = executor.submit(super().emit, record)
+            except RuntimeError:
+                return
+
+        if timeout_s <= 0:
+            # Best-effort: submit and return. Ordering is best-effort and
+            # the caller cannot observe back-pressure, but the asyncio loop
+            # is never blocked.
+            self._track_dropped_future(future)
+            return
+
+        # Block *only* this emit call, not the caller's coroutine beyond the
+        # timeout itself. We use ``future.result(timeout=...)`` rather than
+        # blocking on the underlying ``Handler.lock``, so concurrent emits to
+        # OTHER handlers (or other handlers' queues) are unaffected.
+        try:
+            future.result(timeout=timeout_s)
+        except TimeoutError:
+            # Disk is slower than the deadline. Cancel the future to release
+            # its captured resources; the underlying handler.lock may stay
+            # held briefly until the worker finishes its current write — at
+            # worst a subsequent emit on the SAME handler will queue for the
+            # remainder of that write. Records on other handlers continue
+            # unaffected.
+            future.cancel()
+            self._record_drop(record)
+        except Exception:
+            # ``super().emit()`` already routes handler errors through
+            # ``handleError()``; we swallow any unexpected exception here so
+            # a buggy handler can never crash the gateway loop.
+            self.handleError(record)
+
+    @staticmethod
+    def _reinit_executor_after_shutdown() -> None:
+        """Replace the global emit executor with a fresh one.
+
+        Called when ``submit()`` raises ``RuntimeError`` (executor was shut
+        down by stdlib's atexit hook during interpreter shutdown).  We
+        forcibly null the module-level reference and let the next
+        ``_get_log_emit_executor()`` create a replacement.
+        """
+        global _log_emit_executor
+        with _log_emit_executor_lock:
+            _log_emit_executor = None
+
+    def _track_dropped_future(self, future: Future) -> None:
+        """Periodically report that drops are happening without blocking.
+
+        With ``timeout_s <= 0`` the caller never blocks, so we just keep a
+        process-wide counter and warn every N drops.  The counter is
+        process-global because handler instances can be recreated on
+        ``setup_logging(force=True)`` and we want a stable signal.
+        """
+        future.add_done_callback(_log_drop_audit_callback)
+
+    def _record_drop(self, record: logging.LogRecord) -> None:
+        """Bump the drop counter and warn periodically to ``sys.stderr``."""
+        # Module-global counter so the warning cadence is stable across
+        # handler instances and across forced re-initializations.
+        global _log_dropped_total
+        _log_dropped_total += 1
+        if (
+            _log_dropped_total % self._EMIT_TIMEOUT_WARN_INTERVAL == 0
+            and not getattr(record, self._warned_timeout_attr, False)
+        ):
+            _warn_log_drop(_log_dropped_total)
+
+
+# Module-level drop counter shared by all ``_NonBlockingRotatingFileHandler``
+# instances. Initialised here so the symbol exists at import time even before
+# any handler has been instantiated.
+_log_dropped_total = 0
+
+
+def _log_drop_audit_callback(future: Future) -> None:
+    """Done-callback that audits a fire-and-forget emit.
+
+    Logs an unexpected exception to ``sys.stderr`` if the worker raised (we
+    cannot route it through the handler because the handler's lock is the
+    very thing we are trying to avoid blocking on).  Failure here is a
+    "missing log line" at worst.
+    """
+    try:
+        exc = future.exception()
+    except Exception:
+        return
+    if exc is not None:
+        print(
+            f"[hermes-log] non-blocking emit raised: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _warn_log_drop(dropped_total: int) -> None:
+    """Surface sustained log drops to ``sys.stderr`` so operators see them.
+
+    Stderr is intentional: it never goes through the very handler we're
+    guarding against, so a wedged log file cannot silence this warning.
+    """
+    try:
+        print(
+            f"[hermes-log] WARNING: {_log_dropped_total} log records dropped "
+            f"(gateway.log or agent.log write exceeded timeout). "
+            f"Check disk health or raise HERMES_LOG_EMIT_TIMEOUT_S.",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -571,7 +834,19 @@ def _add_rotating_handler(
             return  # already attached
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    handler = _ManagedRotatingFileHandler(
+    # ``_NonBlockingRotatingFileHandler`` runs the actual write/flush on a
+    # process-wide executor so that a wedged disk cannot freeze the calling
+    # thread — critical for the gateway's asyncio event loop (see
+    # ``_NonBlockingRotatingFileHandler`` docstring for the full rationale).
+    # Tests and operators that need synchronous, ordered writes can opt out
+    # via ``HERMES_LOG_BLOCKING=1`` in the environment; in that mode we
+    # still go through ``_ManagedRotatingFileHandler`` (the original) so the
+    # managed-mode chmod and external-rotation detection are preserved.
+    blocking = os.environ.get("HERMES_LOG_BLOCKING") == "1"
+    handler_cls = (
+        _ManagedRotatingFileHandler if blocking else _NonBlockingRotatingFileHandler
+    )
+    handler = handler_cls(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",
     )

@@ -20,4 +20,34 @@ describe('isLikelyProseCodeBlock', () => {
   it('keeps real code blocks', () => {
     expect(isLikelyProseCodeBlock('ts', 'const value = { bunny: true };\nreturn value')).toBe(false)
   })
+
+  it('keeps zsh command blocks as code even when they look like prose lines', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        'zsh',
+        [
+          'cd ~/Documents/dan-personal',
+          'bash -n install.sh',
+          'brew bundle check --file=packages/Brewfile',
+          'env -i HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" SHELL=/bin/zsh TERM=xterm-256color \\',
+          "  /bin/zsh -lic 'command -v brew && command -v starship && command -v gh && command -v stow'"
+        ].join('\n')
+      )
+    ).toBe(false)
+  })
+
+  it('keeps text-labeled shell command blocks as code', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        'text',
+        [
+          'cd ~/Documents/',
+          'bash -n install.sh',
+          'brew bundle check --file=packages/Brewfile',
+          'env -i HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" SHELL=/bin/zsh TERM=xterm-256color \\',
+          "/bin/zsh -lic 'command -v brew && command -v starship && command -v gh && command -v stow'"
+        ].join('\n')
+      )
+    ).toBe(false)
+  })
 })

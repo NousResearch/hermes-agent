@@ -6,9 +6,12 @@ const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md'
 const COMMON_CODE_LANGUAGES = new Set([
   'bash',
   'c',
+  'cmd',
+  'console',
   'cpp',
   'css',
   'diff',
+  'fish',
   'go',
   'html',
   'java',
@@ -19,12 +22,15 @@ const COMMON_CODE_LANGUAGES = new Set([
   'markdown',
   'md',
   'php',
+  'powershell',
+  'ps1',
   'python',
   'py',
   'ruby',
   'rust',
   'rs',
   'sh',
+  'shell',
   'sql',
   'swift',
   'tsx',
@@ -32,7 +38,8 @@ const COMMON_CODE_LANGUAGES = new Set([
   'typescript',
   'xml',
   'yaml',
-  'yml'
+  'yml',
+  'zsh'
 ])
 
 interface CodeSignals {
@@ -252,7 +259,9 @@ function proseLineCount(body: string): number {
 const CODE_SIGNAL_RE = [
   /(^|\s)(const|let|var|function|class|import|export|return|if|for|while|switch)\b/gim,
   /=>|==|===|!=|!==|\{|\}|;|<\/?[a-z][^>]*>/gi,
-  /^\s*(#include|SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/gim
+  /^\s*(#include|SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/gim,
+  /^\s*(?:\/?(?:bin\/)?(?:bash|zsh|sh|fish)|brew|cd|command|curl|docker|env|gh|git|grep|make|npm|pnpm|python3?|stow|uv|wget|yarn)\b/gim,
+  /\b[A-Z_][A-Z0-9_]*="\$[A-Z_][A-Z0-9_]*"|&&|\|\||\\\s*$/gm
 ]
 
 function codeSignalCount(body: string): number {

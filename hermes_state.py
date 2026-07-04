@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18  # v18: tel_* telemetry tables (local observability) — runs, spans, model/tool calls, errors
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -782,6 +782,76 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+
+-- ── Telemetry (local observability) ─────────────────────────────────────────
+-- Event/span layer co-located in state.db so runs JOIN to sessions/messages.
+-- The append-only JSONL log at ~/.hermes/telemetry/events.jsonl is the source
+-- of truth; these tables are a rebuildable index. They hold the user's own data
+-- (real model ids, provider/tool names) and never leave the machine unless the
+-- user exports them. A "run" is one session (from on_session_start to
+-- on_session_finalize); model/tool calls within it are recorded as spans.
+
+CREATE TABLE IF NOT EXISTS tel_runs (
+    run_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    session_id TEXT,
+    entrypoint TEXT NOT NULL,
+    platform TEXT,
+    start_ns INTEGER NOT NULL,
+    end_ns INTEGER,
+    end_reason TEXT,
+    model_call_count INTEGER DEFAULT 0,
+    tool_call_count INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    schema_v INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS tel_spans (
+    span_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_span_id TEXT,
+    name TEXT NOT NULL,
+    kind TEXT,
+    start_ns INTEGER NOT NULL,
+    end_ns INTEGER,
+    status TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tel_model_calls (
+    span_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    provider TEXT,        -- raw provider, e.g. "anthropic"
+    model TEXT,           -- raw model id, e.g. "claude-opus-4"
+    base_url TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    latency_ms INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS tel_tool_calls (
+    span_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    tool_name TEXT, -- raw tool name (e.g. "web_search")
+    duration_ms INTEGER,
+    result_class TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tel_error_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts_ns INTEGER NOT NULL,
+    error_class TEXT, subsystem TEXT, recovery TEXT -- enums only; NO raw message/stack
+);
+
+CREATE INDEX IF NOT EXISTS ix_tel_runs_trace ON tel_runs(trace_id);
+CREATE INDEX IF NOT EXISTS ix_tel_runs_session ON tel_runs(session_id);
+CREATE INDEX IF NOT EXISTS ix_tel_runs_start ON tel_runs(start_ns);
+CREATE INDEX IF NOT EXISTS ix_tel_spans_run ON tel_spans(run_id);
+CREATE INDEX IF NOT EXISTS ix_tel_spans_trace ON tel_spans(trace_id);
+CREATE INDEX IF NOT EXISTS ix_tel_model_run ON tel_model_calls(run_id);
+CREATE INDEX IF NOT EXISTS ix_tel_tool_run ON tel_tool_calls(run_id);
 """
 
 # Indexes that reference columns added in later schema versions must be

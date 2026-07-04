@@ -138,6 +138,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
+    # ─── Observability ─────────────────────────────────────────────────────
+    # OTLP telemetry export. Lazily installed on first use of
+    # `hermes telemetry export --otlp`. Tracks the `otlp` extra in
+    # pyproject.toml — bump both together.
+    "export.otlp": (
+        "opentelemetry-sdk==1.30.0",
+        "opentelemetry-exporter-otlp-proto-http==1.30.0",
+    ),
+
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),

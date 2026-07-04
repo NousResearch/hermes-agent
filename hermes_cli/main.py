@@ -299,6 +299,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.telemetry import build_telemetry_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -12195,7 +12196,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "telemetry", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12625,6 +12626,195 @@ def cmd_insights(args):
         db.close()
     except Exception as e:
         print(f"Error generating insights: {e}")
+
+
+def cmd_telemetry(args):
+    """Local-only telemetry control + inspection. No uploader exists yet."""
+    import json as _json
+    import time
+
+    from hermes_cli.config import load_config, save_config
+    from agent.telemetry import policy, rollup, metrics
+
+    action = getattr(args, "telemetry_action", None) or "status"
+    config = load_config()
+    tel = config.get("telemetry") if isinstance(config.get("telemetry"), dict) else {}
+    local_enabled = bool(tel.get("local", True))
+    allow_aggregate = bool(tel.get("allow_aggregate", True))
+    consent_state = tel.get("consent_state", policy.CONSENT_UNKNOWN)
+    if consent_state not in policy.VALID_CONSENT_STATES:
+        consent_state = policy.CONSENT_UNKNOWN
+    aggregate_enabled = (local_enabled and allow_aggregate
+                         and consent_state == policy.CONSENT_AGGREGATE)
+    install_id = policy.ensure_install_id(config)
+
+    def _persist_install_id():
+        # Make sure a minted id is written back so it stays stable.
+        config.setdefault("telemetry", {})["install_id"] = install_id
+        save_config(config)
+
+    if action == "status":
+        print("Telemetry status")
+        print("─" * 56)
+        print(f"  Local telemetry:   {'on' if local_enabled else 'off'} "
+              f"(telemetry.local)")
+        print(f"  Aggregate metrics: {'on' if aggregate_enabled else 'off'} "
+              f"(opt-in; consent_state={consent_state})")
+        if consent_state == policy.CONSENT_AGGREGATE and not local_enabled:
+            print("                     ⚠ inert: local telemetry is off — nothing to aggregate")
+        elif consent_state != policy.CONSENT_AGGREGATE and allow_aggregate:
+            print("                     opt in: hermes config set telemetry.consent_state aggregate")
+        if not allow_aggregate:
+            print("                     ⚠ allow_aggregate is false (egress hard-disabled)")
+        print(f"  Install id:        {install_id}")
+        print("  Upload:            DISABLED — no server yet. Aggregate metrics are "
+              "computed locally only.")
+        print()
+        # Export posture — where YOUR data can flow (never Nous). Values only;
+        # lock-state is managed scope's concern, surfaced by its own tooling.
+        try:
+            from agent.telemetry import otlp_exporter, redaction
+            otlp = otlp_exporter._otlp_config(config)
+            print("  Export")
+            if otlp.get("enabled") and otlp.get("endpoint"):
+                _host = str(otlp.get("endpoint"))
+                print(f"    OTLP:           enabled → {_host}")
+                # Show the header name + env var + whether it's set, never the value.
+                hdrs = otlp.get("headers_env") or {}
+                if hdrs:
+                    import os as _os
+                    for _h, _env in hdrs.items():
+                        _state = "set" if _os.environ.get(str(_env)) else "NOT set"
+                        print(f"                    auth: header '{_h}' ← ${_env} ({_state})")
+                _sdk = "installed" if otlp_exporter.is_available() else "MISSING — pip install 'hermes-agent[otlp]'"
+                print(f"                    SDK: {_sdk}")
+            else:
+                print("    OTLP:           disabled (telemetry.export.otlp.enabled)")
+            # Content gate (telemetry.trajectories) + redaction posture.
+            if redaction.content_export_enabled(config):
+                print(f"    Content export: on (trajectories enabled) — message "
+                      f"content exportable")
+            else:
+                print("    Content export: off (trajectories disabled) — structural "
+                      "telemetry only")
+            print("    Secret redaction: on (always)")
+            print(f"    PII redaction:    {redaction.content_mode_for(config)}")
+            print("    Bulk export:    hermes telemetry export --out FILE [--otlp]")
+        except Exception:
+            pass
+        print()
+        # Local data volume
+        try:
+            ov = metrics.overview()
+            runs = ov["workflows"]["total_runs"]
+            mcs = sum(ov["model_calls"]["by_provider"].values())
+            tcs = ov["tool_calls"]["total"]
+            print(f"  Local data: {runs:,} workflows · {mcs:,} model calls · {tcs:,} tool calls")
+        except Exception:
+            print("  Local data: (none yet)")
+        print("\n  Inspect what would be shared:  hermes telemetry preview")
+        return
+
+    if action == "preview":
+        _persist_install_id()
+        since_ns = int((time.time() - args.days * 86400) * 1e9)
+        events = rollup.build_aggregate_events(
+            install_id=install_id, since_ns=since_ns
+        )
+        summary = rollup.summarize(events)
+        print("Telemetry preview — computed locally, NOT uploaded")
+        print("─" * 56)
+        print(f"  Window: last {args.days} days   Events: {summary['total']}")
+        for name, n in sorted(summary["by_event_name"].items()):
+            print(f"    {name}: {n}")
+        print("  Shows the actual models, tools, and counts from local telemetry.")
+        print()
+        shown = events[: args.limit]
+        if getattr(args, "json", False):
+            print(_json.dumps(shown, indent=2))
+        else:
+            for e in shown:
+                if e.get("event_name") == "heartbeat":
+                    print(f"  • heartbeat  hermes={e.get('hermes_version')}  os={e.get('os_family')}")
+                    continue
+                bits = [f"{e.get('event_name')}"]
+                for k in ("entrypoint", "platform", "end_reason", "duration_ms"):
+                    if e.get(k) is not None:
+                        bits.append(f"{k}={e[k]}")
+                models = e.get("models_used") or []
+                if models:
+                    bits.append("models=" + ",".join(
+                        f"{m.get('model') or m.get('provider') or '?'}" for m in models))
+                if e.get("tools_used"):
+                    bits.append("tools=" + ",".join(e["tools_used"]))
+                print("  • " + "  ".join(bits))
+        if len(events) > len(shown):
+            print(f"  ... and {len(events) - len(shown)} more (use --limit)")
+        return
+
+    if action == "export":
+        import sys as _sys
+        from agent.telemetry import exporter_bulk, redaction
+
+        since_ns = int((time.time() - args.since * 86400) * 1e9) if getattr(args, "since", 0) else None
+        want_content = getattr(args, "include_content", False)
+
+        # OTLP path: stream spans to the configured Collector endpoint.
+        if getattr(args, "otlp", False):
+            from agent.telemetry import otlp_exporter
+            if not otlp_exporter.is_enabled(config):
+                print("telemetry.export.otlp is not enabled/endpoint not set. "
+                      "Set telemetry.export.otlp.enabled + .endpoint.", file=_sys.stderr)
+                return
+            # The OTel SDK is an optional dep; export_once() lazily installs it on
+            # first use (gated by security.allow_lazy_installs, TTY-prompted),
+            # same as every other optional backend. OTLPUnavailable is the
+            # fallback when it can't be installed.
+            try:
+                n = otlp_exporter.export_once(config, since_ns=since_ns)
+            except otlp_exporter.OTLPUnavailable as e:
+                print(str(e), file=_sys.stderr)
+                return
+            except Exception as e:
+                print(f"OTLP export failed: {e}", file=_sys.stderr)
+                return
+            print(f"Exported {n} spans to the OTLP endpoint "
+                  f"({(otlp_exporter._otlp_config(config) or {}).get('endpoint')}).",
+                  file=_sys.stderr)
+            return
+
+        content_ok = redaction.content_export_enabled(config)
+        if want_content and not content_ok:
+            print("⚠ --include-content ignored: telemetry.trajectories.enabled is false.")
+            print("  Enable trajectories (admin/config) to export message content.")
+            print("  Exporting structural telemetry only.")
+
+        if not getattr(args, "out", None):
+            print("--out is required (or use --otlp).", file=_sys.stderr)
+            return
+        out_path = args.out
+        if out_path == "-":
+            counts = exporter_bulk.export(
+                _sys.stdout, fmt=args.fmt, since_ns=since_ns,
+                include_content=want_content, config=config,
+            )
+        else:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                counts = exporter_bulk.export(
+                    fh, fmt=args.fmt, since_ns=since_ns,
+                    include_content=want_content, config=config,
+                )
+        # status to stderr so stdout stays clean for `--out -`
+        msg = (f"Exported {counts['telemetry']} telemetry records"
+               + (f" + {counts['sessions']} sessions" if counts["sessions"] else "")
+               + (" (content INCLUDED, redacted)" if counts["content_included"]
+                  else " (structural only)")
+               + (f" -> {out_path}" if out_path != "-" else ""))
+        print(msg, file=_sys.stderr)
+        return
+
+    print(f"Unknown telemetry action: {action}")
+    print("Use: status | preview | export")
 
 
 def cmd_skills(args):
@@ -13711,6 +13901,9 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+
+    # telemetry command (parser in hermes_cli/subcommands/telemetry.py)
+    build_telemetry_parser(subparsers, cmd_telemetry=cmd_telemetry)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

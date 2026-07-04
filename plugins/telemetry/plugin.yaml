@@ -1,0 +1,12 @@
+name: telemetry
+version: 1.0.0
+description: "Local-first telemetry & observability. Records runs, model calls, tool calls, and errors to a local event log + state.db index via plugin hooks — no agent action, no content, no network. Powers /usage, /insights, and local dashboards."
+author: NousResearch
+hooks:
+  - post_api_request
+  - api_request_error
+  - post_tool_call
+  - on_session_start
+  - on_session_finalize
+  - subagent_start
+  - subagent_stop

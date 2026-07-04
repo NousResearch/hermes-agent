@@ -761,7 +761,11 @@ class TestPluginHooks:
         mgr.discover_and_load()
 
         assert mgr.has_hook("pre_api_request") is True
-        assert mgr.has_hook("post_api_request") is False
+        # Negative sentinel: a hook no plugin (user or bundled) registers, proving
+        # that registering pre_api_request doesn't conjure an unrelated hook.
+        # (post_api_request is now registered by the bundled telemetry plugin, so
+        # it is no longer a valid "nothing registered this" sentinel.)
+        assert mgr.has_hook("transform_terminal_output") is False
         results = mgr.invoke_hook(
             "pre_api_request",
             session_id="s1",

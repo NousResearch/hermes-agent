@@ -81,6 +81,19 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def _fmt_ms(ms: float) -> str:
+    """Compact human duration from milliseconds (e.g. 850ms, 2.4s, 1.5m)."""
+    try:
+        ms = float(ms or 0)
+    except (TypeError, ValueError):
+        return "0ms"
+    if ms < 1000:
+        return f"{int(ms)}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    return f"{ms / 60_000:.1f}m"
+
+
 class InsightsEngine:
     """
     Analyzes session history and produces usage insights.
@@ -138,6 +151,7 @@ class InsightsEngine:
                 },
                 "activity": {},
                 "top_sessions": [],
+                "telemetry": {},
             }
 
         # Compute insights
@@ -148,6 +162,7 @@ class InsightsEngine:
         skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
+        telemetry = self._compute_telemetry(cutoff)
 
         return {
             "days": days,
@@ -161,7 +176,36 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "telemetry": telemetry,
         }
+
+    # =========================================================================
+    # Telemetry (observability) — from the tel_* tables (local telemetry)
+    # =========================================================================
+
+    def _compute_telemetry(self, cutoff: float) -> Dict[str, Any]:
+        """Roll up the local telemetry tables for the same window.
+
+        Reuses the engine's existing connection. Fully fail-soft: if the tel_*
+        tables are empty or absent (telemetry.local disabled, fresh install), this
+        returns an empty dict and the renderer skips the section.
+        """
+        try:
+            from agent.telemetry import metrics
+        except Exception:
+            return {}
+        try:
+            since_ns = int(cutoff * 1e9)
+            if not metrics.has_data(conn=self._conn):
+                return {}
+            return {
+                "workflows": metrics.workflow_summary(since_ns=since_ns, conn=self._conn),
+                "model_calls": metrics.model_call_summary(since_ns=since_ns, conn=self._conn),
+                "tool_calls": metrics.tool_call_summary(conn=self._conn),
+                "errors": metrics.error_summary(conn=self._conn),
+            }
+        except Exception:
+            return {}
 
     # =========================================================================
     # Data gathering (SQL queries)
@@ -852,7 +896,79 @@ class InsightsEngine:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
             lines.append("")
 
+        # Telemetry / observability (local telemetry) — only when data exists
+        tel = report.get("telemetry") or {}
+        if tel:
+            self._append_telemetry_section(lines, tel)
+
         return "\n".join(lines)
+
+    def _append_telemetry_section(self, lines: List[str], tel: Dict[str, Any]) -> None:
+        """Render the observability rollups (workflows, tools, providers, errors)."""
+        wf = tel.get("workflows", {})
+        mc = tel.get("model_calls", {})
+        tc = tel.get("tool_calls", {})
+        errs = tel.get("errors", {}).get("by_class", {})
+
+        lines.append("  📡 Observability (local telemetry)")
+        lines.append("  " + "─" * 56)
+
+        total_runs = wf.get("total_runs", 0)
+        if total_runs:
+            sr = wf.get("success_rate", 0.0) * 100
+            p50 = wf.get("duration_ms_p50", 0)
+            p95 = wf.get("duration_ms_p95", 0)
+            lines.append(
+                f"  Workflows: {total_runs:,}   Success: {sr:.1f}%   "
+                f"Duration p50/p95: {_fmt_ms(p50)} / {_fmt_ms(p95)}"
+            )
+            by_entry = wf.get("by_entrypoint", {})
+            if by_entry:
+                entry_str = ", ".join(
+                    f"{k}: {v}" for k, v in sorted(by_entry.items(), key=lambda x: -x[1])
+                )
+                lines.append(f"  Entrypoints: {entry_str}")
+
+        # Tool reliability
+        if tc.get("total"):
+            fail_pct = tc.get("failure_rate", 0.0) * 100
+            lines.append(
+                f"  Tool calls: {tc['total']:,}   Failure rate: {fail_pct:.1f}%"
+            )
+            tools = tc.get("by_tool", {})
+            fails = tc.get("failures_by_tool", {})
+            top = sorted(tools.items(), key=lambda x: -x[1])[:6]
+            if top:
+                parts = []
+                for name, n in top:
+                    f = fails.get(name, 0)
+                    parts.append(f"{name}: {n}" + (f" ({f} failed)" if f else ""))
+                lines.append("    " + "   ".join(parts))
+
+        # Provider / model mix + cache (real names)
+        by_provider = mc.get("by_provider", {})
+        if by_provider:
+            prov_str = ", ".join(
+                f"{k}: {v}" for k, v in sorted(by_provider.items(), key=lambda x: -x[1])
+            )
+            lines.append(f"  Providers: {prov_str}")
+        by_model = mc.get("by_model", {})
+        if by_model:
+            model_str = ", ".join(
+                f"{k}: {v}" for k, v in sorted(by_model.items(), key=lambda x: -x[1])[:8]
+            )
+            cache = mc.get("cache_hit_rate", 0.0) * 100
+            suffix = f"   Cache hit: {cache:.1f}%" if cache else ""
+            lines.append(f"  Models: {model_str}{suffix}")
+
+        # Error classes
+        if errs:
+            err_str = ", ".join(
+                f"{k}: {v}" for k, v in sorted(errs.items(), key=lambda x: -x[1])[:6]
+            )
+            lines.append(f"  Errors: {err_str}")
+
+        lines.append("")
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""

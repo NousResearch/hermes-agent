@@ -1950,7 +1950,61 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
-    
+
+    # Telemetry & observability. Three settings, isolated from each other:
+    #   local        — full-fidelity local observability the user owns (real
+    #                  models, providers, tool names). Default ON.
+    #   aggregate    — opt-in metadata to Nous (no uploader ships yet). Default OFF.
+    #   trajectories — content trajectories for training. Separate consent (not here yet).
+    #
+    # Enterprise locking: any telemetry.* key can be pinned by an administrator via
+    # the managed-scope layer (/etc/hermes/config.yaml), which wins over the user's
+    # value on a per-key basis. There is no telemetry-specific policy block — pin
+    # e.g. `telemetry.allow_aggregate: false` in managed scope to hard-forbid egress.
+    "telemetry": {
+        # Local telemetry: event log + SQLite index in state.db. The user's own data;
+        # never leaves the machine unless they export it or opt into aggregate metrics.
+        "local": True,
+        # Hard gate for aggregate metrics. When False, aggregate metrics are off
+        # regardless of consent_state. Intended to be pinned False by an administrator
+        # via managed scope on locked-down or air-gapped deployments. Default True
+        # (consent_state still governs the opt-in).
+        "allow_aggregate": True,
+        # Aggregate-metrics consent — the single source of truth for the opt-in:
+        # "unknown" (no choice made — never uploads), "local" (declined),
+        # "aggregate" (opted in). Set with `hermes config set telemetry.consent_state`
+        # or a managed-scope pin. Non-interactive installs sit at "unknown".
+        "consent_state": "unknown",
+        # Stable install identifier (aggregate metrics only). Empty string means "mint a
+        # fresh UUID on first use"; clear it to rotate. Never sent by local telemetry.
+        "install_id": "",
+        # Local event-log retention before rotation (days). Local telemetry only.
+        "retention_days": 90,
+        # Keep secret redaction on even at full local capture (a SIEM full of live
+        # credentials is a bigger attack target). Admin may override via managed scope.
+        "redact_secrets": True,
+        # Content redaction for exports / support bundles: "none" | "pii".
+        "content_redaction": "none",
+        # Trajectories: full message content / reasoning / raw tool args.
+        # Off by default. When enabled, full content becomes exportable to the
+        # configured destination — always secret-redacted, and PII-redacted per
+        # content_redaction. This is the consent gate for content export and is
+        # admin-pinnable via managed scope. It does not enable any upload.
+        "trajectories": {
+            "enabled": False,
+        },
+        # Exporters. The OTLP exporter sends to a configured Collector endpoint;
+        # endpoint headers reference environment variable names rather than inline
+        # secrets.
+        "export": {
+            "otlp": {
+                "enabled": False,
+                "endpoint": None,
+                "headers_env": {},  # {"Authorization": "MY_OTLP_TOKEN_ENVVAR"}
+            },
+        },
+    },
+
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented

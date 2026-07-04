@@ -71,6 +71,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 import uuid
@@ -89,10 +90,11 @@ logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    CachedMedia,
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_bytes,
+    cache_media_bytes,
 )
 from gateway.config import Platform
 
@@ -129,7 +131,12 @@ DEFAULT_DELIVERED_TEXT = "Already replied ✅"
 DEFAULT_INTERRUPTED_TEXT = "Run was interrupted before completion."
 
 # Media defaults
-MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
+#
+# LINE clients fetch originalContentUrl when the user taps play, which can be
+# hours after the message was sent — a 30-minute TTL caused 410s on delayed
+# playback. 24h keeps tokens valid across a normal day while still bounding
+# the serving window.
+MEDIA_TOKEN_TTL_SECONDS = 24 * 3600
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
 
@@ -954,11 +961,21 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
-            if local_path:
-                media_urls.append(local_path)
-                media_types.append(msg_type)
-            text = f"[{msg_type}]"
+            cached = await self._download_media(
+                message_id, msg_type, file_name=msg.get("fileName", "") or ""
+            )
+            if cached:
+                media_urls.append(cached.path)
+                media_types.append(cached.media_type)
+                # Videos and files have no gateway enrichment pipeline (unlike
+                # images/voice), so the transcript note is how the agent
+                # learns the local path to pass to video_analyze etc.
+                if msg_type in {"video", "file"}:
+                    text = cached.context_note()
+                else:
+                    text = f"[{msg_type}]"
+            else:
+                text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
             text = f"[sticker: {', '.join(keywords)}]" if keywords else "[sticker]"
@@ -1052,7 +1069,9 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self, message_id: str, msg_type: str, file_name: str = ""
+    ) -> Optional[CachedMedia]:
         if not self._client or not message_id:
             return None
         try:
@@ -1060,17 +1079,26 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+        # LINE serves images as JPEG, voice clips as AAC/M4A, videos as MP4.
+        # "file" messages carry the original fileName in the webhook payload.
+        if not file_name:
+            file_name = {
+                "image": "line_image.jpg",
+                "audio": "line_voice.m4a",
+                "video": "line_video.mp4",
+            }.get(msg_type, "")
+        default_kind = msg_type if msg_type in {"image", "audio", "video"} else None
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            cached = cache_media_bytes(data, filename=file_name, default_kind=default_kind)
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None
+        if cached is None:
+            logger.warning(
+                "LINE: %s payload not cached (invalid or unsupported type, filename=%r)",
+                msg_type, file_name,
+            )
+        return cached
 
     # ------------------------------------------------------------------
     # Outbound send (text)
@@ -1234,6 +1262,43 @@ class LineAdapter(BasePlatformAdapter):
     # Outbound media (image / voice / video)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _serve_allowed_roots() -> Set[Path]:
+        """Roots ``_handle_media`` will serve from (tmp dirs + HERMES_HOME)."""
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home()).resolve()
+        except Exception:
+            hermes_home = Path.home().joinpath(".hermes").resolve()
+        return {
+            Path(tempfile.gettempdir()).resolve(),
+            Path("/tmp").resolve(),  # → /private/tmp on macOS
+            hermes_home,
+        }
+
+    def _ensure_servable(self, path: Path) -> Tuple[Path, bool]:
+        """Return a path ``_handle_media`` is allowed to serve.
+
+        Files already under an allowed root are served in place. Anything
+        else (e.g. an Obsidian vault on Google Drive) is copied into
+        ``HERMES_HOME/cache/line_media/`` so the serving guard doesn't 403
+        LINE's fetch; the copy is temp-tracked and unlinked when its token
+        expires. Returns ``(servable_path, is_temp_copy)``.
+        """
+        resolved = path.resolve()
+        if any(_is_relative_to(resolved, r) for r in self._serve_allowed_roots()):
+            return resolved, False
+        try:
+            from hermes_constants import get_hermes_home
+            cache_dir = Path(get_hermes_home()) / "cache" / "line_media"
+        except Exception:
+            cache_dir = Path.home() / ".hermes" / "cache" / "line_media"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        copy_path = cache_dir / f"{uuid.uuid4().hex[:12]}_{resolved.name}"
+        shutil.copyfile(resolved, copy_path)
+        logger.info("LINE: copied out-of-root media into serving cache: %s", copy_path)
+        return copy_path.resolve(), True
+
     def _register_media(self, file_path: str, *, cleanup: bool = False) -> str:
         """Register a local file for HTTPS serving; return the URL token."""
         # Evict expired tokens first.
@@ -1295,19 +1360,8 @@ class LineAdapter(BasePlatformAdapter):
         if not path.exists() or not path.is_file():
             return web.Response(status=404, text="not found")
 
-        try:
-            from hermes_constants import get_hermes_home
-            hermes_home = Path(get_hermes_home()).resolve()
-        except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
-
-        allowed_roots = {
-            Path(tempfile.gettempdir()).resolve(),
-            Path("/tmp").resolve(),  # → /private/tmp on macOS
-            hermes_home,
-        }
         resolved = path.resolve()
-        if not any(_is_relative_to(resolved, r) for r in allowed_roots):
+        if not any(_is_relative_to(resolved, r) for r in self._serve_allowed_roots()):
             logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
             return web.Response(status=403, text="forbidden")
 
@@ -1338,7 +1392,8 @@ class LineAdapter(BasePlatformAdapter):
                 "(LINE only accepts publicly reachable HTTPS URLs)",
             )
 
-        token = self._register_media(str(path.resolve()))
+        servable, is_temp = self._ensure_servable(path)
+        token = self._register_media(str(servable), cleanup=is_temp)
         url = self._media_url(token, path.name)
         if not url.lower().startswith("https://"):
             return SendResult(success=False, error=f"LINE image URL must be HTTPS: {url}")
@@ -1367,7 +1422,8 @@ class LineAdapter(BasePlatformAdapter):
                 error="LINE_PUBLIC_URL must be set to send audio",
             )
 
-        token = self._register_media(str(path.resolve()))
+        servable, is_temp = self._ensure_servable(path)
+        token = self._register_media(str(servable), cleanup=is_temp)
         url = self._media_url(token, path.name)
         return await self._send_messages(chat_id, [_audio_message(url, duration_ms)])
 
@@ -1394,7 +1450,8 @@ class LineAdapter(BasePlatformAdapter):
         # LINE requires a previewImageUrl. Use one if supplied, otherwise
         # write a stdlib 1×1 PNG to /tmp and serve it. PR #8398.
         if preview_path and Path(preview_path).is_file():
-            preview_token = self._register_media(str(Path(preview_path).resolve()))
+            p_servable, p_is_temp = self._ensure_servable(Path(preview_path))
+            preview_token = self._register_media(str(p_servable), cleanup=p_is_temp)
             preview_filename = Path(preview_path).name
         else:
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -1411,7 +1468,8 @@ class LineAdapter(BasePlatformAdapter):
                     pass
                 raise
 
-        video_token = self._register_media(str(path.resolve()))
+        servable, is_temp = self._ensure_servable(path)
+        video_token = self._register_media(str(servable), cleanup=is_temp)
         video_url = self._media_url(video_token, path.name)
         preview_url = self._media_url(preview_token, preview_filename)
         return await self._send_messages(chat_id, [_video_message(video_url, preview_url)])

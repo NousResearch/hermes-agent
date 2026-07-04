@@ -156,6 +156,33 @@ def test_write_json_peer_gone_oserror_on_flush_returns_false(server):
     assert written and json.loads(written[0]) == {"x": 1}
 
 
+def test_write_json_windows_einval_on_write_returns_false(server):
+    """Windows can report a detached stdout pipe as EINVAL instead of EPIPE."""
+    import errno
+
+    class _DetachedStdout:
+        def write(self, _): raise OSError(errno.EINVAL, "Invalid argument")
+        def flush(self): pass
+
+    server._real_stdout = _DetachedStdout()
+    assert server.write_json({"x": 1}) is False
+
+
+def test_write_json_windows_einval_on_flush_returns_false(server):
+    """Flush can also surface Windows detached stdout as EINVAL."""
+    import errno
+
+    written = []
+
+    class _DetachedFlush:
+        def write(self, line): written.append(line)
+        def flush(self): raise OSError(errno.EINVAL, "Invalid argument")
+
+    server._real_stdout = _DetachedFlush()
+    assert server.write_json({"x": 1}) is False
+    assert written and json.loads(written[0]) == {"x": 1}
+
+
 def test_write_json_non_peer_gone_oserror_re_raises(server):
     """Host I/O failures (ENOSPC, EACCES, EIO …) are NOT peer-gone — they
     must re-raise so the crash log records them instead of looking like

@@ -37,6 +37,7 @@ _PEER_GONE_ERRNOS = frozenset({
     errno.EPIPE,        # write to closed pipe (POSIX)
     errno.ECONNRESET,   # peer reset the connection
     errno.EBADF,        # fd closed under us
+    errno.EINVAL,       # Windows detached stdout can report invalid argument
     errno.ESHUTDOWN,    # transport endpoint shut down
     getattr(errno, "WSAECONNRESET", -1),  # win32 mapping (no-op on POSIX)
     getattr(errno, "WSAESHUTDOWN", -1),

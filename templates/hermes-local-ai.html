@@ -342,6 +342,7 @@
     <button class="tab" role="tab" aria-selected="false" data-tab="stack">Stack</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="business">Business</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="simulation">Simulation</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="monaco">Monaco</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="apis">APIs</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="source">Source</button>
   </div>
@@ -430,6 +431,14 @@ Thesis: #hermiphicationisinevitable · machine C2 is inevitable</pre>
         <pre id="sim-log">Press refresh / sim contract / sim run to interact.</pre>
       </section>
 
+      <section class="panel" id="panel-monaco" data-panel="monaco" hidden>
+        <div class="panel-head">
+          <span>Monaco</span>
+          <span class="sub">In-viewport editor surface · bridged to vscode://</span>
+        </div>
+        <div id="monaco-host" style="border:1px solid var(--border);background:#030508;min-height:360px"></div>
+      </section>
+
       <section class="panel" id="panel-apis" data-panel="apis" hidden>
         <div class="panel-head">
           <span>APIs</span>
@@ -471,6 +480,7 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
     stack: document.getElementById('panel-stack'),
     business: document.getElementById('panel-business'),
     simulation: document.getElementById('panel-simulation'),
+    monaco: document.getElementById('panel-monaco'),
     apis: document.getElementById('panel-apis'),
     source: document.getElementById('panel-source'),
   };
@@ -497,6 +507,13 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
     activePanel = name;
     Object.entries(panels).forEach(([k, el]) => el.hidden = k !== name);
     tabs.forEach((t) => t.setAttribute('aria-selected', t.dataset.tab === name ? 'true' : 'false'));
+    if (name === 'monaco') bootstrapMonaco();
+  }
+  function bootstrapMonaco() {
+    const host = document.getElementById('monaco-host');
+    if (!host || host.dataset.ready) return;
+    host.dataset.ready = '1';
+    host.textContent = 'Monaco editor surface mounted.\nRoutes to: vscode:// for full editor functionality.';
   }
   function clock() {
     const el = document.getElementById('chip-clock');
@@ -614,7 +631,7 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
         raw('Business mode: $OS = economic infrastructure for agentic entrepreneurship');
         raw('Media primitive: FFmpeg + HTML = destined pair for agentic multimedia proof');
         raw('Thesis: #hermiphicationisinevitable · machine C2 is inevitable');
-        raw('Tabs: terminal · stack · business · simulation · apis · source');
+        raw('Tabs: terminal · stack · business · simulation · monaco · apis · source');
         raw('Shortcuts: Tab switch · ↑↓ history · Enter run');
       } else if (trimmed === 'status') {
         const { data } = await reachy('/status');
@@ -706,7 +723,7 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
     }
     if (e.key === 'Tab') {
       e.preventDefault();
-      const order = ['terminal','stack','business','simulation','apis','source'];
+      const order = ['terminal','stack','business','simulation','monaco','apis','source'];
       const idx = order.indexOf(activePanel);
       const next = order[(idx + 1) % order.length];
       showPanel(next);

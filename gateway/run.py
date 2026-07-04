@@ -6135,7 +6135,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
-        if context.startswith("shutdown"):
+        if context.startswith("shutdown") or context == "session expiry":
             try:
                 agent._end_session_on_close = False
             except Exception:

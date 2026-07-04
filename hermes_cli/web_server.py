@@ -1120,6 +1120,8 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+_STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -1168,6 +1170,45 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+def _count_status_active_sessions() -> int:
+    """Return the dashboard status active-session count.
+
+    This is best-effort status garnish, not a critical path.  Use a read-only
+    connection so /api/status never tries to initialise or migrate state.db
+    while another Hermes process is writing to it.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(read_only=True)
+    try:
+        sessions = db.list_sessions_rich(limit=50)
+        now = time.time()
+        return sum(
+            1 for s in sessions
+            if s.get("ended_at") is None
+            and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        )
+    finally:
+        db.close()
+
+
+async def _status_active_sessions() -> int:
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _count_status_active_sessions),
+            timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        _log.debug(
+            "/api/status active session count exceeded %.2fs; returning 0",
+            _STATUS_ACTIVE_SESSIONS_TIMEOUT,
+        )
+    except Exception as exc:
+        _log.debug("/api/status active session count unavailable: %s", exc)
+    return 0
 
 
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
@@ -2485,22 +2526,7 @@ async def get_status(profile: Optional[str] = None):
         if gateway_running and gateway_state is None and remote_health_body is not None:
             gateway_state = "running"
 
-        active_sessions = 0
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-            try:
-                sessions = db.list_sessions_rich(limit=50)
-                now = time.time()
-                active_sessions = sum(
-                    1 for s in sessions
-                    if s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            finally:
-                db.close()
-        except Exception:
-            pass
+        active_sessions = await _status_active_sessions()
 
         # Busy/drainable readout (NAS lifecycle-safety gate).  active_agents is
         # the in-flight gateway-turn count the gateway now persists at every

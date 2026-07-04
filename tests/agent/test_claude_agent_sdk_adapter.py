@@ -1025,3 +1025,64 @@ def test_workflow_task_failure_marks_result(monkeypatch):
     adp.create_claude_agent_message(agent, _api_kwargs())
     # A terminal TaskUpdated(failed) resolves the chip and marks the failure.
     assert completes and completes[0].startswith("[failed]")
+
+
+# ---------------------------------------------------------------------------
+# Durable session store (resume survives a gateway restart)
+# ---------------------------------------------------------------------------
+def test_session_store_roundtrip():
+    adp._store_session("hermes-1", "sess-abc", "/proj")
+    assert adp._lookup_stored_session("hermes-1", "/proj") == "sess-abc"
+    # A session created under another cwd must not be resumed.
+    assert adp._lookup_stored_session("hermes-1", "/elsewhere") is None
+    adp._forget_stored_session("hermes-1")
+    assert adp._lookup_stored_session("hermes-1", "/proj") is None
+
+
+def test_resume_survives_new_agent(monkeypatch):
+    """A fresh agent object (what a gateway restart produces) resumes from
+    the durable store instead of starting the conversation from zero."""
+    capture1 = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok", "session_id": "sess-abc"},
+                          capture=capture1)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(session_id="hermes-1")
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    assert getattr(capture1["options"], "resume", None) is None
+
+    capture2 = {}
+    fake2 = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                           result_kwargs={"result": "ok", "session_id": "sess-abc"},
+                           capture=capture2)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake2)
+    fresh = _agent(session_id="hermes-1")  # new object, same Hermes session
+    adp.create_claude_agent_message(fresh, _api_kwargs())
+    assert capture2["options"].resume == "sess-abc"
+
+
+def test_stale_resume_retries_fresh(monkeypatch):
+    """A stored resume id the CLI no longer knows is forgotten and the turn
+    retried once from a fresh session, instead of failing every turn."""
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok", "session_id": "sess-old"})
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    adp.create_claude_agent_message(_agent(session_id="hermes-1"), _api_kwargs())
+
+    calls = {"n": 0}
+
+    async def _failing_resume_query(*, prompt, options):
+        calls["n"] += 1
+        if getattr(options, "resume", None):
+            raise RuntimeError("No conversation found with session ID sess-old")
+        yield _FakeAssistantMessage([_FakeTextBlock("fresh ok")])
+        yield _FakeResultMessage(result="fresh ok", session_id="sess-new")
+
+    fake.query = _failing_resume_query
+    fresh = _agent(session_id="hermes-1")
+    msg = adp.create_claude_agent_message(fresh, _api_kwargs())
+    assert calls["n"] == 2
+    assert any(getattr(b, "text", None) == "fresh ok" for b in msg.content)
+    # The stale id was replaced by the new session in the store.
+    cwd = getattr(fresh, "_claude_sdk_session_cwd")
+    assert adp._lookup_stored_session("hermes-1", cwd) == "sess-new"

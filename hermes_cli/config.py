@@ -2071,6 +2071,15 @@ DEFAULT_CONFIG = {
         "turn_isolation": False,
         "compute_host_heartbeat_secs": 15,
         "compute_host_respawn_max": 3,
+        # Shutdown/liveness tuning for headless dashboard deployments. Loopback
+        # WebSocket pings stay disabled by default for local Desktop stability;
+        # set ws_ping_interval/ws_ping_timeout > 0 when 127.0.0.1 is reached
+        # through a reverse proxy or SSH tunnel and half-open sockets need
+        # active detection.
+        "graceful_shutdown_timeout": 2.0,  # seconds for uvicorn graceful wait
+        "hard_exit_grace": 5.0,  # seconds before SIGTERM fallback os._exit(0)
+        "ws_ping_interval": 0.0,  # 0 = default (off on loopback, 20s on public)
+        "ws_ping_timeout": 0.0,  # 0 = default (off on loopback, 20s on public)
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

@@ -35,6 +35,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -132,6 +133,107 @@ except ImportError:
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
+
+# Bound uvicorn's graceful shutdown below ``hermes dashboard --stop``'s 3s
+# SIGTERM poll so both systemd and the in-repo stop command avoid unbounded
+# waits on open WebSocket tasks.
+_DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT = 2.0
+_DASHBOARD_HARD_EXIT_GRACE = 5.0
+
+
+def _signal_name(signum: int) -> str:
+    for attr in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, attr, None)
+        if sig is not None and int(sig) == int(signum):
+            return attr
+    return f"signal {signum}"
+
+
+def _arm_dashboard_hard_exit_failsafe(signum: int, grace: float) -> None:
+    """Force dashboard exit if graceful shutdown stalls past the grace window."""
+
+    def _hard_exit() -> None:
+        try:
+            os.write(
+                2,
+                (
+                    f"Dashboard shutdown still running {grace:.1f}s after "
+                    f"{_signal_name(signum)}; forcing process exit\n"
+                ).encode("utf-8", errors="replace"),
+            )
+        except Exception:
+            pass
+        os._exit(0)
+
+    timer = threading.Timer(grace, _hard_exit)
+    timer.daemon = True
+    timer.start()
+
+
+def _positive_dashboard_seconds(
+    config: Dict[str, Any],
+    key: str,
+    default: float | None,
+) -> float | None:
+    value = cfg_get(config, "dashboard", key, default=default)
+    if value in (None, ""):
+        return default
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return default
+    return seconds if math.isfinite(seconds) and seconds > 0 else default
+
+
+def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[float, float]:
+    graceful = _positive_dashboard_seconds(
+        config,
+        "graceful_shutdown_timeout",
+        _DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT,
+    )
+    if graceful is None:
+        graceful = _DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT
+    hard_exit = _positive_dashboard_seconds(
+        config,
+        "hard_exit_grace",
+        _DASHBOARD_HARD_EXIT_GRACE,
+    )
+    if hard_exit is None:
+        hard_exit = _DASHBOARD_HARD_EXIT_GRACE
+    return graceful, max(hard_exit, graceful + 2.0)
+
+
+def _dashboard_ws_ping(
+    config: Dict[str, Any],
+    *,
+    is_loopback: bool,
+) -> tuple[float | None, float | None]:
+    default_interval = None if is_loopback else 20.0
+    default_timeout = None if is_loopback else 20.0
+    interval = _positive_dashboard_seconds(config, "ws_ping_interval", default_interval)
+    timeout = _positive_dashboard_seconds(config, "ws_ping_timeout", default_timeout)
+    if interval is not None and timeout is None:
+        timeout = interval
+    elif timeout is not None and interval is None:
+        interval = timeout
+    return interval, timeout
+
+
+def _install_dashboard_sigterm_escalation(server: Any, *, hard_exit_grace: float) -> None:
+    """Treat a repeated SIGTERM like uvicorn treats repeated SIGINT."""
+    original_handle_exit = server.handle_exit
+    failsafe_armed = False
+
+    def _handle_exit(sig: int, frame: Any) -> None:
+        nonlocal failsafe_armed
+        if sig == signal.SIGTERM and not failsafe_armed:
+            failsafe_armed = True
+            _arm_dashboard_hard_exit_failsafe(sig, hard_exit_grace)
+        if sig == signal.SIGTERM and getattr(server, "should_exit", False):
+            server.force_exit = True
+        original_handle_exit(sig, frame)
+
+    server.handle_exit = _handle_exit
 
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
@@ -844,6 +946,22 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "Web dashboard visual theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+    },
+    "dashboard.graceful_shutdown_timeout": {
+        "type": "number",
+        "description": "Seconds uvicorn waits for dashboard connections/tasks during shutdown",
+    },
+    "dashboard.hard_exit_grace": {
+        "type": "number",
+        "description": "Seconds before SIGTERM forces dashboard process exit if shutdown stalls",
+    },
+    "dashboard.ws_ping_interval": {
+        "type": "number",
+        "description": "WebSocket ping interval seconds (0 = off on loopback, 20 on public binds)",
+    },
+    "dashboard.ws_ping_timeout": {
+        "type": "number",
+        "description": "WebSocket ping timeout seconds (0 = off on loopback, 20 on public binds)",
     },
     "display.resume_display": {
         "type": "select",
@@ -19828,26 +19946,24 @@ def start_server(
     # For explicit non-zero ports, if the port is taken uvicorn catches
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
-    # Loopback binds are the Desktop case: a single local client, no reverse
-    # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
-    # as agent turns, and a single synchronous GIL-holding call on a worker
-    # thread (e.g. a regex/scrub over a large model output, or a long
-    # delegate_task subagent turn) can starve that loop for *minutes* — the
-    # loop cannot process the incoming pong, so uvicorn declares the socket
-    # dead and closes it, dropping an otherwise-healthy local connection
-    # (#53773: "event loop stalled 226.3s"; #48445/#50005). A longer timeout
-    # only raises the threshold — a multi-minute stall sails past any finite
-    # window. The keepalive ping exists to detect *half-open* connections
-    # (reverse-proxy 524, dropped tunnels), which cannot happen on loopback:
-    # there is no network or proxy in the path, and a dead local client tears
-    # the socket down with a real FIN/RST that starlette surfaces as
-    # WebSocketDisconnect regardless of the ping. So on loopback the ping
-    # provides ~no liveness value while actively killing recoverable stalls —
-    # disable it entirely. Non-loopback binds sit behind a Cloudflare Tunnel
-    # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
-    # ping at 20/20 to detect it promptly and stay under the tunnel's idle
-    # window.
+    # Loopback binds are usually the Desktop case: a single local client.
+    # uvicorn's ws keepalive ping runs ON the same event loop as agent turns,
+    # and a synchronous GIL-holding worker call can starve that loop long
+    # enough to falsely kill a healthy local connection (#53773, #48445,
+    # #50005). Keep loopback pings disabled by default for that case, but let
+    # headless 127.0.0.1 deployments reached through a reverse proxy or SSH
+    # tunnel opt back in with dashboard.ws_ping_interval/ws_ping_timeout so
+    # half-open proxy/tunnel sockets are reaped. Non-loopback binds keep the
+    # 20/20 default for public half-open detection.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    _dashboard_config = load_config()
+    _ws_ping_interval, _ws_ping_timeout = _dashboard_ws_ping(
+        _dashboard_config,
+        is_loopback=_is_loopback,
+    )
+    _graceful_shutdown_timeout, _hard_exit_grace = _dashboard_shutdown_timeouts(
+        _dashboard_config
+    )
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -19861,11 +19977,15 @@ def start_server(
         # Half-open detection for public binds only (see above). Loopback
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still
-        # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        # reaped via the WebSocketDisconnect → disconnect/reap path. Headless
+        # loopback deployments behind a reverse proxy/SSH tunnel can opt back
+        # in with dashboard.ws_ping_interval / dashboard.ws_ping_timeout.
+        ws_ping_interval=_ws_ping_interval,
+        ws_ping_timeout=_ws_ping_timeout,
+        timeout_graceful_shutdown=_graceful_shutdown_timeout,
     )
     server = uvicorn.Server(config)
+    _install_dashboard_sigterm_escalation(server, hard_exit_grace=_hard_exit_grace)
 
     async def _serve():
         # Split startup from main_loop so we can read the bound port

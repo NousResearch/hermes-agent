@@ -142,6 +142,7 @@ def _stub_uvicorn_run(monkeypatch):
 
     class _FakeServer:
         should_exit = False
+        force_exit = False
         started = True
         servers: list = []
         lifespan = None
@@ -159,7 +160,11 @@ def _stub_uvicorn_run(monkeypatch):
         async def shutdown(self, sockets=None):
             pass
 
+        def handle_exit(self, sig, frame):
+            self.should_exit = True
+
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
+    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {}})
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
 

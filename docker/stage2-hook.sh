@@ -74,9 +74,16 @@ EOF
 fi
 
 # --- Bootstrap HERMES_HOME as root ---
-# /opt/data is expected to be pre-created by the host (PVC, bind mount, etc.).
-# We skip `mkdir -p` here because in rootless environments the container
-# cannot create directories under /opt.
+# Create the directory (and any missing parents) while we still have root
+# privileges so the chown checks below see real metadata and the later
+# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# ancestors. Without this, custom HERMES_HOME paths whose parents only
+# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
+# file, or any path under a fresh / not pre-populated by the image)
+# fail on first boot with `mkdir: cannot create directory '/...': Permission
+# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
+# is a no-op if the dir already exists. (#18482, salvages #18488)
+mkdir -p "$HERMES_HOME"
 
 # Numeric UID/GID validation: must be digits only, non-root, 1-65534.
 # NAS hosts such as Unraid commonly use low non-root IDs (99:100).
@@ -204,8 +211,43 @@ refuse_symlinked_path() {
     return 1
 }
 
-# chown is skipped in rootless environments where the container cannot
-# change ownership of host-mounted volumes.
+chown_hermes_tree() {
+    target="$1"
+    if refuse_symlinked_path "recursive chown" "$target"; then
+        return 0
+    fi
+    chown -R hermes:hermes "$target" 2>/dev/null || \
+        echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
+}
+
+needs_chown=false
+if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+    needs_chown=true
+fi
+if [ "$needs_chown" = true ]; then
+    echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
+    # In rootless Podman the container's "root" is mapped to an
+    # unprivileged host UID — chown will fail. That's fine: the volume
+    # is already owned by the mapped user on the host side.
+    #
+    # Top-level $HERMES_HOME: chown the directory itself (not its contents)
+    # so hermes can mkdir new subdirs but bind-mounted host files keep
+    # their existing ownership.
+    if refuse_symlinked_path "chown" "$HERMES_HOME"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+            echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    fi
+    # Hermes-owned subdirs: recursive chown is safe here because these are
+    # created and managed exclusively by hermes (see the s6-setuidgid mkdir
+    # -p block below for the canonical list).
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
+        if [ -e "$HERMES_HOME/$sub" ]; then
+            chown_hermes_tree "$HERMES_HOME/$sub"
+        fi
+    done
+fi
 
 # --- Immutable install tree ---
 # Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
@@ -226,8 +268,67 @@ refuse_symlinked_path() {
 # unprivileged runtime user, and it persists across container recreates /
 # image updates (an ABI stamp wipes it if a rebuild bumps the interpreter).
 
-# Profile, cron, and file ownership resets are skipped in rootless
-# environments where chown is not available.
+# Always reset ownership of $HERMES_HOME/profiles to hermes on every
+# boot. Profile dirs and files can land owned by root when commands
+# are invoked via `docker exec <container> hermes …` (which defaults
+# to root unless `-u` is passed), and that breaks the cont-init
+# reconciler (02-reconcile-profiles) which runs as hermes and walks
+# the profiles dir. Idempotent; skipped on rootless containers where
+# chown would fail.
+if [ -d "$HERMES_HOME/profiles" ]; then
+    chown_hermes_tree "$HERMES_HOME/profiles"
+fi
+
+# Always reset ownership of $HERMES_HOME/cron on every boot for the same
+# docker-exec/root-write reason as profiles/. The cron scheduler state
+# (jobs.json) must stay readable by the unprivileged hermes runtime even
+# after root-context maintenance commands or scheduler writes.
+if [ -d "$HERMES_HOME/cron" ]; then
+    chown_hermes_tree "$HERMES_HOME/cron"
+fi
+
+# Reset ownership of hermes-owned top-level state files on every boot.
+# The targeted data-volume chown above only covers hermes-owned
+# *subdirectories*; loose state files living directly under $HERMES_HOME
+# are missed. When those files are created or rewritten by
+# `docker exec <container> hermes …` (root unless `-u` is passed) they
+# land root-owned, and the unprivileged hermes runtime then hits
+# PermissionError on next startup (e.g. gateway.lock / state.db /
+# auth.json), producing a gateway restart loop.
+#
+# We use an explicit allowlist rather than a blanket `find -user root`
+# sweep so host-owned files in a bind-mounted $HERMES_HOME are never
+# touched — same targeted-ownership contract as the subdir chown above
+# (issue #19788, PR #19795). The list mirrors the top-level *file*
+# entries of hermes_cli.profile_distribution.USER_OWNED_EXCLUDE plus the
+# runtime lock files; keep them in sync if that set changes.
+for f in \
+    auth.json auth.lock .env \
+    state.db state.db-shm state.db-wal \
+    hermes_state.db \
+    response_store.db response_store.db-shm response_store.db-wal \
+    gateway.pid gateway.lock gateway_state.json processes.json \
+    active_profile; do
+    if [ -e "$HERMES_HOME/$f" ]; then
+        if refuse_symlinked_path "chown" "$HERMES_HOME/$f"; then
+            :
+        else
+            chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+        fi
+    fi
+done
+
+# --- config.yaml permissions ---
+# Ensure config.yaml is readable by the hermes runtime user even if it
+# was edited on the host after initial ownership setup.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/config.yaml"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    fi
+fi
 
 # --- Seed directory structure as hermes user ---
 # Run as hermes via s6-setuidgid so dirs end up owned correctly (matters
@@ -293,9 +394,10 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.
 if [ -f "$HERMES_HOME/.env" ]; then
-    if refuse_symlinked_path "chmod" "$HERMES_HOME/.env"; then
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/.env"; then
         :
     else
+        chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
     fi
 fi
@@ -319,6 +421,7 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
         :
     else
         printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/auth.json"
     fi
 fi
@@ -354,6 +457,7 @@ if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
         :
     else
         printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+        chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
         chmod 644 "$HERMES_HOME/gateway_state.json"
     fi
 fi

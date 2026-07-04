@@ -2,7 +2,16 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
@@ -338,6 +347,72 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     },
     [submitDraft]
   )
+
+  // Letter shortcuts: A/B/C… activate the visible key-badged rows, the
+  // trailing letter focuses "Other", and Enter submits staged multi-select
+  // choices. Stand down while a field is focused so normal typing is untouched.
+  useEffect(() => {
+    if (!ready || !hasChoices || submitting || expired) {
+      return
+    }
+
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+        return
+      }
+
+      const active = document.activeElement as HTMLElement | null
+      const tag = active?.tagName.toLowerCase()
+
+      if (tag === 'input' || tag === 'textarea' || active?.isContentEditable) {
+        return
+      }
+
+      if (event.key.length === 1) {
+        const index = event.key.toUpperCase().charCodeAt(0) - 65
+
+        if (index >= 0 && index < choices.length) {
+          event.preventDefault()
+          if (multiSelect) {
+            toggleMultiChoice(choices[index])
+          } else {
+            selectChoice(choices[index])
+          }
+
+          return
+        }
+
+        if (allowOther && index === choices.length) {
+          event.preventDefault()
+          textareaRef.current?.focus()
+        }
+
+        return
+      }
+
+      if (event.key === 'Enter' && multiSelect && canSubmitSelected && !trimmedDraft) {
+        event.preventDefault()
+        submitSelected()
+      }
+    }
+
+    window.addEventListener('keydown', handleShortcut)
+
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [
+    allowOther,
+    canSubmitSelected,
+    choices,
+    expired,
+    hasChoices,
+    multiSelect,
+    ready,
+    selectChoice,
+    submitSelected,
+    submitting,
+    toggleMultiChoice,
+    trimmedDraft
+  ])
 
   if (expired) {
     return (

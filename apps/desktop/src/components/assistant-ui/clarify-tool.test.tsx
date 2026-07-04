@@ -148,6 +148,46 @@ describe('ClarifyTool selection status UX', () => {
     expect(status.textContent).toContain('Past sessions')
   })
 
+  it('submits a single-choice answer from its letter shortcut', async () => {
+    const request = renderClarifyTool()
+
+    fireEvent.keyDown(window, { key: 'b' })
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'clarify.respond',
+        {
+          request_id: 'req-1',
+          answer: 'Local reports'
+        },
+        120_000
+      )
+    )
+  })
+
+  it('focuses Other from the trailing letter shortcut and submits it with Enter', async () => {
+    const request = renderClarifyTool()
+
+    fireEvent.keyDown(window, { key: 'd' })
+
+    const other = screen.getByRole('textbox', { name: 'Other (type your answer)' })
+    expect(document.activeElement).toBe(other)
+
+    fireEvent.change(other, { target: { value: 'Use a custom path' } })
+    fireEvent.keyDown(other, { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'clarify.respond',
+        {
+          request_id: 'req-1',
+          answer: 'Use a custom path'
+        },
+        120_000
+      )
+    )
+  })
+
   it('does not expose staged multi-select controls for single-choice prompts', () => {
     renderClarifyTool()
 
@@ -192,6 +232,30 @@ describe('ClarifyTool selection status UX', () => {
     expect(screen.getByText('Past sessions, Web sources')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Select selected' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'clarify.respond',
+        {
+          request_id: 'req-1',
+          answer: 'Past sessions, Web sources'
+        },
+        120_000
+      )
+    )
+  })
+
+  it('toggles multi-select choices by letter shortcut and submits them with Enter', async () => {
+    const request = renderClarifyTool(vi.fn().mockResolvedValue({ ok: true }), { multiSelect: true })
+
+    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(window, { key: 'c' })
+
+    expect(request).not.toHaveBeenCalled()
+    expect(screen.getByText('2 selected')).toBeTruthy()
+    expect(screen.getByText('Past sessions, Web sources')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
 
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith(

@@ -413,6 +413,32 @@ Opt-in via `--strict-preflight` (8 calls/model). **Live check (2026-07-04): PASS
 `deepseek` 8/8; both eval-duty models discriminate perfectly. No elicitation change, so no outcome
 gate; adopted as a standing (opt-in) instrument.
 
+## Answerability weighting (#30) — retro probe PARK (iteration two, 2026-07-04)
+
+Re-opened after #32 pinned the residual P4 gap on answerability (unanswerable 77% > 50%). Before
+spending a build, a **conditional full lap** (`nbq-improve`'s first real use as a protocol) ran a
+zero-model-call retro probe to test #30's *premise* — "kept high-EVSI unanswerable questions cause
+objective failure" — against the existing objective-harness output (`outcome_eval_32.json`:
+per-question EVSI `meta.q_values`, answerability `qa[i].revealed`, outcome `frac`). Probe:
+`evals/probe_answerability.py`.
+
+**Premise NOT supported (n=34).** Highest-EVSI-unanswerable × fail r=+0.052 (within SE, no
+association); any-unanswerable × fail is degenerate (97% base rate — near-universal unanswerability
+leaves no contrast) and points the wrong way. Only a weak continuous whiff (n_unans × frac = −0.22).
+**Verdict: PARK #30** — the mechanism (a non-self-rated batched strict-simulator answerability probe)
+was pre-registered but **not built**; the conditional gate was honored in commit order. Full numbers
++ the verbatim pre-registered rule: `evsi-validation-findings.md` §Answerability retro probe.
+
+**Why the retro test is weak here (the real product):** answerability can only be a useful steering
+signal if answerable high-value questions exist to steer toward; on this corpus they barely do. A
+proper #30 test needs a higher-contrast corpus → candidate 2 (nbq→relentless integration) or
+candidate 3 (reach→investigate loop, which resolves unanswerables). Re-open #30 only with such a
+corpus AND a non-self-rated mechanism (the old self-rated multiplier is still removed — see
+"Tried and removed: answerability" above).
+
+**Methodology banked this lap:** cost is multi-dimensional — `verdict-rubric.md` now requires a
+pre-registered ceiling per axis (wall, tokens, calls), a bust on any one axis vetoing a result win.
+
 ## Decided / deferred
 
 - **Decided, keep:** one layer of projected answers (no chain) · within-round semantic consolidation

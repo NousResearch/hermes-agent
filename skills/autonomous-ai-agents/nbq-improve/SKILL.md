@@ -5,7 +5,7 @@ description: >
   journal, research opportunities, pre-register a cost-aware experiment, build off-default, evaluate
   Δresult AND Δcost, and journal the verdict either way. Triggers: 'improve nbq', 'run the nbq loop',
   'next-best-questions iteration'. There are NO scripts; this protocol is agent-executed.
-version: 1.0.0
+version: 1.0.1
 author: agent
 license: MIT
 platforms: [linux, macos, windows]

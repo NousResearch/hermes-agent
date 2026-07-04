@@ -1,0 +1,353 @@
+{
+  "framings": {
+    "any_unans": {
+      "base_rate": 0.9705882352941176,
+      "clears_se": false,
+      "contingency": {
+        "pred_false_fail_false": 0,
+        "pred_false_fail_true": 1,
+        "pred_true_fail_false": 10,
+        "pred_true_fail_true": 23
+      },
+      "degenerate": true,
+      "failure_reasons": [
+        "degenerate",
+        "wrong-direction"
+      ],
+      "label": "any_unans",
+      "proceeds": false,
+      "r": -0.11236664374387363,
+      "se": 0.17565713561631732
+    },
+    "top1_unans": {
+      "base_rate": 0.7352941176470589,
+      "clears_se": false,
+      "contingency": {
+        "pred_false_fail_false": 3,
+        "pred_false_fail_true": 6,
+        "pred_true_fail_false": 7,
+        "pred_true_fail_true": 18
+      },
+      "degenerate": false,
+      "failure_reasons": [
+        "no-association"
+      ],
+      "label": "top1_unans",
+      "proceeds": false,
+      "r": 0.051639777949432204,
+      "se": 0.17654083569153814
+    }
+  },
+  "n": 34,
+  "n_unans_frac_r": -0.21895740570384223,
+  "per_task": [
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.3333333333333333,
+      "index": 0,
+      "n_unans": 3,
+      "task": "sort-words",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 1,
+      "n_unans": 2,
+      "task": "round-price",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 2,
+      "n_unans": 2,
+      "task": "dedupe",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.3333333333333333,
+      "index": 3,
+      "n_unans": 3,
+      "task": "parse-name",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 4,
+      "n_unans": 2,
+      "task": "fmt-date",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6666666666666666,
+      "index": 5,
+      "n_unans": 2,
+      "task": "truncate",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6666666666666666,
+      "index": 6,
+      "n_unans": 3,
+      "task": "pct",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6666666666666666,
+      "index": 7,
+      "n_unans": 3,
+      "task": "flatten",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 8,
+      "n_unans": 2,
+      "task": "count-words",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 9,
+      "n_unans": 3,
+      "task": "slugify",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 10,
+      "n_unans": 3,
+      "task": "median",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.3333333333333333,
+      "index": 11,
+      "n_unans": 2,
+      "task": "normalize-scores",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 12,
+      "n_unans": 1,
+      "task": "initials",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 13,
+      "n_unans": 3,
+      "task": "next-id",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 14,
+      "n_unans": 1,
+      "task": "adults",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 15,
+      "n_unans": 3,
+      "task": "merge-config",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 16,
+      "n_unans": 3,
+      "task": "to-seconds",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 17,
+      "n_unans": 1,
+      "task": "fmt-money",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 18,
+      "n_unans": 3,
+      "task": "chunk",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": false,
+      "frac": 1.0,
+      "index": 19,
+      "n_unans": 1,
+      "task": "is-weekend",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.2,
+      "index": 20,
+      "n_unans": 1,
+      "task": "csv-report",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6666666666666666,
+      "index": 21,
+      "n_unans": 3,
+      "task": "log-clean",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.25,
+      "index": 22,
+      "n_unans": 3,
+      "task": "db-config",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.75,
+      "index": 23,
+      "n_unans": 3,
+      "task": "dupe-finder",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.25,
+      "index": 24,
+      "n_unans": 2,
+      "task": "json-migrate",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6,
+      "index": 25,
+      "n_unans": 2,
+      "task": "photo-rename",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 26,
+      "n_unans": 3,
+      "task": "todo-report",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6666666666666666,
+      "index": 27,
+      "n_unans": 1,
+      "task": "retry-wrapper",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.0,
+      "index": 28,
+      "n_unans": 2,
+      "task": "atomic-publish",
+      "top1_unans": false
+    },
+    {
+      "any_unans": false,
+      "fail": true,
+      "frac": 0.3333333333333333,
+      "index": 29,
+      "n_unans": 0,
+      "task": "roster-dedupe",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.5,
+      "index": 30,
+      "n_unans": 2,
+      "task": "asset-prune",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.4,
+      "index": 31,
+      "n_unans": 3,
+      "task": "event-time-normalize",
+      "top1_unans": true
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.6,
+      "index": 32,
+      "n_unans": 2,
+      "task": "fee-ledger",
+      "top1_unans": false
+    },
+    {
+      "any_unans": true,
+      "fail": true,
+      "frac": 0.25,
+      "index": 33,
+      "n_unans": 2,
+      "task": "deploy-target",
+      "top1_unans": true
+    }
+  ],
+  "reason": "top1_unans=no-association; any_unans=degenerate+wrong-direction",
+  "verdict": "PARK"
+}

@@ -132,6 +132,17 @@ so misfired lenses self-prune. That division of labor is repeatedly validated:
 - **Archive honestly instead of theater-testing.** CLI/print drivers whose findings are already
   recorded are deliberately left untested, while their pure math helpers remain pinned. Do not add
   tests solely to inflate a coverage number.
+- **Probe the premise before building the fix — for free when the data already exists.** #30's
+  build was gated on a zero-model-call retro probe of the *existing* objective-harness output; the
+  premise ("unanswerable high-EVSI questions cause failure") did not survive, so the build never
+  happened. A clean negative result from data you already have is the cheapest possible no-adopt.
+- **A near-constant predictor is not a signal — report the base rate.** The retro probe's
+  "any-unanswerable" framing was 97% true across tasks: degenerate, uninformative, and easy to
+  mistake for a finding if you only read the correlation. Always print the marginal cell counts /
+  base rate so a degenerate predictor is visible as such.
+- **Cost is multi-dimensional.** Gate wall, tokens, AND calls each against their own pre-registered
+  ceiling; a bust on any one axis vetoes a result win. Don't collapse cost to a single scalar (a
+  wall-neutral but token-heavy change, or a hidden extra model call, must not pass on wall alone).
 
 ## 6. Open, honestly
 
@@ -143,9 +154,15 @@ so misfired lenses self-prune. That division of labor is repeatedly validated:
   lens-payoff regression, AND the efficiency ceiling (+16.8% wall). Built, off-by-default. The
   remaining gap is **answerability**, not candidate altitude — first-order questions fish *more*.
   (`references/design-decisions.md` §First-order candidate source (#32).)
-- **#30 answerability weighting** — **now re-opened** (its condition "post-#32 IF unanswerable > 50%"
-  is met: 77%). Re-open only with a mechanism that isn't self-rated (the old multiplier was inert at
-  0.95 in 15/16 cells; the self-rated ceiling already failed once).
+- **#30 answerability weighting** — **PARKED again (iteration two, 2026-07-04) by a zero-cost retro
+  probe.** A conditional lap tested #30's *premise* before building it: do kept high-EVSI
+  *unanswerable* questions cause objective failure? On the n=34 objective corpus, no — highest-EVSI
+  unanswerable × fail r=+0.05 (within SE); any-unanswerable × fail is degenerate (97% base rate) and
+  wrong-direction. Unanswerability is near-universal here, so there's almost no answerable-question
+  contrast to steer toward — #30 can't help until a higher-contrast corpus exists (candidate 2/3).
+  Re-open only with such a corpus AND a non-self-rated mechanism (the old multiplier was inert at 0.95
+  in 15/16 cells). Probe: `evals/probe_answerability.py`; verdict:
+  `references/evsi-validation-findings.md` §Answerability retro probe.
 - **Prompt distillation**: unblocked by the #32 no-adopt (the value model is not the gap), but
   now lower-priority than #30 — re-scope against whichever answerability mechanism lands.
 - **Discrimination preflight (#33 — built, adopted as an opt-in instrument)**: `--strict-preflight`

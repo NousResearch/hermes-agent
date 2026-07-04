@@ -702,6 +702,56 @@ candidate altitude, is the residual gap. This satisfies **#30's re-open conditio
 > 50%), now the successor lever, with the standing constraint that the mechanism must not be
 self-rated. `firstorder` stays built, off-by-default. Cost columns are now standing gate output.
 
+## Answerability retro probe (#30 gate) — PARK (iteration two, 2026-07-04)
+
+The first real *use* of `nbq-improve` as a protocol (iteration two) ran a **conditional full lap**:
+a zero-cost retro probe (item A) gated whether to build #30 answerability weighting (item B).
+Pre-registration: `nbq-improve/references/prereg-iteration-two.md`.
+
+**Item A — retro probe, ZERO new model calls.** The originally-planned join against `relentless`'s
+`journey.json` was not runnable (those logs carry no nbq assume-default annotations — the unbuilt
+candidate 2). The cheapest falsifying test lived in the OBJECTIVE harness output instead:
+`~/.hermes/outcome_eval_32.json` already carries, per task/arm, `meta.q_values[i]` (per-question
+EVSI, index-aligned), `qa[i].revealed`/`answer` (answerability — "The spec doesn't say." ⇒
+unanswerable), and `frac`/`per_test` (objective outcome). Probe: `evals/probe_answerability.py`
+(offline, deterministic, stdlib-only); pinned input `~/.hermes/outcome_eval_32_iter2probe.json`
+(sha256 3787b1f7…); durable stats `~/.hermes/probe_answerability_iter2.json`.
+
+**Pre-registered GATE rule (verbatim):** "#30 build PROCEEDS iff the primary association is in the
+hypothesized direction (unanswerable ⇒ more failure) AND the effect clears its own SE (|effect| > SE),
+on ≥1 of the two primary framings, AND the marginal cells are not degenerate (both levels of the
+predictor occur on ≥ ~15% of tasks). #30 is PARKED if: no association, wrong-direction association
+(unanswerable ⇒ success), OR a degenerate predictor."
+
+**Result (n=34 nbq tasks):**
+- `top1_unans × fail` (highest-EVSI kept question unanswerable × frac<1): **r=+0.0516, SE=0.1765,
+  |r| does NOT clear SE** → no-association. Contingency 18/7/6/3, base rate 0.735 (non-degenerate).
+- `any_unans × fail`: **r=−0.1124 (wrong direction), base rate 0.971 → DEGENERATE** (33/34 tasks have
+  ≥1 unanswerable top-K question — the predictor is near-constant, so the retro sample structurally
+  cannot discriminate). Contingency 23/10/1/0.
+- Tertiary `n_unans × frac`: r=−0.219 (weakly the hypothesized direction, but continuous and not a
+  pre-registered decisive framing — the only whiff of signal, too underpowered to justify a build).
+
+**Verdict: PARK.** Neither primary framing clears the mechanical gate. The φ-coefficients were
+independently re-derived by hand from the contingency tables (12/√54000=+0.0516; −10/√7920=−0.1124).
+
+**Autopsy / the product:** answerability's causal link to objective failure is **not supported** in
+this corpus, and the probe explains *why a retro test here is weak*: unanswerability is near-universal
+(73–97% base rate), so there is almost no answerable-question contrast to correlate against.
+Down-weighting EVSI by answerability can only help if answerable high-value questions actually exist
+to steer toward; on this task set they barely do. **A proper #30 test needs a higher-contrast corpus**
+— which is exactly candidate 2 (nbq→relentless integration, to build a real annotated corpus) or
+candidate 3 (reach→investigate loop, which *resolves* some unanswerables into answerables). #30 stays
+parked; those rise.
+
+**Item B (#30 answerability weighting) was NOT built** — the conditional gate was honored in commit
+order, not retrofitted. Its pre-registration stands unexercised for a future lap, including the
+**per-dimension efficiency ceilings** authored this lap (a bust on ANY axis vetoes even a result win):
+"wall: mean added wall ≤ 10% of an nbq run; tokens: mean added tokens ≤ 15% of an nbq run; calls:
+≤ +1 added model call per run (a second probe call is itself a veto)." Cost is no longer a single
+scalar — `verdict-rubric.md` was sharpened to require a per-axis ceiling (wall, tokens, calls), the
+methodology product of this lap.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

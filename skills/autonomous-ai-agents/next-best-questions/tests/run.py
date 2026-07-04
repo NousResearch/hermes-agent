@@ -19,7 +19,13 @@ import sys
 import unittest
 
 SUITES = ("basic", "live", "all")
-TEST_MODULES = ("test_infogain", "test_evals", "test_eval_families", "test_outcome_eval")
+TEST_MODULES = (
+    "test_infogain",
+    "test_evals",
+    "test_eval_families",
+    "test_outcome_eval",
+    "test_probe_answerability",
+)
 
 
 def main(argv=None):

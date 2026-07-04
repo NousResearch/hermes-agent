@@ -25,10 +25,10 @@ import {
   $busy,
   $connection,
   $messages,
+  clearSessionReplyReady,
   setAwaitingResponse,
   setBusy,
-  setMessages,
-  setSessionReplyReady
+  setMessages
 } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
@@ -598,7 +598,7 @@ export function usePromptActions({
           )
         }
 
-        setSessionReplyReady(storedSessionId, false)
+        clearSessionReplyReady(storedSessionId)
 
         return true
       } catch (err) {

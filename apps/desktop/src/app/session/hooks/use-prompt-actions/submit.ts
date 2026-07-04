@@ -13,7 +13,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages, setSessionReplyReady } from '@/store/session'
+import { clearSessionReplyReady, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -203,7 +203,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      setSessionReplyReady(selectedStoredSessionIdRef.current ?? activeSessionIdRef.current, false)
+      clearSessionReplyReady(selectedStoredSessionIdRef.current ?? activeSessionIdRef.current)
       clearNotifications()
 
       let sessionId: null | string = activeSessionId

@@ -71,6 +71,52 @@ def test_truncated_arguments_replaced_with_empty_object(caplog):
     )
 
 
+def test_single_object_array_arguments_unwrapped():
+    messages = [
+        _assistant_message(
+            _tool_call(arguments='[{"path": "/tmp/foo", "mode": "replace"}]')
+        ),
+        _tool_message(content="done"),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert (
+        messages[0]["tool_calls"][0]["function"]["arguments"]
+        == '{"path":"/tmp/foo","mode":"replace"}'
+    )
+    assert messages[1]["content"] == "done"
+
+
+def test_non_object_json_arguments_replaced_with_empty_object():
+    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    messages = [
+        _assistant_message(_tool_call(arguments='[{"path": "/tmp/foo"}, {"path": "/tmp/bar"}]')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert messages[1]["tool_call_id"] == "call_1"
+    assert messages[1]["content"] == marker
+
+
+def test_scalar_json_arguments_replaced_with_empty_object():
+    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    messages = [
+        _assistant_message(_tool_call(arguments='"not an object"')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert messages[1]["tool_call_id"] == "call_1"
+    assert messages[1]["content"] == marker
+
+
 def test_marker_appended_to_existing_tool_message():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [

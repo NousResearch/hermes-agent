@@ -286,6 +286,48 @@ def sanitize_tool_call_arguments(
             continue
 
         insert_at = message_index + 1
+
+        def _replace_with_empty_object(tool_call: dict, function: dict, arguments: str) -> None:
+            nonlocal insert_at
+
+            tool_call_id = tool_call.get("id")
+            function_name = function.get("name", "?")
+            preview = arguments[:80]
+            log.warning(
+                "Corrupted tool_call arguments repaired before request "
+                "(session=%s, message_index=%s, tool_call_id=%s, function=%s, preview=%r)",
+                session_id or "-",
+                message_index,
+                tool_call_id or "-",
+                function_name,
+                preview,
+            )
+            function["arguments"] = "{}"
+
+            existing_tool_msg = None
+            scan_index = message_index + 1
+            while scan_index < len(messages):
+                candidate = messages[scan_index]
+                if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                    break
+                if candidate.get("tool_call_id") == tool_call_id:
+                    existing_tool_msg = candidate
+                    break
+                scan_index += 1
+
+            if existing_tool_msg is None:
+                messages.insert(
+                    insert_at,
+                    make_tool_result_message(
+                        function_name if function_name != "?" else "",
+                        marker,
+                        tool_call_id,
+                    ),
+                )
+                insert_at += 1
+            else:
+                _prepend_marker(existing_tool_msg)
+
         for tool_call in tool_calls:
             if not isinstance(tool_call, dict):
                 continue
@@ -304,47 +346,25 @@ def sanitize_tool_call_arguments(
                 continue
 
             try:
-                json.loads(arguments)
+                parsed_arguments = json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
-                function_name = function.get("name", "?")
-                preview = arguments[:80]
-                log.warning(
-                    "Corrupted tool_call arguments repaired before request "
-                    "(session=%s, message_index=%s, tool_call_id=%s, function=%s, preview=%r)",
-                    session_id or "-",
-                    message_index,
-                    tool_call_id or "-",
-                    function_name,
-                    preview,
-                )
-                function["arguments"] = "{}"
-
-                existing_tool_msg = None
-                scan_index = message_index + 1
-                while scan_index < len(messages):
-                    candidate = messages[scan_index]
-                    if not isinstance(candidate, dict) or candidate.get("role") != "tool":
-                        break
-                    if candidate.get("tool_call_id") == tool_call_id:
-                        existing_tool_msg = candidate
-                        break
-                    scan_index += 1
-
-                if existing_tool_msg is None:
-                    messages.insert(
-                        insert_at,
-                        make_tool_result_message(
-                            function_name if function_name != "?" else "",
-                            marker,
-                            tool_call_id,
-                        ),
-                    )
-                    insert_at += 1
-                else:
-                    _prepend_marker(existing_tool_msg)
-
+                _replace_with_empty_object(tool_call, function, arguments)
                 repaired += 1
+                continue
+
+            if isinstance(parsed_arguments, dict):
+                continue
+            if (
+                isinstance(parsed_arguments, list)
+                and len(parsed_arguments) == 1
+                and isinstance(parsed_arguments[0], dict)
+            ):
+                function["arguments"] = json.dumps(parsed_arguments[0], separators=(",", ":"))
+                repaired += 1
+                continue
+
+            _replace_with_empty_object(tool_call, function, arguments)
+            repaired += 1
 
         message_index += 1
 

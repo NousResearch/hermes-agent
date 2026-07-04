@@ -12847,6 +12847,14 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+    wh_sub.add_argument(
+        "--stable-session",
+        action="store_true",
+        help=(
+            "Keep the route on one continuous Hermes session across deliveries. "
+            "Use for conversational reply threads that may continue across turns."
+        ),
+    )
 
     # =========================================================================
     # lsp command

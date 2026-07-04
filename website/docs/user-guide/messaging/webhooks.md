@@ -85,6 +85,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `stable_session` | No | If `true`, every delivery for this route reuses one stable Hermes session instead of a per-delivery session ID. Use this for conversational reply routes that may continue across turns. |
 
 ### Full example
 
@@ -99,6 +100,7 @@ platforms:
         github-pr:
           events: ["pull_request"]
           secret: "github-webhook-secret"
+          stable_session: true
           prompt: |
             Review this pull request:
             Repository: {repository.full_name}

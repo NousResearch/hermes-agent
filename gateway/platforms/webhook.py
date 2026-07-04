@@ -665,7 +665,16 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        # AXIS PATCH (01): routes can opt-in to STABLE session keys via
+        # `stable_session: true` in webhook_subscriptions.json. Every
+        # delivery for that route then maps to ONE continuous Hermes
+        # session, giving the agent memory across turns. Required for
+        # conversational voice flows (operator-message). Default kept
+        # for batch/concurrent webhooks.
+        if route_config.get("stable_session"):
+            session_chat_id = f"webhook:{route_name}"
+        else:
+            session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),

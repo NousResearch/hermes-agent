@@ -469,8 +469,39 @@ class TestEventFilter:
 
 
 # ===================================================================
-# HTTP handling
+# Session routing
 # ===================================================================
+
+
+class TestStableSessionRouting:
+    @pytest.mark.asyncio
+    async def test_stable_session_route_uses_route_name_only(self):
+        routes = {
+            "operator-message": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Reply to the operator",
+                "stable_session": True,
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/operator-message",
+                json={"message": "hello"},
+                headers={"X-Webhook-Signature": ""},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_id == "webhook:operator-message"
+
+
 
 
 class TestHTTPHandling:

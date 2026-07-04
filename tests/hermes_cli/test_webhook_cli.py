@@ -33,6 +33,7 @@ def _make_args(**kwargs):
         "skills": "",
         "deliver": "log",
         "deliver_chat_id": "",
+        "stable_session": False,
         "secret": "",
         "payload": "",
     }
@@ -65,6 +66,15 @@ class TestSubscribe:
         assert route["prompt"] == "Issue: {issue.title}"
         assert route["deliver"] == "telegram"
         assert route["deliver_extra"] == {"chat_id": "12345"}
+
+    def test_stable_session_flag(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="operator-message",
+            stable_session=True,
+        ))
+        route = _load_subscriptions()["operator-message"]
+        assert route["stable_session"] is True
 
     def test_custom_secret(self):
         webhook_command(_make_args(

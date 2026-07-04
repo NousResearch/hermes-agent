@@ -3897,7 +3897,8 @@ async function waitForHermes(baseUrl, token) {
 
 function getWindowButtonPosition() {
   if (!IS_MAC) return null
-  return mainWindow?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
+  if (!mainWindow || mainWindow.isDestroyed()) return WINDOW_BUTTON_POSITION
+  return mainWindow.getWindowButtonPosition() || WINDOW_BUTTON_POSITION
 }
 
 function getNativeOverlayWidth() {
@@ -3905,8 +3906,9 @@ function getNativeOverlayWidth() {
 }
 
 function getWindowState() {
+  const destroyed = !mainWindow || mainWindow.isDestroyed()
   return {
-    isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
+    isFullscreen: destroyed ? false : Boolean(mainWindow.isFullScreen()),
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition()
   }

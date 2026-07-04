@@ -6002,7 +6002,12 @@ function createWindow() {
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
-    if (details?.reason === 'crashed' || details?.reason === 'oom') {
+    // Reload on any unexpected renderer termination — 'crashed', 'oom', or
+    // 'killed' (e.g. SIGTERM from the OS or an external watchdog).  The
+    // crash-loop guard (RENDERER_RELOAD_MAX) prevents infinite reloads.
+    // 'clean-exit' and 'integrity-failure' are deliberately excluded: the
+    // former is intentional and the latter would just fail again.
+    if (details?.reason === 'crashed' || details?.reason === 'oom' || details?.reason === 'killed') {
       const now = Date.now()
       rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
 

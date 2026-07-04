@@ -126,6 +126,25 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
+async def test_rich_send_unwraps_code_formatted_slash_commands_for_taps():
+    adapter = _make_adapter()
+    content = (
+        "## Ops\n\n"
+        "| Step | Command |\n"
+        "|---|---|\n"
+        "| restart | `/restart` |"
+    )
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    markdown = api_kwargs["rich_message"]["markdown"]
+    assert "/restart" in markdown
+    assert "`/restart`" not in markdown
+
+
+@pytest.mark.asyncio
 async def test_details_with_math_skips_rich_send_to_avoid_tdesktop_crash():
     adapter = _make_adapter()
 

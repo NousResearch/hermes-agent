@@ -133,6 +133,34 @@ class TestFormatMessageCodeBlocks:
         # The surrounding text's underscore-free content should be fine
         assert "Use" in result
 
+    def test_inline_slash_command_unwrapped_so_telegram_taps_execute(self, adapter):
+        result = adapter.format_message("Use `/restart` when ready")
+        assert "/restart" in result
+        assert "`/restart`" not in result
+        assert "\\`/restart\\`" not in result
+
+    def test_hyphenated_slash_command_unwrapped_to_telegram_valid_alias(self, adapter):
+        result = adapter.format_message("Use `/reload-mcp` after editing MCP config")
+        assert "/reload\\_mcp" in result
+        assert "/reload-mcp" not in result
+        assert "`" not in result
+
+    def test_fenced_slash_command_unwrapped_so_telegram_taps_execute(self, adapter):
+        result = adapter.format_message("Run:\n```\n/new\n/restart\n```\nThen continue")
+        assert "/new" in result
+        assert "/restart" in result
+        assert "```" not in result
+
+    def test_shell_code_block_with_slash_path_stays_code(self, adapter):
+        result = adapter.format_message("```bash\ncurl /health\n```")
+        assert "```bash" in result
+        assert "curl /health" in result
+
+    def test_non_command_code_block_with_inline_slash_command_stays_code(self, adapter):
+        result = adapter.format_message("```text\nliteral `/restart` example\n```")
+        assert "```text" in result
+        assert r"\`/restart\`" in result
+
     def test_code_block_special_chars_not_escaped(self, adapter):
         text = "```\nif (x > 0) { return !x; }\n```"
         result = adapter.format_message(text)

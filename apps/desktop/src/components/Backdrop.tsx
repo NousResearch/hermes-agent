@@ -91,6 +91,7 @@ export function Backdrop() {
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-2"
+          data-slot="theme-backdrop-statue"
           style={{
             mixBlendMode: statue.blendMode as CSSProperties['mixBlendMode'],
             opacity: statue.opacity

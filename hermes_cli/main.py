@@ -8906,10 +8906,16 @@ def _detect_venv_python_processes(
         exe = info.get("exe")
         if not exe or pid is None or int(pid) in skip:
             continue
+        # Skip Windows system processes that can never be Hermes (#57829):
+        # psutil may return a working directory or cmdline fragment that
+        # accidentally matches the venv prefix for processes like Registry
+        # or MemCompression running under svchost.exe.
         try:
             exe_norm = str(Path(exe).resolve()).lower()
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
+        if exe_norm.startswith(r"c:\windows\system32\\") or exe_norm.startswith(r"c:\windows\\"):
+            continue
         cmdline_raw = " ".join(info.get("cmdline") or [])
         cmdline_low = cmdline_raw.lower()
         cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep

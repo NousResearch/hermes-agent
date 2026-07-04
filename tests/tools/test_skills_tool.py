@@ -1370,3 +1370,106 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+# ---------------------------------------------------------------------------
+# Profile-scoped skills trusted dirs (issue #43796)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileSkillsTrustedDirs:
+    """Verify that profile-scoped skills dirs are auto-trusted."""
+
+    def test_profile_skills_dir_auto_trusted(self, tmp_path, caplog):
+        """A skill in the active profile's skills dir should NOT trigger
+        the 'outside trusted directories' security warning."""
+        global_skills = tmp_path / "global" / "skills"
+        profile_skills = tmp_path / "profiles" / "myprofile" / "skills"
+        global_skills.mkdir(parents=True)
+        profile_skills.mkdir(parents=True)
+
+        _make_skill(profile_skills, "profile-skill")
+
+        active_profile_file = tmp_path / "global" / "active_profile"
+        active_profile_file.write_text("myprofile\n")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", global_skills),
+            patch("tools.skills_tool.get_hermes_home", return_value=tmp_path / "global"),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[profile_skills]),
+        ):
+            with caplog.at_level("WARNING", logger="tools.skills_tool"):
+                raw = skill_view("profile-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "outside the trusted skills directory" not in caplog.text
+
+    def test_default_profile_no_extra_trusted_dir(self, tmp_path, caplog):
+        """Default profile should NOT add an extra trusted dir (it's the same
+        as SKILLS_DIR)."""
+        global_skills = tmp_path / "skills"
+        global_skills.mkdir(parents=True)
+
+        _make_skill(global_skills, "local-skill")
+
+        active_profile_file = tmp_path / "active_profile"
+        active_profile_file.write_text("default\n")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", global_skills),
+            patch("tools.skills_tool.get_hermes_home", return_value=tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            with caplog.at_level("WARNING", logger="tools.skills_tool"):
+                raw = skill_view("local-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "outside the trusted skills directory" not in caplog.text
+
+    def test_no_active_profile_file(self, tmp_path, caplog):
+        """When active_profile file doesn't exist, no extra dir is added."""
+        global_skills = tmp_path / "skills"
+        global_skills.mkdir(parents=True)
+
+        _make_skill(global_skills, "local-skill")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", global_skills),
+            patch("tools.skills_tool.get_hermes_home", return_value=tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            with caplog.at_level("WARNING", logger="tools.skills_tool"):
+                raw = skill_view("local-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "outside the trusted skills directory" not in caplog.text
+
+    def test_profile_auto_trust_does_not_trust_unrelated_dirs(self, tmp_path, caplog):
+        """The profile auto-trust should only add the profile's skills dir,
+        not any arbitrary directory."""
+        global_skills = tmp_path / "global" / "skills"
+        profile_skills = tmp_path / "profiles" / "myprofile" / "skills"
+        external_dir = tmp_path / "external"
+        global_skills.mkdir(parents=True)
+        profile_skills.mkdir(parents=True)
+        external_dir.mkdir(parents=True)
+
+        # Skill is in external_dir (an external_dir entry), NOT in profile_skills
+        _make_skill(external_dir, "external-skill")
+
+        active_profile_file = tmp_path / "global" / "active_profile"
+        active_profile_file.write_text("myprofile\n")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", global_skills),
+            patch("tools.skills_tool.get_hermes_home", return_value=tmp_path / "global"),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_dir]),
+        ):
+            raw = skill_view("external-skill")
+
+        result = json.loads(raw)
+        # external_dir is in external_dirs, so it IS trusted and the skill loads
+        assert result["success"] is True

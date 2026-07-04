@@ -1136,6 +1136,19 @@ def skill_view(
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
         _trusted_dirs = [SKILLS_DIR.resolve()]
+        # Auto-trust active profile's skills dir (handles contexts where
+        # HERMES_HOME is not propagated, e.g. desktop backend, MCP server)
+        try:
+            _hermes_home = get_hermes_home()
+            _active_profile_path = _hermes_home / "active_profile"
+            if _active_profile_path.exists():
+                _active_profile = _active_profile_path.read_text(encoding="utf-8").strip()
+                if _active_profile and _active_profile != "default":
+                    _profile_skills = (_hermes_home / "profiles" / _active_profile / "skills").resolve()
+                    if _profile_skills not in _trusted_dirs:
+                        _trusted_dirs.append(_profile_skills)
+        except Exception:
+            pass
         try:
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:

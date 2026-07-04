@@ -85,3 +85,15 @@ Reason:
 - future AI agents and the user need to see how the system is controlled
 - launchd schedule alone is not enough; operators need mode/status/source/log commands
 - `trend-discovery ops` is the top-level operational summary
+
+---
+
+## 2026-07-04 · AI Relay บน VPS · แก้ทางโค้ด ไม่แตะ token gateway (nat)
+
+Decision: แก้ Fable/Opus เรียกไม่ได้บน VPS ด้วยการให้ relay-call ตัด `CLAUDE_CODE_OAUTH_TOKEN` (token org ที่ปิดสิทธิ์ Claude Code) เฉพาะตอนเรียก claude (fable/opus) → ใช้ login เครื่องแทน · ไม่แก้ `~/.hermes/.env` ของ gateway
+
+Reason:
+- ทางโค้ดไม่แตะไฟล์ลับที่ Hermes gateway (พนักงานใช้ร่วม) ใช้อยู่ → gateway ไม่เสี่ยงล่ม
+- ต้นเหตุจริงที่ Codex เรียก relay ไม่ได้ = สำเนาเก่า `/usr/local/bin/relay-call` (root) บังตัวใหม่ `~/.local/bin` (symlink→repo) · แก้ด้วย sudo symlink ชี้ repo (เจ้าของรันเอง)
+- verified tier 5: เจ้าของรัน `relay-call --tool fable` บน VPS ได้ opus (rotated_from=fable)
+- commit หลัก `06aff79d8` · main=VPS=`816cdf2e0` · pytest 11/11

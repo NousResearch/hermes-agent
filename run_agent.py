@@ -5889,17 +5889,33 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(
-            self,
-            user_message,
-            system_message,
-            conversation_history,
-            task_id,
-            stream_callback,
-            persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            moa_config=moa_config,
-        )
+        _tt_result = None
+        try:
+            _tt_result = run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                moa_config=moa_config,
+            )
+            return _tt_result
+        finally:
+            # Capture the turn's OUTCOME on EVERY exit path — every return and
+            # every exception. run_conversation has many early returns
+            # (interrupts, failed calls, policy blocks) that never reach
+            # finalize_turn; those are exactly the turns a self-observation
+            # plugin most wants. The agent still reflects this turn's state here
+            # (fallback flag / guardrail counts reset only at the *next* turn's
+            # prologue). Never allowed to affect the turn's result.
+            try:
+                from agent.turn_telemetry import capture_turn_telemetry
+                self._last_turn_telemetry = capture_turn_telemetry(self, result=_tt_result)
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

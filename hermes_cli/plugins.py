@@ -1908,6 +1908,14 @@ class PluginManager:
         system prompt stays identical across turns so cached tokens
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
+
+        ``pre_llm_call`` also receives ``last_turn=`` — a retrospective
+        record of what the PREVIOUS turn did (provider/model used, whether
+        it fell back, tool-failure counts, tools offered). It is empty on
+        the first turn. See :mod:`agent.turn_telemetry` for the schema. Use
+        it to reason about the agent's own recent behavior (e.g. "last turn
+        ran on a fallback endpoint"); treat it as *last* turn, never *this*
+        turn.
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])

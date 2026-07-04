@@ -441,3 +441,29 @@ class TestLoginPageRender:
             assert "<script>" in html
         finally:
             clear_providers()
+
+
+# ---------------------------------------------------------------------------
+# Auto-SSO fall-through — password-only provider has no OAuth redirect
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSsoSkipsPasswordOnlyProvider:
+    """Regression: with only a password-only provider registered, an unauth
+    HTML load must fall back to the /login credential form, NOT auto-initiate
+    the OAuth redirect. Password-only providers implement complete_password_login
+    and leave start_login a NotImplementedError stub, so /auth/login would 500.
+    """
+
+    def test_unauth_html_load_falls_back_to_login_not_auto_sso(self, gated_app):
+        r = gated_app.get("/", follow_redirects=False)
+        assert r.status_code == 302
+        # Interstitial credential form, not the OAuth-initiation route.
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
+    def test_unauth_html_load_does_not_500(self, gated_app):
+        # End-to-end: following the redirect must land on the login page,
+        # never the NotImplementedError 500 from start_login().
+        r = gated_app.get("/", follow_redirects=True)
+        assert r.status_code == 200

@@ -177,7 +177,11 @@ def _auto_sso_response(request: Request) -> Response | None:
 
     # list_session_providers() already filters on supports_session=True, so
     # token-only credentials (drain/service providers) are never candidates.
-    providers = list_session_providers()
+    # Also drop password-only providers: their start_login() is a stub that
+    # raises NotImplementedError (there's no OAuth redirect to auto-initiate),
+    # so /auth/login would 500. They render the /login credential form instead,
+    # which is exactly the fall-through when this returns None.
+    providers = [p for p in list_session_providers() if not p.supports_password]
     if len(providers) != 1:
         # Zero → nothing to redirect to. Two+ → user must choose at /login.
         return None

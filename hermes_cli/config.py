@@ -7148,6 +7148,30 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def _check_ascii_control_credential(key: str, value: str) -> str:
+    """Warn and strip ASCII control characters from credential values."""
+    bad_chars: list[str] = []
+    for i, ch in enumerate(value):
+        codepoint = ord(ch)
+        if codepoint < 32 or codepoint == 127:
+            bad_chars.append(f"  position {i}: U+{codepoint:04X}")
+
+    if not bad_chars:
+        return value
+
+    sanitized = "".join(ch for ch in value if ord(ch) >= 32 and ord(ch) != 127)
+    print(
+        f"\n  Warning: {key} contains ASCII control characters that will break API requests.\n"
+        f"  This usually happens when copying credentials with hidden terminal or editor artifacts.\n"
+        + "\n".join(f"  {line}" for line in bad_chars[:5])
+        + ("\n  ... and more" if len(bad_chars) > 5 else "")
+        + f"\n\n  The control characters have been stripped automatically.\n"
+        f"  If authentication fails, re-copy the key from the provider's dashboard.\n",
+        file=sys.stderr,
+    )
+    return sanitized
+
+
 def _quote_env_value(value: str) -> str:
     """Quote .env values containing characters with special dotenv meaning."""
     if value == "":
@@ -7185,8 +7209,9 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
-    value = value.replace("\n", "").replace("\r", "")
-    # API keys / tokens must be ASCII — strip non-ASCII with a warning.
+    # API keys / tokens must be printable ASCII — strip copy-paste artifacts
+    # before writing .env or mutating os.environ.
+    value = _check_ascii_control_credential(key, value)
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()

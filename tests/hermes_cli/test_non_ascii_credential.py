@@ -8,7 +8,7 @@ httpx tries to encode the Authorization header as ASCII.
 import os
 
 
-from hermes_cli.config import _check_non_ascii_credential
+from hermes_cli.config import _check_ascii_control_credential, _check_non_ascii_credential, save_env_value
 
 
 class TestCheckNonAsciiCredential:
@@ -45,6 +45,43 @@ class TestCheckNonAsciiCredential:
         assert result == "all-ascii-value-123"
         captured = capsys.readouterr()
         assert captured.err == ""
+
+
+class TestCheckAsciiControlCredential:
+    """Tests for _check_ascii_control_credential()."""
+
+    def test_printable_ascii_key_unchanged(self, capsys):
+        key = "sk-proj-abc123"
+        result = _check_ascii_control_credential("TEST_API_KEY", key)
+        assert result == key
+        assert capsys.readouterr().err == ""
+
+    def test_strips_ascii_control_chars(self, capsys):
+        result = _check_ascii_control_credential("OPENAI_API_KEY", "sk-\x00live\tkey\x7f")
+        assert result == "sk-livekey"
+        captured = capsys.readouterr()
+        assert "ASCII control characters" in captured.err
+        assert "U+0000" in captured.err
+        assert "U+0009" in captured.err
+        assert "U+007F" in captured.err
+
+
+class TestSaveEnvValueCredentialSanitization:
+    """Tests for save-time credential normalization."""
+
+    def test_save_env_value_strips_control_chars_before_write_and_environ(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        save_env_value("OPENAI_API_KEY", "sk-\x00live\tkey\x7f\nnext\r")
+
+        assert os.environ["OPENAI_API_KEY"] == "sk-livekeynext"
+        env_bytes = (tmp_path / ".env").read_bytes()
+        assert env_bytes == b"OPENAI_API_KEY=sk-livekeynext\n"
+        assert b"\x00" not in env_bytes
+        assert b"\t" not in env_bytes
+        assert b"\x7f" not in env_bytes
+        assert "ASCII control characters" in capsys.readouterr().err
 
 
 class TestEnvLoaderSanitization:

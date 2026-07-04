@@ -49,6 +49,12 @@ export interface Theme {
   brand: ThemeBrand
   bannerLogo: string
   bannerHero: string
+  spinner: {
+    waitingFaces: string[]
+    thinkingFaces: string[]
+    thinkingVerbs: string[]
+    wings: string[][]
+  }
 }
 
 // ── Color math ───────────────────────────────────────────────────────
@@ -298,7 +304,54 @@ export const DARK_THEME: Theme = {
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+
+  spinner: {
+    waitingFaces: [
+      '(｡•́︿•̀｡)',
+      '(◔_◔)',
+      '(¬‿¬)',
+      '( •_•)>⌐■-■',
+      '(⌐■_■)',
+      '(´･_･`)',
+      '◉_◉',
+      '(°ロ°)',
+      '( ˘⌣˘)♡',
+      'ヽ(>∀<☆)☆',
+      '٩(๑❛ᴗ❛๑)۶',
+      '(⊙_⊙)',
+      '(¬_¬)',
+      '( ͡° ͜ʖ ͡°)',
+      'ಠ_ಠ'
+    ],
+    thinkingFaces: [
+      '(｡•́︿•̀｡)',
+      '(◔_◔)',
+      '(¬‿¬)',
+      '(´･_･`)',
+      '◉_◉',
+      '(°ロ°)',
+      '(⊙_⊙)'
+    ],
+    thinkingVerbs: [
+      'pondering',
+      'contemplating',
+      'musing',
+      'cogitating',
+      'ruminating',
+      'deliberating',
+      'mulling',
+      'reflecting',
+      'processing',
+      'reasoning',
+      'analyzing',
+      'computing',
+      'synthesizing',
+      'formulating',
+      'brainstorming'
+    ],
+    wings: []
+  }
 }
 
 // Light-terminal palette: darker golds/ambers that stay legible on white
@@ -343,7 +396,9 @@ export const LIGHT_THEME: Theme = {
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+
+  spinner: DARK_THEME.spinner
 }
 
 const TRUE_RE = /^(?:1|true|yes|on)$/
@@ -516,7 +571,13 @@ export function fromSkin(
   bannerLogo = '',
   bannerHero = '',
   toolPrefix = '',
-  helpHeader = ''
+  helpHeader = '',
+  spinner?: {
+    waiting_faces?: string[]
+    thinking_faces?: string[]
+    thinking_verbs?: string[]
+    wings?: string[][]
+  }
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
@@ -585,7 +646,26 @@ export function fromSkin(
       },
 
       bannerLogo,
-      bannerHero
+      bannerHero,
+
+      spinner: {
+        waitingFaces:
+          (spinner?.waiting_faces?.length ?? 0) > 0
+            ? spinner!.waiting_faces!
+            : d.spinner.waitingFaces,
+        thinkingFaces:
+          (spinner?.thinking_faces?.length ?? 0) > 0
+            ? spinner!.thinking_faces!
+            : d.spinner.thinkingFaces,
+        thinkingVerbs:
+          (spinner?.thinking_verbs?.length ?? 0) > 0
+            ? spinner!.thinking_verbs!
+            : d.spinner.thinkingVerbs,
+        wings:
+          (spinner?.wings?.length ?? 0) > 0
+            ? spinner!.wings!
+            : d.spinner.wings
+      }
     },
     process.env,
     DEFAULT_LIGHT_MODE

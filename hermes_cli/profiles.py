@@ -142,6 +142,61 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+# Env vars whose presence auto-enables a gateway platform.
+# When cloning a profile, these are stripped from the cloned .env to
+# prevent the new profile's gateway from connecting to the same external
+# service as the source profile.  Two gateways sharing one Feishu app /
+# Telegram bot / Discord bot cause duplicate message delivery, split
+# sessions across profiles, and endless pairing-code loops when only
+# one profile has the approved user.
+#
+# Prefixes match every related var (e.g. FEISHU_ also removes
+# FEISHU_ALLOWED_USERS etc. — the cloned profile can re-add policy
+# vars independently).
+_GATEWAY_PLATFORM_CRED_PREFIXES: tuple[str, ...] = (
+    "FEISHU_",
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET",
+    "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_SIGNING_SECRET",
+    "WHATSAPP_CLOUD_APP_ID", "WHATSAPP_CLOUD_APP_SECRET",
+    "QQ_APP_ID", "QQ_APP_SECRET",
+    "YUANBAO_APP_ID", "YUANBAO_APP_KEY", "YUANBAO_APP_SECRET",
+    "WECOM_", "WEIXIN_", "DINGTALK_", "BLUEBUBBLES_",
+    "SIGNAL_", "MATRIX_", "MATTERMOST_",
+)
+
+
+def _strip_gateway_platform_creds(env_path: Path) -> None:
+    """Remove gateway platform credentials from a cloned .env file.
+
+    Called after copying ``.env`` from the source profile during
+    ``--clone`` / ``--clone-all``.  Keeps non-platform secrets
+    (provider API keys, etc.) intact.
+    """
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return
+    kept = []
+    removed = set()
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("#") or "=" not in stripped:
+            kept.append(line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if any(
+            key == prefix or key.startswith(prefix)
+            for prefix in _GATEWAY_PLATFORM_CRED_PREFIXES
+            if prefix.endswith("_")
+        ) or key in _GATEWAY_PLATFORM_CRED_PREFIXES:
+            removed.add(key)
+            continue
+        kept.append(line)
+    if removed:
+        env_path.write_text("".join(kept), encoding="utf-8")
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -1069,6 +1124,15 @@ def create_profile(
                             os.chmod(str(dst), 0o600)
                         except OSError:
                             pass
+                        # Strip gateway platform credentials that would
+                        # cause the cloned profile's gateway to connect to
+                        # the same external service as the source profile
+                        # (multi-connection conflict).  Without this, every
+                        # cloned profile fights for the same Feishu /
+                        # Telegram / Discord / etc. connection, yielding
+                        # duplicate messages, split sessions, and endless
+                        # pairing-code loops.
+                        _strip_gateway_platform_creds(dst)
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled

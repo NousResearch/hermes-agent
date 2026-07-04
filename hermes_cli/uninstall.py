@@ -575,9 +575,9 @@ def run_uninstall(args):
     project_root = get_project_root()
     hermes_home = get_hermes_home()
 
-    # Detect named profiles when uninstalling from the default root —
-    # offer to clean them up too instead of leaving zombie HERMES_HOMEs
-    # and systemd units behind.
+    # Detect named profiles when uninstalling from the default root so a
+    # full uninstall can actually remove everything, including sibling
+    # profile homes, wrappers, and gateway services.
     is_default_profile = _is_default_hermes_home(hermes_home)
     named_profiles = _discover_named_profiles() if is_default_profile else []
 
@@ -646,36 +646,14 @@ def run_uninstall(args):
     
     full_uninstall = (choice == "2")
 
-    # When doing a full uninstall from the default profile, also offer to
-    # remove any named profiles — stopping their gateway services, unlinking
-    # their alias wrappers, and wiping their HERMES_HOME dirs. Otherwise
-    # those leave zombie services and data behind.
-    remove_profiles = False
-    if full_uninstall and named_profiles:
-        print()
-        print(color("Other profiles will NOT be removed by default.", Colors.YELLOW))
-        print(f"Found {len(named_profiles)} named profile(s): " +
-              ", ".join(p.name for p in named_profiles))
-        print()
-        try:
-            resp = input(color(
-                f"Also stop and remove these {len(named_profiles)} profile(s)? [y/N]: ",
-                Colors.BOLD
-            )).strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            print("Cancelled.")
-            return
-        remove_profiles = resp in {"y", "yes"}
-
     # Final confirmation
     print()
     if full_uninstall:
         print(color("⚠️  WARNING: This will permanently delete ALL Hermes data!", Colors.RED, Colors.BOLD))
         print(color("   Including: configs, API keys, sessions, scheduled jobs, logs", Colors.RED))
-        if remove_profiles:
+        if named_profiles:
             print(color(
-                f"   Plus {len(named_profiles)} profile(s): " +
+                f"   Plus {len(named_profiles)} named profile(s): " +
                 ", ".join(p.name for p in named_profiles),
                 Colors.RED
             ))
@@ -699,7 +677,7 @@ def run_uninstall(args):
         project_root=project_root,
         hermes_home=hermes_home,
         full_uninstall=full_uninstall,
-        remove_profiles=remove_profiles,
+        remove_profiles=full_uninstall,
         named_profiles=named_profiles,
     )
 
@@ -839,7 +817,7 @@ def _perform_uninstall(
         #     ``<default>/profiles/<name>/`` and will be swept away by the
         #     rmtree below, but services + alias scripts live OUTSIDE the
         #     default root and have to be cleaned up explicitly.
-        if remove_profiles and named_profiles:
+        if named_profiles:
             for prof in named_profiles:
                 _uninstall_profile(prof)
 

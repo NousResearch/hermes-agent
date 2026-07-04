@@ -277,6 +277,34 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, body, secret) is True
 
+    def test_validate_generic_v2_stripped_timestamp_does_not_downgrade_to_v1(self):
+        """Regression test for a downgrade attack found in review: a sender
+        migrating to V2 typically sends BOTH the V1 and V2 signatures
+        together (for compatibility while both ends update). If an
+        attacker captures one such mixed request and replays it with the
+        X-Webhook-Timestamp header stripped, the presence of
+        X-Webhook-Signature-V2 must still commit to V2 validation and
+        reject — it must NOT silently fall through to validating the
+        still-present, still-unprotected V1 signature instead. Falling
+        through would let an attacker downgrade a V2-protected request
+        back into the exact replay hole V2 exists to close, just by
+        deleting one header from a captured request."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        v1_sig = _generic_signature(body, secret)
+        # Simulates a captured mixed V1+V2 request replayed with the
+        # timestamp header stripped — V1 signature is still valid on its
+        # own, but must not be reachable via this path.
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            "X-Webhook-Signature": v1_sig,
+            # X-Webhook-Timestamp deliberately omitted.
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
     def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
         """Regression/documentation test: a captured (body, signature) V1
         pair replays successfully no matter how much time has passed,

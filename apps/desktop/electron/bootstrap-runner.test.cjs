@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const fs = require('node:fs')
+const https = require('node:https')
 const os = require('node:os')
 const path = require('node:path')
 
@@ -8,7 +9,9 @@ const {
   runBootstrap,
   resolveInstallScript,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  downloadInstallScript,
+  BOOTSTRAP_CANCELLED
 } = require('./bootstrap-runner.cjs')
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -133,6 +136,79 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
       /HTTP 404|Failed to download/
     )
   } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript rejects promptly when a download is aborted', async () => {
+  const home = mkTmpHome()
+  const controller = new AbortController()
+  try {
+    const commit = 'b'.repeat(40)
+    const pending = resolveInstallScript({
+      installStamp: { commit },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      abortSignal: controller.signal,
+      _download: (_commit, _dest, { abortSignal } = {}) =>
+        new Promise((_resolve, reject) => {
+          if (!abortSignal) {
+            return
+          }
+          if (abortSignal.aborted) {
+            reject(new Error(BOOTSTRAP_CANCELLED))
+            return
+          }
+          abortSignal.addEventListener(
+            'abort',
+            () => {
+              reject(new Error(BOOTSTRAP_CANCELLED))
+            },
+            { once: true }
+          )
+        })
+    })
+
+    controller.abort()
+    await assert.rejects(pending, /cancelled/i)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('downloadInstallScript aborts an in-flight GitHub fetch', async () => {
+  const home = mkTmpHome()
+  const controller = new AbortController()
+  const commit = 'c'.repeat(40)
+  const dest = cachedScriptPath(home, commit)
+
+  const originalGet = https.get
+  https.get = (_url, callback) => {
+    const fakeRes = {
+      statusCode: 200,
+      pipe() {},
+      destroy() {},
+      resume() {}
+    }
+    const fakeReq = {
+      destroy() {
+        controller.abort()
+      },
+      on() {
+        return fakeReq
+      }
+    }
+    queueMicrotask(() => callback(fakeRes))
+    return fakeReq
+  }
+
+  try {
+    const pending = downloadInstallScript(commit, dest, { abortSignal: controller.signal })
+    controller.abort()
+    await assert.rejects(pending, /cancelled/i)
+  } finally {
+    https.get = originalGet
     fs.rmSync(home, { recursive: true, force: true })
   }
 })

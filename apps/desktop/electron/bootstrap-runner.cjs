@@ -29,9 +29,9 @@
  * Resolves with the same shape as the final 'complete' or 'failed' event so
  * callers can await either way.
  *
- * NOT implemented yet (deferred to Phase 1E / 1F):
- *   - User-facing retry / cancel from the renderer (event channels exist;
- *     no UI consumes them yet)
+ * Cancel: the renderer calls hermes:bootstrap:cancel, which aborts the runner's
+ * AbortController. The signal is honored during GitHub installer downloads,
+ * manifest fetches, and per-stage install script spawns.
  */
 
 const fs = require('node:fs')
@@ -50,6 +50,22 @@ function hiddenWindowsChildOptions(options = {}) {
 }
 
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
+const BOOTSTRAP_CANCELLED = 'bootstrap cancelled by user'
+
+function bootstrapCancelledError() {
+  return new Error(BOOTSTRAP_CANCELLED)
+}
+
+function isBootstrapCancelled(err) {
+  const message = err && err.message ? String(err.message) : ''
+  return message === BOOTSTRAP_CANCELLED || /cancelled by user/i.test(message)
+}
+
+function throwIfAborted(abortSignal) {
+  if (abortSignal && abortSignal.aborted) {
+    throw bootstrapCancelledError()
+  }
+}
 
 // Stages flagged needs_user_input=true in the manifest are skipped by the
 // runner (passed -NonInteractive to install.ps1, which the install script
@@ -104,78 +120,165 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath) {
+function downloadInstallScript(commit, destPath, { abortSignal } = {}) {
   // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
   // is immutable (unlike a branch ref), so we don't need integrity
   // verification beyond "did the file we wrote pass a syntax probe."
   const scriptName = installScriptName()
   const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${commit}/scripts/${scriptName}`
   return new Promise((resolve, reject) => {
+    throwIfAborted(abortSignal)
+
+    let settled = false
+    const cleanups = []
+    const finish = (err, value) => {
+      if (settled) return
+      settled = true
+      while (cleanups.length) {
+        try {
+          cleanups.pop()()
+        } catch {
+          void 0
+        }
+      }
+      if (err) reject(err)
+      else resolve(value)
+    }
+
+    const onAbort = () => finish(bootstrapCancelledError())
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort()
+        return
+      }
+      abortSignal.addEventListener('abort', onAbort, { once: true })
+      cleanups.push(() => abortSignal.removeEventListener('abort', onAbort))
+    }
+
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
     const tmpPath = destPath + '.tmp'
-    const out = fs.createWriteStream(tmpPath)
-    https
-      .get(url, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
-          out.close()
-          fs.unlinkSync(tmpPath)
-          https
-            .get(res.headers.location, res2 => {
-              if (res2.statusCode !== 200) {
-                reject(
-                  new Error(
-                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
-                  )
-                )
-                return
-              }
-              const out2 = fs.createWriteStream(tmpPath)
-              res2.pipe(out2)
-              out2.on('finish', () => {
-                out2.close()
-                fs.renameSync(tmpPath, destPath)
-                resolve(destPath)
-              })
-              out2.on('error', reject)
-            })
-            .on('error', reject)
-          return
+
+    const pipeResponseToFile = (res, out) => {
+      cleanups.push(() => {
+        try {
+          res.destroy()
+        } catch {
+          void 0
         }
-        if (res.statusCode !== 200) {
-          out.close()
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
-          return
+      })
+      cleanups.push(() => {
+        try {
+          out.destroy()
+        } catch {
+          void 0
         }
-        res.pipe(out)
-        out.on('finish', () => {
-          out.close()
-          fs.renameSync(tmpPath, destPath)
-          resolve(destPath)
-        })
-        out.on('error', err => {
+      })
+
+      res.pipe(out)
+      out.on('finish', () => {
+        out.close(() => {
           try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
+            fs.renameSync(tmpPath, destPath)
+            finish(null, destPath)
+          } catch (err) {
+            finish(err)
           }
-          reject(err)
         })
       })
-      .on('error', err => {
+      out.on('error', err => {
         try {
           fs.unlinkSync(tmpPath)
         } catch {
           void 0
         }
-        reject(err)
+        finish(err)
       })
+    }
+
+    const req = https.get(url, res => {
+      if (abortSignal && abortSignal.aborted) {
+        try {
+          res.destroy()
+        } catch {
+          void 0
+        }
+        onAbort()
+        return
+      }
+
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        // GitHub raw shouldn't redirect for a SHA URL, but follow once
+        // defensively.
+        try {
+          res.resume()
+        } catch {
+          void 0
+        }
+        const redirectReq = https.get(res.headers.location, res2 => {
+          if (abortSignal && abortSignal.aborted) {
+            try {
+              res2.destroy()
+            } catch {
+              void 0
+            }
+            onAbort()
+            return
+          }
+          if (res2.statusCode !== 200) {
+            finish(
+              new Error(
+                `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
+              )
+            )
+            return
+          }
+          const out2 = fs.createWriteStream(tmpPath)
+          pipeResponseToFile(res2, out2)
+        })
+        cleanups.push(() => {
+          try {
+            redirectReq.destroy()
+          } catch {
+            void 0
+          }
+        })
+        redirectReq.on('error', err => finish(err))
+        return
+      }
+
+      if (res.statusCode !== 200) {
+        try {
+          res.resume()
+        } catch {
+          void 0
+        }
+        try {
+          fs.unlinkSync(tmpPath)
+        } catch {
+          void 0
+        }
+        finish(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
+        return
+      }
+
+      const out = fs.createWriteStream(tmpPath)
+      pipeResponseToFile(res, out)
+    })
+    cleanups.push(() => {
+      try {
+        req.destroy()
+      } catch {
+        void 0
+      }
+    })
+    req.on('error', err => {
+      try {
+        fs.unlinkSync(tmpPath)
+      } catch {
+        void 0
+      }
+      finish(err)
+    })
   })
 }
 
@@ -184,8 +287,10 @@ async function resolveInstallScript({
   sourceRepoRoot,
   hermesHome,
   emit,
+  abortSignal,
   _download = downloadInstallScript
 }) {
+  throwIfAborted(abortSignal)
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -220,10 +325,14 @@ async function resolveInstallScript({
     line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
   })
   try {
-    await _download(installStamp.commit, cached)
+    await _download(installStamp.commit, cached, { abortSignal })
+    throwIfAborted(abortSignal)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
     return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
   } catch (err) {
+    if (isBootstrapCancelled(err)) {
+      throw err
+    }
     // The pinned commit may not be fetchable from GitHub -- most commonly a
     // locally-built desktop app stamped to an unpushed HEAD (see
     // write-build-stamp.cjs fromLocalGit). Fall back to the installer that
@@ -476,7 +585,8 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp }) {
+async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, abortSignal }) {
+  throwIfAborted(abortSignal)
   const isPosix = installerKind === 'posix'
   const args = isPosix
     ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })]
@@ -484,8 +594,12 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
-    hermesHome
+    hermesHome,
+    abortSignal
   })
+  if (result.killed || (abortSignal && abortSignal.aborted)) {
+    throw bootstrapCancelledError()
+  }
   if (result.code !== 0) {
     throw new Error(
       `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
@@ -665,7 +779,14 @@ async function runBootstrap(opts) {
 
   try {
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    const scriptInfo = await resolveInstallScript({
+      installStamp,
+      sourceRepoRoot,
+      hermesHome,
+      emit,
+      abortSignal
+    })
+    throwIfAborted(abortSignal)
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -675,8 +796,10 @@ async function runBootstrap(opts) {
       emit,
       hermesHome,
       activeRoot,
-      installStamp
+      installStamp,
+      abortSignal
     })
+    throwIfAborted(abortSignal)
     emit({
       type: 'manifest',
       stages: manifest.stages,
@@ -717,6 +840,10 @@ async function runBootstrap(opts) {
     emit({ type: 'complete', marker })
     return { ok: true, marker }
   } catch (err) {
+    if ((abortSignal && abortSignal.aborted) || isBootstrapCancelled(err)) {
+      emit({ type: 'failed', error: BOOTSTRAP_CANCELLED })
+      return { ok: false, cancelled: true }
+    }
     emit({ type: 'failed', error: err.message || String(err) })
     return { ok: false, error: err.message || String(err) }
   } finally {
@@ -734,6 +861,10 @@ module.exports = {
   parseStageResult,
   resolveLocalInstallScript,
   resolveInstallScript,
+  fetchManifest,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  downloadInstallScript,
+  BOOTSTRAP_CANCELLED,
+  isBootstrapCancelled
 }

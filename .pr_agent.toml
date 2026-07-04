@@ -21,3 +21,10 @@ IMPORTANT: Write every field, heading, and bullet of your answer in THAI languag
 
 [pr_description]
 publish_labels = false
+
+# webhook อัตโนมัติ: รีวิวอย่างเดียว ไม่ให้ AI ไปแก้คำอธิบาย MR หรือยัด code suggestion
+# (จากบทเรียนทดสอบจริง: /describe ไปห่อคำอธิบายงานเด็กฝึก · /improve เปลืองโควตา)
+[gitlab]
+pr_commands = [
+    "/review",
+]

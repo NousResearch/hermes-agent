@@ -42,6 +42,13 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
+def test_moa_auxiliary_default_timeouts_are_bounded():
+    aux = DEFAULT_CONFIG["auxiliary"]
+
+    assert aux["moa_reference"]["timeout"] == 120
+    assert aux["moa_aggregator"]["timeout"] == 180
+
+
 def test_session_search_no_longer_appears_in_auxiliary_model_config():
     """session_search is a direct DB-backed tool, not an auxiliary LLM task."""
     assert "session_search" not in DEFAULT_CONFIG["auxiliary"]

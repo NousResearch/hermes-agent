@@ -747,7 +747,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[{dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
@@ -816,7 +816,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 skills_str = ", ".join(skill_names)
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
+            right_lines.append(f"[{dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
 

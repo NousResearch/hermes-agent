@@ -2726,6 +2726,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
+        # Per-job max_tokens override (e.g. "max_tokens": 4096 in jobs.json)
+        job_max_tokens = job.get("max_tokens")
+        if job_max_tokens is not None:
+            try:
+                job_max_tokens = int(job_max_tokens)
+            except (ValueError, TypeError):
+                logger.warning("Job '%s': invalid max_tokens=%r, ignoring", job_id, job_max_tokens)
+                job_max_tokens = None
+
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
 
@@ -2880,6 +2889,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
+            max_tokens=job_max_tokens,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,

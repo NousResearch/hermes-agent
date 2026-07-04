@@ -1868,7 +1868,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str, str]:
         if _bash is None:
             return False, (
                 "Shell cron scripts require 'bash' on PATH (or /bin/bash on Unix), "
-                "but none was found. Install Git Bash / WSL bash on Windows, "
+                "but bash not found on this system. Install Git Bash / WSL bash on Windows, "
                 "or rewrite the script as Python (.py)."
             ), ""
         argv = [_bash, str(path)]
@@ -1942,16 +1942,35 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _normalize_script_result(result: Optional[tuple]) -> tuple[bool, str, str]:
+    """Normalize legacy/new script result tuples to ``(success, stdout, stderr)``.
+
+    Older tests and helper call sites may still provide ``(success, stdout)``.
+    Keep accepting that shape so broader scheduler/test compatibility does not
+    depend on every mock being updated in lockstep.
+    """
+    if result is None:
+        return False, "", ""
+    if len(result) == 3:
+        success, stdout, stderr = result
+        return bool(success), str(stdout or ""), str(stderr or "")
+    if len(result) == 2:
+        success, stdout = result
+        return bool(success), str(stdout or ""), ""
+    raise ValueError(f"Expected script result tuple of len 2 or 3, got {len(result)}")
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
         job: The cron job dict.
-        prerun_script: Optional ``(success, stdout)`` from a script that has
-            already been executed by the caller (e.g. for a wake-gate check).
-            When provided, the script is not re-executed and the cached
-            result is used for prompt injection. When omitted, the script
-            (if any) runs inline as before.
+        prerun_script: Optional cached script result from a caller-side
+            execution (e.g. for a wake-gate check). Accepts both the legacy
+            ``(success, stdout)`` shape and the richer
+            ``(success, stdout, stderr)`` shape. When provided, the script is
+            not re-executed and the cached result is used for prompt injection.
+            When omitted, the script (if any) runs inline as before.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -1967,9 +1986,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     script_path = job.get("script")
     if script_path:
         if prerun_script is not None:
-            success, script_output, script_stderr = prerun_script
+            success, script_output, script_stderr = _normalize_script_result(prerun_script)
         else:
-            success, script_output, script_stderr = _run_job_script(script_path)
+            success, script_output, script_stderr = _normalize_script_result(_run_job_script(script_path))
         if success:
             if script_output:
                 prompt = (
@@ -2315,7 +2334,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output, script_stderr = _run_job_script(script_path)
+            ok, output, script_stderr = _normalize_script_result(_run_job_script(script_path))
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2413,7 +2432,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _normalize_script_result(_run_job_script(script_path))
         _ran_ok, _script_output, _script_stderr = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

@@ -22,6 +22,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 _write_lock = threading.Lock()
+_MAX_LOG_BYTES = 5 * 1024 * 1024
+_BACKUP_COUNT = 3
 
 # Field names that must never appear in the log raw. Any kwarg matching
 # these is silently dropped.
@@ -62,6 +64,29 @@ def _resolve_log_path() -> Path:
     return Path(home) / "logs" / "dashboard-auth.log"
 
 
+def _rotate_log_if_needed(path: Path, incoming_bytes: int) -> None:
+    """Rotate dashboard-auth.log using the standard ``.1``/``.2`` suffixes."""
+    if _MAX_LOG_BYTES <= 0 or _BACKUP_COUNT <= 0 or not path.exists():
+        return
+    try:
+        if path.stat().st_size + incoming_bytes <= _MAX_LOG_BYTES:
+            return
+    except OSError:
+        return
+
+    oldest = path.with_name(f"{path.name}.{_BACKUP_COUNT}")
+    try:
+        oldest.unlink()
+    except FileNotFoundError:
+        pass
+
+    for index in range(_BACKUP_COUNT - 1, 0, -1):
+        src = path.with_name(f"{path.name}.{index}")
+        if src.exists():
+            src.rename(path.with_name(f"{path.name}.{index + 1}"))
+    path.rename(path.with_name(f"{path.name}.1"))
+
+
 def audit_log(event: AuditEvent, **fields: Any) -> None:
     """Append one event to the audit log.
 
@@ -83,6 +108,7 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _write_lock:
+            _rotate_log_if_needed(path, len(line.encode("utf-8")))
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)
     except Exception as e:

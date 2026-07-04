@@ -79,3 +79,31 @@ def test_audit_creates_logs_dir_if_missing(tmp_path, monkeypatch):
     audit_log(AuditEvent.LOGIN_START, provider="nous")
     assert (home / "logs").is_dir()
     assert (home / "logs" / "dashboard-auth.log").exists()
+
+
+def test_audit_rotates_log_when_size_cap_is_reached(profile_home, monkeypatch):
+    from hermes_cli.dashboard_auth import audit as audit_mod
+
+    monkeypatch.setattr(audit_mod, "_MAX_LOG_BYTES", 120)
+    monkeypatch.setattr(audit_mod, "_BACKUP_COUNT", 2)
+
+    log_path = profile_home / "logs" / "dashboard-auth.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("older-login-line\n" * 8, encoding="utf-8")
+    (profile_home / "logs" / "dashboard-auth.log.1").write_text(
+        "previous-backup\n", encoding="utf-8",
+    )
+    (profile_home / "logs" / "dashboard-auth.log.2").write_text(
+        "oldest-backup\n", encoding="utf-8",
+    )
+
+    audit_log(AuditEvent.LOGIN_START, provider="nous")
+
+    current = log_path.read_text(encoding="utf-8")
+    rotated = (profile_home / "logs" / "dashboard-auth.log.1").read_text(encoding="utf-8")
+    second_backup = (profile_home / "logs" / "dashboard-auth.log.2").read_text(encoding="utf-8")
+
+    assert "login_start" in current
+    assert "older-login-line" not in current
+    assert "older-login-line" in rotated
+    assert second_backup == "previous-backup\n"

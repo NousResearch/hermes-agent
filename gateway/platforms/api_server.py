@@ -14,6 +14,8 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- POST /api/imports/analyze         — analyze Glys import files into a structured proposal
+- POST /api/imports/{import_id}/confirm — acknowledge cleanup for a Glys import analysis
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -32,18 +34,23 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
 import socket as _socket
 import re
+import shutil
 import sqlite3
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from xml.etree import ElementTree
 
 try:
     from aiohttp import web
@@ -95,6 +102,183 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+GLYSAI_IMPORT_MAX_FILE_BYTES = 128 * 1024
+GLYSAI_IMPORT_MAX_IMAGE_BYTES = 12 * 1024 * 1024
+GLYSAI_IMPORT_MAX_IMAGE_FILES = 8
+GLYSAI_IMPORT_MAX_TOTAL_CHARS = 60_000
+GLYSAI_IMPORT_TEXT_EXTENSIONS = frozenset({"csv", "json", "txt", "tsv", "xml"})
+GLYSAI_IMPORT_XLSX_EXTENSIONS = frozenset({"xlsx"})
+GLYSAI_IMPORT_IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "webp", "gif", "bmp"})
+GLYSAI_IMPORT_SYSTEM_PROMPT = "\n".join([
+    "Tu es Lou, provider Hermes pour l'import automatise Glys AI.",
+    "Tu retournes uniquement un ImportPlan JSON valide, sans markdown ni prose.",
+    "Le plan est une proposition de revue: Hermes ne decide jamais d'ecriture directe dans Glys.",
+    "Respecte strictement le requested_schema fourni: aucun champ racine inconnu.",
+    "warnings doit toujours etre une liste de textes si le schema l'autorise.",
+    "N'inclus jamais le contenu brut complet d'un fichier, de base64, de token, de cle API ou de cle licence.",
+    "Extrais les lignes metier lisibles une par une; n'invente aucune donnee absente.",
+])
+GLYSAI_IMPORT_IMAGE_VISION_PROMPT = "\n".join([
+    "Tu lis une photo ou un scan de document pour preparer un import Glys.",
+    "Transcris le texte utile et structure les informations visibles sans inventer.",
+    "Cherche: chevaux, proprietaires, emails, telephones, dates, soins, vaccins, mouvements, pensions, facturation, montants et remarques.",
+    "Ne retourne pas de base64 ni de contenu technique; uniquement une lecture business concise.",
+])
+GLYSAI_IMPORT_JSON_FIELDS = frozenset({
+    "backend_replayable_bytes_reasons",
+    "requested_schema",
+    "quality_gate",
+    "files_metadata",
+    "context",
+})
+GLYSAI_IMPORT_TEXT_FIELDS = frozenset({
+    "install_id",
+    "actor_scope",
+    "license_plan",
+    "license_status",
+    "source",
+    "skill_id",
+    "skill_name",
+    "skill_version",
+    "raw_file_persistence",
+    "provider_file_retention",
+    "backend_transport_mode",
+    "backend_replayable_bytes_required",
+    "requested_schema_version",
+    "analysis_directive",
+})
+GLYSAI_IMPORT_MAX_FORM_FIELD_CHARS = 16_384
+GLYSAI_IMPORT_MAX_PROMPT_JSON_CHARS = 12_000
+GLYSAI_IMPORT_MAX_RETURN_STRING_CHARS = 2_000
+GLYSAI_IMPORT_SENSITIVE_KEY_RE = re.compile(
+    r"(authorization|bearer|token|secret|password|api[_-]?key|license[_-]?key|licence[_-]?key|private[_-]?key)",
+    re.IGNORECASE,
+)
+GLYSAI_IMPORT_UNSAFE_RESPONSE_KEY_RE = re.compile(
+    r"(^raw($|_)|raw[_-]?file|file[_-]?(content|text|bytes)|full[_-]?text|base64|authorization|bearer|token|secret|api[_-]?key|license[_-]?key|licence[_-]?key)",
+    re.IGNORECASE,
+)
+GLYSAI_IMPORT_DEFAULT_TEMPLATE: Dict[str, Any] = {
+    "summary": {
+        "language": "fr",
+        "source_documents": [],
+        "detected_domains": [],
+        "counts": {
+            "owners": 0,
+            "horses": 0,
+            "cares": 0,
+            "movements": 0,
+            "invoices": 0,
+            "reproduction_records": 0,
+            "other_records": 0,
+            "unsupported": 0,
+            "warnings": 0,
+        },
+    },
+    "owners": [{
+        "name": None,
+        "first_name": None,
+        "last_name": None,
+        "email": None,
+        "phone": None,
+        "address": None,
+        "city": None,
+        "postal_code": None,
+        "company_name": None,
+        "siret": None,
+        "vat_number": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+        "notes": None,
+    }],
+    "horses": [{
+        "name": None,
+        "aliases": [],
+        "owner_name": None,
+        "owner_email": None,
+        "breed": None,
+        "birth_date": None,
+        "gender": None,
+        "color": None,
+        "category": None,
+        "chip_number": None,
+        "sire_number": None,
+        "status": None,
+        "current_location": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+        "notes": None,
+    }],
+    "cares": [{
+        "horse_name": None,
+        "care_type": None,
+        "care_date": None,
+        "next_date": None,
+        "provider_name": None,
+        "cost": None,
+        "notes": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+    }],
+    "movements": [{
+        "horse_name": None,
+        "movement_type": None,
+        "movement_date": None,
+        "origin_location": None,
+        "destination_location": None,
+        "transport_company": None,
+        "health_certificate": None,
+        "reason": None,
+        "notes": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+    }],
+    "invoices": [{
+        "owner_name": None,
+        "supplier_name": None,
+        "horse_name": None,
+        "invoice_type": None,
+        "category": None,
+        "amount": None,
+        "due_date": None,
+        "paid_date": None,
+        "status": None,
+        "external_reference": None,
+        "notes": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+    }],
+    "reproduction_records": [{
+        "mare_name": None,
+        "stallion_name": None,
+        "record_type": None,
+        "record_date": None,
+        "pregnancy_check_result": None,
+        "expected_foaling_date": None,
+        "vet_name": None,
+        "ai_center": None,
+        "notes": None,
+        "source": None,
+        "source_row": None,
+        "confidence": None,
+    }],
+    "other_records": [{
+        "domain": None,
+        "display_name": None,
+        "source": None,
+        "source_row": None,
+        "fields": [{"label": None, "value": None}],
+        "missing_reason": None,
+        "confidence": None,
+    }],
+    "unsupported": [],
+    "warnings": [],
+}
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -133,6 +317,568 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
         return bool(value)
     return default
 
+
+def _glys_import_safe_filename(filename: str) -> str:
+    raw = Path(str(filename or "document")).name.strip() or "document"
+    safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw).strip(" ._")
+    return (safe or "document")[:180]
+
+
+def _glys_import_safe_import_id(import_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(import_id or "").strip())
+    return safe[:120]
+
+
+def _glys_import_extension(filename: str) -> str:
+    name = _glys_import_safe_filename(filename).lower()
+    if "." not in name:
+        return ""
+    return name.rsplit(".", 1)[-1]
+
+
+def _glys_import_cache_root() -> Path:
+    try:
+        from hermes_constants import get_hermes_dir
+        return get_hermes_dir("cache/glys_imports", "glys_imports")
+    except Exception:
+        return Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser() / "cache" / "glys_imports"
+
+
+def _glys_import_cleanup_import(import_id: str) -> bool:
+    """Best-effort cleanup for an import-specific transient spool directory.
+
+    The current production path keeps upload bytes in memory and does not spool
+    raw files. This cleanup remains for idempotency and for stale directories
+    from older hotfixes/crashes. Never logs local paths.
+    """
+    safe_id = _glys_import_safe_import_id(import_id)
+    if not safe_id:
+        return True
+    root = _glys_import_cache_root()
+    target = root / safe_id
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            resolved_root = root.resolve()
+            resolved_target = target.resolve()
+            if resolved_target == resolved_root or resolved_root not in resolved_target.parents:
+                return False
+            shutil.rmtree(resolved_target, ignore_errors=True)
+        return not target.exists()
+    except Exception:
+        return False
+
+
+def _glys_import_is_text_file(filename: str, content_type: str) -> bool:
+    mime = (content_type or "").strip().lower()
+    if mime.startswith("text/"):
+        return True
+    if mime in {"application/json", "application/xml", "application/csv", "text/csv"}:
+        return True
+    return _glys_import_extension(filename) in GLYSAI_IMPORT_TEXT_EXTENSIONS
+
+
+def _glys_import_is_image_file(filename: str, content_type: str) -> bool:
+    mime = (content_type or "").strip().lower()
+    if mime.startswith("image/"):
+        return True
+    return _glys_import_extension(filename) in GLYSAI_IMPORT_IMAGE_EXTENSIONS
+
+
+def _glys_import_text_from_xlsx(data: bytes) -> Optional[str]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            shared_strings: List[str] = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in root.iter():
+                    if item.tag.endswith("}t") or item.tag == "t":
+                        shared_strings.append(item.text or "")
+
+            sheet_names = sorted(
+                name
+                for name in archive.namelist()
+                if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+            )
+            rows: List[str] = []
+            for sheet_name in sheet_names[:10]:
+                root = ElementTree.fromstring(archive.read(sheet_name))
+                rows.append(f"[{sheet_name}]")
+                for row in root.iter():
+                    if not (row.tag.endswith("}row") or row.tag == "row"):
+                        continue
+                    values: List[str] = []
+                    for cell in row:
+                        if not (cell.tag.endswith("}c") or cell.tag == "c"):
+                            continue
+                        cell_type = cell.attrib.get("t", "")
+                        raw_value = ""
+                        for child in cell:
+                            if child.tag.endswith("}v") or child.tag == "v":
+                                raw_value = child.text or ""
+                                break
+                            if child.tag.endswith("}is") or child.tag == "is":
+                                raw_value = " ".join(
+                                    text_node.text or ""
+                                    for text_node in child.iter()
+                                    if text_node.tag.endswith("}t") or text_node.tag == "t"
+                                )
+                                break
+                        if cell_type == "s" and raw_value.isdigit():
+                            index = int(raw_value)
+                            value = shared_strings[index] if index < len(shared_strings) else raw_value
+                        else:
+                            value = raw_value
+                        values.append(value)
+                    if any(value.strip() for value in values):
+                        rows.append("\t".join(values))
+                    if len("\n".join(rows)) >= GLYSAI_IMPORT_MAX_TOTAL_CHARS:
+                        return "\n".join(rows)[:GLYSAI_IMPORT_MAX_TOTAL_CHARS]
+            return "\n".join(rows).strip() or None
+    except Exception:
+        return None
+
+
+def _glys_import_json_object(text: str) -> Dict[str, Any]:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    first = cleaned.find("{")
+    last = cleaned.rfind("}")
+    if first >= 0 and last > first:
+        parsed = json.loads(cleaned[first:last + 1])
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("Invalid JSON import proposal")
+
+
+def _glys_import_text_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    out: List[str] = []
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip()
+        else:
+            try:
+                text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                text = str(item)
+            text = text.strip()
+        if text:
+            out.append(redact_sensitive_text(text, force=True)[:GLYSAI_IMPORT_MAX_RETURN_STRING_CHARS])
+    return out
+
+
+def _glys_import_redact_prompt_value(value: Any, *, key: str = "") -> Any:
+    if GLYSAI_IMPORT_SENSITIVE_KEY_RE.search(key or ""):
+        return "«redacted-secret»"
+    if isinstance(value, dict):
+        return {
+            str(k)[:120]: _glys_import_redact_prompt_value(v, key=str(k))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_glys_import_redact_prompt_value(item, key=key) for item in value[:200]]
+    if isinstance(value, str):
+        return redact_sensitive_text(value[:GLYSAI_IMPORT_MAX_FORM_FIELD_CHARS], force=True)
+    return value
+
+
+def _glys_import_prompt_json(value: Any) -> str:
+    redacted = _glys_import_redact_prompt_value(value)
+    try:
+        rendered = json.dumps(redacted, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        rendered = json.dumps(str(redacted), ensure_ascii=False)
+    if len(rendered) > GLYSAI_IMPORT_MAX_PROMPT_JSON_CHARS:
+        return rendered[:GLYSAI_IMPORT_MAX_PROMPT_JSON_CHARS] + "…"
+    return rendered
+
+
+def _glys_import_parse_json_fields(fields: Dict[str, str]) -> tuple[Dict[str, Any], Optional[Dict[str, str]]]:
+    parsed: Dict[str, Any] = {}
+    for name in sorted(GLYSAI_IMPORT_JSON_FIELDS):
+        raw = fields.get(name)
+        if raw in (None, ""):
+            continue
+        try:
+            parsed[name] = json.loads(raw)
+        except Exception:
+            return {}, {"error": "GLYSAI_IMPORT_INVALID_JSON_FIELD", "field": name}
+    return parsed, None
+
+
+def _glys_import_json_schema_type(schema: Dict[str, Any]) -> Optional[str]:
+    typ = schema.get("type")
+    if isinstance(typ, list):
+        for item in typ:
+            if item != "null":
+                return str(item)
+        return None
+    if isinstance(typ, str):
+        return typ
+    if "properties" in schema:
+        return "object"
+    if "items" in schema:
+        return "array"
+    return None
+
+
+def _glys_import_is_json_schema(schema: Any) -> bool:
+    return isinstance(schema, dict) and any(k in schema for k in ("type", "properties", "items", "$schema"))
+
+
+def _glys_import_schema_empty(schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return None
+    if "default" in schema:
+        return schema.get("default")
+    typ = _glys_import_json_schema_type(schema)
+    if typ == "array":
+        return []
+    if typ == "object":
+        return {}
+    if typ == "string":
+        return ""
+    if typ == "boolean":
+        return False
+    return None
+
+
+def _glys_import_filter_json_schema(value: Any, schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return _glys_import_scrub_plan_value(value)
+    typ = _glys_import_json_schema_type(schema)
+    if typ == "array":
+        if not isinstance(value, list):
+            return []
+        item_schema = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+        return [_glys_import_filter_json_schema(item, item_schema) for item in value]
+    if typ == "object":
+        if not isinstance(value, dict):
+            return {}
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            return _glys_import_scrub_plan_value(value) if isinstance(value, dict) else {}
+        out: Dict[str, Any] = {}
+        for key, prop_schema in props.items():
+            if key in value:
+                filtered = _glys_import_filter_json_schema(value.get(key), prop_schema)
+                if filtered is not None:
+                    out[key] = filtered
+            else:
+                empty = _glys_import_schema_empty(prop_schema)
+                if empty in ([], {}) or key == "warnings":
+                    out[key] = empty
+        return out
+    if typ == "string":
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)[:GLYSAI_IMPORT_MAX_RETURN_STRING_CHARS]
+        return redact_sensitive_text(str(value), force=True)[:GLYSAI_IMPORT_MAX_RETURN_STRING_CHARS]
+    if typ == "integer":
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    if typ == "number":
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if typ == "boolean":
+        return value if isinstance(value, bool) else None
+    return _glys_import_scrub_plan_value(value)
+
+
+def _glys_import_filter_template(value: Any, template: Any) -> Any:
+    if isinstance(template, dict):
+        if not isinstance(value, dict):
+            return {k: _glys_import_filter_template(None, v) for k, v in template.items() if isinstance(v, (list, dict))}
+        out: Dict[str, Any] = {}
+        for key, sub_template in template.items():
+            if key in value:
+                filtered = _glys_import_filter_template(value.get(key), sub_template)
+                if filtered is not None:
+                    out[key] = filtered
+            elif isinstance(sub_template, list):
+                out[key] = []
+            elif isinstance(sub_template, dict):
+                out[key] = _glys_import_filter_template({}, sub_template)
+        return out
+    if isinstance(template, list):
+        if not isinstance(value, list):
+            return []
+        item_template = template[0] if template else None
+        if item_template is None:
+            return [_glys_import_scrub_plan_value(item) for item in value]
+        return [_glys_import_filter_template(item, item_template) for item in value]
+    return _glys_import_scrub_plan_value(value)
+
+
+def _glys_import_root_keys(schema: Any) -> List[str]:
+    if _glys_import_is_json_schema(schema):
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        if isinstance(props, dict):
+            return [str(key) for key in props.keys()]
+        return []
+    if isinstance(schema, dict):
+        return [str(key) for key in schema.keys()]
+    return [str(key) for key in GLYSAI_IMPORT_DEFAULT_TEMPLATE.keys()]
+
+
+def _glys_import_schema_allows_key(schema: Any, key: str) -> bool:
+    return key in _glys_import_root_keys(schema)
+
+
+def _glys_import_scrub_plan_value(value: Any, *, key: str = "") -> Any:
+    if GLYSAI_IMPORT_UNSAFE_RESPONSE_KEY_RE.search(key or ""):
+        return None
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            k_str = str(k)
+            filtered = _glys_import_scrub_plan_value(v, key=k_str)
+            if filtered is not None:
+                out[k_str] = filtered
+        return out
+    if isinstance(value, list):
+        return [item for item in (_glys_import_scrub_plan_value(v, key=key) for v in value) if item is not None]
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)[:GLYSAI_IMPORT_MAX_RETURN_STRING_CHARS]
+    return value
+
+
+def _glys_import_normalize_proposal(
+    proposal: Dict[str, Any],
+    requested_schema: Optional[Dict[str, Any]],
+    warnings: List[str],
+    unsupported: List[str],
+) -> Dict[str, Any]:
+    schema: Any = requested_schema if isinstance(requested_schema, dict) and requested_schema else GLYSAI_IMPORT_DEFAULT_TEMPLATE
+    source = _glys_import_scrub_plan_value(proposal) if isinstance(proposal, dict) else {}
+    if _glys_import_is_json_schema(schema):
+        normalized = _glys_import_filter_json_schema(source, schema)
+    else:
+        normalized = _glys_import_filter_template(source, schema)
+    if not isinstance(normalized, dict):
+        normalized = {}
+
+    root_keys = _glys_import_root_keys(schema)
+    normalized = {key: normalized[key] for key in root_keys if key in normalized}
+
+    if _glys_import_schema_allows_key(schema, "warnings"):
+        merged_warnings = _glys_import_text_list(proposal.get("warnings")) + _glys_import_text_list(warnings)
+        normalized["warnings"] = merged_warnings
+    if _glys_import_schema_allows_key(schema, "unsupported"):
+        existing = normalized.get("unsupported")
+        if isinstance(existing, list):
+            normalized["unsupported"] = existing + _glys_import_text_list(unsupported)
+        else:
+            normalized["unsupported"] = _glys_import_text_list(unsupported)
+
+    for key in root_keys:
+        if key not in normalized:
+            template = schema.get("properties", {}).get(key) if _glys_import_is_json_schema(schema) else schema.get(key) if isinstance(schema, dict) else None
+            empty = _glys_import_schema_empty(template) if isinstance(template, dict) else [] if isinstance(template, list) else None
+            if empty in ([], {}) or key in {"warnings", "unsupported"}:
+                normalized[key] = empty
+    return normalized
+
+
+async def _glys_import_vision_payload_from_files(files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    sections: List[str] = []
+    warnings: List[str] = []
+    unsupported: List[str] = []
+    image_files: List[Dict[str, Any]] = []
+
+    for file_info in files:
+        filename = _glys_import_safe_filename(str(file_info.get("filename") or "document"))
+        content_type = str(file_info.get("content_type") or "application/octet-stream")
+        if _glys_import_is_image_file(filename, content_type):
+            image_files.append(file_info)
+
+    if not image_files:
+        return {"sections": sections, "warnings": warnings, "unsupported": unsupported}
+
+    if len(image_files) > GLYSAI_IMPORT_MAX_IMAGE_FILES:
+        for file_info in image_files[GLYSAI_IMPORT_MAX_IMAGE_FILES:]:
+            filename = _glys_import_safe_filename(str(file_info.get("filename") or "document"))
+            unsupported.append(f"{filename}: trop d'images dans ce lot, a reprendre plus tard.")
+        image_files = image_files[:GLYSAI_IMPORT_MAX_IMAGE_FILES]
+
+    try:
+        from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+    except Exception as exc:
+        logger.warning("[api_server] Glys import vision unavailable: %s", exc.__class__.__name__)
+        for file_info in image_files:
+            filename = _glys_import_safe_filename(str(file_info.get("filename") or "document"))
+            unsupported.append(f"{filename}: analyse image indisponible pour le moment.")
+        return {"sections": sections, "warnings": warnings, "unsupported": unsupported}
+
+    for file_info in image_files:
+        filename = _glys_import_safe_filename(str(file_info.get("filename") or "document"))
+        content_type = str(file_info.get("content_type") or "application/octet-stream")
+        if not content_type.startswith("image/"):
+            extension = _glys_import_extension(filename) or "jpeg"
+            content_type = f"image/{'jpeg' if extension == 'jpg' else extension}"
+        data = file_info.get("data") or b""
+
+        if not isinstance(data, (bytes, bytearray)):
+            unsupported.append(f"{filename}: contenu image illisible.")
+            continue
+        data_bytes = bytes(data)
+        if len(data_bytes) > GLYSAI_IMPORT_MAX_IMAGE_BYTES:
+            unsupported.append(f"{filename}: image trop volumineuse pour l'analyse.")
+            continue
+
+        sha256 = hashlib.sha256(data_bytes).hexdigest()
+        try:
+            image_data_url = f"data:{content_type};base64,{base64.b64encode(data_bytes).decode('ascii')}"
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": GLYSAI_IMPORT_IMAGE_VISION_PROMPT},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }]
+            response = await async_call_llm(
+                task="vision",
+                messages=messages,
+                temperature=0.1,
+                max_tokens=2000,
+                timeout=120.0,
+            )
+            analysis = extract_content_or_reasoning(response)
+            if not isinstance(analysis, str) or not analysis.strip():
+                unsupported.append(f"{filename}: image non exploitable par l'analyse visuelle.")
+                continue
+            sections.append("\n".join([
+                f"Fichier image: {filename}",
+                f"Type MIME: {content_type}",
+                f"Taille: {len(data_bytes)} octets",
+                f"SHA256: {sha256}",
+                "Lecture visuelle:",
+                analysis.strip()[:GLYSAI_IMPORT_MAX_TOTAL_CHARS],
+            ]))
+        except Exception as exc:
+            logger.warning(
+                "[api_server] Glys import image analysis failed: import_file=%s mime=%s size=%s sha256=%s error=%s",
+                filename,
+                content_type,
+                len(data_bytes),
+                sha256,
+                exc.__class__.__name__,
+            )
+            unsupported.append(f"{filename}: image non exploitable par l'analyse visuelle.")
+
+    return {"sections": sections, "warnings": warnings, "unsupported": unsupported}
+
+
+def _glys_import_payload_from_files(
+    files: List[Dict[str, Any]],
+    *,
+    fields: Optional[Dict[str, str]] = None,
+    json_fields: Optional[Dict[str, Any]] = None,
+    vision_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    fields = fields or {}
+    json_fields = json_fields or {}
+    sections: List[str] = list((vision_payload or {}).get("sections") or [])
+    warnings: List[str] = list((vision_payload or {}).get("warnings") or [])
+    unsupported: List[str] = list((vision_payload or {}).get("unsupported") or [])
+    remaining_chars = GLYSAI_IMPORT_MAX_TOTAL_CHARS
+
+    for file_info in files:
+        filename = _glys_import_safe_filename(str(file_info.get("filename") or "document"))
+        content_type = str(file_info.get("content_type") or "application/octet-stream")[:120]
+        data = file_info.get("data") or b""
+        if not isinstance(data, (bytes, bytearray)):
+            unsupported.append(f"{filename}: contenu illisible.")
+            continue
+        data_bytes = bytes(data)
+        sha256 = hashlib.sha256(data_bytes).hexdigest()
+
+        text: Optional[str] = None
+        max_bytes = min(len(data_bytes), GLYSAI_IMPORT_MAX_FILE_BYTES)
+        if _glys_import_is_text_file(filename, content_type):
+            text = data_bytes[:max_bytes].decode("utf-8", errors="replace").replace("\x00", "").strip()
+        elif _glys_import_extension(filename) in GLYSAI_IMPORT_XLSX_EXTENSIONS:
+            text = _glys_import_text_from_xlsx(data_bytes[:max_bytes])
+        elif _glys_import_is_image_file(filename, content_type):
+            continue
+        else:
+            unsupported.append(f"{filename}: format a analyser via OCR Hermes dedie.")
+            continue
+
+        if not text:
+            unsupported.append(f"{filename}: fichier vide ou illisible.")
+            continue
+
+        if remaining_chars <= 0:
+            unsupported.append(f"{filename}: lot trop volumineux pour l'analyse.")
+            continue
+
+        content = text[:remaining_chars]
+        remaining_chars -= len(content)
+        if len(data_bytes) > max_bytes or len(text) > len(content):
+            warnings.append(f"{filename}: contenu tronque pour rester dans la limite d'analyse.")
+
+        sections.append("\n".join([
+            f"Fichier: {filename}",
+            f"Type MIME: {content_type}",
+            f"Taille: {len(data_bytes)} octets",
+            f"SHA256: {sha256}",
+            "Contenu extrait borne (ne pas recopier comme contenu brut complet dans la reponse):",
+            content,
+        ]))
+
+    requested_schema = json_fields.get("requested_schema")
+    schema_for_prompt = requested_schema if isinstance(requested_schema, dict) and requested_schema else GLYSAI_IMPORT_DEFAULT_TEMPLATE
+    request_metadata: Dict[str, Any] = {}
+    for name in sorted(GLYSAI_IMPORT_TEXT_FIELDS):
+        value = fields.get(name)
+        if value not in (None, ""):
+            request_metadata[name] = value[:GLYSAI_IMPORT_MAX_FORM_FIELD_CHARS]
+    for name in sorted(GLYSAI_IMPORT_JSON_FIELDS - {"requested_schema"}):
+        if name in json_fields:
+            request_metadata[name] = json_fields[name]
+
+    prompt_parts = [
+        "Analyse les fichiers ci-dessous et extrais uniquement les donnees importables pour Glys.",
+        "Retourne un ImportPlan JSON strict, sans markdown, conforme exactement au requested_schema.",
+        "Ne retourne aucun champ racine absent du schema; warnings doit etre une liste de textes.",
+        "Ne copie jamais le contenu brut complet d'un fichier; retourne seulement des champs metier courts et verifiables.",
+        "Hermes propose uniquement: n'affirme aucune ecriture directe dans Glys.",
+        f"requested_schema_version: {redact_sensitive_text(fields.get('requested_schema_version', '')[:200], force=True)}",
+        "requested_schema JSON:",
+        _glys_import_prompt_json(schema_for_prompt),
+    ]
+    if request_metadata:
+        prompt_parts.extend(["Contexte transport et qualite (redige sans secrets):", _glys_import_prompt_json(request_metadata)])
+    directive = fields.get("analysis_directive")
+    if directive:
+        prompt_parts.extend(["Directive d'analyse:", redact_sensitive_text(directive[:GLYSAI_IMPORT_MAX_FORM_FIELD_CHARS], force=True)])
+    if sections:
+        prompt_parts.extend(["Fichiers analyses:", "\n\n---\n\n".join(sections)])
+
+    return {
+        "prompt": "\n\n".join(prompt_parts),
+        "has_content": bool(sections),
+        "warnings": warnings,
+        "unsupported": unsupported,
+        "requested_schema": requested_schema if isinstance(requested_schema, dict) else None,
+    }
 
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
@@ -842,6 +1588,13 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        # Glys AI provider imports are a narrow production contract for Lou.
+        # Prefer the dedicated GLYSAI_LOU_API_KEY when present, while keeping
+        # the normal API server key as a compatibility fallback for tests and
+        # existing profile config. Never log either value.
+        self._glys_import_api_key: str = str(
+            extra.get("glys_import_key") or os.getenv("GLYSAI_LOU_API_KEY") or self._api_key or ""
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1063,6 +1816,31 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    def _check_glys_import_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        """Validate the dedicated Glys AI Lou provider bearer token."""
+        expected = self._glys_import_api_key
+        if not expected:
+            logger.error("Glys import provider rejected request: no API key configured")
+            return web.json_response(
+                {"error": {"message": "Glys import provider API key is not configured", "type": "invalid_request_error", "code": "missing_api_key"}},
+                status=401,
+            )
+
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if hmac.compare_digest(token, expected):
+                return None
+
+        logger.warning(
+            "Glys import provider rejected invalid API key: %s",
+            self._request_audit_log_suffix(request),
+        )
+        return web.json_response(
+            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            status=401,
+        )
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1232,6 +2010,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        persist: bool = True,
+        skip_memory: bool = False,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1325,7 +2106,10 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is None:
+            enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        else:
+            enabled_toolsets = list(enabled_toolsets_override)
 
         max_iterations = _current_max_iterations()
 
@@ -1347,11 +2131,18 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
+            session_db=self._ensure_session_db() if persist else None,
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            skip_memory=skip_memory,
         )
+        if not persist:
+            # Import-provider file prompts contain customer raw upload text. Keep
+            # those turns out of durable state/session snapshots and memory.
+            setattr(agent, "_persist_disabled", True)
+            setattr(agent, "_session_json_enabled", False)
+            setattr(agent, "_session_db", None)
         return agent
 
     # ------------------------------------------------------------------
@@ -1522,6 +2313,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "glys_import_analyze": {"method": "POST", "path": "/api/imports/analyze"},
+                "glys_import_confirm": {"method": "POST", "path": "/api/imports/{import_id}/confirm"},
             },
         })
 
@@ -2048,6 +2841,165 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    async def _handle_import_analyze(self, request: "web.Request") -> "web.Response":
+        """POST /api/imports/analyze — Glys business import extraction."""
+        auth_err = self._check_glys_import_auth(request)
+        if auth_err:
+            return auth_err
+
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
+        if not request.content_type.startswith("multipart/"):
+            if request.content_length in (None, 0):
+                return web.json_response(
+                    {"error": "GLYSAI_IMPORT_FILES_REQUIRED", "message": "At least one file is required"},
+                    status=400,
+                )
+            return web.json_response(
+                {"error": "INVALID_MULTIPART_REQUEST", "message": "multipart/form-data is required"},
+                status=400,
+            )
+
+        fields: Dict[str, str] = {}
+        files: List[Dict[str, Any]] = []
+        try:
+            reader = await request.multipart()
+            async for part in reader:
+                if part.name == "files":
+                    data = await part.read(decode=False)
+                    filename = _glys_import_safe_filename(part.filename or "document")
+                    content_type = str(part.headers.get("Content-Type", "application/octet-stream"))[:120]
+                    files.append({
+                        "filename": filename,
+                        "content_type": content_type,
+                        "data": data,
+                    })
+                elif part.name:
+                    fields[part.name] = (await part.text())[:GLYSAI_IMPORT_MAX_FORM_FIELD_CHARS].strip()
+        except Exception as exc:
+            logger.warning("[api_server] invalid Glys import multipart payload: %s", exc.__class__.__name__)
+            return web.json_response(
+                {"error": "INVALID_MULTIPART_REQUEST", "message": "Invalid multipart payload"},
+                status=400,
+            )
+
+        if not files:
+            return web.json_response(
+                {"error": "GLYSAI_IMPORT_FILES_REQUIRED", "message": "At least one file is required"},
+                status=400,
+            )
+
+        json_fields, json_error = _glys_import_parse_json_fields(fields)
+        if json_error is not None:
+            return web.json_response(json_error, status=400)
+
+        import_id = f"import_{uuid.uuid4().hex}"
+        try:
+            vision_payload = await _glys_import_vision_payload_from_files(files)
+            payload = _glys_import_payload_from_files(
+                files,
+                fields=fields,
+                json_fields=json_fields,
+                vision_payload=vision_payload,
+            )
+            if not payload["has_content"]:
+                proposal = _glys_import_normalize_proposal(
+                    {},
+                    payload.get("requested_schema"),
+                    payload["warnings"],
+                    payload["unsupported"],
+                )
+                return web.json_response({"importId": import_id, "proposal": proposal})
+
+            session_id = f"glys_import_{uuid.uuid4().hex}"
+            try:
+                result, _usage = await self._run_agent(
+                    user_message=payload["prompt"],
+                    conversation_history=[],
+                    ephemeral_system_prompt=GLYSAI_IMPORT_SYSTEM_PROMPT,
+                    session_id=session_id,
+                    gateway_session_key=session_id,
+                    persist=False,
+                    skip_memory=True,
+                    enabled_toolsets_override=[],
+                )
+            except Exception as exc:
+                logger.error(
+                    "[api_server] Glys import analysis failed: import_id=%s error=%s",
+                    import_id,
+                    exc.__class__.__name__,
+                )
+                return web.json_response(
+                    {"error": "GLYSAI_IMPORT_ANALYSIS_FAILED", "message": "Import analysis failed"},
+                    status=502,
+                )
+
+            final_response = result.get("final_response") if isinstance(result, dict) else ""
+            if not isinstance(final_response, str) or not final_response.strip():
+                return web.json_response(
+                    {"error": "GLYSAI_IMPORT_INVALID_RESPONSE", "message": "Import analysis returned no proposal"},
+                    status=502,
+                )
+
+            try:
+                proposal = _glys_import_json_object(final_response)
+            except Exception:
+                logger.warning("[api_server] Glys import analysis returned invalid JSON: import_id=%s", import_id)
+                return web.json_response(
+                    {"error": "GLYSAI_IMPORT_INVALID_RESPONSE", "message": "Import analysis returned invalid JSON"},
+                    status=502,
+                )
+
+            normalized = _glys_import_normalize_proposal(
+                proposal,
+                payload.get("requested_schema"),
+                payload["warnings"],
+                payload["unsupported"],
+            )
+            return web.json_response({"importId": import_id, "proposal": normalized})
+        finally:
+            if not _glys_import_cleanup_import(import_id):
+                logger.warning("[api_server] Glys import cleanup incomplete: import_id=%s", import_id)
+
+    async def _handle_import_confirm(self, request: "web.Request") -> "web.Response":
+        """POST /api/imports/{import_id}/confirm — delete transient import data."""
+        auth_err = self._check_glys_import_auth(request)
+        if auth_err:
+            return auth_err
+
+        import_id = _glys_import_safe_import_id(request.match_info.get("import_id") or "")
+        if not import_id:
+            return web.json_response(
+                {"error": "INVALID_IMPORT_ID", "message": "import_id is required"},
+                status=400,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            body_import_id = _glys_import_safe_import_id(str(body.get("import_id") or body.get("importId") or ""))
+            if body_import_id and body_import_id != import_id:
+                return web.json_response(
+                    {"error": "INVALID_IMPORT_ID", "message": "import_id mismatch"},
+                    status=400,
+                )
+
+        if not _glys_import_cleanup_import(import_id):
+            return web.json_response(
+                {"error": "GLYSAI_IMPORT_CLEANUP_FAILED", "message": "Import cleanup failed"},
+                status=500,
+            )
+
+        return web.json_response({
+            "importId": import_id,
+            "deleted": True,
+            "files_deleted": True,
+        })
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -4022,6 +4974,9 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        persist: bool = True,
+        skip_memory: bool = False,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4058,6 +5013,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    persist=persist,
+                    skip_memory=skip_memory,
+                    enabled_toolsets_override=enabled_toolsets_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4774,6 +5732,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_post("/api/imports/analyze", self._handle_import_analyze)
+            self._app.router.add_post("/api/imports/{import_id}/confirm", self._handle_import_confirm)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

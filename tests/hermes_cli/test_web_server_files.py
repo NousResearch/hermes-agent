@@ -171,6 +171,29 @@ def test_forced_root_paths_stay_under_root(forced_files_client, tmp_path):
     assert escaped.status_code == 403
 
 
+def test_forced_root_listing_omits_symlinks_outside_root(forced_files_client, tmp_path):
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "visible.txt").write_text("safe")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("do not leak")
+    link = root / "escape"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("filesystem does not allow directory symlinks")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    names = [entry["name"] for entry in listing.json()["entries"]]
+    assert names == ["visible.txt"]
+
+    escaped = client.get("/api/files", params={"path": str(link)})
+    assert escaped.status_code == 403
+
+
 def test_local_mode_defaults_to_home_and_can_jump_to_absolute_path(local_files_client, tmp_path):
     client, home = local_files_client
     (home / "home.txt").write_text("home")

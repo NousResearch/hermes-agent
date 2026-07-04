@@ -1704,11 +1704,16 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
-        entries = [
-            _managed_file_entry(policy, child)
-            for child in target.iterdir()
-            if not _is_sensitive_path(child)
-        ]
+        entries = []
+        for child in target.iterdir():
+            if _is_sensitive_path(child):
+                continue
+            try:
+                entries.append(_managed_file_entry(policy, child))
+            except HTTPException as exc:
+                if exc.status_code == 403 and exc.detail == "Path outside managed files root":
+                    continue
+                raise
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:

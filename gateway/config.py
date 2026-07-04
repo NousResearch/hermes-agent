@@ -1091,8 +1091,15 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
-                    bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat in {Platform.DISCORD, Platform.SLACK}:
+                    if "channel_skill_bindings" in platform_cfg:
+                        bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                    if "channel_skills" in platform_cfg:
+                        channel_skills = platform_cfg["channel_skills"]
+                        if isinstance(channel_skills, dict):
+                            bridged["channel_skills"] = {str(k): v for k, v in channel_skills.items()}
+                        else:
+                            bridged["channel_skills"] = channel_skills
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):

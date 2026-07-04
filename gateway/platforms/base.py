@@ -2186,15 +2186,19 @@ def resolve_channel_skills(
 ) -> list[str] | None:
     """Resolve auto-loaded skill(s) for a channel/thread from platform config.
 
-    Looks up ``channel_skill_bindings`` in the adapter's ``config.extra`` dict.
-
-    Config format::
+    Preferred config format::
 
         channel_skill_bindings:
           - id: "C0123"          # Slack channel ID or Discord channel/forum ID
             skills: ["skill-a", "skill-b"]
           - id: "D0ABCDE"
             skill: "solo-skill"  # single string also accepted
+
+    Legacy/dict alias also accepted::
+
+        channel_skills:
+          "C0123": ["skill-a", "skill-b"]
+          "D0ABCDE": "solo-skill"
 
     Prefers an exact match on *channel_id*; falls back to *parent_id*
     (useful for forum threads / Slack threads inheriting the parent channel's
@@ -2203,34 +2207,46 @@ def resolve_channel_skills(
     Returns a deduplicated list of skill names (order preserved), or None if
     no match is found.
     """
-    bindings = config_extra.get("channel_skill_bindings") or []
-    if not isinstance(bindings, list) or not bindings:
+
+    def _normalize_skills(value: Any) -> list[str] | None:
+        if isinstance(value, str):
+            skill = value.strip()
+            return [skill] if skill else None
+        if isinstance(value, list):
+            seen: list[str] = []
+            for name in value:
+                if not isinstance(name, str):
+                    continue
+                normalized = name.strip()
+                if normalized and normalized not in seen:
+                    seen.append(normalized)
+            return seen or None
         return None
-    ids_to_check: set[str] = set()
-    if channel_id:
-        ids_to_check.add(str(channel_id))
-    if parent_id:
-        ids_to_check.add(str(parent_id))
+
+    ids_to_check: list[str] = []
+    for key in (channel_id, parent_id):
+        if key:
+            normalized = str(key)
+            if normalized not in ids_to_check:
+                ids_to_check.append(normalized)
     if not ids_to_check:
         return None
-    for entry in bindings:
-        if not isinstance(entry, dict):
-            continue
-        entry_id = str(entry.get("id", ""))
-        if entry_id in ids_to_check:
-            skills = entry.get("skills") or entry.get("skill")
-            if isinstance(skills, str):
-                s = skills.strip()
-                return [s] if s else None
-            if isinstance(skills, list) and skills:
-                seen: list[str] = []
-                for name in skills:
-                    if not isinstance(name, str):
-                        continue
-                    nm = name.strip()
-                    if nm and nm not in seen:
-                        seen.append(nm)
-                return seen or None
+
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if isinstance(bindings, list):
+        for entry in bindings:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id", ""))
+            if entry_id in ids_to_check:
+                return _normalize_skills(entry.get("skills") or entry.get("skill"))
+
+    channel_skills = config_extra.get("channel_skills") or {}
+    if isinstance(channel_skills, dict):
+        for key in ids_to_check:
+            if key in channel_skills:
+                return _normalize_skills(channel_skills.get(key))
+
     return None
 
 

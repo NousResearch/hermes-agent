@@ -4459,6 +4459,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 

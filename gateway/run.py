@@ -10257,6 +10257,96 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return message_text
 
+    def _inject_auto_skills_for_new_session(
+        self,
+        event,
+        session_entry,
+        task_id: str,
+        session_key: str,
+        *,
+        is_new_session: bool | None = None,
+    ) -> bool:
+        """Inject channel-bound skill or bundle payloads into a fresh session.
+
+        Topic/channel bindings historically loaded individual skills only. Keep
+        that behavior, but also accept bundle slash names such as ``/ops-core``
+        so config can reuse the same grouping mechanism as user-invoked bundle
+        commands.
+        """
+        if is_new_session is None:
+            is_new_session = (
+                getattr(session_entry, "created_at", None)
+                == getattr(session_entry, "updated_at", None)
+                or getattr(session_entry, "was_auto_reset", False)
+                or getattr(session_entry, "is_fresh_reset", False)
+            )
+        auto = getattr(event, "auto_skill", None)
+        if not is_new_session or not auto:
+            return False
+
+        skill_names = [auto] if isinstance(auto, str) else list(auto)
+        try:
+            from agent.skill_bundles import (
+                build_bundle_invocation_message,
+                resolve_bundle_command_key,
+            )
+            from agent.skill_commands import _build_skill_message, _load_skill_payload
+
+            combined_parts: list[str] = []
+            loaded_names: list[str] = []
+            for raw_name in skill_names:
+                skill_name = str(raw_name or "").strip()
+                if not skill_name:
+                    continue
+
+                bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+                if bundle_key:
+                    bundle = build_bundle_invocation_message(
+                        bundle_key,
+                        task_id=task_id,
+                    )
+                    if bundle:
+                        bundle_message, _bundle_loaded, bundle_missing = bundle
+                        combined_parts.append(bundle_message)
+                        loaded_names.append(bundle_key)
+                        if bundle_missing:
+                            logger.warning(
+                                "[Gateway] Auto-bundle '%s' skipped missing skill(s): %s",
+                                bundle_key,
+                                bundle_missing,
+                            )
+                        continue
+
+                loaded = _load_skill_payload(skill_name, task_id=task_id)
+                if loaded:
+                    loaded_skill, skill_dir, display_name = loaded
+                    note = (
+                        f'[IMPORTANT: The "{display_name}" skill is auto-loaded. '
+                        "Follow its instructions for this session.]"
+                    )
+                    part = _build_skill_message(loaded_skill, skill_dir, note)
+                    if part:
+                        combined_parts.append(part)
+                        loaded_names.append(skill_name)
+                else:
+                    logger.warning("[Gateway] Auto-skill/bundle '%s' not found", skill_name)
+
+            if not combined_parts:
+                return False
+
+            # Append the user's original text after all skill/bundle payloads.
+            combined_parts.append(event.text)
+            event.text = "\n\n".join(combined_parts)
+            logger.info(
+                "[Gateway] Auto-loaded skill(s)/bundle(s) %s for session %s",
+                loaded_names,
+                session_key,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[Gateway] Failed to auto-load skill(s)/bundle(s) %s: %s", skill_names, e)
+            return False
+
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
         if not pending_native:
@@ -10511,41 +10601,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
-            try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _combined_parts: list[str] = []
-                _loaded_names: list[str] = []
-                for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                    if _loaded:
-                        _loaded_skill, _skill_dir, _display_name = _loaded
-                        _note = (
-                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
-                        )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
-                        if _part:
-                            _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
-                    else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
-                if _combined_parts:
-                    # Append the user's original text after all skill payloads
-                    _combined_parts.append(event.text)
-                    event.text = "\n\n".join(_combined_parts)
-                    logger.info(
-                        "[Gateway] Auto-loaded skill(s) %s for session %s",
-                        _loaded_names, session_key,
-                    )
-            except Exception as e:
-                logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+        self._inject_auto_skills_for_new_session(
+            event,
+            session_entry,
+            _quick_key,
+            session_key,
+            is_new_session=_is_new_session,
+        )
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)

@@ -37,7 +37,7 @@ import {
   mediaPathFromMarkdownHref,
   mediaStreamUrl
 } from '@/lib/media'
-import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { extractPreviewTargets, previewTargetFromMarkdownHref, stripPreviewTargets } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
@@ -688,28 +688,63 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   )
 }
 
+function PreviewMarkerCards({ targets }: { targets: string[] }) {
+  if (targets.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {targets.map(target => (
+        <PreviewAttachment key={target} source="explicit-link" target={target} />
+      ))}
+    </div>
+  )
+}
+
+function usePreviewMarkdown(text: string, isRunning: boolean) {
+  return useMemo(() => {
+    const targets = extractPreviewTargets(text)
+
+    return {
+      displayText: targets.length > 0 ? stripPreviewTargets(text) : text,
+      targets: isRunning ? [] : targets
+    }
+  }, [isRunning, text])
+}
+
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+  const { displayText, targets } = usePreviewMarkdown(text, isRunning)
+
   return (
-    <TextMessagePartProvider isRunning={isRunning} text={text}>
+    <TextMessagePartProvider isRunning={isRunning} text={displayText}>
       <SmoothStreamingText>
         <DeferStreamingText>
           <MarkdownTextSurface {...surfaceProps} />
         </DeferStreamingText>
       </SmoothStreamingText>
+      <PreviewMarkerCards targets={targets} />
     </TextMessagePartProvider>
   )
 }
 
 const MarkdownTextImpl = () => {
+  const { text, status } = useMessagePartText()
+  const isRunning = status.type === 'running'
+  const { displayText, targets } = usePreviewMarkdown(text, isRunning)
+
   return (
-    <DeferStreamingText>
-      <MarkdownTextSurface />
-    </DeferStreamingText>
+    <TextMessagePartProvider isRunning={isRunning} text={displayText}>
+      <DeferStreamingText>
+        <MarkdownTextSurface />
+      </DeferStreamingText>
+      <PreviewMarkerCards targets={targets} />
+    </TextMessagePartProvider>
   )
 }
 

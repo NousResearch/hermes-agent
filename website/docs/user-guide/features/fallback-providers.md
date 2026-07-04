@@ -39,6 +39,28 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+### Tracking the Portal's Free Model (`recommended:free`)
+
+The Nous Portal rotates which model is free. Instead of hardcoding today's free
+model (and silently getting billed — or erroring — when it rotates), `nous`
+entries accept a sentinel model name that resolves to the Portal's current
+`freeRecommendedModels` pick at chain-build time:
+
+```yaml
+fallback_providers:
+  - provider: nous
+    model: recommended:free
+```
+
+Resolution goes through the same cached recommended-models lookup as the model
+picker: a short-TTL in-process cache backed by a last-known-good disk cache, so
+a Portal hiccup degrades to the previous answer rather than dropping the
+fallback. If no answer is available at all (first run, offline), the entry is
+skipped with a warning and the rest of the chain works normally.
+
+The sentinel is only special for `provider: nous` — on any other provider the
+string is treated as a literal model name.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::

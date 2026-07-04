@@ -92,8 +92,8 @@ def _discord_request(
         error_body = ""
         try:
             error_body = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
+        except Exception as _decode_err:
+            logger.debug("Failed to read Discord error body: %s", _decode_err)
         raise DiscordAPIError(e.code, error_body) from e
 
 

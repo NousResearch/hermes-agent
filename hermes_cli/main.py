@@ -2411,6 +2411,19 @@ def cmd_chat(args):
 
 def cmd_gateway(args):
     """Gateway management commands."""
+    from hermes_cli.config import cfg_get, load_config
+
+    config = load_config()
+    if not cfg_get(config, "gateway", "enabled", default=False):
+        product = cfg_get(config, "agent", "product", default="ai-brain")
+        print(
+            "Messaging gateway is disabled in AI Brain mode.\n"
+            f"  product: {product}\n"
+            "  Use the CLI (`hermes`), TUI (`hermes --tui`), or desktop app instead.\n"
+            "  To re-enable chatbots, set gateway.enabled: true in config.yaml."
+        )
+        raise SystemExit(1)
+
     _sync_bundled_skills_quietly()
 
     from hermes_cli.gateway import gateway_command

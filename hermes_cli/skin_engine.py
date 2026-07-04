@@ -99,6 +99,7 @@ BUILT-IN SKINS
 ==============
 
 - ``default`` — Classic Hermes gold/kawaii (the current look)
+- ``ai-brain`` — Neural cyan AI Brain theme (default product identity)
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
@@ -195,6 +196,63 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
+    },
+    "ai-brain": {
+        "name": "ai-brain",
+        "description": "AI Brain — neural cyan intelligence theme",
+        "colors": {
+            "banner_border": "#1E88E5",
+            "banner_title": "#00E5FF",
+            "banner_accent": "#40C4FF",
+            "banner_dim": "#546E7A",
+            "banner_text": "#ECEFF1",
+            "ui_accent": "#40C4FF",
+            "ui_label": "#80D8FF",
+            "ui_ok": "#69F0AE",
+            "ui_error": "#FF5252",
+            "ui_warn": "#FFD740",
+            "prompt": "#ECEFF1",
+            "input_rule": "#1E88E5",
+            "response_border": "#00E5FF",
+            "status_bar_bg": "#0D1117",
+            "status_bar_text": "#B0BEC5",
+            "status_bar_strong": "#00E5FF",
+            "status_bar_dim": "#546E7A",
+            "status_bar_good": "#69F0AE",
+            "status_bar_warn": "#FFD740",
+            "status_bar_bad": "#FF6E40",
+            "status_bar_critical": "#FF5252",
+            "session_label": "#80D8FF",
+            "session_border": "#546E7A",
+        },
+        "spinner": {
+            "waiting_faces": ["(🧠)", "(⚡)", "(◈)", "(◎)", "(◇)"],
+            "thinking_faces": ["(🧠)", "(⚡)", "(◈)", "(⌁)", "(<>)"],
+            "thinking_verbs": [
+                "reasoning", "synthesizing", "retrieving", "planning",
+                "coding", "automating", "analyzing", "connecting",
+            ],
+            "wings": [
+                ["⟨🧠", "🧠⟩"],
+                ["⟨⚡", "⚡⟩"],
+                ["⟨◈", "◈⟩"],
+            ],
+        },
+        "branding": {
+            "agent_name": "AI Brain",
+            "welcome": "AI Brain online. Code, automate, and execute tasks — type /help for commands.",
+            "goodbye": "Brain offline. See you next session.",
+            "response_label": " 🧠 Brain ",
+            "prompt_symbol": "▸",
+            "help_header": "(🧠) AI Brain Commands",
+        },
+        "tool_prefix": "▏",
+        "banner_logo": """[bold #00E5FF] █████╗ ██╗     ██████╗ ██████╗  █████╗ ██╗███╗   ██╗[/]
+[bold #40C4FF]██╔══██╗██║     ██╔══██╗██╔══██╗██╔══██╗██║████╗  ██║[/]
+[#1E88E5]███████║██║     ██████╔╝██████╔╝███████║██║██╔██╗ ██║[/]
+[#1565C0]██╔══██║██║     ██╔══██╗██╔══██╗██╔══██║██║██║╚██╗██║[/]
+[#0D47A1]██║  ██║███████╗██████╔╝██║  ██║██║  ██║██║██║ ╚████║[/]
+[#0D47A1]╚═╝  ╚═╝╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝[/]""",
     },
     "ares": {
         "name": "ares",

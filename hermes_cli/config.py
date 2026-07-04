@@ -916,6 +916,9 @@ DEFAULT_CONFIG = {
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
     "agent": {
+        # Product identity. "ai-brain" disables messaging/chatbot surfaces
+        # and enables the Brain RAG knowledge stack by default.
+        "product": "ai-brain",
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
@@ -1737,7 +1740,7 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
-        "skin": "default",
+        "skin": "ai-brain",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
         # responses, log lines, tool outputs, or slash-command descriptions.
@@ -2081,10 +2084,10 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # Set to a provider name to activate: "brain-rag", "openviking",
+        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
-        "provider": "",
+        "provider": "brain_rag",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -2717,6 +2720,9 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # When false (default for AI Brain), messaging/chatbot gateway features
+        # are disabled. CLI, TUI, and desktop remain available.
+        "enabled": False,
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

@@ -1,0 +1,4 @@
+name: brain_rag
+description: Local hybrid RAG — BM25 + vector retrieval with document ingestion.
+kind: memory-provider
+version: 1.0.0

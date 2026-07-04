@@ -234,13 +234,13 @@ function normalizeAnsiForeground(color: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'Hermes Agent',
-  icon: '⚕',
-  prompt: '❯',
-  welcome: 'Type your message or /help for commands.',
-  goodbye: 'Goodbye! ⚕',
-  tool: '┊',
-  helpHeader: '(^_^)? Commands'
+  name: 'AI Brain',
+  icon: '🧠',
+  prompt: '▸',
+  welcome: 'Code, automate, and execute tasks — type /help for commands.',
+  goodbye: 'Brain offline. See you next session.',
+  tool: '▏',
+  helpHeader: '(🧠) AI Brain Commands'
 }
 
 const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
@@ -253,11 +253,11 @@ const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
 
 export const DARK_THEME: Theme = {
   color: {
-    primary: '#FFD700',
-    accent: '#FFBF00',
-    border: '#CD7F32',
-    text: '#FFF8DC',
-    muted: '#CC9B1F',
+    primary: '#00E5FF',
+    accent: '#40C4FF',
+    border: '#1E88E5',
+    text: '#ECEFF1',
+    muted: '#546E7A',
     // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
     // read as barely-visible on dark terminals for long body text.  The
     // new value sits ~60% luminance — readable without losing the "muted /

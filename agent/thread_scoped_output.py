@@ -131,16 +131,22 @@ def thread_scoped_silence() -> Iterator[None]:
     process is multi-threaded and another thread must keep its console output.
     """
     sink = open(os.devnull, "w", encoding="utf-8")
-    ident = threading.get_ident()
-    out_proxy = _ensure_installed("stdout", sink)
-    err_proxy = _ensure_installed("stderr", sink)
-    out_proxy.silence(ident)
-    err_proxy.silence(ident)
     try:
+        ident = threading.get_ident()
+        out_proxy = _ensure_installed("stdout", sink)
+        err_proxy = _ensure_installed("stderr", sink)
+        out_proxy.silence(ident)
+        err_proxy.silence(ident)
         yield
     finally:
-        out_proxy.unsilence(ident)
-        err_proxy.unsilence(ident)
+        try:
+            out_proxy.unsilence(ident)
+        except Exception:
+            pass
+        try:
+            err_proxy.unsilence(ident)
+        except Exception:
+            pass
         try:
             sink.close()
         except Exception:

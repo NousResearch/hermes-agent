@@ -292,24 +292,25 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
-def parse_duration(s: str) -> int:
+def parse_duration(s: str) -> float:
     """
-    Parse duration string into minutes.
-    
+    Parse duration string into minutes (fractional for sub-minute durations).
+
     Examples:
         "30m" → 30
         "2h" → 120
         "1d" → 1440
+        "10s" → 0.166...  (sub-minute, returned as fractional minutes)
     """
     s = s.strip().lower()
-    match = re.match(r'^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
+    match = re.match(r'^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
     if not match:
-        raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
-    
+        raise ValueError(f"Invalid duration: '{s}'. Use format like '10s', '30m', '2h', or '1d'")
+
     value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: m, h, or d
-    
-    multipliers = {'m': 1, 'h': 60, 'd': 1440}
+    unit = match.group(2)[0]  # First char: s, m, h, or d
+
+    multipliers = {'s': 1/60, 'm': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
 
 
@@ -339,10 +340,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
+        total_seconds = max(1, round(minutes * 60))
+        if total_seconds < 60:
+            display = f"every {total_seconds}s"
+        else:
+            display = f"every {minutes}m"
         return {
             "kind": "interval",
             "minutes": minutes,
-            "display": f"every {minutes}m"
+            "display": display,
         }
     
     # Check for cron expression (5 or 6 space-separated fields)
@@ -392,10 +398,11 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
+    # Duration like "10s", "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
-        run_at = _hermes_now() + timedelta(minutes=minutes)
+        total_seconds = max(1, round(minutes * 60))
+        run_at = _hermes_now() + timedelta(seconds=total_seconds)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
@@ -406,7 +413,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
-        f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
+        f"  - Duration: '10s', '30m', '2h', '1d' (one-shot)\n"
         f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
@@ -529,13 +536,14 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
+        total_seconds = max(1, round(minutes * 60))
         if last_run_at:
             # Next run is last_run + interval
             last = _ensure_aware(datetime.fromisoformat(last_run_at))
-            next_run = last + timedelta(minutes=minutes)
+            next_run = last + timedelta(seconds=total_seconds)
         else:
             # First run is now + interval
-            next_run = now + timedelta(minutes=minutes)
+            next_run = now + timedelta(seconds=total_seconds)
         return next_run.isoformat()
 
     elif schedule["kind"] == "cron":

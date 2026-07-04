@@ -104,6 +104,23 @@ function sensitiveFileBlockReason(filePath) {
     return `${basename} is blocked because it may include auth credentials.`
   }
 
+  // Hermes credential stores (auth.json, OAuth tokens, MCP tokens, webhook secrets)
+  if (normalized.includes('/.hermes/') && (
+    basename === 'auth.json' ||
+    basename === '.anthropic_oauth.json' ||
+    basename === 'webhook_subscriptions.json'
+  )) {
+    return `${basename} is a Hermes credential store and is blocked.`
+  }
+
+  if (normalized.includes('/auth/') && basename.endsWith('_oauth.json')) {
+    return `${basename} contains OAuth credentials and is blocked.`
+  }
+
+  if (normalized.includes('/mcp-tokens/')) {
+    return 'MCP server token files are blocked.'
+  }
+
   return null
 }
 

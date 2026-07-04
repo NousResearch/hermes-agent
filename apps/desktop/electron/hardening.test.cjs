@@ -60,6 +60,19 @@ test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
   assert.match(String(sensitiveFileBlockReason('/tmp/server-cert.pem')), /\.pem/)
 })
 
+test('sensitiveFileBlockReason blocks Hermes credential stores', () => {
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/auth.json')), /credential store/)
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/.anthropic_oauth.json')), /credential store/)
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/webhook_subscriptions.json')), /credential store/)
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/auth/google_oauth.json')), /OAuth credentials/)
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/auth/xai_oauth.json')), /OAuth credentials/)
+  assert.match(String(sensitiveFileBlockReason('/home/user/.hermes/mcp-tokens/github.json')), /MCP server token/)
+
+  // Non-credential files in .hermes/ should NOT be blocked
+  assert.equal(sensitiveFileBlockReason('/home/user/.hermes/config.yaml'), null)
+  assert.equal(sensitiveFileBlockReason('/home/user/.hermes/skills/notes.md'), null)
+})
+
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {
   await rejectsWithCode(resolveReadableFileForIpc('', { purpose: 'File preview' }), 'invalid-path')
   await rejectsWithCode(resolveReadableFileForIpc('   ', { purpose: 'File preview' }), 'invalid-path')
@@ -214,6 +227,37 @@ test('resolveReadableFileForIpc blocks common sensitive files', async t => {
   const allowed = path.join(tempDir, '.env.example')
   fs.writeFileSync(allowed, 'EXAMPLE_TOKEN=value', 'utf8')
   assert.equal((await resolveReadableFileForIpc(allowed, { purpose: 'File preview' })).resolvedPath, allowed)
+})
+
+test('resolveReadableFileForIpc blocks Hermes credential stores via IPC preview', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-'))
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
+
+  const hermesDir = path.join(tempDir, '.hermes')
+  const authDir = path.join(hermesDir, 'auth')
+  const mcpDir = path.join(hermesDir, 'mcp-tokens')
+  fs.mkdirSync(authDir, { recursive: true })
+  fs.mkdirSync(mcpDir, { recursive: true })
+
+  const blockedCreds = [
+    path.join(hermesDir, 'auth.json'),
+    path.join(hermesDir, '.anthropic_oauth.json'),
+    path.join(hermesDir, 'webhook_subscriptions.json'),
+    path.join(authDir, 'google_oauth.json'),
+    path.join(authDir, 'xai_oauth.json'),
+    path.join(mcpDir, 'github.json'),
+  ]
+
+  for (const filePath of blockedCreds) {
+    fs.writeFileSync(filePath, '{"token": "secret"}', 'utf8')
+    await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+  }
+
+  // Non-credential files in .hermes/ should still be previewable
+  const safeFile = path.join(hermesDir, 'config.yaml')
+  fs.writeFileSync(safeFile, 'model: gpt-4', 'utf8')
+  const resolved = await resolveReadableFileForIpc(safeFile, { purpose: 'File preview' })
+  assert.equal(resolved.resolvedPath, safeFile)
 })
 
 test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', async t => {

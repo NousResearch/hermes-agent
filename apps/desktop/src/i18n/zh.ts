@@ -1659,7 +1659,7 @@ export const zh: Translations = {
   activeChats: {
     search: '搜索活跃对话…',
     title: '活跃对话',
-    subtitle: '正在运行和等待你回复的对话',
+    subtitle: '你可以回复或需要回复的对话',
     emptyTitle: '暂无活跃对话',
     emptyDesc: '正在运行的对话和需要回复的会话会显示在这里。',
     groupStatus: '状态',
@@ -1671,6 +1671,7 @@ export const zh: Translations = {
     answer: '回复',
     open: '打开',
     waiting: '等待',
+    reply: '需要回复',
     running: '运行中',
     recent: '最近',
     idle: '空闲',

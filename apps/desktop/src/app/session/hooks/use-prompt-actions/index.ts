@@ -180,6 +180,13 @@ interface RestoreMessageTarget {
   userOrdinal?: number | null
 }
 
+export interface TargetSessionReply {
+  profile?: null | string
+  runtimeSessionId?: null | string
+  storedSessionId: string
+  text: string
+}
+
 export function usePromptActions({
   activeSessionId,
   activeSessionIdRef,
@@ -473,6 +480,128 @@ export function usePromptActions({
       return await submitPromptText(rawText, options)
     },
     [executeSlashCommand, submitPromptText]
+  )
+
+  const sendTextToSession = useCallback(
+    async ({ profile, runtimeSessionId, storedSessionId, text: rawText }: TargetSessionReply): Promise<boolean> => {
+      const text = rawText.trim()
+
+      if (!text) {
+        return false
+      }
+
+      let sessionId = runtimeSessionId || null
+      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const optimisticMessage: ChatMessage = {
+        id: optimisticId,
+        role: 'user',
+        parts: [textPart(text)]
+      }
+
+      const resumeTarget = async (): Promise<string> => {
+        const resumed = await requestGateway<{ session_id?: string }>('session.resume', {
+          session_id: storedSessionId,
+          ...(profile ? { profile } : {})
+        })
+
+        const recoveredId = resumed?.session_id
+
+        if (!recoveredId) {
+          throw new Error(copy.sessionUnavailable)
+        }
+
+        sessionId = recoveredId
+        updateSessionState(recoveredId, state => state, storedSessionId)
+
+        return recoveredId
+      }
+
+      const seedOptimistic = (sid: string) =>
+        updateSessionState(
+          sid,
+          state => ({
+            ...state,
+            messages: state.messages.some(message => message.id === optimisticId)
+              ? state.messages
+              : [...state.messages, optimisticMessage],
+            busy: true,
+            awaitingResponse: true,
+            pendingBranchGroup: null,
+            sawAssistantPayload: false,
+            interrupted: false
+          }),
+          storedSessionId
+        )
+
+      const appendError = (sid: string, error: unknown) => {
+        const message = inlineErrorMessage(error, copy.promptFailed)
+
+        updateSessionState(
+          sid,
+          state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `assistant-error-${Date.now()}`,
+                role: 'assistant',
+                parts: [],
+                error: message || copy.promptFailed,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ],
+            busy: false,
+            awaitingResponse: false,
+            pendingBranchGroup: null,
+            sawAssistantPayload: true
+          }),
+          storedSessionId
+        )
+      }
+
+      try {
+        const sid = sessionId || (await resumeTarget())
+
+        seedOptimistic(sid)
+
+        try {
+          await withSessionBusyRetry(() =>
+            requestGateway('prompt.submit', { session_id: sid, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          )
+        } catch (firstErr) {
+          if (!isSessionNotFoundError(firstErr)) {
+            throw firstErr
+          }
+
+          updateSessionState(
+            sid,
+            state => ({
+              ...state,
+              busy: false,
+              awaitingResponse: false
+            }),
+            storedSessionId
+          )
+
+          const recoveredId = await resumeTarget()
+          seedOptimistic(recoveredId)
+          await withSessionBusyRetry(() =>
+            requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          )
+        }
+
+        return true
+      } catch (err) {
+        if (sessionId) {
+          appendError(sessionId, err)
+        }
+
+        notifyError(err, copy.promptFailed)
+
+        return false
+      }
+    },
+    [copy.promptFailed, copy.sessionUnavailable, requestGateway, updateSessionState]
   )
 
   const transcribeVoiceAudio = useCallback(
@@ -942,6 +1071,7 @@ export function usePromptActions({
     handoffSession,
     reloadFromMessage,
     restoreToMessage,
+    sendTextToSession,
     steerPrompt,
     submitText,
     transcribeVoiceAudio

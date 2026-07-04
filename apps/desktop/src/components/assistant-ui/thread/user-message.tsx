@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { parseMessageReply } from '@/store/message-replies'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -105,7 +106,9 @@ export const UserMessage: FC<{
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
-  const messageText = messageContentText(content)
+  const rawMessageText = messageContentText(content)
+  const parsedReply = parseMessageReply(rawMessageText)
+  const messageText = parsedReply.body
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -235,6 +238,17 @@ export const UserMessage: FC<{
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
       <div className="min-h-[1.25rem]" ref={clampInnerRef}>
+        {parsedReply.quote && (
+          <div
+            className="mb-1.5 rounded-lg border-r-2 border-[color-mix(in_srgb,var(--dt-composer-ring)_74%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_10%,transparent)] px-2 py-1 text-[0.72rem] leading-snug text-muted-foreground/90"
+            data-slot="aui_reply-quote"
+          >
+            <div className="mb-0.5 font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))]">
+              Replying to Hermes
+            </div>
+            <div className="line-clamp-2 wrap-anywhere">{parsedReply.quote}</div>
+          </div>
+        )}
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import {
   $attentionSessionIds,
   $messagingSessions,
@@ -14,7 +14,8 @@ import type { SessionInfo, SessionMessage } from '@/types/hermes'
 import { ActiveChatsView } from './index'
 
 vi.mock('@/hermes', () => ({
-  getSessionMessages: vi.fn()
+  getSessionMessages: vi.fn(),
+  listAllProfileSessions: vi.fn()
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -48,11 +49,8 @@ function message(role: SessionMessage['role'], content: string): SessionMessage 
 describe('ActiveChatsView', () => {
   beforeEach(() => {
     vi.setSystemTime(new Date('2026-07-04T12:00:00.000Z'))
-    $sessionsLoading.set(false)
-    $messagingSessions.set([])
-    $workingSessionIds.set(['running-chat'])
-    $attentionSessionIds.set(['waiting-chat'])
-    $sessions.set([
+
+    const seededSessions = [
       sessionInfo({
         id: 'recent-chat',
         last_active: Date.now() / 1000 - 60,
@@ -72,11 +70,26 @@ describe('ActiveChatsView', () => {
         preview: 'Running chat preview',
         title: 'Running chat'
       })
-    ])
-    vi.mocked(getSessionMessages).mockResolvedValue({
-      messages: [message('user', 'Need help here'), message('assistant', 'I can help')],
-      session_id: 'waiting-chat'
+    ]
+
+    $sessionsLoading.set(false)
+    $messagingSessions.set([])
+    $workingSessionIds.set(['running-chat'])
+    $attentionSessionIds.set(['waiting-chat'])
+    $sessions.set(seededSessions)
+    vi.mocked(listAllProfileSessions).mockResolvedValue({
+      limit: 100,
+      offset: 0,
+      sessions: seededSessions,
+      total: seededSessions.length
     })
+    vi.mocked(getSessionMessages).mockImplementation(async (sessionId: string) => ({
+      messages:
+        sessionId === 'recent-chat'
+          ? [message('assistant', 'Earlier answer'), message('user', 'Please follow up')]
+          : [message('user', 'Need help here'), message('assistant', 'I can help')],
+      session_id: sessionId
+    }))
   })
 
   afterEach(() => {
@@ -90,7 +103,7 @@ describe('ActiveChatsView', () => {
     $sessionsLoading.set(true)
   })
 
-  it('shows only active chats, groups them, selects the highest-priority chat, and replies to that session', async () => {
+  it('keeps chats that need a reply, groups them, selects the highest-priority chat, and replies to that session', async () => {
     const onSendReply = vi.fn(async () => true)
 
     render(
@@ -101,11 +114,12 @@ describe('ActiveChatsView', () => {
       />
     )
 
+    await screen.findByText('Lower Hermes chat')
     const rows = screen.getAllByRole('button', { name: /chat/i })
 
     expect(rows[0]?.textContent).toContain('Top active chat')
     expect(rows[1]?.textContent).toContain('Running chat')
-    expect(screen.queryByText('Lower Hermes chat')).toBeNull()
+    expect(rows[2]?.textContent).toContain('Lower Hermes chat')
     expect(screen.getByRole('button', { name: /Status/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Profile/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Workspace/i })).toBeTruthy()
@@ -124,11 +138,6 @@ describe('ActiveChatsView', () => {
   })
 
   it('keeps row selection tied to the clicked active stored session', async () => {
-    vi.mocked(getSessionMessages).mockImplementation(async (sessionId: string) => ({
-      messages: [message('user', `Transcript for ${sessionId}`)],
-      session_id: sessionId
-    }))
-
     render(
       <ActiveChatsView
         onOpenSession={vi.fn()}
@@ -140,7 +149,7 @@ describe('ActiveChatsView', () => {
     fireEvent.click(screen.getByRole('button', { name: /Running chat/i }))
 
     await waitFor(() => expect(getSessionMessages).toHaveBeenLastCalledWith('running-chat', undefined))
-    expect(await screen.findByText('Transcript for running-chat')).toBeTruthy()
+    expect(await screen.findByText('Need help here')).toBeTruthy()
 
     const header = screen.getByRole('heading', { name: 'Running chat' }).closest('header')
     expect(header).not.toBeNull()

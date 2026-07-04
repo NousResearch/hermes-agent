@@ -173,6 +173,14 @@ export async function switchProfile(name: string): Promise<void> {
 // to the primary (window) backend's profile on boot.
 export const $activeGatewayProfile = atom<string>('default')
 
+// The profile the user is looking at in the sidebar/rail. This is deliberately
+// separate from $activeGatewayProfile: the visible context should switch as
+// soon as the user clicks a profile, while the gateway may still be waking that
+// backend in the background.
+export const $selectedProfileScope = atom<string>('default')
+
+let preferredProfileScope: string | null = null
+
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
@@ -197,6 +205,14 @@ let _lastRoutedProfile: string | null = null
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
   setApiRequestProfile(key)
+
+  if (preferredProfileScope === null || preferredProfileScope === key) {
+    $selectedProfileScope.set(key)
+
+    if (preferredProfileScope === key) {
+      preferredProfileScope = null
+    }
+  }
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
@@ -314,18 +330,20 @@ $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY
 // gateway so opening/selecting a profile (which swaps the gateway) moves the
 // whole sidebar with it — a real context switch, not a separate filter to keep
 // in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+export const $profileScope = computed([$showAllProfiles, $selectedProfileScope], (showAll, selected) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(selected)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
-// chats at it, and swap the single live gateway onto its backend (which moves
-// $activeGatewayProfile → name, so $profileScope follows).
+// chats at it, update the visible sidebar scope immediately, and swap the live
+// gateway onto its backend in the background.
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($selectedProfileScope.get())
+  preferredProfileScope = target
+  $selectedProfileScope.set(target)
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
@@ -404,7 +422,7 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($selectedProfileScope.get()))
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
 

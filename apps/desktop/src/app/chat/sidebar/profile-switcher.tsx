@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -38,7 +38,6 @@ import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/p
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
-  $activeGatewayProfile,
   $profileColors,
   $profileCreateRequest,
   $profileIcons,
@@ -55,6 +54,13 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import {
+  $attentionSessionIds,
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  sessionPinId
+} from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -77,6 +83,14 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 const SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 const RAIL_TRANSITION = { duration: 300, easing: SPRING }
 const DRAG_TRANSITION = `transform 200ms ${SPRING}`
+
+const PROFILE_RAIL_SCROLL_FUZZ = 1
+
+interface ProfileRailScrollState {
+  canScrollLeft: boolean
+  canScrollRight: boolean
+  hasOverflow: boolean
+}
 
 // The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
 // (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
@@ -106,21 +120,55 @@ export function ProfileRail() {
   const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
-  const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const icons = useStore($profileIcons)
+  const sessions = useStore($sessions)
+  const cronSessions = useStore($cronSessions)
+  const messagingSessions = useStore($messagingSessions)
+  const attentionSessionIds = useStore($attentionSessionIds)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [pendingSoul, setPendingSoul] = useState<null | string>(null)
+  const [scrollState, setScrollState] = useState<ProfileRailScrollState>({
+    canScrollLeft: false,
+    canScrollRight: false,
+    hasOverflow: false
+  })
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
   const condensed = profiles.length > PROFILE_DROPDOWN_THRESHOLD
+
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      setScrollState({ canScrollLeft: false, canScrollRight: false, hasOverflow: false })
+
+      return
+    }
+
+    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth)
+
+    const next = {
+      canScrollLeft: el.scrollLeft > PROFILE_RAIL_SCROLL_FUZZ,
+      canScrollRight: el.scrollLeft < maxScrollLeft - PROFILE_RAIL_SCROLL_FUZZ,
+      hasOverflow: maxScrollLeft > PROFILE_RAIL_SCROLL_FUZZ
+    }
+
+    setScrollState(current =>
+      current.canScrollLeft === next.canScrollLeft &&
+      current.canScrollRight === next.canScrollRight &&
+      current.hasOverflow === next.hasOverflow
+        ? current
+        : next
+    )
+  }, [])
 
   // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
   // rail is navigable without a trackpad. Trackpad x-scroll (deltaX) passes
@@ -149,7 +197,7 @@ export function ProfileRail() {
   }, [condensed])
 
   const isAll = scope === ALL_PROFILES
-  const activeKey = normalizeProfileKey(gatewayProfile)
+  const activeKey = normalizeProfileKey(scope)
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
@@ -159,6 +207,67 @@ export function ProfileRail() {
   )
 
   const multiProfile = profiles.length > 1
+  const namedProfileSignature = named.map(profile => profile.name).join('\0')
+
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      updateScrollState()
+
+      return
+    }
+
+    const onScroll = () => updateScrollState()
+    const frame = window.requestAnimationFrame(updateScrollState)
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            updateScrollState()
+          })
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    resizeObserver?.observe(el)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      el.removeEventListener('scroll', onScroll)
+      resizeObserver?.disconnect()
+    }
+  }, [multiProfile, namedProfileSignature, updateScrollState])
+
+  const scrollProfiles = (direction: 1 | -1) => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth)
+    const step = Math.max(24, Math.floor(el.clientWidth * 0.75))
+    el.scrollLeft = Math.min(maxScrollLeft, Math.max(0, el.scrollLeft + direction * step))
+    updateScrollState()
+  }
+
+  const attentionCounts = useMemo(() => {
+    const ids = new Set(attentionSessionIds)
+    const counts = new Map<string, number>()
+
+    for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
+      if (!ids.has(session.id) && !ids.has(sessionPinId(session))) {
+        continue
+      }
+
+      const profile = normalizeProfileKey(session.profile)
+      counts.set(profile, (counts.get(profile) ?? 0) + 1)
+    }
+
+    return counts
+  }, [attentionSessionIds, cronSessions, messagingSessions, sessions])
+
+  const totalAttentionCount = [...attentionCounts.values()].reduce((sum, count) => sum + count, 0)
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
@@ -231,18 +340,26 @@ export function ProfileRail() {
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
             active={isAll || onDefault}
+            badgeCount={isAll ? totalAttentionCount : (attentionCounts.get('default') ?? 0)}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill
+            active={isAll}
+            badgeCount={totalAttentionCount}
+            glyph="layers"
+            label={p.allProfiles}
+            onSelect={() => setShowAllProfiles(true)}
+          />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
         <ProfilePill
           active
+          badgeCount={attentionCounts.get('default') ?? 0}
           glyph="home"
           label={defaultProfile.name}
           onSelect={() => selectProfile(defaultProfile.name)}
@@ -264,44 +381,64 @@ export function ProfileRail() {
           <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
         </div>
       ) : (
-        <div
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          ref={scrollRef}
-        >
-          {multiProfile && (
-            <DndContext
-              collisionDetection={closestCenter}
-              modifiers={[stepThroughCells]}
-              onDragEnd={handleDragEnd}
-              onDragOver={handleDragOver}
-              onDragStart={handleDragStart}
-              sensors={sensors}
-            >
-              <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-                {/* relative → the strip is the dragged square's offsetParent, so the
-                    clamp modifier bounds drags to the occupied cells (not the +). */}
-                <div className="relative flex items-center gap-1">
-                  {named.map(profile => (
-                    <ProfileSquare
-                      active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                      color={resolveProfileColor(profile.name, colors)}
-                      icon={icons[normalizeProfileKey(profile.name)] ?? null}
-                      key={profile.name}
-                      label={profile.name}
-                      onDelete={() => setPendingDelete(profile)}
-                      onEditSoul={() => setPendingSoul(profile.name)}
-                      onRecolor={color => setProfileColor(profile.name, color)}
-                      onRename={() => setPendingRename(profile)}
-                      onSelect={() => selectProfile(profile.name)}
-                      onSetIcon={icon => setProfileIcon(profile.name, icon)}
-                    />
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
+        <div className="flex min-w-0 flex-1 items-center gap-0.5">
+          {scrollState.hasOverflow && (
+            <ProfileRailScrollButton
+              direction={-1}
+              disabled={!scrollState.canScrollLeft}
+              onClick={() => scrollProfiles(-1)}
+            />
           )}
 
-          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+          <div
+            aria-label="Profile list"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            ref={scrollRef}
+          >
+            {multiProfile && (
+              <DndContext
+                collisionDetection={closestCenter}
+                modifiers={[stepThroughCells]}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver}
+                onDragStart={handleDragStart}
+                sensors={sensors}
+              >
+                <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+                  {/* relative → the strip is the dragged square's offsetParent, so the
+                      clamp modifier bounds drags to the occupied cells (not the +). */}
+                  <div className="relative flex items-center gap-1">
+                    {named.map(profile => (
+                      <ProfileSquare
+                        active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                        badgeCount={attentionCounts.get(normalizeProfileKey(profile.name)) ?? 0}
+                        color={resolveProfileColor(profile.name, colors)}
+                        icon={icons[normalizeProfileKey(profile.name)] ?? null}
+                        key={profile.name}
+                        label={profile.name}
+                        onDelete={() => setPendingDelete(profile)}
+                        onEditSoul={() => setPendingSoul(profile.name)}
+                        onRecolor={color => setProfileColor(profile.name, color)}
+                        onRename={() => setPendingRename(profile)}
+                        onSelect={() => selectProfile(profile.name)}
+                        onSetIcon={icon => setProfileIcon(profile.name, icon)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
+            )}
+
+            <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+          </div>
+
+          {scrollState.hasOverflow && (
+            <ProfileRailScrollButton
+              direction={1}
+              disabled={!scrollState.canScrollRight}
+              onClick={() => scrollProfiles(1)}
+            />
+          )}
         </div>
       )}
 
@@ -435,6 +572,37 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
   )
 }
 
+function ProfileRailScrollButton({
+  direction,
+  disabled,
+  onClick
+}: {
+  direction: 1 | -1
+  disabled: boolean
+  onClick: () => void
+}) {
+  const label = direction === -1 ? 'Scroll profiles left' : 'Scroll profiles right'
+
+  return (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={cn(
+          'shrink-0 bg-transparent text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100',
+          disabled && 'opacity-25 hover:bg-transparent hover:text-(--ui-text-tertiary)'
+        )}
+        disabled={disabled}
+        onClick={onClick}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name={direction === -1 ? 'chevron-left' : 'chevron-right'} size="0.75rem" />
+      </Button>
+    </Tip>
+  )
+}
+
 // The condensed rail: every named profile in one compact select. The trigger
 // shows the active profile (tinted initial + name); on default/all scope it
 // falls back to the placeholder since the left toggle pill carries that state.
@@ -490,20 +658,23 @@ function ProfileDropdown({
 
 interface ProfilePillProps {
   active: boolean
+  badgeCount?: number
   // home / All / Manage are glyph action buttons (navigation, not identity).
   glyph: string
   label: string
   onSelect: () => void
 }
 
-function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
+function ProfilePill({ active, badgeCount = 0, glyph, label, onSelect }: ProfilePillProps) {
+  const ariaLabel = waitingBadgeAriaLabel(label, badgeCount)
+
   return (
     <Tip label={label}>
       <Button
-        aria-label={label}
+        aria-label={ariaLabel}
         aria-pressed={active}
         className={cn(
-          'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+          'relative bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
           active && 'bg-(--ui-control-active-background) text-foreground'
         )}
         onClick={onSelect}
@@ -512,6 +683,7 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
         variant="ghost"
       >
         <Codicon name={glyph} size="0.875rem" />
+        <ProfileAttentionBadge count={badgeCount} />
       </Button>
     </Tip>
   )
@@ -519,6 +691,7 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
 
 interface ProfileSquareProps {
   active: boolean
+  badgeCount?: number
   color: null | string
   icon: null | string
   label: string
@@ -543,6 +716,7 @@ const LONG_PRESS_MS = 450
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({
   active,
+  badgeCount = 0,
   color,
   icon,
   label,
@@ -585,6 +759,7 @@ function ProfileSquare({
   const base = CSS.Transform.toString(transform)
   const ring = active ? `inset 0 0 0 1.5px ${hue}` : ''
   const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
+  const ariaLabel = waitingBadgeAriaLabel(label, badgeCount)
 
   const pickColor = (next: null | string) => {
     onRecolor(next)
@@ -603,7 +778,7 @@ function ProfileSquare({
                   <TooltipTrigger asChild>
                     <button
                       className={cn(
-                        'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                        'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
                         active ? 'opacity-100' : 'opacity-55',
                         isDragging && 'z-10 cursor-grabbing opacity-100'
                       )}
@@ -620,7 +795,7 @@ function ProfileSquare({
                       type="button"
                       {...attributes}
                       {...listeners}
-                      aria-label={label}
+                      aria-label={ariaLabel}
                       aria-pressed={active}
                       // Hold-to-recolor rides alongside the dnd pointer listener (call
                       // it first so drag tracking still arms), then a timer opens the
@@ -654,11 +829,14 @@ function ProfileSquare({
                       onPointerUp={clearPress}
                     >
                       {icon || label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                      <ProfileAttentionBadge count={badgeCount} />
                     </button>
                   </TooltipTrigger>
                 </ContextMenuTrigger>
               </PopoverAnchor>
-              <TooltipContent>{label}</TooltipContent>
+              <TooltipContent>
+                <span data-bidi-plaintext="">{label}</span>
+              </TooltipContent>
             </Tooltip>
           </TooltipProvider>
 
@@ -728,5 +906,28 @@ function ProfileSquare({
       open={iconOpen}
     />
     </>
+  )
+}
+
+function waitingBadgeAriaLabel(label: string, count: number): string {
+  if (count <= 0) {
+    return label
+  }
+
+  return `${label}, ${count} waiting for your reply`
+}
+
+function ProfileAttentionBadge({ count }: { count: number }) {
+  if (count <= 0) {
+    return null
+  }
+
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-amber-400 px-0.5 text-[0.5rem] font-bold leading-none text-black shadow-[0_0_0_1px_var(--ui-sidebar-surface-background)]"
+    >
+      {count > 99 ? '99+' : count}
+    </span>
   )
 }

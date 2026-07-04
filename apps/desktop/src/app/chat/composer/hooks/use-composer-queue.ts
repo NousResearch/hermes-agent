@@ -31,9 +31,11 @@ interface UseComposerQueueArgs {
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
   onSubmit: ChatBarProps['onSubmit']
+  onDraftQueued?: () => void
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
   sessionId: string | null | undefined
+  transformDraftText?: (text: string) => string
 }
 
 /**
@@ -55,9 +57,11 @@ export function useComposerQueue({
   loadIntoComposer,
   onCancel,
   onSubmit,
+  onDraftQueued,
   queueEditRef,
   queueSessionKey,
-  sessionId
+  sessionId,
+  transformDraftText
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
 
@@ -168,16 +172,17 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: transformDraftText?.(text) ?? text, attachments })) {
       return false
     }
 
     clearDraft()
     clearComposerAttachments()
+    onDraftQueued?.()
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, onDraftQueued, transformDraftText])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

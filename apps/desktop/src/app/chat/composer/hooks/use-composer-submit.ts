@@ -29,12 +29,14 @@ interface UseComposerSubmitArgs {
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
+  onSubmitAccepted?: () => void
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  transformSubmitText?: (text: string) => string
 }
 
 /**
@@ -64,26 +66,36 @@ export function useComposerSubmit({
   onCancel,
   onSteer,
   onSubmit,
+  onSubmitAccepted,
   queueCurrentDraft,
   queueEdit,
   queuedPrompts,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  transformSubmitText
 }: UseComposerSubmitArgs) {
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
+    const submittedText = transformSubmitText?.(text) ?? text
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
       stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+    void Promise.resolve(attachments ? onSubmit(submittedText, { attachments }) : onSubmit(submittedText))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearSessionDraft(submittedScope)
+          onSubmitAccepted?.()
+        }
+      })
       .catch(restore)
   }
 

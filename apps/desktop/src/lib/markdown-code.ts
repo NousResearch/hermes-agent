@@ -35,6 +35,15 @@ const COMMON_CODE_LANGUAGES = new Set([
   'yml'
 ])
 
+export function hasRTLCharacters(text: string): boolean {
+  // Hebrew, Arabic, and adjacent RTL scripts. Keep this local and cheap so
+  // rendering decisions can opt into bidi-safe prose handling without loading
+  // heavier i18n utilities in the streaming path.
+  return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0780-\u07BF\u0700-\u074F]/u.test(
+    text
+  )
+}
+
 interface CodeSignals {
   bulletLines: number
   codeSignals: number
@@ -312,16 +321,24 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const cleanLanguage = sanitizeLanguageTag(language || '')
   const signals = codeSignals(code || '')
 
-  if (!signals.trimmed || signals.codeSignals >= 3) {
+  if (!signals.trimmed) {
+    return false
+  }
+
+  if (NON_CODE_FENCE_LANGUAGES.has(cleanLanguage)) {
+    if (hasRTLCharacters(signals.trimmed)) {
+      return true
+    }
+
+    return signals.proseLines >= 3 && signals.codeSignals === 0
+  }
+
+  if (signals.codeSignals >= 3) {
     return false
   }
 
   if (signals.bulletLines >= 1 && (signals.hasMarkdown || signals.proseLines >= 2)) {
     return true
-  }
-
-  if (NON_CODE_FENCE_LANGUAGES.has(cleanLanguage)) {
-    return signals.proseLines >= 3 && signals.codeSignals === 0
   }
 
   return !COMMON_CODE_LANGUAGES.has(cleanLanguage) && signals.proseLines >= 2 && signals.codeSignals <= 1

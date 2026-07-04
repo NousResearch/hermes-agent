@@ -1481,7 +1481,7 @@ export const en: Translations = {
   activeChats: {
     search: 'Search active chats...',
     title: 'Active chats',
-    subtitle: 'Running chats and conversations waiting on you',
+    subtitle: 'Conversations you can answer or need to reply to',
     emptyTitle: 'No active chats',
     emptyDesc: 'Running chats and conversations that need a reply will appear here.',
     groupStatus: 'Status',
@@ -1493,6 +1493,7 @@ export const en: Translations = {
     answer: 'Answer',
     open: 'Open',
     waiting: 'Waiting',
+    reply: 'Reply needed',
     running: 'Running',
     recent: 'Recent',
     idle: 'Idle',

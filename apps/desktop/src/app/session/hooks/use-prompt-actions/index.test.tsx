@@ -46,6 +46,12 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
+  sendTextToSession: (target: {
+    profile?: null | string
+    runtimeSessionId?: null | string
+    storedSessionId: string
+    text: string
+  }) => Promise<boolean>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
@@ -114,10 +120,18 @@ function Harness({
     onReady({
       cancelRun: actions.cancelRun,
       restoreToMessage: actions.restoreToMessage,
+      sendTextToSession: actions.sendTextToSession,
       steerPrompt: actions.steerPrompt,
       submitText: actions.submitText
     })
-  }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
+  }, [
+    actions.cancelRun,
+    actions.restoreToMessage,
+    actions.sendTextToSession,
+    actions.steerPrompt,
+    actions.submitText,
+    onReady
+  ])
 
   return null
 }
@@ -135,8 +149,8 @@ describe('usePromptActions /title', () => {
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(
-      async (method: string) => (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -159,8 +173,8 @@ describe('usePromptActions /title', () => {
   it('reports the queued state when the session row is not persisted yet', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(
-      async (method: string) => (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null

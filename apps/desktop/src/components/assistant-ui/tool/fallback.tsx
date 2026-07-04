@@ -236,6 +236,7 @@ function ToolTitle({
         status === 'error' && 'text-destructive',
         status === 'warning' && 'text-amber-700 dark:text-amber-300'
       )}
+      data-bidi-plaintext=""
     >
       {isPending && titleAction ? (
         <>

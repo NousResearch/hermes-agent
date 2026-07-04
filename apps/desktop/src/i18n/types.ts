@@ -1232,6 +1232,7 @@ export interface Translations {
     answer: string
     open: string
     waiting: string
+    reply: string
     running: string
     recent: string
     idle: string

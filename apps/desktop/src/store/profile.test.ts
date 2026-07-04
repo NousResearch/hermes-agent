@@ -21,9 +21,13 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 const {
   $activeGatewayProfile,
   $profileIcons,
+  $profileScope,
   $profiles,
+  $selectedProfileScope,
+  $showAllProfiles,
   ensureGatewayProfile,
   refreshProfiles,
+  selectProfile,
   setProfileIcon
 } = await import('./profile')
 const { $connection } = await import('./session')
@@ -51,8 +55,11 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  ensureGatewayForProfile.mockImplementation(async () => undefined)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -164,5 +171,48 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+})
+
+describe('selectProfile', () => {
+  it('updates the visible profile scope before the gateway finishes switching', async () => {
+    let resolveGateway!: () => void
+
+    const gatewayReady = new Promise<undefined>(resolve => {
+      resolveGateway = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile.mockImplementationOnce(() => gatewayReady)
+
+    selectProfile('content-creator')
+
+    expect($profileScope.get()).toBe('content-creator')
+    expect($selectedProfileScope.get()).toBe('content-creator')
+    expect($activeGatewayProfile.get()).toBe('default')
+
+    resolveGateway()
+    await gatewayReady
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('content-creator'))
+  })
+
+  it('does not let a slower previous gateway activation override a newer selected scope', async () => {
+    let resolveFirst!: () => void
+
+    const firstGatewayReady = new Promise<undefined>(resolve => {
+      resolveFirst = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile
+      .mockImplementationOnce(() => firstGatewayReady)
+      .mockImplementationOnce(async () => undefined)
+
+    selectProfile('content-creator')
+    selectProfile('bina-meatzevet')
+
+    expect($profileScope.get()).toBe('bina-meatzevet')
+
+    resolveFirst()
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('bina-meatzevet'))
+    expect($profileScope.get()).toBe('bina-meatzevet')
   })
 })

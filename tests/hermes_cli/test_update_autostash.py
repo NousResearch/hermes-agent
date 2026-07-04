@@ -385,6 +385,7 @@ def test_discard_lockfile_churn_restores_lock_when_package_json_clean(tmp_path):
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
+    lazy_refresh_calls = []
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
@@ -393,7 +394,12 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
-    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_refresh_active_lazy_features",
+        lambda **kwargs: lazy_refresh_calls.append(kwargs),
+    )
+    return lazy_refresh_calls
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
@@ -566,6 +572,42 @@ def _make_update_side_effect(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect, recorded
+
+
+def test_cmd_update_forwards_uv_install_target_to_lazy_refresh(monkeypatch, tmp_path):
+    lazy_refresh_calls = _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/uv" if name == "uv" else None,
+    )
+    side_effect, _ = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
+
+    assert len(lazy_refresh_calls) == 1
+    call = lazy_refresh_calls[0]
+    assert call["install_cmd_prefix"] == ["/usr/bin/uv", "pip"]
+    assert call["env"]["VIRTUAL_ENV"] == str(tmp_path / "venv")
+    assert call["group"] == "all"
+
+
+def test_cmd_update_forwards_pip_install_target_to_lazy_refresh(monkeypatch, tmp_path):
+    lazy_refresh_calls = _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(hermes_main, "_ensure_uv_for_termux", lambda pip_cmd: None)
+    side_effect, _ = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
+
+    assert lazy_refresh_calls == [
+        {
+            "install_cmd_prefix": [hermes_main.sys.executable, "-m", "pip"],
+            "env": None,
+            "group": "all",
+        }
+    ]
 
 
 def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):

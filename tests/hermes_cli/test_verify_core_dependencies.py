@@ -264,3 +264,85 @@ class TestResolveInstallTargetPython:
                 ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
             )
             assert result is None
+
+
+class TestRefreshActiveLazyFeaturesVerification:
+    def test_failed_lazy_refresh_verifies_core_deps(self, monkeypatch, capsys):
+        """A failed optional backend refresh may have partially touched the venv.
+
+        Run the existing core dependency verifier immediately so base-package
+        corruption is repaired before the update continues into Node/UI steps.
+        """
+        from tools import lazy_deps
+        from hermes_cli.main import _refresh_active_lazy_features
+
+        captured = {}
+        monkeypatch.setattr(lazy_deps, "active_features", lambda: ["platform.matrix"])
+        monkeypatch.setattr(
+            lazy_deps,
+            "refresh_active_features",
+            lambda prompt=False: {"platform.matrix": "failed: build backend exploded"},
+        )
+
+        def fake_verify(install_cmd_prefix, *, env=None, group="all"):
+            captured["prefix"] = install_cmd_prefix
+            captured["env"] = env
+            captured["group"] = group
+
+        monkeypatch.setattr("hermes_cli.main._verify_core_dependencies_installed", fake_verify)
+
+        env = {"VIRTUAL_ENV": "/tmp/hermes-venv"}
+        _refresh_active_lazy_features(
+            install_cmd_prefix=["uv", "pip"],
+            env=env,
+            group="termux-all",
+        )
+
+        out = capsys.readouterr().out
+        assert "platform.matrix failed to refresh" in out
+        assert "Verifying core dependencies after lazy refresh failure" in out
+        assert captured == {
+            "prefix": ["uv", "pip"],
+            "env": env,
+            "group": "termux-all",
+        }
+
+    def test_successful_lazy_refresh_does_not_verify_core_deps(self, monkeypatch):
+        from tools import lazy_deps
+        from hermes_cli.main import _refresh_active_lazy_features
+
+        monkeypatch.setattr(lazy_deps, "active_features", lambda: ["platform.slack"])
+        monkeypatch.setattr(
+            lazy_deps,
+            "refresh_active_features",
+            lambda prompt=False: {"platform.slack": "refreshed"},
+        )
+        mock_verify = MagicMock()
+        monkeypatch.setattr("hermes_cli.main._verify_core_dependencies_installed", mock_verify)
+
+        _refresh_active_lazy_features(install_cmd_prefix=["uv", "pip"], env={})
+
+        mock_verify.assert_not_called()
+
+    def test_unexpected_lazy_refresh_exception_verifies_core_deps(self, monkeypatch, capsys):
+        from tools import lazy_deps
+        from hermes_cli.main import _refresh_active_lazy_features
+
+        monkeypatch.setattr(lazy_deps, "active_features", lambda: ["platform.matrix"])
+
+        def boom(prompt=False):
+            raise RuntimeError("refresh registry broke")
+
+        monkeypatch.setattr(lazy_deps, "refresh_active_features", boom)
+        mock_verify = MagicMock()
+        monkeypatch.setattr("hermes_cli.main._verify_core_dependencies_installed", mock_verify)
+
+        _refresh_active_lazy_features(install_cmd_prefix=["uv", "pip"], env={"VIRTUAL_ENV": "v"})
+
+        out = capsys.readouterr().out
+        assert "Lazy refresh failed unexpectedly" in out
+        mock_verify.assert_called_once_with(
+            ["uv", "pip"],
+            env={"VIRTUAL_ENV": "v"},
+            group="all",
+        )

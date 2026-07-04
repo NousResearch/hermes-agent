@@ -3,6 +3,7 @@
 from agent.moa_loop import (
     _brief_frame,
     _brief_reference_messages,
+    _compress_cold_result,
     _reference_messages,
     _render_tool_calls,
 )
@@ -82,6 +83,44 @@ def test_render_tool_calls_arg_budget_truncates():
     capped = _render_tool_calls(calls, arg_budget=80)
     assert len(full) > 4000
     assert len(capped) < 200 and "+4920 chars" in capped
+
+
+def test_compress_cold_result_keeps_salient_lines():
+    log = ("# ran: pytest -q\n"
+           + "\n".join(f"pass line {i} boring output" for i in range(400))
+           + "\nFAILED tests/test_x.py::test_rounding — AssertionError: 0.01 != 0.00\n"
+           + "\n".join(f"more noise {i}" for i in range(400)))
+    out = _compress_cold_result(log, 320)
+    assert len(out) <= 320 + 40
+    assert "FAILED" in out and "0.01 != 0.00" in out      # salient survives
+    assert "boring output" not in out                      # noise dropped
+    assert "ran: pytest -q" in out                         # header kept
+
+
+def test_compress_cold_result_falls_back_to_head_when_no_signal():
+    dump = "\n".join(f"benign config key_{i} = {i}" for i in range(500))
+    out = _compress_cold_result(dump, 300)
+    assert len(out) <= 300 + 60
+    assert out.startswith("benign config key_0")
+
+
+def test_brief_distributed_failures_survive_deep_history():
+    """The recon-regression guard: on a deep transcript whose diagnosis is smeared
+    across many early failing-test logs, those FAILED lines must survive cold
+    compression rather than being elided wholesale."""
+    depth = 16
+    t = _transcript(depth, result_chars=6000)
+    # make each tool result carry a distinct failing-assertion breadcrumb
+    n = 0
+    for msg in t:
+        if msg["role"] == "tool":
+            msg["content"] = f"FAILED test_step_{n} — AssertionError: mismatch {n}\n" + msg["content"]
+            n += 1
+    brief = _brief_reference_messages(t, recent_turns=4, total_budget=24000, tools=_TOOLS)
+    blob = "\n".join(m["content"] for m in brief)
+    survived = sum(1 for i in range(n) if f"FAILED test_step_{i}" in blob)
+    # the vast majority of early breadcrumbs should survive (not just the hot 4)
+    assert survived >= n - 2, f"only {survived}/{n} failing breadcrumbs survived"
 
 
 def test_brief_preserves_recent_state_fidelity():

@@ -628,8 +628,72 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # per-slot lens — a per-model lens showed no diversity benefit in piloting and
 # is intentionally out of scope here).
 _BRIEF_COLD_TEXT_BUDGET = 300      # older assistant narration
+_BRIEF_HOT_ARG_BUDGET = 800        # recent tool-call args (a preview, not the whole blob)
 _BRIEF_COLD_ARG_BUDGET = 80        # older tool-call args
-_BRIEF_COLD_RESULT_BUDGET = 240    # older tool results (gist only)
+_BRIEF_COLD_RESULT_BUDGET = 320    # older tool results (salient-line digest)
+
+# High-signal markers worth keeping from an OLD tool result even after the step
+# scrolls out of the recent window. A blind head+tail gist of a cold result
+# throws away the one line that mattered (the failing assertion 20 steps back);
+# on diagnostic transcripts that signal is *distributed* across many early steps,
+# so dropping it measurably hurt aggregated answer quality (the recon regression).
+# Keeping only these lines shrinks each cold result to a few lines, which — under
+# a fixed total budget — lets MANY more cold steps survive instead of being
+# elided wholesale. Case-insensitive substring/prefix scan (cheap, no regex
+# backtracking on huge logs).
+_BRIEF_SALIENT_SUBSTR = (
+    "fail", "error", "traceback", "exception", "assert", "mismatch",
+    "expected", "actual", "!=", "not equal", " differ", "unexpected",
+    "warning", "warn:", "deprecat", "denied", "refused", "timeout",
+    "cannot", "could not", "no such", "missing", "invalid", "conflict",
+    "panic", "fatal", "abort", "nonzero", "non-zero", "exit code",
+)
+_BRIEF_SALIENT_PREFIX = ("+", "-", "@@", "E ", ">", "!")  # diff / pytest error gutters
+
+
+def _compress_cold_result(text: str, budget: int = _BRIEF_COLD_RESULT_BUDGET) -> str:
+    """Content-aware digest of an OLD tool result.
+
+    Keeps the header line (path / command echo, usually line 0) plus the salient
+    lines (failures, tracebacks, diffs, mismatches, warnings). Falls back to a
+    plain head clip when nothing salient is found (e.g. a benign file dump), so a
+    non-diagnostic result still shrinks. Always bounded by ``budget``.
+    """
+    if not text or len(text) <= budget:
+        return text
+    lines = text.splitlines()
+    head = lines[0].strip() if lines else ""
+
+    def _salient(ln: str) -> bool:
+        s = ln.strip()
+        if not s:
+            return False
+        low = s.lower()
+        if any(sub in low for sub in _BRIEF_SALIENT_SUBSTR):
+            return True
+        # diff/error gutters, but ignore diff file headers (+++/---)
+        return s.startswith(_BRIEF_SALIENT_PREFIX) and not s.startswith(("+++", "---"))
+
+    picked: list[str] = []
+    if head:
+        picked.append(head)
+    used = len(head)
+    hits = 0
+    for ln in lines[1:]:
+        if not _salient(ln):
+            continue
+        s = ln.strip()
+        if used + len(s) + 1 > budget:
+            break
+        picked.append(s)
+        used += len(s) + 1
+        hits += 1
+    if hits == 0:
+        # nothing diagnostic — a plain head clip is the honest gist
+        return _truncate_tool_result(text, budget)
+    remaining = len(lines) - 1 - hits
+    tail = f"\n[… {remaining} more line(s) …]" if remaining > 0 else ""
+    return "\n".join(picked) + tail
 
 
 def _brief_frame(
@@ -731,31 +795,54 @@ def _brief_reference_messages(
             if t:
                 parts.append(t if hot else _truncate_tool_result(t, _BRIEF_COLD_TEXT_BUDGET))
             calls_text = _render_tool_calls(
-                e.get("calls"), arg_budget=(None if hot else _BRIEF_COLD_ARG_BUDGET)
+                e.get("calls"), arg_budget=(_BRIEF_HOT_ARG_BUDGET if hot else _BRIEF_COLD_ARG_BUDGET)
             )
             if calls_text:
                 parts.append(calls_text)
             return {"role": "assistant", "content": "\n".join(parts)} if parts else None
-        # tool result
-        budget = _REFERENCE_TOOL_RESULT_BUDGET if hot else _BRIEF_COLD_RESULT_BUDGET
-        return {"role": "tool_result", "content": _truncate_tool_result(e["text"], budget)}
+        # tool result: hot → head+tail at full budget; cold → salient-line digest
+        # so distributed diagnostic signal (failures/tracebacks) survives even as
+        # the step scrolls out of the recent window.
+        if hot:
+            return {"role": "tool_result", "content": _truncate_tool_result(e["text"], _REFERENCE_TOOL_RESULT_BUDGET)}
+        return {"role": "tool_result", "content": _compress_cold_result(e["text"], _BRIEF_COLD_RESULT_BUDGET)}
+
+    def _has_signal(content: str) -> bool:
+        low = content.lower()
+        return any(sub in low for sub in _BRIEF_SALIENT_SUBSTR)
 
     rendered_events: list[dict[str, Any]] = []
     for i, e in enumerate(events):
         r = render(e, hot=(i >= hot_from))
         if r is not None:
-            rendered_events.append({**r, "_cold": i < hot_from})
+            cold = i < hot_from
+            rendered_events.append({**r, "_cold": cold, "_salient": cold and _has_signal(r["content"])})
 
-    # 4. Clamp to total budget by dropping the oldest COLD turns first.
+    # 4. Clamp to total budget. Drop order: oldest LOW-signal cold turns first,
+    #    and only if still over, oldest salient cold turns. This keeps distributed
+    #    diagnostic breadcrumbs (failures/tracebacks 20 steps back) sticky rather
+    #    than eliding them by age — the recon-regression fix. Hot window + frame
+    #    are never dropped.
     frame = _brief_frame(messages, tools, constraints)
     overhead = (len(frame) if frame else 0) + len(advisory_instruction)
+
+    def _over() -> bool:
+        return sum(len(x["content"]) for x in rendered_events) + overhead > total_budget
+
     dropped = 0
-    while sum(len(x["content"]) for x in rendered_events) + overhead > total_budget:
-        idx = next((j for j, x in enumerate(rendered_events) if x.get("_cold")), None)
-        if idx is None:
+    for salient_pass in (False, True):
+        while _over():
+            idx = next(
+                (j for j, x in enumerate(rendered_events)
+                 if x.get("_cold") and (salient_pass or not x.get("_salient"))),
+                None,
+            )
+            if idx is None:
+                break
+            rendered_events.pop(idx)
+            dropped += 1
+        if not _over():
             break
-        rendered_events.pop(idx)
-        dropped += 1
 
     # 5. Flatten (fold tool results into the preceding assistant turn).
     flat: list[dict[str, Any]] = []

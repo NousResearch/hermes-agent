@@ -11,8 +11,8 @@ your row when done.
 
 | Plan | Title                                           | Priority | Effort | Depends on | Status |
 |------|-------------------------------------------------|----------|--------|------------|--------|
-| 001  | Eliminate dual-`pyvenv.cfg` drift risk between `.venv/` and `venv/` | P1       | M      | —          | STEP 1 DONE — Step 2 needs revision |
-| 001-step2-revision | Junction-after-install design (supersedes plan 001 Step 2) | P1 | M | 001 (Step 1) | TODO |
+| 001  | Eliminate dual-`pyvenv.cfg` drift risk between `.venv/` and `venv/` | P1       | M      | —          | DONE   |
+| 001-step2-revision | Junction-after-install design (supersedes plan 001 Step 2) | P1 | M | 001 (Step 1) | DONE |
 | 002  | Full-hermes-agent audit — RECON + DEEP-blueprint (no source edits) | P2       | S      | —          | DONE   |
 
 Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED` (with one-line reason) | `REJECTED` (with one-line rationale).

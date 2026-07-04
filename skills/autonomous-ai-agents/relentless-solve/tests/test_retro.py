@@ -114,6 +114,79 @@ class RunHindsight(unittest.TestCase):
         with open(os.path.join(self.tmp, "retro.json.prior"), "rb") as fh:
             self.assertEqual(fh.read(), prior)
 
+    def test_crash_window_reuses_matching_journey_fp_without_a_model_call(self):
+        expected = relentless.journeylib.fp(
+            relentless.journeylib.render_journey(self.j, level="COMPACT"))
+        stored = relentless.journeylib.stamp_tiers(
+            self.j, valid_hindsight(self.j))
+        stored["_journey_fp"] = expected
+        with open(os.path.join(self.tmp, "retro.json"), "w", encoding="utf-8") as fh:
+            json.dump(stored, fh)
+        calls = []
+
+        def fail_if_called(prompt, timeout):
+            calls.append(prompt)
+            raise AssertionError("model should not be called")
+        relentless.invoke_hermes = fail_if_called
+
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        self.assertEqual(out["optimality"], valid_hindsight(self.j)["optimality"])
+        self.assertNotIn("_journey_fp", out)
+        self.assertEqual(calls, [])
+
+    def test_foreign_journey_fp_is_still_quarantined_and_rejudged(self):
+        stored = relentless.journeylib.stamp_tiers(
+            self.j, valid_hindsight(self.j))
+        stored["_journey_fp"] = "deadbeef"
+        with open(os.path.join(self.tmp, "retro.json"), "w", encoding="utf-8") as fh:
+            json.dump(stored, fh)
+        fresh = valid_hindsight(self.j)
+        self._wire([json.dumps(fresh)])
+
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        self.assertEqual(out["optimality"], fresh["optimality"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "retro.json.prior")))
+
+    def test_legacy_artifact_without_journey_fp_is_quarantined_and_rejudged(self):
+        stored = relentless.journeylib.stamp_tiers(
+            self.j, valid_hindsight(self.j))
+        with open(os.path.join(self.tmp, "retro.json"), "w", encoding="utf-8") as fh:
+            json.dump(stored, fh)
+        self._wire([json.dumps(valid_hindsight(self.j))])
+
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        self.assertEqual(out["optimality"], "acceptable")
+        self.assertEqual(len(self.prompts), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "retro.json.prior")))
+
+    def test_artifact_acceptance_persists_the_canonical_retro_json(self):
+        expected = relentless.journeylib.fp(
+            relentless.journeylib.render_journey(self.j, level="COMPACT"))
+
+        def write_artifact(out_path):
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(valid_hindsight(self.j), fh)
+            return "not JSON"
+        self._wire([write_artifact])
+
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        with open(os.path.join(self.tmp, "retro.json"), encoding="utf-8") as fh:
+            stored = json.load(fh)
+        self.assertEqual(stored.pop("_journey_fp"), expected)
+        self.assertEqual(stored, out)
+
+    def test_stdout_acceptance_persists_the_canonical_retro_json(self):
+        expected = relentless.journeylib.fp(
+            relentless.journeylib.render_journey(self.j, level="COMPACT"))
+        self._wire([json.dumps(valid_hindsight(self.j))])
+
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        with open(os.path.join(self.tmp, "retro.json"), encoding="utf-8") as fh:
+            stored = json.load(fh)
+        self.assertEqual(stored.pop("_journey_fp"), expected)
+        self.assertEqual(stored, out)
+
     def test_prior_quarantine_failure_becomes_a_skip_sentinel(self):
         with open(os.path.join(self.tmp, "retro.json"), "w", encoding="utf-8") as fh:
             fh.write("[]\n")

@@ -646,10 +646,9 @@ FIXED this pass (each test-pinned):
   `LEARNINGS_MAX_COUNT` in the journal too; a real-engine retro-tail
   replay-determinism test (`RetroTailReplay` in `test_engine_contract`).
 
-DEFERRED: finding #10 — `run_hindsight` crash-window non-idempotence. If the model
-wrote a valid `retro.json` but the step didn't record completion, replay quarantines
-it and re-calls the judge; a second-call failure downgrades a valid judgment to
-skipped. Rationale: the window is narrow, the outcome (skip) is always valid and
-NEVER un-succeeds a run, and reconciling reuse-on-replay with the aggressive-quarantine
-fixes (#5/#7) needs a journey/run-identity design out of proportion to a lost advisory
-judgment. Revisit if crash-window judgment loss is ever observed.
+RESOLVED (round-5): finding #10 — hindsight run-identity idempotence. Every accepted
+judgment now stamps the fingerprint of the exact COMPACT journey render into the
+canonical `retro.json`; replay before step completion recognizes a matching fingerprint
+and returns the already-tiered judgment without quarantine or another model call. A
+foreign, stale, or legacy artifact with a mismatched or missing fingerprint is still
+quarantined and re-judged exactly as before (#5/#7).

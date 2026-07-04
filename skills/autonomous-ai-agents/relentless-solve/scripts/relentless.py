@@ -1328,13 +1328,27 @@ def run_hindsight(jobj, slug_dir, timeout):
     by code with one violation-echo retry. INVARIANT: this can never un-succeed a run —
     every failure mode returns a {"skipped": <reason>} sentinel, and the caller only
     ever splices the result into the journey's advisory `hindsight` slot."""
+    try:
+        compact = journeylib.render_journey(jobj, level="COMPACT")
+        _journey_fp = journeylib.fp(compact)
+    except Exception as e:
+        return {"skipped": f"hindsight setup error ({e.__class__.__name__})"}
     out_path = os.path.join(slug_dir, "retro.json")
+    try:
+        with open(out_path, encoding="utf-8") as fh:
+            prior = json.load(fh)
+        if isinstance(prior, dict) and prior.get("_journey_fp") == _journey_fp:
+            prior = dict(prior)
+            prior.pop("_journey_fp", None)
+            if not journeylib.validate_hindsight(prior, jobj):
+                return prior
+    except Exception:
+        pass
     # Artifact beats stdout, so quarantine a previous run's artifact before this run
     # can accidentally treat it as fresh judge output.
     quarantine_error = _quarantine(out_path, ".prior")
     if quarantine_error:
         return {"skipped": f"retro quarantine failed: {quarantine_error}"}
-    compact = journeylib.render_journey(jobj, level="COMPACT")
     violations = None
     for attempt in range(RETRO_ATTEMPTS):
         prompt = retro_envelope.hindsight_prompt(compact, out_path)
@@ -1356,7 +1370,12 @@ def run_hindsight(jobj, slug_dir, timeout):
         violations = journeylib.validate_hindsight(obj, jobj)
         if not violations:
             try:
-                return journeylib.stamp_tiers(jobj, obj)
+                stamped = journeylib.stamp_tiers(jobj, obj)
+                stamped.pop("_journey_fp", None)
+                canonical = dict(stamped)
+                canonical["_journey_fp"] = _journey_fp
+                _atomic_write(out_path, json.dumps(canonical, indent=2) + "\n")
+                return stamped
             except Exception as e:
                 violations = [f"hindsight stamping error ({e.__class__.__name__}): {e}"]
         _quarantine(out_path, f".rej{attempt}")

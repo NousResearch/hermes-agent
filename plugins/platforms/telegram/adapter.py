@@ -397,6 +397,14 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+# Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
+# in CLOSE-WAIT the PTB polling task is blocked on epoll on the dead socket and
+# never wakes, so an unguarded stop() hangs indefinitely and wedges the whole
+# reconnect/teardown ladder. This is an internal safety bound (not a user knob),
+# applied identically at every stop() site so no path can hang on a dead socket.
+_UPDATER_STOP_TIMEOUT = 15.0
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -2001,7 +2009,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # the gateway silently drops messages for hours.
                     # Bounding stop() lets the reconnect ladder always advance.
                     # Refs: NousResearch/hermes-agent#58270
-                    await asyncio.wait_for(app.updater.stop(), timeout=15.0)
+                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[%s] updater.stop() timed out during network-error "
@@ -2382,10 +2390,19 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             # Stop the local updater cleanly before sleeping.  If it's already
             # stopped (e.g. PTB raised before updater.running was set) this is
-            # a no-op.
+            # a no-op.  Bounded with a timeout for the same reason as the
+            # network-error path: a CLOSE-WAIT socket can wedge stop() on epoll
+            # forever, which would stall the conflict-retry ladder.
             try:
                 if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during conflict "
+                            "retry (likely CLOSE-WAIT socket); continuing",
+                            self.name,
+                        )
             except Exception:
                 pass
 
@@ -2453,16 +2470,33 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] %s Original error: %s",
             self.name, message, error,
         )
+        # Snapshot whether we are the call that actually transitions to fatal.
+        # A concurrent retry task scheduled by an earlier conflict may already
+        # be suspended past the entry guard; once _set_fatal_error flips the
+        # flag, adding an await below (the bounded stop()) yields the loop and
+        # lets that task reach this branch too — double-notifying the fatal
+        # handler.  Only the first transition notifies.
+        _already_fatal = (
+            self.has_fatal_error
+            and self.fatal_error_code == "telegram_polling_conflict"
+        )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
-                await self._app.updater.stop()
+                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] updater.stop() timed out after exhausting conflict "
+                "retries (likely CLOSE-WAIT socket); proceeding to fatal notify",
+                self.name,
+            )
         except Exception as stop_error:
             logger.warning(
                 "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
                 self.name, stop_error, exc_info=True,
             )
-        await self._notify_fatal_error()
+        if not _already_fatal:
+            await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,
@@ -3352,9 +3386,20 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._app:
             try:
-                # Only stop the updater if it's running
+                # Only stop the updater if it's running.  Bounded with a
+                # timeout: a CLOSE-WAIT socket can wedge stop() on epoll
+                # indefinitely, which would hang disconnect() (and any
+                # gateway shutdown/restart waiting on it) forever.  On timeout
+                # we fall through to app.stop()/shutdown() to force teardown.
                 if self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    try:
+                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] updater.stop() timed out during disconnect "
+                            "(likely CLOSE-WAIT socket); forcing app shutdown",
+                            self.name,
+                        )
                 if self._app.running:
                     await self._app.stop()
                 await self._app.shutdown()

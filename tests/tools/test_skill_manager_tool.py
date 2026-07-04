@@ -614,7 +614,13 @@ class TestSkillManageDispatcher:
 
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
+            # hc-376 stages background-review skill writes by default, which
+            # would stage the two setup creates (skills never hit disk) and mask
+            # the bundled-delete refusal this test exercises — opt into autowrite
+            # like the provenance test above so the creates actually apply.
             with _skill_dir(tmp_path), \
+                 patch("tools.write_approval.background_review_skill_autowrite_enabled",
+                       return_value=True), \
                  patch("tools.skill_usage.is_protected_builtin", return_value=False), \
                  patch("tools.skill_usage.is_hub_installed", return_value=False), \
                  patch("tools.skill_usage.is_bundled",

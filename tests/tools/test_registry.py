@@ -287,12 +287,18 @@ class TestCheckFnExceptionHandling:
             defs = reg.get_definitions({"hidden_tool"})
 
         assert defs == []
+        # v0.18-merged wording: "check_fn <qualname> returned False; dependent
+        # tools will be unavailable this turn" (the old fork-era "Tool X
+        # check_fn failed" line is gone).
         assert any(
-            "Tool hidden_tool check_fn failed: returned false" in record.message
+            "returned False" in record.message and "unavailable" in record.message
             for record in caplog.records
         )
 
-    def test_failed_check_fn_cache_uses_short_jittered_ttl(self, monkeypatch):
+    def test_failed_check_fn_cached_for_full_ttl(self, monkeypatch):
+        """A no-recent-success failure is cached for the FULL TTL (the merged
+        v0.18 design dropped the fork-era short jittered failure TTL in favor
+        of fixed TTL + a last-good grace window handled separately)."""
         invalidate_check_fn_cache()
         now = {"value": 100.0}
         calls = {"count": 0}
@@ -310,13 +316,12 @@ class TestCheckFnExceptionHandling:
             check_fn=unavailable,
         )
         monkeypatch.setattr("tools.registry.time.monotonic", lambda: now["value"])
-        monkeypatch.setattr("tools.registry.random.uniform", lambda _low, _high: 1.5)
 
         reg.get_definitions({"flaky_tool"})
-        now["value"] += 9.4
-        reg.get_definitions({"flaky_tool"})
-        now["value"] += 0.2
-        reg.get_definitions({"flaky_tool"})
+        now["value"] += 29.0
+        reg.get_definitions({"flaky_tool"})  # inside TTL → cached False, no re-probe
+        now["value"] += 2.0
+        reg.get_definitions({"flaky_tool"})  # past TTL → re-probe
 
         assert calls["count"] == 2
         invalidate_check_fn_cache()

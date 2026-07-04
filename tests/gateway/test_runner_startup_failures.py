@@ -86,7 +86,7 @@ class _ConversationReadyAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.API_SERVER)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -107,7 +107,7 @@ class _BackgroundFeishuAdapter(BasePlatformAdapter):
         self.started = started
         self.release = release
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self.started.set()
         await self.release.wait()
         return True
@@ -266,7 +266,7 @@ async def test_background_platform_adapter_creation_does_not_block_api_ready(mon
     _install_bg_startup_seam()
 
     class _DeferredFeishuAdapter(_BackgroundFeishuAdapter):
-        async def connect(self) -> bool:
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
             connect_started.set()
             await connect_release.wait()
             return True

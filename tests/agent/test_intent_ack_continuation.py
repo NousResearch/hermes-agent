@@ -181,3 +181,48 @@ def test_long_response_is_not_treated_as_an_ack():
     assert not looks_like_codex_intermediate_ack(
         a, REPRO_USER, long_ack, msgs, require_workspace=False
     )
+
+
+# ── detector: CJK replies (#55664) ────────────────────────────────────────
+
+
+def test_cjk_future_ack_fires_with_action_verb():
+    """#55664: Chinese reply announcing intent + action verb must fire.
+
+    Repro from the reporter (Traditional Chinese, MoA aggregator): the
+    model replies "我先載入 skill 確認用法…" and ends the turn. The English
+    regex alone never matches, so the all-api_mode opt-in was effectively
+    dead for CJK users.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "幫我看看伺服器目前的狀態"
+    cjk_ack = "我先載入 skill 確認用法，再掃描一次相關檔案。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert looks_like_codex_intermediate_ack(
+        a, user_msg, cjk_ack, msgs, require_workspace=False
+    )
+
+
+def test_cjk_simplified_future_ack_fires():
+    """Simplified Chinese future-ack + action verb fires the detector."""
+    a = _agent(True, "chat_completions")
+    user_msg = "看一下这个仓库"
+    cjk_ack = "让我先检查一下代码结构。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert looks_like_codex_intermediate_ack(
+        a, user_msg, cjk_ack, msgs, require_workspace=False
+    )
+
+
+def test_cjk_reply_without_action_verb_does_not_fire():
+    """A CJK future-ack with no action verb must not trip the detector
+    (matches the English guardrail: 'I will help you brainstorm' is not
+    an action)."""
+    a = _agent(True, "chat_completions")
+    user_msg = "幫我想一下方案"
+    # Pure CJK future-ack with no action verb in the cjk_action_markers list.
+    cjk_no_verb = "讓我們一起想想接下來怎麼做。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert not looks_like_codex_intermediate_ack(
+        a, user_msg, cjk_no_verb, msgs, require_workspace=False
+    )

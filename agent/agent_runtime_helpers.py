@@ -2341,7 +2341,14 @@ def looks_like_codex_intermediate_ack(
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
-    if not has_future_ack:
+    # Parallel CJK substring check — \b word boundaries don't apply to CJK,
+    # so the English regex can't be extended. #55664: this made intent-ack
+    # continuation a no-op for CJK users even with the all-api_mode opt-in.
+    cjk_future_acks = (
+        "我先", "我來", "我会", "我會", "讓我", "让我", "我直接", "接下來我", "接下来我",
+    )
+    has_cjk_future_ack = any(phrase in assistant_text for phrase in cjk_future_acks)
+    if not has_future_ack and not has_cjk_future_ack:
         return False
 
     action_markers = (
@@ -2365,6 +2372,11 @@ def looks_like_codex_intermediate_ack(
         "report back",
         "summarize",
     )
+    cjk_action_markers = (
+        "載入", "加载", "查", "執行", "执行", "掃描", "扫描", "檢查", "检查",
+        "分析", "讀取", "读取", "搜尋", "搜寻", "測試", "测试", "修復", "修复",
+        "除錯", "除错", "找", "打開", "打开", "看一下", "檢視", "检视",
+    )
     workspace_markers = (
         "directory",
         "current directory",
@@ -2381,7 +2393,10 @@ def looks_like_codex_intermediate_ack(
         "path",
     )
 
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
+    assistant_mentions_action = any(
+        marker in assistant_text
+        for marker in action_markers + cjk_action_markers
+    )
     if not assistant_mentions_action:
         return False
 

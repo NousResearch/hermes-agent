@@ -39,15 +39,19 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $profileActivity,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  neediestSessionId,
   normalizeProfileKey,
+  type ProfileActivity,
   refreshActiveProfile,
   selectProfile,
+  selectProfileSession,
   setProfileColor,
   setProfileOrder,
   setShowAllProfiles,
@@ -105,6 +109,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const activityByProfile = useStore($profileActivity)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -147,6 +152,25 @@ export function ProfileRail() {
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
+
+  // Default rows are keyed "default" by the aggregator/derivation whatever the
+  // profile's directory name; named rows key by their (normalized) name.
+  const defaultActivity = defaultProfile
+    ? (activityByProfile[normalizeProfileKey(defaultProfile.name)] ?? activityByProfile.default)
+    : undefined
+
+  // Badge click: jump into the profile AND straight to the session that needs
+  // you (attention first, else the most recent working one) — composing with
+  // the per-profile last-session restore for plain square clicks.
+  const openNeediest = (name: string, activity: ProfileActivity | undefined) => {
+    const target = neediestSessionId(activity)
+
+    if (target) {
+      selectProfileSession(name, target)
+    } else {
+      selectProfile(name)
+    }
+  }
 
   const named = sortByProfileOrder(
     profiles.filter(profile => !profile.is_default),
@@ -224,12 +248,22 @@ export function ProfileRail() {
         (defaultProfile ? (
           // On default → toggle to all. Anywhere else (all view or a named
           // profile) → return to default. So leaving a profile never lands on all.
-          <ProfilePill
-            active={isAll || onDefault}
-            glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
-          />
+          // While away from default, its activity badge rides the pill's corner.
+          <span className="relative shrink-0">
+            <ProfilePill
+              active={isAll || onDefault}
+              glyph={isAll ? 'layers' : 'home'}
+              label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
+              onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
+            />
+            {!onDefault && defaultActivity && (
+              <ActivityBadge
+                activity={defaultActivity}
+                label={defaultProfile.name}
+                onOpen={() => openNeediest(defaultProfile.name, defaultActivity)}
+              />
+            )}
+          </span>
         ) : (
           <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
         ))}
@@ -251,6 +285,7 @@ export function ProfileRail() {
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
+            activityByProfile={activityByProfile}
             colors={colors}
             onSelect={selectProfile}
             profiles={named}
@@ -278,11 +313,15 @@ export function ProfileRail() {
                   {named.map(profile => (
                     <ProfileSquare
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      activity={activityByProfile[normalizeProfileKey(profile.name)]}
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
                       label={profile.name}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
+                      onOpenActivity={() =>
+                        openNeediest(profile.name, activityByProfile[normalizeProfileKey(profile.name)])
+                      }
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
@@ -432,11 +471,13 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
 // falls back to the placeholder since the left toggle pill carries that state.
 function ProfileDropdown({
   activeKey,
+  activityByProfile,
   colors,
   onSelect,
   profiles
 }: {
   activeKey: null | string
+  activityByProfile: Record<string, ProfileActivity>
   colors: Record<string, string>
   onSelect: (name: string) => void
   profiles: ProfileInfo[]
@@ -455,6 +496,9 @@ function ProfileDropdown({
         {profiles.map(profile => {
           const color = resolveProfileColor(profile.name, colors)
           const hue = color ?? 'var(--ui-text-quaternary)'
+          const activity = activityByProfile[normalizeProfileKey(profile.name)]
+          const attention = activity ? activity.attention.length : 0
+          const working = activity ? activity.working.length : 0
 
           return (
             <SelectItem key={profile.name} value={profile.name}>
@@ -467,12 +511,95 @@ function ProfileDropdown({
                   {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
                 </span>
                 <span className="truncate">{profile.name}</span>
+                {/* Condensed rail: a plain dot stands in for the corner badge
+                    (amber = needs input beats accent = working). */}
+                {(attention > 0 || working > 0) && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'ml-auto size-1.5 shrink-0 rounded-full',
+                      attention > 0 ? 'bg-amber-500' : 'bg-(--ui-accent)'
+                    )}
+                  />
+                )}
               </span>
             </SelectItem>
           )
         })}
       </SelectContent>
     </Select>
+  )
+}
+
+// How many activity rows a rail tooltip lists before truncating — the badge
+// count still carries the full number.
+const ACTIVITY_TOOLTIP_LIMIT = 6
+
+// Working/attention badge pinned to a rail square's (or the default pill's)
+// corner. Amber + count = sessions blocked on you; accent ping = a turn is
+// running somewhere in that profile ("needs input" wins, like the sidebar row
+// dot). A separate sibling button — a <button> can't nest one — that stops
+// pointer-down so a badge click never arms a drag or selects the square under
+// it; clicking jumps straight to the neediest session via onOpen.
+function ActivityBadge({ activity, label, onOpen }: { activity: ProfileActivity; label: string; onOpen: () => void }) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const attention = activity.attention.length
+  const working = activity.working.length
+
+  if (attention === 0 && working === 0) {
+    return null
+  }
+
+  const description = attention > 0 ? p.attentionBadge(attention) : p.workingBadge(working)
+
+  return (
+    <button
+      aria-label={`${label}: ${description}`}
+      className={cn(
+        'absolute -right-1 -top-1 z-10 grid place-items-center rounded-full leading-none',
+        attention > 0
+          ? 'h-3 min-w-3 bg-amber-500 px-[0.1875rem] text-[0.5rem] font-semibold text-black'
+          : "size-2 bg-(--ui-accent) before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
+      )}
+      onClick={event => {
+        event.stopPropagation()
+        onOpen()
+      }}
+      onPointerDown={event => event.stopPropagation()}
+      title={description}
+      type="button"
+    >
+      {attention > 0 ? (attention > 9 ? '9+' : attention) : null}
+    </button>
+  )
+}
+
+// Square tooltip body: the plain profile name, or — when the profile has live
+// activity — the name plus each active session's title and state.
+function ActivityTooltip({ activity, label }: { activity: ProfileActivity | undefined; label: string }) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const rows = activity ? [...activity.attention, ...activity.working].slice(0, ACTIVITY_TOOLTIP_LIMIT) : []
+
+  if (rows.length === 0) {
+    return <>{label}</>
+  }
+
+  return (
+    <div className="flex max-w-64 flex-col gap-1">
+      <span className="font-semibold">{label}</span>
+      {rows.map(row => (
+        <span className="flex items-center gap-1.5" key={row.id}>
+          <span
+            aria-hidden="true"
+            className={cn('size-1.5 shrink-0 rounded-full', row.needsInput ? 'bg-amber-500' : 'bg-(--ui-accent)')}
+          />
+          <span className="min-w-0 flex-1 truncate">{row.title?.trim() || r.untitledPlaceholder}</span>
+          <span className="shrink-0 text-(--ui-text-tertiary)">{row.needsInput ? r.needsInput : r.sessionRunning}</span>
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -507,9 +634,11 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
 
 interface ProfileSquareProps {
   active: boolean
+  activity?: ProfileActivity
   color: null | string
   label: string
   onSelect: () => void
+  onOpenActivity: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
@@ -529,10 +658,12 @@ const LONG_PRESS_MS = 450
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({
   active,
+  activity,
   color,
   label,
   onDelete,
   onEditSoul,
+  onOpenActivity,
   onRecolor,
   onRename,
   onSelect
@@ -576,123 +707,136 @@ function ProfileSquare({
   }
 
   return (
-    <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
-      <ContextMenu>
-        <TooltipProvider delayDuration={0}>
-          <Tooltip>
-            <PopoverAnchor asChild>
-              <ContextMenuTrigger asChild>
-                <TooltipTrigger asChild>
-                  <button
-                    className={cn(
-                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-                      active ? 'opacity-100' : 'opacity-55',
-                      isDragging && 'z-10 cursor-grabbing opacity-100'
-                    )}
-                    ref={setNodeRef}
-                    style={{
-                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
-                      boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
-                      color: color ?? undefined,
-                      // Glide the dragged square between snapped cells with a little
-                      // overshoot (no scale — the overflow-x strip would clip it).
-                      transform: base,
-                      transition: isDragging ? DRAG_TRANSITION : transition
-                    }}
-                    type="button"
-                    {...attributes}
-                    {...listeners}
-                    aria-label={label}
-                    aria-pressed={active}
-                    // Hold-to-recolor rides alongside the dnd pointer listener (call
-                    // it first so drag tracking still arms), then a timer opens the
-                    // picker and flags the trailing click so it doesn't also select.
-                    onClick={() => {
-                      if (suppressClick.current) {
+    // The sortable node is this wrapper (not the button) so the corner
+    // activity badge — a sibling button; buttons can't nest — rides along with
+    // drags. The drag listeners stay on the square itself.
+    <div
+      className={cn('relative shrink-0', isDragging && 'z-10')}
+      ref={setNodeRef}
+      style={{
+        // Glide the dragged square between snapped cells with a little
+        // overshoot (no scale — the overflow-x strip would clip it).
+        transform: base,
+        transition: isDragging ? DRAG_TRANSITION : transition
+      }}
+    >
+      <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
+        <ContextMenu>
+          <TooltipProvider delayDuration={0}>
+            <Tooltip>
+              <PopoverAnchor asChild>
+                <ContextMenuTrigger asChild>
+                  <TooltipTrigger asChild>
+                    <button
+                      className={cn(
+                        'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                        active ? 'opacity-100' : 'opacity-55',
+                        isDragging && 'cursor-grabbing opacity-100'
+                      )}
+                      style={{
+                        backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                        boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
+                        color: color ?? undefined
+                      }}
+                      type="button"
+                      {...attributes}
+                      {...listeners}
+                      aria-label={label}
+                      aria-pressed={active}
+                      // Hold-to-recolor rides alongside the dnd pointer listener (call
+                      // it first so drag tracking still arms), then a timer opens the
+                      // picker and flags the trailing click so it doesn't also select.
+                      onClick={() => {
+                        if (suppressClick.current) {
+                          suppressClick.current = false
+
+                          return
+                        }
+
+                        onSelect()
+                      }}
+                      onPointerCancel={clearPress}
+                      onPointerDown={event => {
+                        listeners?.onPointerDown?.(event)
+
+                        if (event.button !== 0) {
+                          return
+                        }
+
                         suppressClick.current = false
+                        clearPress()
+                        pressTimer.current = window.setTimeout(() => {
+                          suppressClick.current = true
+                          triggerHaptic('success')
+                          setPickerOpen(true)
+                        }, LONG_PRESS_MS)
+                      }}
+                      onPointerLeave={clearPress}
+                      onPointerUp={clearPress}
+                    >
+                      {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    </button>
+                  </TooltipTrigger>
+                </ContextMenuTrigger>
+              </PopoverAnchor>
+              <TooltipContent>
+                <ActivityTooltip activity={activity} label={label} />
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
 
-                        return
-                      }
-
-                      onSelect()
-                    }}
-                    onPointerCancel={clearPress}
-                    onPointerDown={event => {
-                      listeners?.onPointerDown?.(event)
-
-                      if (event.button !== 0) {
-                        return
-                      }
-
-                      suppressClick.current = false
-                      clearPress()
-                      pressTimer.current = window.setTimeout(() => {
-                        suppressClick.current = true
-                        triggerHaptic('success')
-                        setPickerOpen(true)
-                      }, LONG_PRESS_MS)
-                    }}
-                    onPointerLeave={clearPress}
-                    onPointerUp={clearPress}
-                  >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-                  </button>
-                </TooltipTrigger>
-              </ContextMenuTrigger>
-            </PopoverAnchor>
-            <TooltipContent>{label}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-
-        {/* The rail sits at the very bottom, so pad off the chrome (esp. the
-            statusbar) — Radix then flips the menu up instead of squishing it. */}
-        <ContextMenuContent
-          aria-label={p.actionsFor(label)}
-          className="w-40"
-          collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
-          // Menu close refocuses the trigger — which doubles as the popover
-          // anchor — so the picker reads it as focus-outside and dies on open.
-          // Suppress the refocus and the picker survives.
-          onCloseAutoFocus={event => event.preventDefault()}
-        >
-          <ContextMenuItem onSelect={() => setPickerOpen(true)}>
-            <Codicon name="symbol-color" size="0.875rem" />
-            <span>{p.color}</span>
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={onRename}>
-            <Codicon name="text-size" size="0.875rem" />
-            <span>{p.renameMenu}</span>
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={onEditSoul}>
-            <Codicon name="edit" size="0.875rem" />
-            <span>{p.editSoul}</span>
-          </ContextMenuItem>
-          <ContextMenuItem
-            className="text-destructive focus:text-destructive"
-            onSelect={onDelete}
-            variant="destructive"
+          {/* The rail sits at the very bottom, so pad off the chrome (esp. the
+              statusbar) — Radix then flips the menu up instead of squishing it. */}
+          <ContextMenuContent
+            aria-label={p.actionsFor(label)}
+            className="w-40"
+            collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+            // Menu close refocuses the trigger — which doubles as the popover
+            // anchor — so the picker reads it as focus-outside and dies on open.
+            // Suppress the refocus and the picker survives.
+            onCloseAutoFocus={event => event.preventDefault()}
           >
-            <Codicon name="trash" size="0.875rem" />
-            <span>{t.common.delete}</span>
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+            <ContextMenuItem onSelect={() => setPickerOpen(true)}>
+              <Codicon name="symbol-color" size="0.875rem" />
+              <span>{p.color}</span>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={onRename}>
+              <Codicon name="text-size" size="0.875rem" />
+              <span>{p.renameMenu}</span>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={onEditSoul}>
+              <Codicon name="edit" size="0.875rem" />
+              <span>{p.editSoul}</span>
+            </ContextMenuItem>
+            <ContextMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={onDelete}
+              variant="destructive"
+            >
+              <Codicon name="trash" size="0.875rem" />
+              <span>{t.common.delete}</span>
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
 
-      <PopoverContent
-        aria-label={p.colorFor(label)}
-        className="w-auto p-2"
-        collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
-        side="top"
-      >
-        <ColorSwatches
-          clearIcon="sync"
-          clearLabel={p.autoColor}
-          onChange={pickColor}
-          swatches={PROFILE_SWATCHES}
-          swatchLabel={p.setColor}
-          value={color}
-        />
-      </PopoverContent>
-    </Popover>
+        <PopoverContent
+          aria-label={p.colorFor(label)}
+          className="w-auto p-2"
+          collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+          side="top"
+        >
+          <ColorSwatches
+            clearIcon="sync"
+            clearLabel={p.autoColor}
+            onChange={pickColor}
+            swatches={PROFILE_SWATCHES}
+            swatchLabel={p.setColor}
+            value={color}
+          />
+        </PopoverContent>
+      </Popover>
+
+      {activity && !isDragging && <ActivityBadge activity={activity} label={label} onOpen={onOpenActivity} />}
+    </div>
   )
 }

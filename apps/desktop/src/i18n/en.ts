@@ -1324,7 +1324,9 @@ export const en: Translations = {
     failedLoadSoul: 'Failed to load SOUL.md',
     failedSaveSoul: 'Failed to save SOUL.md',
     failedCreate: 'Failed to create profile',
-    failedRename: 'Failed to rename profile'
+    failedRename: 'Failed to rename profile',
+    workingBadge: count => (count === 1 ? '1 session working' : `${count} sessions working`),
+    attentionBadge: count => (count === 1 ? '1 session needs your input' : `${count} sessions need your input`)
   },
 
   cron: {
@@ -2547,5 +2549,21 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
     }
+  },
+
+  commandCenterOverview: {
+    sectionLabel: 'All profiles',
+    sectionDescription: 'Activity across every profile, plus the shared kanban board',
+    working: count => `${count} working`,
+    attention: count => (count === 1 ? '1 needs input' : `${count} need input`),
+    sessions: count => `${count} ${count === 1 ? 'session' : 'sessions'}`,
+    idle: 'Idle',
+    noActivity: 'No activity yet',
+    currentBadge: 'Current',
+    switch: 'Switch',
+    openBoard: 'Open board',
+    kanbanUnavailable: 'Kanban is not available on this backend.',
+    noHotCards: 'Nothing in review or blocked',
+    openCard: title => `Open "${title}" on the kanban board`
   }
 }

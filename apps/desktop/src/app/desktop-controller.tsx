@@ -46,7 +46,19 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileRestoreRequest,
+  $profileScope,
+  activeProfileQueryKey,
+  forgetProfileSession,
+  forgetSessionMemo,
+  isSessionListed,
+  refreshActiveProfile,
+  rememberedProfileSession,
+  rememberProfileSession
+} from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -88,6 +100,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { profileRestoreSuperseded } from './desktop-controller-utils'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useReconnectReconciliation } from './gateway/hooks/use-reconnect-reconciliation'
@@ -116,6 +129,7 @@ import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
+import { resolveStoredSession } from './session/hooks/use-session-actions/utils'
 import { useSessionListActions } from './session/hooks/use-session-list-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
@@ -273,10 +287,13 @@ export function DesktopController() {
     }
   }, [])
 
-  // Remember the open chat so a relaunch reopens it instead of an empty new-chat.
+  // Remember the open chat so a relaunch reopens it instead of an empty
+  // new-chat — globally (relaunch) AND per owning profile, so switching back
+  // to a profile restores the conversation you left it on.
   useEffect(() => {
     if (routedSessionId) {
       setRememberedSessionId(routedSessionId)
+      rememberProfileSession(routedSessionId)
     }
   }, [routedSessionId])
 
@@ -298,9 +315,17 @@ export function DesktopController() {
   }, [location.pathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
+    if (!resumeExhaustedSessionId) {
+      return
+    }
+
+    if (getRememberedSessionId() === resumeExhaustedSessionId) {
       setRememberedSessionId(null)
     }
+
+    // A terminally-unresumable session must not be re-attempted by the next
+    // profile switch either.
+    forgetSessionMemo(resumeExhaustedSessionId)
   }, [resumeExhaustedSessionId])
 
   // Notification click: the main process already focused the window; jump to its
@@ -654,6 +679,69 @@ export function DesktopController() {
     lastFreshRef.current = freshSessionRequest
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
+
+  // A profile switch restores that profile's remembered last session (or the
+  // explicit target of a rail-badge click) instead of always dropping to a
+  // blank draft — so hopping A → B → A lands back in each profile's context.
+  // Existence is checked against the already-fetched cross-profile list first;
+  // only an unlisted id pays for the by-id REST probe (resolveStoredSession).
+  // Deleted/archived memo → clear it and fall back to a fresh draft. The token
+  // ref makes a rapid second switch supersede an in-flight probe, so a stale
+  // restore can never navigate over a newer one.
+  const profileRestoreRequest = useStore($profileRestoreRequest)
+  const lastProfileRestoreTokenRef = useRef(0)
+
+  useEffect(() => {
+    const request = profileRestoreRequest
+
+    if (!request || request.token === lastProfileRestoreTokenRef.current) {
+      return
+    }
+
+    lastProfileRestoreTokenRef.current = request.token
+    const remembered = request.sessionId ?? rememberedProfileSession(request.profile)
+
+    if (!remembered) {
+      startFreshSessionDraft()
+
+      return
+    }
+
+    if (isSessionListed($sessions.get(), remembered)) {
+      navigate(sessionRoute(remembered))
+
+      return
+    }
+
+    // Snapshot the selection as of the switch — the pre-switch profile's open
+    // session legitimately still sits in $selectedStoredSessionId here, so only
+    // a CHANGE during the probe means the user actively opened something newer.
+    const selectedAtRequest = $selectedStoredSessionId.get()
+
+    void (async () => {
+      const row = await resolveStoredSession(remembered).catch(() => undefined)
+
+      // Superseded while probing (another switch, or the user opened a chat /
+      // started a resume themselves) → never restore over the newer context.
+      if (
+        profileRestoreSuperseded({
+          currentToken: lastProfileRestoreTokenRef.current,
+          requestToken: request.token,
+          selectedAtRequest,
+          selectedNow: $selectedStoredSessionId.get()
+        })
+      ) {
+        return
+      }
+
+      if (row && !row.archived) {
+        navigate(sessionRoute(remembered))
+      } else {
+        forgetProfileSession(request.profile)
+        startFreshSessionDraft()
+      }
+    })()
+  }, [navigate, profileRestoreRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill. Both are nanostores, so the blanket
@@ -1064,7 +1152,7 @@ export function DesktopController() {
           onCompleted={() => {
             void refreshHermesConfig()
             void refreshCurrentModel()
-            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
           }}
           requestGateway={requestGateway}
         />
@@ -1089,14 +1177,14 @@ export function DesktopController() {
             onConfigSaved={() => {
               void refreshHermesConfig()
               void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
             }}
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey()] })
             }}
           />
         </Suspense>

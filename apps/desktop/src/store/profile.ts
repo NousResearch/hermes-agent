@@ -1,7 +1,6 @@
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
@@ -12,9 +11,9 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { $attentionSessionIds, $sessions, $workingSessionIds, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
-import type { ProfileInfo } from '@/types/hermes'
+import type { ProfileInfo, SessionInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
@@ -155,20 +154,187 @@ export const $activeGatewayProfile = atom<string>('default')
 export const $newChatProfile = atom<string | null>(null)
 
 // Bumped whenever the open session should be dropped for a fresh new-session
-// draft: a profile switch/create (below), or deleting the project that owns the
-// currently-open session (store/projects). The chat controller subscribes and
-// resets to the intro draft, so we never strand the user in an orphaned view.
+// draft: a per-profile "+" (newSessionInProfile below), or deleting the project
+// that owns the currently-open session (store/projects). The chat controller
+// subscribes and resets to the intro draft, so we never strand the user in an
+// orphaned view. A plain profile SWITCH no longer routes through here — it
+// fires $profileRestoreRequest instead so the controller can resume that
+// profile's remembered session (falling back to a fresh draft).
 export const $freshSessionRequest = atom(0)
 
 export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
+// ── Per-profile last-session memory ────────────────────────────────────────
+// Stored id of the last chat each profile had open, so hopping A → B → A lands
+// back in A's conversation instead of a blank draft every time. Same idiom as
+// the global lastSessionId relaunch memo (store/session), but keyed by profile.
+const PROFILE_LAST_SESSIONS_STORAGE_KEY = 'hermes.desktop.profileLastSessions'
+
+export const $profileLastSessions = atom<Record<string, string>>(storedStringRecord(PROFILE_LAST_SESSIONS_STORAGE_KEY))
+
+$profileLastSessions.subscribe(value => persistStringRecord(PROFILE_LAST_SESSIONS_STORAGE_KEY, value))
+
+// Which profile owns a stored session id, per the cross-profile aggregator's
+// tag. Falls back to the live gateway profile (a brand-new session created on
+// the active backend isn't in the list yet); returns null when the list hasn't
+// loaded and the id is unknown, so we never guess-attribute at cold start.
+export function profileKeyForSession(sessionId: string): null | string {
+  const sessions = $sessions.get()
+  const row = sessions.find(session => session.id === sessionId || session._lineage_root_id === sessionId)
+
+  if (row) {
+    return normalizeProfileKey(row.profile)
+  }
+
+  return sessions.length > 0 ? normalizeProfileKey($activeGatewayProfile.get()) : null
+}
+
+/** Memo the open session as its owning profile's "last session". No-ops when
+ *  the owner can't be attributed yet (session list not loaded). */
+export function rememberProfileSession(sessionId: string): void {
+  const key = profileKeyForSession(sessionId)
+
+  if (!key) {
+    return
+  }
+
+  const current = $profileLastSessions.get()
+
+  if (current[key] !== sessionId) {
+    $profileLastSessions.set({ ...current, [key]: sessionId })
+  }
+}
+
+export function rememberedProfileSession(profile: string): null | string {
+  return $profileLastSessions.get()[normalizeProfileKey(profile)] ?? null
+}
+
+/** Clear a profile's memo (its remembered session was deleted/archived). */
+export function forgetProfileSession(profile: string): void {
+  const key = normalizeProfileKey(profile)
+  const current = $profileLastSessions.get()
+
+  if (key in current) {
+    const next = { ...current }
+    delete next[key]
+    $profileLastSessions.set(next)
+  }
+}
+
+/** Drop a dead session id from EVERY profile memo (delete/archive/exhausted
+ *  resume) so no profile tries to restore it later. */
+export function forgetSessionMemo(sessionId: string): void {
+  const current = $profileLastSessions.get()
+  const survivors = Object.entries(current).filter(([, id]) => id !== sessionId)
+
+  if (survivors.length !== Object.keys(current).length) {
+    $profileLastSessions.set(Object.fromEntries(survivors))
+  }
+}
+
+/** True when `sessionId` is present, un-archived, in the loaded session list —
+ *  the cheap existence check before the by-id REST probe. */
+export function isSessionListed(sessions: SessionInfo[], sessionId: string): boolean {
+  return sessions.some(
+    session => !session.archived && (session.id === sessionId || session._lineage_root_id === sessionId)
+  )
+}
+
+// A profile switch asks the controller to restore that profile's last session
+// (or the explicit `sessionId`, for rail-badge clicks) instead of always
+// dropping to a blank draft. Token-guarded so a rapid second switch supersedes
+// a restore probe still in flight.
+export interface ProfileSessionRestoreRequest {
+  profile: string
+  /** Explicit target (rail badge click); null → use the per-profile memo. */
+  sessionId: null | string
+  token: number
+}
+
+export const $profileRestoreRequest = atom<null | ProfileSessionRestoreRequest>(null)
+
+let profileRestoreToken = 0
+
+function requestProfileSessionRestore(profile: string, sessionId: null | string): void {
+  $profileRestoreRequest.set({ profile, sessionId, token: ++profileRestoreToken })
+}
+
+// ── Per-profile activity (working / needs-input badges) ───────────────────
+// Sessions come pre-tagged with their owning profile by the cross-profile
+// aggregator; bucket the global working/attention sets by that tag so the
+// profile rail can badge each square without any extra fetching.
+
+export interface ProfileActivitySession {
+  id: string
+  lastActive: number
+  needsInput: boolean
+  title: null | string
+}
+
+export interface ProfileActivity {
+  /** Sessions blocked on the user (clarify/approval) — the amber badge. */
+  attention: ProfileActivitySession[]
+  /** Sessions with a turn running that are NOT waiting on the user. */
+  working: ProfileActivitySession[]
+}
+
+export function deriveProfileActivity(
+  sessions: SessionInfo[],
+  workingIds: string[],
+  attentionIds: string[]
+): Record<string, ProfileActivity> {
+  const working = new Set(workingIds)
+  const attention = new Set(attentionIds)
+  const result: Record<string, ProfileActivity> = {}
+
+  for (const session of sessions) {
+    const needsInput = attention.has(session.id)
+
+    if (!needsInput && !working.has(session.id)) {
+      continue
+    }
+
+    // The default profile keys as "default" everywhere in the rail (activeKey,
+    // hotkeys), whatever its directory name — mirror that here.
+    const key = session.is_default_profile ? 'default' : normalizeProfileKey(session.profile)
+    const entry = (result[key] ??= { attention: [], working: [] })
+
+    const row: ProfileActivitySession = {
+      id: session.id,
+      lastActive: session.last_active,
+      needsInput,
+      title: session.title
+    }
+
+    // "Needs input" wins over "working" (a clarify-blocked session is
+    // technically still running) — same precedence as the sidebar row dot.
+    ;(needsInput ? entry.attention : entry.working).push(row)
+  }
+
+  for (const entry of Object.values(result)) {
+    entry.attention.sort((a, b) => b.lastActive - a.lastActive)
+    entry.working.sort((a, b) => b.lastActive - a.lastActive)
+  }
+
+  return result
+}
+
+export const $profileActivity = computed([$sessions, $workingSessionIds, $attentionSessionIds], deriveProfileActivity)
+
+/** The session a badge click should open: blocked-on-you first, else the most
+ *  recently active working one. */
+export function neediestSessionId(activity: ProfileActivity | undefined): null | string {
+  return activity?.attention[0]?.id ?? activity?.working[0]?.id ?? null
+}
+
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
-// profile the live gateway is currently on, and drop cached settings from the
-// previous profile so pages refetch against the right backend. Fires once
-// immediately (no real change → no invalidation), so single-profile users just
-// get "default" (→ the primary backend) with no extra fetches.
+// profile the live gateway is currently on. Profile-scoped react-query keys
+// carry the profile segment (see activeProfileQueryKey), so a swap needs NO
+// cache invalidation: profile B's queries key differently than A's, A's cached
+// data can never render under B, and hopping back to A hits A's warm cache.
+// Only the starmap (a nanostore, not react-query) still resets by hand.
 let _lastRoutedProfile: string | null = null
 
 $activeGatewayProfile.subscribe(value => {
@@ -176,13 +342,19 @@ $activeGatewayProfile.subscribe(value => {
   setApiRequestProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
-    // Profile-scoped settings + the unified session list are now stale.
-    void queryClient.invalidateQueries()
     resetStarmapGraph()
   }
 
   _lastRoutedProfile = key
 })
+
+/** Query-key segment for the profile the live gateway is on RIGHT NOW — for
+ *  imperative cache writes/invalidations. Reactive call sites should key off
+ *  `normalizeProfileKey(useStore($activeGatewayProfile))` instead so the query
+ *  re-keys when the gateway swaps. */
+export function activeProfileQueryKey(): string {
+  return normalizeProfileKey($activeGatewayProfile.get())
+}
 
 // Target profile while a gateway swap is mid-flight (spawning/reconnecting that
 // profile's backend), else null. Drives the chat's "waking up <profile>" loader
@@ -300,16 +472,29 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
-  // Switching profiles (or coming back from the all-profiles browse view) starts
-  // fresh; re-tapping the profile you're already in leaves your session be.
+  // Switching profiles (or coming back from the all-profiles browse view)
+  // restores that profile's last open session — fresh draft only when there's
+  // nothing to restore; re-tapping the profile you're already in leaves your
+  // session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
   if (switching) {
-    requestFreshSession()
+    requestProfileSessionRestore(target, null)
   }
 
+  void ensureGatewayProfile(target)
+}
+
+// Switch to `name` AND open a specific session — the profile-rail badge click,
+// which jumps straight to the session that needs you. Same context switch as
+// selectProfile, but the restore targets the given session instead of the memo.
+export function selectProfileSession(name: string, sessionId: string): void {
+  const target = normalizeProfileKey(name)
+  $showAllProfiles.set(false)
+  $newChatProfile.set(target)
+  requestProfileSessionRestore(target, sessionId)
   void ensureGatewayProfile(target)
 }
 

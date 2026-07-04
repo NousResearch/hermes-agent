@@ -17,8 +17,15 @@ beforeAll(() => {
 const getGlobalModelOptions = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args)
+  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
+  // Pulled in transitively via @/store/profile (profile-scoped query keys).
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn()
 }))
+
+// Keep the profile store's gateway/starmap side effects inert in this suite.
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => null }, ensureGatewayForProfile: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 // MoA presets now arrive as the catalog's virtual `moa` provider row (the same
 // payload a remote gateway's model.options returns), not the /api/model/moa

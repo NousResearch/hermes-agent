@@ -260,8 +260,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (modelChanged || providerChanged) {
+          // Keys are ['model-options', <profile>, <sessionId|'global'>]. This
+          // event can arrive over a BACKGROUND profile's socket, so match by
+          // session id across every profile segment instead of guessing one.
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            predicate: query =>
+              query.queryKey[0] === 'model-options' && (!explicitSid || !sessionId || query.queryKey[2] === sessionId)
           })
         }
       } else if (event.type === 'message.start') {

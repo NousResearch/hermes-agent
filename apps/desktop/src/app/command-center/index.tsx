@@ -21,6 +21,7 @@ import {
   Download,
   MessageCircle,
   Trash2,
+  Users,
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
@@ -36,10 +37,19 @@ import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay
 import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
+import { OverviewPanel } from './overview'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'maintenance' | 'overview' | 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+// 'overview' leads: it is the default landing when the panel opens without an
+// explicit ?section (the global hotkey path).
+const SECTIONS = [
+  'overview',
+  'sessions',
+  'system',
+  'usage',
+  'maintenance'
+] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
@@ -51,7 +61,8 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
-  // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
+  // Used by the overview's kanban chips (open the board view); broader
+  // navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
 }
@@ -124,13 +135,28 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+export function CommandCenterView({
+  initialSection,
+  onClose,
+  onDeleteSession,
+  onNavigateRoute,
+  onOpenSession
+}: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
+  const ov = t.commandCenterOverview
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
-  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'overview')
+
+  // 'overview' is typed outside cc.sections/sectionDescriptions (its copy lives
+  // in the appended commandCenterOverview block), so label lookups branch here.
+  const sectionLabel = (value: CommandCenterSection): string =>
+    value === 'overview' ? ov.sectionLabel : cc.sections[value]
+
+  const sectionDescription = (value: CommandCenterSection): string =>
+    value === 'overview' ? ov.sectionDescription : cc.sectionDescriptions[value]
 
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
@@ -299,15 +325,17 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           groups={SECTIONS.map(value => ({
             active: section === value,
             icon:
-              value === 'sessions'
-                ? MessageCircle
-                : value === 'system'
-                  ? Activity
-                  : value === 'maintenance'
-                    ? Wrench
-                    : BarChart3,
+              value === 'overview'
+                ? Users
+                : value === 'sessions'
+                  ? MessageCircle
+                  : value === 'system'
+                    ? Activity
+                    : value === 'maintenance'
+                      ? Wrench
+                      : BarChart3,
             id: value,
-            label: cc.sections[value],
+            label: sectionLabel(value),
             onSelect: () => setSection(value)
           }))}
         />
@@ -317,10 +345,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             {/* Redundant on narrow — the nav dropdown already names the section. */}
             <div className="min-w-0 max-[47.5rem]:hidden">
               <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
-                {cc.sections[section]}
+                {sectionLabel(section)}
               </h2>
               <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {cc.sectionDescriptions[section]}
+                {sectionDescription(section)}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -342,7 +370,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             </div>
           </header>
 
-          {section === 'sessions' ? (
+          {section === 'overview' ? (
+            <OverviewPanel onClose={onClose} onNavigateRoute={onNavigateRoute} />
+          ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />

@@ -1103,6 +1103,8 @@ export interface Translations {
     failedSaveSoul: string
     failedCreate: string
     failedRename: string
+    workingBadge: (count: number) => string
+    attentionBadge: (count: number) => string
   }
 
   cron: {
@@ -2131,5 +2133,24 @@ export interface Translations {
       description: string
       toggle: string
     }
+  }
+
+  // Cross-profile "All profiles" overview in the command center. Kept as its
+  // own top-level block (adjacent to commandCenter, appended at the end) so it
+  // composes with the existing section without touching its shape.
+  commandCenterOverview: {
+    sectionLabel: string
+    sectionDescription: string
+    working: (count: number) => string
+    attention: (count: number) => string
+    sessions: (count: number) => string
+    idle: string
+    noActivity: string
+    currentBadge: string
+    switch: string
+    openBoard: string
+    kanbanUnavailable: string
+    noHotCards: string
+    openCard: (title: string) => string
   }
 }

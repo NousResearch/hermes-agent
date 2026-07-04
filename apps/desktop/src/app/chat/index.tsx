@@ -24,7 +24,7 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, normalizeProfileKey } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -347,8 +347,13 @@ export function ChatView({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
+  // Keyed by the live gateway profile: the catalog is served per backend, so
+  // profile A's models never paint under profile B and a hop back hits A's
+  // warm cache (no blanket invalidation on switch anymore).
+  const modelOptionsProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
+    queryKey: ['model-options', modelOptionsProfile, activeSessionId || 'global'],
     queryFn: () => {
       if (!activeSessionId) {
         return getGlobalModelOptions()

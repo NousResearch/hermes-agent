@@ -12,8 +12,15 @@ const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
+  // Pulled in transitively via @/store/profile (activeProfileQueryKey).
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
 }))
+
+// Keep the profile store's gateway/starmap side effects inert in this suite.
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => null }, ensureGatewayForProfile: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({

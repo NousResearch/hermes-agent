@@ -57,6 +57,7 @@ import {
 } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { requestStartWorkSession } from '@/store/projects'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
@@ -303,8 +304,12 @@ export function CommandPalette() {
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
+  // Config is profile-scoped (the sessions/archived lists below are cross-
+  // profile aggregates, so they stay unscoped).
+  const paletteProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const configQuery = useQuery({
-    queryKey: ['command-palette', 'config'],
+    queryKey: ['command-palette', 'config', paletteProfile],
     queryFn: getHermesConfigRecord,
     enabled: open
   })

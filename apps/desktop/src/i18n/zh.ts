@@ -1503,7 +1503,9 @@ export const zh: Translations = {
     failedLoadSoul: '加载 SOUL.md 失败',
     failedSaveSoul: '保存 SOUL.md 失败',
     failedCreate: '创建配置档案失败',
-    failedRename: '重命名配置档案失败'
+    failedRename: '重命名配置档案失败',
+    workingBadge: count => `${count} 个会话运行中`,
+    attentionBadge: count => `${count} 个会话等待你的输入`
   },
 
   cron: {
@@ -2696,5 +2698,21 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
     }
+  },
+
+  commandCenterOverview: {
+    sectionLabel: '全部配置档案',
+    sectionDescription: '总览所有配置档案的活动，以及共享的看板',
+    working: count => `${count} 个进行中`,
+    attention: count => `${count} 个待输入`,
+    sessions: count => `${count} 个会话`,
+    idle: '空闲',
+    noActivity: '暂无活动',
+    currentBadge: '当前',
+    switch: '切换',
+    openBoard: '打开看板',
+    kanbanUnavailable: '此后端不支持看板。',
+    noHotCards: '没有待审查或被阻塞的卡片',
+    openCard: title => `在看板中打开「${title}」`
   }
 }

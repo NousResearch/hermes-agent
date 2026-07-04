@@ -26,7 +26,7 @@ import { queryClient, writeCache } from '@/lib/query-client'
 import { normalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, activeProfileQueryKey, normalizeProfileKey } from '@/store/profile'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -59,15 +59,25 @@ const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'hub'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
-// background refetch. A profile swap globally invalidates (see store/profile),
-// so these plain keys refetch against the new backend automatically.
+// background refetch. Keys carry the active gateway profile segment: a profile
+// swap re-keys the queries (per-profile warm caches, no cross-profile bleed)
+// instead of the old blanket invalidation in store/profile.
 const SKILLS_QUERY_KEY = ['skills-list'] as const
 const TOOLSETS_QUERY_KEY = ['toolsets-list'] as const
 
+const skillsKey = (profile: string) => [...SKILLS_QUERY_KEY, profile] as const
+const toolsetsKey = (profile: string) => [...TOOLSETS_QUERY_KEY, profile] as const
+
 // Optimistic write-through: toggles/bulk/archive repaint instantly; the next
-// background refetch reconciles with the backend.
-const setSkills = writeCache<SkillInfo[]>(SKILLS_QUERY_KEY)
-const setToolsets = writeCache<ToolsetInfo[]>(TOOLSETS_QUERY_KEY)
+// background refetch reconciles with the backend. Writes land on the ACTIVE
+// profile's slot — mutations always go through the active backend.
+const setSkills = (
+  next: SkillInfo[] | undefined | ((prev: SkillInfo[] | undefined) => SkillInfo[] | undefined)
+): void => writeCache<SkillInfo[]>(skillsKey(activeProfileQueryKey()))(next)
+
+const setToolsets = (
+  next: ToolsetInfo[] | undefined | ((prev: ToolsetInfo[] | undefined) => ToolsetInfo[] | undefined)
+): void => writeCache<ToolsetInfo[]>(toolsetsKey(activeProfileQueryKey()))(next)
 
 // Per-tool call counts come from a 365-day message scan — heavy, and purely
 // cosmetic (Toolsets usage badges). Cache the result module-wide with a TTL so
@@ -181,6 +191,9 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
   const { t } = useI18n()
   const gateway = useStore($gateway) as HermesGateway | null
+  // Reactive profile segment: a gateway swap re-keys the queries below onto
+  // the new profile's cache slot.
+  const capabilitiesProfile = normalizeProfileKey(useStore($activeGatewayProfile))
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
@@ -190,13 +203,13 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     isError: skillsFailed,
     error: skillsError
   } = useQuery({
-    queryKey: SKILLS_QUERY_KEY,
+    queryKey: skillsKey(capabilitiesProfile),
     queryFn: getSkills,
     staleTime: 0
   })
 
   const { data: toolsets, isError: toolsetsFailed } = useQuery({
-    queryKey: TOOLSETS_QUERY_KEY,
+    queryKey: toolsetsKey(capabilitiesProfile),
     queryFn: getToolsets,
     staleTime: 0
   })
@@ -215,8 +228,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY }),
-      queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: skillsKey(activeProfileQueryKey()) }),
+      queryClient.invalidateQueries({ queryKey: toolsetsKey(activeProfileQueryKey()) })
     ])
 
     // An explicit refresh is the one time we bypass the analytics TTL — but
@@ -233,7 +246,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   }, [])
 
   const refreshToolsets = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
+    void queryClient.invalidateQueries({ queryKey: toolsetsKey(activeProfileQueryKey()) })
   }, [])
 
   useRefreshHotkey(refreshCapabilities)
@@ -492,7 +505,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await editLearningNode(skillEditor.name, skillDraft)
-      notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(skillEditor.name) })
+      notify({
+        kind: 'success',
+        title: t.skills.skillUpdated,
+        message: t.skills.appliesToNewSessions(skillEditor.name)
+      })
       setSkillEditor(null)
       void refreshCapabilities()
     } catch (err) {
@@ -577,7 +594,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
                   right={
                     <ListStripMenu
-                      items={[{ disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }]}
+                      items={[
+                        { disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }
+                      ]}
                       label={t.skills.tabSkills}
                       toggle={bulkSwitch(allSkillsEnabled)}
                     />

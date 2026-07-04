@@ -4419,8 +4419,8 @@ class SlackAdapter(BasePlatformAdapter):
                 if stripped_blocks and stripped_blocks not in text.strip():
                     logger.debug(
                         "Slack: extracted additional text from blocks "
-                        "(likely quoted/forwarded content): %s",
-                        stripped_blocks[:300],
+                        "(likely quoted/forwarded content; chars=%d)",
+                        len(stripped_blocks),
                     )
                     text = (text.strip() + "\n" + stripped_blocks).strip()
 

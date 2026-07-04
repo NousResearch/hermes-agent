@@ -836,16 +836,27 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature is considered "active" when its *primary* package — the
+    first entry in :data:`LAZY_DEPS` for that feature — is installed.
+    Subsequent entries are typically supporting pins (a CVE-floor version
+    constraint on a transitive dependency like ``aiohttp==3.14.1``) that
+    can already be satisfied by packages installed for unrelated
+    features. Treatment of supporting pins as activation triggers caused
+    false positives on Windows: every messaging platform that shared the
+    CVE-floor pin read as "active" for users who never enabled them, and
+    ``hermes update`` proceeded to install their full stacks — including
+    ``mautrix[encryption]`` whose ``python-olm`` build requires ``make``
+    and isn't installable on stock Windows (#58458).
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        # ``specs`` is always non-empty by construction of LAZY_DEPS, so
+        # the first spec is the feature's primary identifier (mautrix,
+        # discord.py[voice], slack-bolt, anthropic, boto3, mistralai, …).
+        if _is_present(specs[0]):
             active.append(feature)
     return active
 

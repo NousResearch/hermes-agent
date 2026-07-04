@@ -317,14 +317,76 @@ class TestActiveFeatures:
         assert "platform.slack" not in active
 
     def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+        # platform.slack primary is ``slack-bolt``; only that one needs to
+        # be present for the feature to count as active (user activated
+        # it before, one transitive may have been uninstalled separately).
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_supporting_pin_does_not_activate_feature(self, monkeypatch):
+        """Supporting pins (e.g. shared aiohttp CVE-floor) must not count
+        as activation for a feature the user never enabled (#58458).
+
+        Several messaging backends (``platform.matrix``, ``platform.slack``,
+        ``platform.discord``, ``platform.teams``, ``homeassistant``, ``sms``)
+        share an ``aiohttp==3.14.1`` CVE-floor pin. ``aiohttp`` ships as a
+        transitive of common core deps (edge-tts, firecrawl-py, discord.py),
+        so the historical ``any(_is_present(s) for s in specs)`` check
+        flipped every one of those backends to *active* for users who
+        never opted in — and ``hermes update`` proceeded to install their
+        full stacks, surfacing on Windows because ``mautrix[encryption]``
+        needs ``make`` for its libolm build.
+        """
+        # Trigger aiohttp-only as the installed package (case-insensitive
+        # match against any aiohttp-flavoured spec). With the new primary
+        # dispatch, *no* feature with aiohttp as a secondary pin should
+        # activate.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: "aiohttp" in spec.lower(),
+        )
+        active = ld.active_features()
+        # None of the messaging/SMS/Home Assistant features should appear.
+        for feature in (
+            "platform.matrix",
+            "platform.slack",
+            "platform.discord",
+            "platform.teams",
+            "homeassistant",
+            "sms",
+        ):
+            assert feature not in active, (
+                f"{feature!r} was falsely activated by the shared aiohttp "
+                f"pin (got active={active!r}, expected aiohttp presence to "
+                f"be ignored in supporting-pins)"
+            )
+
+    def test_primary_spec_alone_activates(self, monkeypatch):
+        """Sanity: only the primary spec matters for activation (#58458)."""
+        # platform.matrix primary is ``mautrix[encryption]==0.21.0``.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "mautrix",
+        )
+        assert "platform.matrix" in ld.active_features()
+        # And the inverse: aiohttp-only present does NOT activate matrix
+        # (covered above but pinned explicitly for the matrix case the
+        # reporter hit on Windows).
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: "aiohttp" in spec.lower(),
+        )
+        # Build a minimal LAZY_DEPS subset for matrix so the assertion
+        # is self-contained.
+        monkeypatch.setitem(
+            ld.LAZY_DEPS,
+            "platform.matrix",
+            ld.LAZY_DEPS["platform.matrix"],
+        )
+        assert "platform.matrix" not in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

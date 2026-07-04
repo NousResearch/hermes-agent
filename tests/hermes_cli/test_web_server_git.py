@@ -134,6 +134,32 @@ def test_git_commit_context_omits_tracked_env_diff(client, repo):
     assert "sk-new-secret" not in body["diff"]
 
 
+def test_git_review_omits_env_rename_destination_diffs(client, repo):
+    tracked_secret = repo / ".env"
+    tracked_secret.write_text("OPENAI_API_KEY=sk-secret\n")
+    _git(repo, "add", ".env")
+    _git(repo, "commit", "-qm", "track env")
+    _git(repo, "mv", ".env", "safe.txt")
+
+    review_diff = client.get(
+        "/api/git/review/diff", params={"path": str(repo), "file": "safe.txt"}
+    ).json()["diff"]
+    assert review_diff == ""
+    assert "sk-secret" not in review_diff
+
+    file_diff = client.get(
+        "/api/git/file-diff", params={"path": str(repo), "file": "safe.txt"}
+    ).json()["diff"]
+    assert file_diff == ""
+    assert "sk-secret" not in file_diff
+
+    commit_context = client.get(
+        "/api/git/review/commit-context", params={"path": str(repo)}
+    ).json()["diff"]
+    assert "safe.txt" not in commit_context
+    assert "sk-secret" not in commit_context
+
+
 def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert client.post("/api/git/review/stage", json={"path": str(repo), "file": "a.txt"}).json() == {"ok": True}
     staged = client.get("/api/git/status", params={"path": str(repo)}).json()

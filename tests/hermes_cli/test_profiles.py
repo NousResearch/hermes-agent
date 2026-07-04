@@ -223,6 +223,19 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_assigns_unique_api_server_port(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / ".env").write_text("API_SERVER_ENABLED=true\n")
+        existing = create_profile("existing", clone_config=True, no_alias=True)
+        (existing / ".env").write_text("API_SERVER_ENABLED=true\nAPI_SERVER_PORT=8643\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        env = (profile_dir / ".env").read_text()
+        assert "API_SERVER_ENABLED=true" in env
+        assert "API_SERVER_PORT=8644" in env
+
     def test_clone_config_migrates_legacy_config_version(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

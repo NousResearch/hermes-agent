@@ -125,6 +125,8 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "checkpoints",
 })
 
+_API_SERVER_DEFAULT_PORT = 8642
+
 # Marker file written by `hermes profile create --no-skills`.  When present in
 # a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
 # update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
@@ -140,6 +142,95 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
     except OSError:
         return False
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return values
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _truthy_env_value(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _api_server_port_for_profile(profile_dir: Path) -> Optional[int]:
+    env = _parse_env_file(profile_dir / ".env")
+    if not _truthy_env_value(env.get("API_SERVER_ENABLED", "")):
+        return None
+    raw_port = env.get("API_SERVER_PORT", "").strip()
+    if not raw_port:
+        return _API_SERVER_DEFAULT_PORT
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return None
+    if port <= 0:
+        return None
+    return port
+
+
+def _iter_profile_dirs() -> list[Path]:
+    dirs = [_get_default_hermes_home()]
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        try:
+            dirs.extend(entry for entry in profiles_root.iterdir() if entry.is_dir())
+        except OSError:
+            pass
+    return dirs
+
+
+def _assign_clone_api_server_port(profile_dir: Path) -> None:
+    """Give cloned API-server profiles a distinct port when none was explicit."""
+    env_path = profile_dir / ".env"
+    env = _parse_env_file(env_path)
+    if not _truthy_env_value(env.get("API_SERVER_ENABLED", "")):
+        return
+    if env.get("API_SERVER_PORT", "").strip():
+        return
+
+    used_ports = {
+        port
+        for other in _iter_profile_dirs()
+        if other != profile_dir
+        for port in [_api_server_port_for_profile(other)]
+        if port is not None
+    }
+    port = _API_SERVER_DEFAULT_PORT
+    while port in used_ports:
+        port += 1
+
+    try:
+        existing = env_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return
+    newline = "" if not existing or existing.endswith("\n") else "\n"
+    env_path.write_text(f"{existing}{newline}API_SERVER_PORT={port}\n", encoding="utf-8")
+    try:
+        os.chmod(str(env_path), 0o600)
+    except OSError:
+        pass
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
@@ -1104,6 +1195,8 @@ def create_profile(
             os.chmod(str(env_path), 0o600)
         except OSError:
             pass  # best-effort — save_env_value creates the file on demand
+    elif source_dir is not None:
+        _assign_clone_api_server_port(profile_dir)
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).

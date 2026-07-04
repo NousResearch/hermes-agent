@@ -8252,7 +8252,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a
             # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
+            # Feishu's websocket mode is outbound-only (no port binding), so
+            # only treat feishu as port-binding when connection_mode=webhook.
+            _is_port_binding = platform.value in _PORT_BINDING_PLATFORM_VALUES
+            if platform.value == "feishu":
+                _is_port_binding = (
+                    platform_config.extra.get("connection_mode", "websocket") == "webhook"
+                )
+            if _is_port_binding:
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "
                     f"'{platform.value}', but gateway.multiplex_profiles is on. The "

@@ -1972,12 +1972,40 @@ def detect_provider_for_model(
     1. Direct provider static catalog match
     2. OpenRouter catalog match
     """
+    import logging
+    _log = logging.getLogger("hermes_cli.models")
+
+    # --- Priority 0.5: Respect explicit config.model settings ---
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        if isinstance(_cfg, dict):
+            _model_cfg = _cfg.get("model", {})
+            if isinstance(_model_cfg, dict):
+                _cfg_provider = str(_model_cfg.get("provider", "")).strip().lower()
+                _cfg_base_url = str(_model_cfg.get("base_url", "")).strip()
+                if _cfg_provider and _cfg_base_url:
+                    if _cfg_provider == current_provider.lower():
+                        _log.debug(
+                            "detect_provider_for_model: skipping auto-detect — "
+                            "config.model.provider=%s base_url=%s explicitly set",
+                            _cfg_provider, _cfg_base_url[:50],
+                        )
+                        return None
+    except Exception:
+        pass
+
     name = (model_name or "").strip()
     if not name:
         return None
 
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
+        _log.debug(
+            "detect_provider_for_model: static match → provider=%s model=%s "
+            "provider_source=static_catalog",
+            static_match[0], static_match[1],
+        )
         return static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         return None
@@ -1987,6 +2015,11 @@ def detect_provider_for_model(
     or_slug = _find_openrouter_slug(name)
     if or_slug:
         if current_provider != "openrouter":
+            _log.info(
+                "detect_provider_for_model: switching provider=%s→openrouter "
+                "model=%s provider_source=openrouter_catalog",
+                current_provider, or_slug,
+            )
             return ("openrouter", or_slug)
         # Already on openrouter, just return the resolved slug
         if or_slug != name:

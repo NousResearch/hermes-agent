@@ -1094,6 +1094,22 @@ def switch_model(
             or current_provider.startswith("custom:")
             or ("localhost" in _base or "127.0.0.1" in _base)
         )
+        # Also skip auto-detection when the user has an explicit
+        # config.model.provider + config.model.base_url — their intent
+        # is clear and we shouldn't second-guess it. (#39753)
+        if not is_custom:
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                if isinstance(_cfg, dict):
+                    _mc = _cfg.get("model", {})
+                    if isinstance(_mc, dict):
+                        _cp = str(_mc.get("provider", "")).strip().lower()
+                        _cu = str(_mc.get("base_url", "")).strip()
+                        if _cp and _cu and _cp == current_provider.lower():
+                            is_custom = True
+            except Exception:
+                pass
 
         if (
             target_provider == current_provider

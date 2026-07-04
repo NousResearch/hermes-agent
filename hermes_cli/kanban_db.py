@@ -1849,6 +1849,43 @@ def init_db(
     return path
 
 
+def invalidate_cached_schema(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Path:
+    """Drop the process-local "already initialized" cache entry for a
+    board's DB path, without opening a second connection.
+
+    Unlike :func:`init_db` — which busts the cache AND immediately opens
+    its own `connect()` to re-run the migration right then — this only
+    clears the cache bit. Whichever caller naturally calls `connect()`
+    for this path next (on its own schedule, its own connection) will
+    see the path is no longer cached and safely redo the schema/migration
+    pass under the normal init lock, as a single connection.
+
+    Exists for callers that detected a broken/gutted DB file (e.g. the
+    kanban dispatcher's tick loop, see `kanban_watchers.py`) and need it
+    to self-heal on the next natural connection — not `init_db()`,
+    which those callers must never invoke directly: a second connection
+    doing schema work in the same pass as the first can race it (see
+    `init_db`'s callers in `gateway/kanban_watchers.py` and issue #21378
+    for the incident this caused when the dispatcher and notifier watchers
+    each called `init_db()` unconditionally).
+    """
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
+    try:
+        resolved = str(path.resolve())
+    except Exception:
+        resolved = str(path)
+    with _INIT_LOCK:
+        _INITIALIZED_PATHS.discard(resolved)
+    return path
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 

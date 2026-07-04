@@ -972,6 +972,108 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
+        # Tables created by SCHEMA_SQL (kanban_db.py). A "no such table"
+        # error naming one of these means the DB file opened cleanly (it's
+        # not corrupt — see `_is_corrupt_board_db_error` above) but never
+        # got its schema, or lost it after this process already cached the
+        # resolved path in `_kb._INITIALIZED_PATHS`. That cache is
+        # process-local and keyed by path only: `connect()` skips schema
+        # creation on every call after the first successful one for a given
+        # path, so if the file underneath gets replaced/truncated/wiped
+        # out-of-band (external cleanup, board reset), every subsequent
+        # tick keeps opening the same gutted file and failing forever —
+        # what happened to board `test-05-regression-02` on 2026-06-28
+        # (~85 consecutive "no such table: tasks" ticks over 84 minutes,
+        # only resolved once something outside the gateway process ran
+        # `hermes kanban init` and rewrote the file).
+        _SCHEMA_TABLES = frozenset({
+            "tasks", "task_links", "task_comments", "task_events",
+            "task_runs", "task_attachments", "kanban_notify_subs",
+        })
+
+        def _is_missing_schema_error(exc: Exception) -> bool:
+            # Deliberately narrow: only `OperationalError: no such table:
+            # <schema table>`. Does NOT match "database is locked" or other
+            # OperationalError shapes from ordinary WAL/lock contention —
+            # those already retry fine on the next tick and must not be
+            # treated as broken-board state.
+            if not isinstance(exc, sqlite3.OperationalError):
+                return False
+            msg = str(exc).lower().strip()
+            if not msg.startswith("no such table:"):
+                return False
+            table = msg.split(":", 1)[1].strip()
+            return table in _SCHEMA_TABLES
+
+        def _board_structure_diagnostics(slug: str) -> str:
+            """Describe what's missing on disk, for the alert log line
+            only — never used as a detection trigger by itself. Actual
+            healthy boards vary a lot in which of these exist (e.g. a
+            board with no tasks yet has no logs/; several boards in this
+            install have no workspaces/), so gating on directory contents
+            directly would over-trigger on ordinary idle boards."""
+            d = _kb.board_dir(slug)
+            missing = [
+                name for name in ("board.json", "logs", "workspaces")
+                if not (d / name).exists()
+            ]
+            return (
+                f"missing on disk: {', '.join(missing)}" if missing
+                else "directory structure looks intact"
+            )
+
+        # One clean cache-invalidation is attempted per (board, fingerprint)
+        # the first time a missing-schema error is seen for it. If the
+        # NEXT tick against that same fingerprint still fails the same way,
+        # invalidating the cache didn't help — quarantine via
+        # `disabled_corrupt_boards` instead of retrying forever.
+        schema_reinit_attempted: dict[
+            str, tuple[tuple[str, int | None, int | None], float]
+        ] = {}
+
+        def _handle_missing_schema(
+            slug: str,
+            fingerprint: tuple[str, int | None, int | None],
+            exc: Exception,
+        ) -> bool:
+            """Returns True if this tick's error was handled here (caller
+            should return None without falling through to the generic
+            `logger.exception` path)."""
+            if not _is_missing_schema_error(exc):
+                return False
+            attempted = schema_reinit_attempted.get(slug)
+            if attempted is not None and attempted[0] == fingerprint:
+                # Already invalidated the cache for this exact file state
+                # on a prior tick and the NEXT tick's connect() still
+                # couldn't find the schema — it's not a stale-cache issue,
+                # something is actually wrong with the file. Stop
+                # hammering it every tick.
+                schema_reinit_attempted.pop(slug, None)
+                disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                logger.error(
+                    "kanban dispatcher: board %s database %s is still "
+                    "missing core tables after a cache-invalidated retry "
+                    "(%s); pausing dispatch for this board until the file "
+                    "changes, the gateway restarts, or the quarantine "
+                    "timer expires. %s. Investigate manually, then run "
+                    "`hermes kanban init` for this board if it's safe to "
+                    "recreate.",
+                    slug, fingerprint[0], exc,
+                    _board_structure_diagnostics(slug),
+                )
+                return True
+            logger.error(
+                "kanban dispatcher: board %s database %s is missing core "
+                "tables (%s); %s. Invalidating this process's schema cache "
+                "for the board so the next scheduled tick's connect() "
+                "re-creates the schema; will quarantine if that doesn't "
+                "fix it.",
+                slug, fingerprint[0], exc, _board_structure_diagnostics(slug),
+            )
+            schema_reinit_attempted[slug] = (fingerprint, time.monotonic())
+            _kb.invalidate_cached_schema(board=slug)
+            return True
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -1036,6 +1138,8 @@ class GatewayKanbanWatchersMixin:
                         fingerprint[0],
                     )
                     return None
+                if _handle_missing_schema(slug, fingerprint, exc):
+                    return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
@@ -1050,6 +1154,8 @@ class GatewayKanbanWatchersMixin:
                         slug,
                         fingerprint[0],
                     )
+                    return None
+                if _handle_missing_schema(slug, fingerprint, exc):
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

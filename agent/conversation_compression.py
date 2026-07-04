@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.tool_dispatch_helpers import make_tool_result_message
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,86 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _todo_state_messages_for_compression(agent: Any) -> list[dict]:
+    """Return provider-valid tool history that preserves active todos.
+
+    This state is internal continuity, not user intent. It must therefore be
+    represented as canonical ``todo`` tool history rather than as a synthetic
+    ``role=user`` message that can become the next active instruction after a
+    compaction boundary.
+
+    The serialized summary describes only the carried active payload. Completed
+    and cancelled items are deliberately omitted so finished work does not
+    re-enter the model context after compression.
+    """
+    todo_store = getattr(agent, "_todo_store", None)
+    if todo_store is None:
+        return []
+
+    active_items_fn = getattr(todo_store, "active_items", None)
+    if not callable(active_items_fn):
+        return []
+    active_items = active_items_fn()
+    if not isinstance(active_items, list):
+        return []
+    if not active_items:
+        return []
+
+    pending = sum(1 for item in active_items if item["status"] == "pending")
+    in_progress = sum(1 for item in active_items if item["status"] == "in_progress")
+    content = json.dumps(
+        {
+            "todos": active_items,
+            "summary": {
+                "total": len(active_items),
+                "pending": pending,
+                "in_progress": in_progress,
+                "completed": 0,
+                "cancelled": 0,
+            },
+        },
+        ensure_ascii=False,
+    )
+    tool_call_id = f"context-compression-todo-{uuid.uuid4().hex[:8]}"
+    assistant_msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {"name": "todo", "arguments": "{}"},
+            }
+        ],
+    }
+    return [assistant_msg, make_tool_result_message("todo", content, tool_call_id)]
+
+
+def _insert_todo_state_messages(
+    compressed: list[dict],
+    todo_state_messages: list[dict],
+) -> list[dict]:
+    """Insert compressed todo state at a provider-valid continuation point.
+
+    The todo state is synthetic assistant/tool history, not user intent. Place
+    it after the latest real user turn so it cannot become a leading assistant
+    message on providers that require user-first histories, while preserving
+    adjacency between the assistant tool call and its tool result.
+    """
+    if not todo_state_messages:
+        return compressed
+
+    for idx in range(len(compressed) - 1, -1, -1):
+        if compressed[idx].get("role") == "user":
+            return [
+                *compressed[: idx + 1],
+                *todo_state_messages,
+                *compressed[idx + 1 :],
+            ]
+
+    return compressed
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -644,9 +726,9 @@ def compress_context(
                         "check auxiliary.compression.model in config.yaml."
                     )
 
-        todo_snapshot = agent._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+        todo_state_messages = _todo_state_messages_for_compression(agent)
+        if todo_state_messages:
+            compressed = _insert_todo_state_messages(compressed, todo_state_messages)
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)

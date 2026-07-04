@@ -48,6 +48,31 @@ class TestHasItems:
         assert store.has_items() is True
 
 
+class TestActiveItems:
+    def test_returns_only_pending_and_in_progress_items(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Done", "status": "completed"},
+            {"id": "2", "content": "Next", "status": "pending"},
+            {"id": "3", "content": "Working", "status": "in_progress"},
+            {"id": "4", "content": "Skipped", "status": "cancelled"},
+        ])
+
+        assert store.active_items() == [
+            {"id": "2", "content": "Next", "status": "pending"},
+            {"id": "3", "content": "Working", "status": "in_progress"},
+        ]
+
+    def test_returns_copy(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+
+        active = store.active_items()
+        active[0]["content"] = "MUTATED"
+
+        assert store.read()[0]["content"] == "Task"
+
+
 class TestFormatForInjection:
     def test_empty_returns_none(self):
         store = TodoStore()
@@ -122,10 +147,10 @@ class TestTodoToolFunction:
 class TestTodoStoreBounds:
     """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).
 
-    The todo list is re-injected into context after every compression event,
-    so an unbounded item — whether authored by the model or replayed from
-    caller-supplied history on the API server's _hydrate_todo_store path —
-    would defeat the compression it rides through. These pin the caps.
+    Active todos are carried across compression, so an unbounded item — whether
+    authored by the model or replayed from caller-supplied history on the API
+    server's _hydrate_todo_store path — would defeat the compression it rides
+    through. These pin the caps.
     Not a security boundary (the API surface is authenticated and the caller
     supplies their own history); this is footgun containment / parity.
     """

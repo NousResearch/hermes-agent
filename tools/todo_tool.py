@@ -4,8 +4,8 @@ Todo Tool Module - Planning & Task Management
 
 Provides an in-memory task list the agent uses to decompose complex tasks,
 track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+lives on the AIAgent instance (one per session) and is preserved across
+context compression as canonical todo tool history.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -22,18 +22,20 @@ from typing import Dict, Any, List, Optional
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
 # Bounds on persisted todo state. The todo list is a planning aid the model
-# re-reads after every context-compression event (see format_for_injection),
-# so unbounded item content or count defeats the compression it rides through.
+# re-reads after context compression via canonical todo tool history, so
+# unbounded item content or count defeats the compression it rides through.
 # These caps keep a single oversized item (whether authored by the model or
 # replayed from caller-supplied history on the API server) from inflating the
-# re-injection block. Generous relative to real plans — a todo item is a short
-# task description, and active lists are a handful of items, not hundreds.
+# preserved tool-result payload. Generous relative to real plans — a todo item
+# is a short task description, and active lists are a handful of items, not
+# hundreds.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
 # Upper bound on a single todo tool-result payload accepted during history
 # hydration. The gateway/API server replays caller-supplied conversation
 # history to rebuild the store, so an oversized forged result is dropped
-# before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
+# before it is parsed into the in-memory TodoStore (see
+# AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
 
@@ -108,12 +110,21 @@ class TodoStore:
         """Check if there are any items in the list."""
         return bool(self._items)
 
+    def active_items(self) -> List[Dict[str, str]]:
+        """Return a copy of todos that should remain active after compression."""
+        return [
+            item.copy()
+            for item in self._items
+            if item["status"] in {"pending", "in_progress"}
+        ]
+
     def format_for_injection(self) -> Optional[str]:
         """
-        Render the todo list for post-compression injection.
+        Render active todos for legacy display contexts.
 
-        Returns a human-readable string to append to the compressed
-        message history, or None if the list is empty.
+        Returns a human-readable string, or None if the list has no active
+        pending/in-progress items. Context compression preserves todos as
+        canonical tool history instead of appending this text as a user message.
         """
         if not self._items:
             return None
@@ -126,12 +137,9 @@ class TodoStore:
             "cancelled": "[~]",
         }
 
-        # Only inject pending/in_progress items — completed/cancelled ones
-        # cause the model to re-do finished work after compression.
-        active_items = [
-            item for item in self._items
-            if item["status"] in {"pending", "in_progress"}
-        ]
+        # Only render pending/in_progress items — completed/cancelled ones
+        # cause the model to re-do finished work if carried across compression.
+        active_items = self.active_items()
         if not active_items:
             return None
 

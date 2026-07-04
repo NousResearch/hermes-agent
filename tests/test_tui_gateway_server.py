@@ -1,3 +1,5 @@
+import ast
+import inspect
 import json
 import os
 import subprocess
@@ -3880,6 +3882,96 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_tui_compression_exhausted_handoff_rotates_to_fresh_session(monkeypatch):
+    old_agent = types.SimpleNamespace(session_id="old-key", model="old-model")
+    new_agent = types.SimpleNamespace(session_id="new-key", model="new-model")
+    session = _session(
+        agent=old_agent,
+        history=[{"role": "user", "content": "bloated" * 1000}],
+        attached_images=["/tmp/image.png"],
+        image_counter=1,
+    )
+    server._sessions["sid"] = session
+
+    persisted = {}
+    emitted = []
+
+    class _DB:
+        def replace_messages(self, key, messages):
+            persisted["key"] = key
+            persisted["messages"] = messages
+
+    @server.contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _DB()
+
+    monkeypatch.setattr(server, "_new_session_key", lambda: "new-key")
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, s: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"model": agent.model})
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, **kwargs: new_agent)
+
+    try:
+        notice = server._seed_compression_exhausted_handoff(
+            "sid",
+            session,
+            {
+                "compression_exhausted": True,
+                "error": "Context length exceeded",
+                "messages": [
+                    {"role": "user", "content": "Bitte weiterarbeiten"},
+                    {
+                        "role": "assistant",
+                        "content": "[CONTEXT COMPACTION]\n## Summary\nWichtig",
+                        "_compressed_summary": True,
+                    },
+                ],
+            },
+        )
+
+        assert session["session_key"] == "new-key"
+        assert session["agent"] is new_agent
+        assert [m["role"] for m in session["history"]] == ["user", "assistant"]
+        assert "@session:default/session-key" in session["history"][0]["content"]
+        assert session["attached_images"] == []
+        assert session["image_counter"] == 0
+        assert persisted["key"] == "new-key"
+        assert persisted["messages"] == session["history"]
+        assert "@session:default/session-key" in notice
+        assert ("session.info", "sid", {"model": "new-model"}) in emitted
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_wires_tui_handoff_when_compression_exhausted():
+    tree = ast.parse(inspect.getsource(server._run_prompt_submit))
+    compression_branch = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        constants = [
+            sub.value
+            for sub in ast.walk(node.test)
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+        ]
+        if "compression_exhausted" in constants:
+            compression_branch = node
+            break
+
+    assert compression_branch is not None
+    calls = {
+        sub.func.id
+        for sub in ast.walk(compression_branch)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_seed_compression_exhausted_handoff" in calls
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 
@@ -6605,6 +6697,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
+            patch("platform.system", return_value="Linux"),
         ):
             resp = server.handle_request(
                 {

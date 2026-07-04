@@ -33,6 +33,10 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # When true, terminal tool progress on markdown-capable platforms is shown
+    # as fenced code blocks. Set false for mobile/chat surfaces that should
+    # keep tool progress visible but compact/plain.
+    "tool_progress_code_blocks": True,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -240,6 +244,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "tool_progress_code_blocks",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

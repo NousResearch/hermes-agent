@@ -54,6 +54,7 @@ from typing import Callable, Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
+from agent.compression_handoff import build_compression_handoff_messages
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
@@ -11365,9 +11366,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
             if agent_result.get("compression_exhausted") and session_entry and session_key:
+                _compression_old_session_id = session_entry.session_id
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
-                    session_entry.session_id,
+                    _compression_old_session_id,
                 )
                 new_entry = self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
@@ -11393,10 +11395,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._sync_telegram_topic_binding,
                         source, session_entry, reason="compression-exhausted-reset",
                     )
+
+                    # Seed the fresh session with a bounded, deterministic
+                    # handoff so the next user message has actionable context
+                    # instead of an empty reset.  This deliberately does NOT
+                    # call a model: compression is already exhausted, so any
+                    # extra summarisation LLM call risks repeating the same
+                    # context-length failure.  The old full transcript stays
+                    # searchable via the @session link embedded in the handoff.
+                    try:
+                        try:
+                            from hermes_cli.profiles import get_active_profile_name
+                            _handoff_profile = get_active_profile_name()
+                        except Exception:
+                            _handoff_profile = "default"
+                        _handoff_messages = build_compression_handoff_messages(
+                            agent_result,
+                            old_session_id=_compression_old_session_id,
+                            new_session_id=session_entry.session_id,
+                            profile=_handoff_profile,
+                        )
+                        for _handoff_msg in _handoff_messages:
+                            self.session_store.append_to_transcript(
+                                session_entry.session_id,
+                                _handoff_msg,
+                            )
+                        logger.info(
+                            "Seeded compression handoff %s -> %s (%d messages).",
+                            _compression_old_session_id,
+                            session_entry.session_id,
+                            len(_handoff_messages),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to seed compression handoff for %s -> %s: %s",
+                            _compression_old_session_id,
+                            session_entry.session_id,
+                            e,
+                        )
                 response = (response or "") + (
-                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
-                    "Your next message will start a fresh session."
+                    "\n\n🔄 Automatischer Handoff — diese Unterhaltung war nach "
+                    "mehreren Kompressionsversuchen weiterhin zu groß für das "
+                    "Modell. Ich habe deshalb sichtbar eine neue Session mit "
+                    "kompaktem Arbeitsstand gestartet, statt noch einen "
+                    "übergroßen Modellaufruf zu versuchen. Terminal-/UI-Zustand "
+                    "kann dabei nicht vollständig übertragen werden; Dateien, "
+                    "Pfade, To-dos und der alte Session-Verweis wurden als "
+                    "Handoff in die neue Session übernommen."
                 )
 
             ts = time.time()  # Unix epoch float — consistent with DB storage
@@ -16437,6 +16482,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # at ``tool_preview_length`` (default 40) so a long or multi-line
             # command doesn't render as a huge block — matching the budget the
             # non-terminal preview path already applies (#42634).
+            try:
+                _terminal_progress_code_blocks = bool(
+                    resolve_display_setting(
+                        user_config,
+                        platform_key,
+                        "tool_progress_code_blocks",
+                        True,
+                    )
+                )
+            except Exception:
+                _terminal_progress_code_blocks = True
             _code_block_full = None
             _code_block_short = None
             try:
@@ -16444,7 +16500,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _progress_adapter = None
             if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
+                _terminal_progress_code_blocks
+                and getattr(_progress_adapter, "supports_code_blocks", False)
                 and tool_name == "terminal"
                 and isinstance(args, dict)
                 and isinstance(args.get("command"), str)

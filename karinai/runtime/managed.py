@@ -121,6 +121,12 @@ def write_managed_gateway_config(
             "base_url": base_url,
             "api_mode": cfg.model_gateway_api_mode,
         }
+        if cfg.model_supports_vision:
+            # The custom gateway provider has no models.dev capability entry, so
+            # image-input routing would always degrade to text mode. This explicit
+            # capability override (read first by agent/image_routing) enables
+            # native image attachment AND the vision_analyze native fast path.
+            data["model"]["supports_vision"] = True
         data["providers"] = {
             "karinai-model-gateway": {
                 "name": "KarinAI model gateway",

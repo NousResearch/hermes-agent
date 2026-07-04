@@ -76,6 +76,12 @@ class ManagedRuntimeConfig:
     model_gateway_model: str = "karinai/default"
     model_gateway_api_mode: str = "chat_completions"
     model_gateway_backend_provider: str = ""
+    # Whether the gateway's agent model accepts image (vision) input. The custom
+    # gateway provider has no models.dev capability entry, so without this
+    # explicit signal the image-input routing always degrades to text mode and
+    # native image attachment never activates in managed runs. Conservative
+    # default: off (sending pixels to a non-vision model fails the request).
+    model_supports_vision: bool = False
     image_gateway_url: str = ""
     image_gateway_provider: str = ""
     image_gateway_model: str = ""
@@ -128,6 +134,9 @@ class ManagedRuntimeConfig:
             or "chat_completions",
             model_gateway_backend_provider=_clean(
                 source.get("KARINAI_MODEL_GATEWAY_BACKEND_PROVIDER")
+            ),
+            model_supports_vision=parse_bool(
+                source.get("KARINAI_MODEL_SUPPORTS_VISION"), default=False
             ),
             image_gateway_url=_clean(source.get("KARINAI_IMAGE_GATEWAY_URL")),
             image_gateway_provider=_clean(source.get("KARINAI_IMAGE_GATEWAY_PROVIDER")),

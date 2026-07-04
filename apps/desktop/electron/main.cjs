@@ -2772,7 +2772,7 @@ function resolveWebDist() {
 }
 
 function resolveRendererIndex() {
-  const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
+  const candidates = [path.join(resolveWebDist(), 'index.html'), path.join(APP_ROOT, 'dist', 'index.html')]
   const found = candidates.find(fileExists)
   if (found) return found
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with

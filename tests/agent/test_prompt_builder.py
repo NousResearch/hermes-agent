@@ -474,6 +474,58 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_prompt_index_compact_mode_keeps_all_names_and_folds_descriptions(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name in ["alpha", "bravo", "charlie", "delta"]:
+            d = tmp_path / "skills" / "coding" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Description for {name}\n---\n"
+            )
+
+        result = build_skills_system_prompt(
+            prompt_index_mode="compact",
+            prompt_index_top_per_category=2,
+        )
+
+        assert "alpha: Description for alpha" in result
+        assert "bravo: Description for bravo" in result
+        # Names remain visible even when descriptions are folded away.
+        assert "+ 2 more names-only: charlie, delta" in result
+        assert "Description for charlie" not in result
+        assert "Description for delta" not in result
+        assert "Compact skills index mode is on" in result
+        assert "skill_view(name)" in result
+        assert "skills_list" in result
+
+    def test_prompt_index_compact_mode_from_config_misses_full_cache(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name in ["alpha", "bravo", "charlie"]:
+            d = tmp_path / "skills" / "coding" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Description for {name}\n---\n"
+            )
+
+        full = build_skills_system_prompt()
+        assert "Description for charlie" in full
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  prompt_index_mode: compact\n"
+            "  prompt_index_top_per_category: 1\n"
+        )
+        compact = build_skills_system_prompt()
+
+        assert "alpha: Description for alpha" in compact
+        assert "+ 2 more names-only: bravo, charlie" in compact
+        assert "Description for bravo" not in compact
+        assert "Description for charlie" not in compact
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

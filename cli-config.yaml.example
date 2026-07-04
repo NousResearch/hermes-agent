@@ -660,6 +660,13 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Prompt index rendering. "full" keeps historical behavior. "compact" keeps
+  # every skill name visible but folds lower entries in each category into a
+  # names-only line to reduce fixed prompt size; skill_view still loads the full
+  # instructions for any listed skill.
+  prompt_index_mode: full
+  prompt_index_top_per_category: 3
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

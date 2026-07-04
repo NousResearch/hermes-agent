@@ -12,7 +12,7 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_config_path, get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -25,6 +25,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_environment,
     skill_matches_platform,
+    yaml_load,
 )
 from utils import atomic_json_write
 
@@ -1414,10 +1415,64 @@ def _skill_should_show(
     return True
 
 
+def _skills_prompt_index_settings(
+    prompt_index_mode: "str | None" = None,
+    prompt_index_top_per_category: "int | None" = None,
+) -> tuple[str, int]:
+    """Resolve skills prompt-index rendering settings.
+
+    Kept local to prompt assembly and read directly from config.yaml to avoid
+    importing the full CLI config stack during agent startup. Defaults preserve
+    the historical full index unless the user explicitly opts into compact
+    rendering.
+    """
+    mode = "full"
+    top_per_category = 3
+
+    if prompt_index_mode is None or prompt_index_top_per_category is None:
+        config_path = get_config_path()
+        if config_path.exists():
+            try:
+                parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.debug("Could not read skills prompt-index config %s: %s", config_path, exc)
+                parsed = None
+            if isinstance(parsed, dict):
+                skills_cfg = parsed.get("skills")
+                if isinstance(skills_cfg, dict):
+                    if prompt_index_mode is None:
+                        prompt_index_mode = skills_cfg.get("prompt_index_mode")
+                    if prompt_index_top_per_category is None:
+                        prompt_index_top_per_category = skills_cfg.get(
+                            "prompt_index_top_per_category"
+                        )
+
+    if prompt_index_mode is not None:
+        requested = str(prompt_index_mode).strip().lower()
+        if requested in {"full", "compact"}:
+            mode = requested
+        elif requested:
+            logger.debug("Unknown skills.prompt_index_mode=%r; using full", prompt_index_mode)
+
+    if prompt_index_top_per_category is not None:
+        try:
+            top_per_category = max(0, int(prompt_index_top_per_category))
+        except (TypeError, ValueError):
+            logger.debug(
+                "Invalid skills.prompt_index_top_per_category=%r; using %s",
+                prompt_index_top_per_category,
+                top_per_category,
+            )
+
+    return mode, top_per_category
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    prompt_index_mode: "str | None" = None,
+    prompt_index_top_per_category: "int | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1438,7 +1493,16 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``prompt_index_mode=\"compact\"`` is opt-in global rendering compression:
+    every skill name remains visible, but only the first N skills per category
+    keep descriptions and the rest are folded into a names-only continuation.
     """
+    prompt_index_mode, prompt_index_top_per_category = _skills_prompt_index_settings(
+        prompt_index_mode,
+        prompt_index_top_per_category,
+    )
+
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
@@ -1463,6 +1527,8 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        prompt_index_mode,
+        prompt_index_top_per_category,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1617,6 +1683,14 @@ def build_skills_system_prompt(
             "context, so their descriptions are omitted — the skills work "
             "normally and load with skill_view(name) as usual.)"
         )
+    compact_note = ""
+    if prompt_index_mode == "compact":
+        compact_note = (
+            "\n(Compact skills index mode is on: every skill name is still listed, "
+            "but some descriptions are folded to reduce prompt size. If a "
+            "names-only skill may be relevant, load it with skill_view(name) "
+            "or inspect the catalog with skills_list.)"
+        )
 
     if not skills_by_category:
         result = ""
@@ -1634,14 +1708,31 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
+
+            entries = []
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
+                entries.append((name, desc))
+
+            if prompt_index_mode == "compact":
+                described = entries[:prompt_index_top_per_category]
+                names_only = entries[prompt_index_top_per_category:]
+            else:
+                described = entries
+                names_only = []
+
+            for name, desc in described:
                 if desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")
+            if names_only:
+                names = ", ".join(name for name, _ in names_only)
+                index_lines.append(
+                    f"    + {len(names_only)} more names-only: {names}"
+                )
 
         result = (
             "## Skills (mandatory)\n"
@@ -1671,6 +1762,7 @@ def build_skills_system_prompt(
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
+            + compact_note
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

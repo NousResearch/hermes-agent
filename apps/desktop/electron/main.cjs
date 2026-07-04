@@ -5610,7 +5610,16 @@ async function startHermes() {
       connectionPromise = null
       sendBackendExit({ code, signal })
       if (!backendReady) {
-        const message = `Hermes backend exited before it became ready (${signal || code}).`
+        // Surface the most recent backend output (before the exit line we just
+        // pushed) so the user sees actionable information — e.g. "fastapi not
+        // installed" with the install command — directly in the boot failure
+        // overlay, rather than only in the expandable log viewer.
+        const recentOutput = hermesLog
+          .slice(-10, -1)
+          .join('\n')
+          .trim()
+        const message =
+          `Hermes backend exited before it became ready (${signal || code}).${recentOutput ? `\n\n${recentOutput}` : ''}`
         updateBootProgress(
           {
             error: message,

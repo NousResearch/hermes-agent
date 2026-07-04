@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -512,32 +511,31 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     onConfiguredChange?.()
   }
 
-  const emptyMessage = useMemo(() => {
-    if (loading || !cfg) {
-      return null
-    }
-
-    if (!cfg.has_category) {
-      return copy.noProviderOptions
-    }
-
-    if (providers.length === 0) {
-      return copy.noProviders
-    }
-
-    return null
-  }, [cfg, copy, loading, providers.length])
-
   if (loading) {
-    return <PageLoader className="min-h-32" label={copy.loadingConfig} />
+    // Inline row, not a full block loader — a big centered spinner is what
+    // caused the Skills/Tools tab-switch layout jump; this reads as "more
+    // config incoming" without reserving a tall empty area.
+    return (
+      <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" />
+        {copy.loadingConfig}
+      </div>
+    )
   }
 
-  if (emptyMessage) {
-    return <p className="px-1 py-3 text-xs text-muted-foreground">{emptyMessage}</p>
+  // Nothing to configure → render nothing. An inspector explaining that there
+  // is nothing to explain is noise (the old expander UX needed the message so
+  // an expanded-empty panel didn't look broken; the always-open detail doesn't).
+  if (!cfg || !cfg.has_category) {
+    return null
+  }
+
+  if (providers.length === 0) {
+    return <p className="px-1 py-3 text-xs text-muted-foreground">{copy.noProviders}</p>
   }
 
   return (
-    <div className="mt-3 grid gap-2">
+    <div className="grid gap-2">
       {providers.map(provider => {
         const isActive = activeProvider === provider.name
         const configured = providerConfigured(provider, envState)

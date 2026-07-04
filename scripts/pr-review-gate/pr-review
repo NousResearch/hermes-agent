@@ -28,7 +28,7 @@ fi
 load_env() {
   local f="$1"
   [ -f "$f" ] || return 0
-  while IFS= read -r raw; do
+  while IFS= read -r raw || [ -n "$raw" ]; do
     # ข้ามเฉพาะบรรทัด comment เต็มบรรทัด — ห้ามตัด # กลางค่า (key/URL บางตัวมี #)
     case "$raw" in \#*|"") continue ;; esac
     line="$raw"
@@ -74,9 +74,38 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
   export GOOGLE_AI_STUDIO__GEMINI_API_KEY="${GEMINI_API_KEY}"
 fi
 
-# ตั้งค่ารุ่น AI ผ่านตัวแปรระบบ (ช่องทางมาตรฐานของ PR-Agent · override ได้ด้วย PR_REVIEW_MODEL)
-export CONFIG__MODEL="${PR_REVIEW_MODEL:-gemini/gemini-2.5-flash}"
-export CONFIG__FALLBACK_MODELS='["openrouter/anthropic/claude-haiku-4.5"]'
+# โหลดค่าจากไฟล์ตั้งค่าประจำเครื่อง (~/.hermes/pr-review-gate/pr_agent.toml)
+# เป็นตัวแปรระบบแบบ SECTION__KEY ให้ pr-agent เห็นจริง (จาก Codex review:
+# เดิมไฟล์นี้ถูกติดตั้งแต่ไม่ถูกใช้ — เครื่องที่ repo ไม่มี .pr_agent.toml จะเสียกติกาไทยเงียบๆ)
+if [ -f "${CONFIG}" ]; then
+  toml_exports="$("${VENV}/bin/python" - "$CONFIG" <<'PY'
+import shlex, sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    data = tomllib.load(f)
+for section, kv in data.items():
+    if not isinstance(kv, dict):
+        continue
+    for key, val in kv.items():
+        name = f"{section}__{key}".upper()
+        if isinstance(val, bool):
+            val = "true" if val else "false"
+        elif isinstance(val, list):
+            val = "[" + ",".join(f'"{v}"' for v in val) + "]"
+        print(f"[ -n \"${{{name}:-}}\" ] || export {name}={shlex.quote(str(val))}")
+PY
+)"
+  eval "${toml_exports}"
+fi
+
+# ตั้งค่ารุ่น AI ผ่านตัวแปรระบบ (override ได้ด้วย PR_REVIEW_MODEL · ชนะค่าในไฟล์)
+export CONFIG__MODEL="${PR_REVIEW_MODEL:-${CONFIG__MODEL:-gemini/gemini-2.5-flash}}"
+export CONFIG__FALLBACK_MODELS="${CONFIG__FALLBACK_MODELS:-[\"openrouter/anthropic/claude-haiku-4.5\"]}"
 # รุ่น AI ใหม่ที่ pr-agent ยังไม่รู้จักเพดาน token — บอกค่าให้ตรงนี้
 export CONFIG__CUSTOM_MODEL_MAX_TOKENS="${PR_REVIEW_MAX_TOKENS:-128000}"
+
+if [ "${PR_REVIEW_DRYRUN:-}" = "1" ]; then
+  echo "[dry-run] ค่าที่จะส่งให้ pr-agent:"
+  env | grep -E "^(CONFIG__|PR_REVIEWER__|PR_DESCRIPTION__)" | cut -d= -f1 | sort
+  exit 0
+fi
 exec "${VENV}/bin/pr-agent" --pr_url "${PR_URL}" "${CMD}"

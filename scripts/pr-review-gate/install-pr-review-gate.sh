@@ -24,9 +24,11 @@ if [ ! -x "${VENV}/bin/pip" ]; then
   "${PYTHON_BIN}" -m venv "${VENV}"
 fi
 "${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet pr-agent || {
-  echo "ลงจาก PyPI ไม่ผ่าน — ลองลงจาก GitHub ตรง"
-  "${VENV}/bin/pip" install --quiet "git+https://github.com/qodo-ai/pr-agent.git"
+# ล็อกเวอร์ชันกันพฤติกรรมเปลี่ยนเองตอนติดตั้งเครื่องใหม่ (จาก Codex review)
+PR_AGENT_VERSION="${PR_AGENT_VERSION:-0.2.4}"
+"${VENV}/bin/pip" install --quiet "pr-agent==${PR_AGENT_VERSION}" || {
+  echo "ลงจาก PyPI ไม่ผ่าน — ลองลงจาก GitHub ตรง (tag v${PR_AGENT_VERSION})"
+  "${VENV}/bin/pip" install --quiet "git+https://github.com/qodo-ai/pr-agent.git@v${PR_AGENT_VERSION}"
 }
 
 if [ ! -f "${GATE_DIR}/pr_agent.toml" ]; then

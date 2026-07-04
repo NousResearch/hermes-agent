@@ -264,7 +264,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
 
         threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
+        # Only auto-lower when the detected model context is genuinely
+        # smaller than the threshold — not when the user explicitly
+        # configured `auxiliary.compression.context_length`.  A
+        # user override is a deliberate choice; silently re-deriving
+        # the threshold from it causes compression to fire on almost
+        # every turn in long-running sessions (#58407).
+        user_override = getattr(
+            agent, "_aux_compression_context_length_config", None
+        )
+        if (
+            aux_context < threshold
+            and (user_override is None or user_override != aux_context)
+        ):
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,

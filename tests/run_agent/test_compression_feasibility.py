@@ -504,3 +504,82 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_no_auto_lower_when_user_configured_context_length(mock_get_client, mock_ctx_len):
+    """When auxiliary.compression.context_length is set by the user,
+    the detected aux_context comes from the user override — NOT from
+    model probing.  Auto-lowering the threshold based on a value the
+    user deliberately chose causes compression to fire on nearly every
+    turn (#58407).  The auto-lower must only fire when the context
+    comes from real model detection."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.80)
+    # threshold = 160,000 — aux would be 128,000 (below threshold)
+    agent._aux_compression_context_length_config = 128_000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "deepseek/deepseek-v4-flash")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    # No warning emitted — auto-lower must not fire
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+    # Threshold stays at the original value, NOT lowered to 128,000
+    assert agent.context_compressor.threshold_tokens == 160_000
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_no_auto_lower_preserves_original_warning_message(mock_get_client, mock_ctx_len):
+    """The auto-lower warning is a user-visible status message.  When
+    the user configured a context_length override, no warning should
+    be emitted at all — the session should operate silently."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.75)
+    # threshold = 150,000
+    agent._aux_compression_context_length_config = 128_000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "deepseek/deepseek-v4-flash")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 0, (
+        f"expected no status messages when user override is set, got: {messages}"
+    )
+    assert agent._compression_warning is None
+    # _emit_status should not have been called with any auto-lower message
+    assert not any("Auto-lowered" in m for m in messages)
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_auto_lower_still_fires_when_no_user_override(mock_get_client, mock_ctx_len):
+    """Regression guard: when no user-configured context_length exists,
+    auto-lower must continue to fire for genuinely small aux models.
+    This is the original behaviour and must not regress (#58407)."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.85)
+    # threshold = 170,000 — aux has 80,000
+    agent._aux_compression_context_length_config = None
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "Auto-lowered" in messages[0]
+    assert agent._compression_warning is not None
+    assert agent.context_compressor.threshold_tokens == 80_000

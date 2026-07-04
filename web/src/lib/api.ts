@@ -752,58 +752,42 @@ export const api = {
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
-  disconnectOAuthProvider: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean; provider: string }>(
+  disconnectOAuthProvider: (providerId: string) =>
+    fetchJSON<{ ok: boolean; provider: string }>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
-  startOAuthLogin: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthStartResponse>(
+    ),
+  startOAuthLogin: (providerId: string) =>
+    fetchJSON<OAuthStartResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: "{}",
       },
-    );
-  },
-  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthSubmitResponse>(
+    ),
+  submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
+    fetchJSON<OAuthSubmitResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, code }),
       },
-    );
-  },
+    ),
   pollOAuthSession: (providerId: string, sessionId: string) =>
     fetchJSON<OAuthPollResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
     ),
-  cancelOAuthSession: async (sessionId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean }>(
+  cancelOAuthSession: (sessionId: string) =>
+    fetchJSON<{ ok: boolean }>(
       `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
+    ),
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>

@@ -81,6 +81,22 @@ export function SidebarSessionRow({
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
+  const handleDragStart = (event: React.DragEvent<HTMLElement>) => {
+    // Reorder drags belong to dnd-kit (the grab handle) — cancel the native
+    // session drag so the two DnD systems don't fight.
+    if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+      event.preventDefault()
+
+      return
+    }
+
+    writeSessionDrag(event.dataTransfer, {
+      id: session.id,
+      profile: session.profile || 'default',
+      title
+    })
+  }
+
   return (
     <SessionContextMenu
       folderKey={sessionPinId(session)}
@@ -103,29 +119,14 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
-        draggable
-        onDragStart={event => {
-          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
-          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
-            event.preventDefault()
-
-            return
-          }
-
-          writeSessionDrag(event.dataTransfer, {
-            id: session.id,
-            profile: session.profile || 'default',
-            title
-          })
-        }}
         ref={ref}
         style={style}
         {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 cursor-grab items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left active:cursor-grabbing group-hover:pr-12"
+          draggable
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -151,6 +152,7 @@ export function SidebarSessionRow({
 
             onResume()
           }}
+          onDragStart={handleDragStart}
           type="button"
         >
           {reorderable ? (
@@ -204,7 +206,10 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span
+            className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+            data-bidi-plaintext=""
+          >
             {title}
           </span>
         </button>

@@ -38,11 +38,19 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
-import { $sidebarFolders, folderForKey, moveSessionToFolder, removeSessionFromFolder } from '@/store/sidebar-folders'
+import {
+  $sidebarFolders,
+  folderForKey,
+  moveSessionToFolderInScope,
+  removeSessionFromFolderInScope
+} from '@/store/sidebar-folders'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { visibleFoldersForScope } from './folders'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -129,7 +137,9 @@ function useSessionActions({
   const folders = useStore($sidebarFolders)
   // Folder membership is keyed by the durable id (sessionPinId), mirroring pins.
   const membershipKey = folderKey || sessionId
-  const currentFolder = folderForKey(folders, membershipKey)
+  const profileKey = normalizeProfileKey(profile)
+  const visibleFolders = visibleFoldersForScope(folders, profileKey)
+  const currentFolder = folderForKey(visibleFolders, membershipKey, profileKey)
 
   const pinItem: ItemSpec = {
     disabled: !onPin,
@@ -207,7 +217,7 @@ function useSessionActions({
   // the Item-matched Radix Sub components so the dropdown and context menus stay
   // at parity. Only shown when folders exist / the session is already foldered.
   const renderFolderItems = (Item: MenuItem) => {
-    if (folders.length === 0 && !currentFolder) {
+    if (visibleFolders.length === 0 && !currentFolder) {
       return null
     }
 
@@ -218,20 +228,20 @@ function useSessionActions({
 
     return (
       <>
-        {folders.length > 0 && (
+        {visibleFolders.length > 0 && (
           <Sub>
             <SubTrigger disabled={!sessionId}>
               <Codicon name="folder" size="0.875rem" />
               <span>{r.moveToFolder}</span>
             </SubTrigger>
             <SubContent>
-              {folders.map(folder => (
+              {visibleFolders.map(folder => (
                 <Item
                   disabled={!sessionId}
                   key={folder.id}
                   onSelect={() => {
                     triggerHaptic('selection')
-                    moveSessionToFolder(membershipKey, folder.id)
+                    moveSessionToFolderInScope(membershipKey, folder.id, profileKey)
                   }}
                 >
                   <Codicon name="folder" size="0.875rem" />
@@ -251,7 +261,7 @@ function useSessionActions({
             label: r.removeFromFolder,
             onSelect: () => {
               triggerHaptic('selection')
-              removeSessionFromFolder(membershipKey)
+              removeSessionFromFolderInScope(membershipKey, profileKey)
             }
           })}
       </>

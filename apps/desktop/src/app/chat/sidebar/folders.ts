@@ -1,12 +1,10 @@
 import type { SessionInfo } from '@/hermes'
 import type { SidebarFolder } from '@/store/sidebar-folders'
 
-// Folders visible in the given profile scope: a folder shows when it's global
-// (pinned), has no profileKey (pre-scoping folders default to global so they
-// don't vanish), or belongs to the active profile. This is what makes folders
-// "stick" to the profile they were created in.
+// Folders visible in the given profile scope: a folder shows when it was
+// explicitly pinned global, or when it belongs to the active profile.
 export function visibleFoldersForScope(folders: SidebarFolder[], scope: string): SidebarFolder[] {
-  return folders.filter(folder => folder.pinned || !folder.profileKey || folder.profileKey === scope)
+  return folders.filter(folder => folder.pinned || folder.profileKey === scope)
 }
 
 // Resolve a folder's stored session keys to live sessions, dropping any key that

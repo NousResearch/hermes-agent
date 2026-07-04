@@ -1158,9 +1158,35 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  activeChats: {
+    search: 'Search active chats...',
+    title: 'Active chats',
+    subtitle: 'Running chats and conversations waiting on you',
+    emptyTitle: 'No active chats',
+    emptyDesc: 'Running chats and conversations that need a reply will appear here.',
+    groupStatus: 'Status',
+    groupProfile: 'Profile',
+    groupWorkspace: 'Workspace',
+    loadingTranscript: 'Loading transcript...',
+    failedTranscript: 'Transcript failed to load',
+    replyPlaceholder: 'Reply to this chat...',
+    answer: 'Answer',
+    open: 'Open',
+    waiting: 'Waiting',
+    running: 'Running',
+    recent: 'Recent',
+    idle: 'Idle',
+    messages: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
+    profile: name => `Profile: ${name}`,
+    noPreview: 'No transcript preview yet.',
+    sent: 'Reply sent',
+    sendFailed: 'Reply failed'
+  },
+
   sidebar: {
     nav: {
       'new-session': 'New session',
+      'active-chats': 'Active chats',
       skills: 'Skills & Tools',
       messaging: 'Messaging',
       artifacts: 'Artifacts'

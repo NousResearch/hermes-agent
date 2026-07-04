@@ -24,7 +24,8 @@ export interface SessionDragPayload {
 
 export function writeSessionDrag(transfer: DataTransfer, payload: SessionDragPayload) {
   transfer.setData(HERMES_SESSION_MIME, JSON.stringify(payload))
-  transfer.effectAllowed = 'copy'
+  transfer.setData('text/plain', payload.title || payload.id)
+  transfer.effectAllowed = 'copyMove'
 }
 
 export function dragHasSession(transfer: DataTransfer | null) {
@@ -159,6 +160,7 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
   editor.focus({ preventScroll: true })
 
   const selection = window.getSelection()
+
   const range =
     selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
       ? selection.getRangeAt(0)

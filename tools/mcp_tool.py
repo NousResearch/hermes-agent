@@ -1895,6 +1895,8 @@ class MCPServerTask:
                     # sweep needs the pgid to reach any reparented descendants
                     # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
                     new_pgids: Dict[int, int] = {}
+                    new_starts: Dict[int, int] = {}
+                    from gateway.status import get_process_start_time
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
@@ -1902,10 +1904,17 @@ class MCPServerTask:
                             # AttributeError: Windows (os.getpgid is POSIX-only)
                             # ProcessLookupError: child raced and already exited
                             pass
+                        # Record the leader's start time so a later sweep can
+                        # detect PID/PGID recycling before signalling (see
+                        # _stdio_starttimes).
+                        _start = get_process_start_time(_pid)
+                        if _start is not None:
+                            new_starts[_pid] = _start
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                        _stdio_starttimes.update(new_starts)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -2998,6 +3007,15 @@ _orphan_stdio_pids: set = set()
 # exited and been removed from the active map.  Empty on Windows
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
+
+# Spawn-time start ticks (/proc/<pid>/stat field 22) of each stdio child's
+# pgroup leader, captured alongside the PGID.  PIDs/PGIDs are recycled by the
+# kernel once the original process exits and is reaped, so a long-lived
+# tracker holding a bare PGID is unsafe: by the time a sweep runs, that number
+# may name an unrelated process group (observed in the wild: a desktop browser
+# whose session leader happened to reuse a dead MCP child's PID).  We re-check
+# the leader's start time before signalling so a recycled PGID is never killed.
+_stdio_starttimes: Dict[int, int] = {}  # pid -> leader start ticks
 
 
 def _snapshot_child_pids() -> set:
@@ -4904,11 +4922,14 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         if include_active:
             pids.update(dict(_stdio_pids))
             _stdio_pids.clear()
-        # Snapshot pgids for the pids we're about to kill, then drop the
-        # entries so a future spawn can't collide with stale state.
+        # Snapshot pgids + spawn-time leader start ticks for the pids we're
+        # about to kill, then drop the entries so a future spawn can't collide
+        # with stale state.
         pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}
-        for pid in pgids:
+        starts: Dict[int, int] = {pid: _stdio_starttimes[pid] for pid in pids if pid in _stdio_starttimes}
+        for pid in pids:
             _stdio_pgids.pop(pid, None)
+            _stdio_starttimes.pop(pid, None)
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
     # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
@@ -4923,6 +4944,23 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
 
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
         """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        # PID-reuse guard: only signal if ``pid`` still names the process we
+        # spawned.  Once an MCP child exits and is reaped the kernel may recycle
+        # its PID/PGID onto an unrelated process group; signalling the stale
+        # number would kill a stranger (e.g. a recycled PGID landing on a
+        # desktop browser's session leader).  Skip when the leader's start time
+        # no longer matches.  With no recorded start time we fall through to the
+        # legacy best-effort path (capture raced the child's exit).
+        expected_start = starts.get(pid)
+        if expected_start is not None:
+            from gateway.status import get_process_start_time
+            if get_process_start_time(pid) != expected_start:
+                logger.debug(
+                    "Skip signalling MCP pid %d (%s): start-time mismatch — "
+                    "PID was recycled; refusing to kill an unrelated process group.",
+                    pid, server_name,
+                )
+                return
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:

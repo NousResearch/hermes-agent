@@ -196,6 +196,71 @@ class TestStdioPidTracking:
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
         assert mock_sleep.called
 
+    def test_kill_orphaned_skips_recycled_pid(self):
+        """PID-reuse guard: a recycled PID (start-time changed) is NOT signalled.
+
+        Regression test: once an MCP child exits and is reaped, the kernel can
+        recycle its PID/PGID onto an unrelated process group.  The sweep must
+        not signal the stale number, or it kills a stranger (observed: a desktop
+        browser whose session leader reused a dead MCP child's PID).
+        """
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _stdio_starttimes,
+            _lock,
+        )
+
+        fake_pid = 454545
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pids.add(fake_pid)
+            _stdio_pgids[fake_pid] = fake_pid
+            _stdio_starttimes[fake_pid] = 111111  # recorded at spawn
+
+        # Current start time differs -> PID was recycled -> guard must skip.
+        with patch("gateway.status.get_process_start_time", return_value=222222), \
+             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.mcp_tool.time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        mock_killpg.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            _stdio_pgids.pop(fake_pid, None)
+            _stdio_starttimes.pop(fake_pid, None)
+
+    def test_kill_orphaned_signals_when_start_time_matches(self):
+        """The orphan IS signalled when its leader start-time still matches."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _stdio_starttimes,
+            _lock,
+        )
+
+        fake_pid = 464646
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pids.add(fake_pid)
+            _stdio_pgids[fake_pid] = fake_pid
+            _stdio_starttimes[fake_pid] = 333333
+
+        with patch("gateway.status.get_process_start_time", return_value=333333), \
+             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.mcp_tool.time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
+        with _lock:
+            _stdio_pgids.pop(fake_pid, None)
+            _stdio_starttimes.pop(fake_pid, None)
+
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
 

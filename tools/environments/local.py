@@ -1048,6 +1048,10 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
+                # Record the group leader's start time so _kill_process can
+                # detect PID/PGID recycling before signalling the group.
+                from gateway.status import get_process_start_time
+                proc._hermes_pgid_start = get_process_start_time(proc.pid)
             except ProcessLookupError:
                 pass
 
@@ -1101,12 +1105,33 @@ class LocalEnvironment(BaseEnvironment):
                 except (subprocess.TimeoutExpired, OSError):
                     pass
             else:
+                expected_start = getattr(proc, "_hermes_pgid_start", None)
+
+                def _leader_is_ours(pgid) -> bool:
+                    # The setsid group leader's PID == its PGID.  Confirm it is
+                    # still the process we spawned before signalling the whole
+                    # group, so a recycled PID/PGID can never take down an
+                    # unrelated process group.  When no start-time baseline was
+                    # captured (e.g. macOS, which has no /proc), fall back to the
+                    # legacy best-effort behaviour rather than refusing to kill.
+                    if pgid is None:
+                        return False
+                    if expected_start is None:
+                        return True
+                    from gateway.status import get_process_start_time
+                    return get_process_start_time(pgid) == expected_start
+
                 try:
                     pgid = os.getpgid(proc.pid)
                 except ProcessLookupError:
                     pgid = getattr(proc, "_hermes_pgid", None)
-                    if pgid is None:
-                        raise
+
+                if not _leader_is_ours(pgid):
+                    # Leader exited and its PID/PGID may have been recycled onto
+                    # an unrelated process group; signalling the stale number is
+                    # unsafe.  Bail out — a rare orphaned grandchild may leak,
+                    # which is strictly preferable to killing a stranger.
+                    return
 
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
@@ -1117,6 +1142,11 @@ class LocalEnvironment(BaseEnvironment):
                 # load the wrapper can exit before grandchildren do; returning
                 # at that point leaves orphaned process-group members behind.
                 if _wait_for_group_exit(pgid, 1.0):
+                    return
+
+                if not _leader_is_ours(pgid):
+                    # Leader exited during the grace window; do not escalate to
+                    # SIGKILL on a possibly-recycled PGID.
                     return
 
                 try:

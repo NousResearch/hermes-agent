@@ -68,6 +68,24 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+
+_LENGTH_CONTINUATION_PLACEHOLDER = "[Response interrupted by length limit]"
+
+
+def _ensure_length_continuation_message_is_non_empty(message: dict[str, Any]) -> None:
+    """Ensure a length-continuation assistant message is API-acceptable.
+
+    Some strict OpenAI-compatible APIs reject assistant messages that have no
+    visible content and no tool calls. The truncation-continuation path appends
+    the interrupted assistant message back into history before asking the model
+    to continue, so synthesize a small placeholder only for the pathological
+    empty case.
+    """
+    if message.get("content") or message.get("tool_calls"):
+        return
+    message["content"] = _LENGTH_CONTINUATION_PLACEHOLDER
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -1787,6 +1805,7 @@ def run_conversation(
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                            _ensure_length_continuation_message_is_non_empty(interim_msg)
                             messages.append(interim_msg)
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)

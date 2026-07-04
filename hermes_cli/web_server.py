@@ -7050,26 +7050,15 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    oauth_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = oauth_file.with_name(
-        f"{oauth_file.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
-    )
-    try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, oauth_file)
-        try:
-            oauth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+    # atomic_json_write creates the temp with mode 0o600 (via mkstemp) *before*
+    # any content is written, then fsyncs and atomically replaces the target.
+    # The previous os.replace + post-hoc chmod left a TOCTOU window in which the
+    # OAuth token file was world-readable at the default umask (0o644 on most
+    # hosts) between the rename and the chmod. atomic_json_write also preserves
+    # the existing file's owner and cleans up its temp on failure.
+    from utils import atomic_json_write
+
+    atomic_json_write(oauth_file, payload, indent=2, mode=0o600)
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.

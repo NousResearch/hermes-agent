@@ -32,6 +32,7 @@ def _run_setup_feishu(
     prompt_responses = list(prompt_responses or [""])
 
     saved_env = {}
+    removed_keys = []
 
     def mock_save(name, value):
         saved_env[name] = value
@@ -39,8 +40,19 @@ def _run_setup_feishu(
     def mock_get(name):
         return existing_env.get(name, "")
 
+    def mock_remove(name):
+        removed_keys.append(name)
+        if name in existing_env:
+            del existing_env[name]
+            return True
+        if name in saved_env:
+            del saved_env[name]
+            return True
+        return False
+
     with patch("hermes_cli.config.save_env_value", side_effect=mock_save), \
          patch("hermes_cli.config.get_env_value", side_effect=mock_get), \
+         patch("hermes_cli.config.remove_env_value", side_effect=mock_remove), \
          patch("hermes_cli.cli_output.prompt_yes_no", side_effect=prompt_yes_no_responses), \
          patch("hermes_cli.setup.prompt_choice", side_effect=prompt_choice_responses), \
          patch("hermes_cli.cli_output.prompt", side_effect=prompt_responses), \
@@ -54,7 +66,7 @@ def _run_setup_feishu(
         from plugins.platforms.feishu.adapter import interactive_setup
         interactive_setup()
 
-    return saved_env
+    return saved_env, removed_keys
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +77,7 @@ class TestSetupFeishuQrPath:
     """Tests for the QR scan-to-create happy path."""
 
     def test_qr_success_saves_core_credentials(self):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test",
                 "app_secret": "secret_test",
@@ -85,7 +97,7 @@ class TestSetupFeishuQrPath:
     def test_qr_success_does_not_persist_bot_identity(self):
         """Bot identity is discovered at runtime by _hydrate_bot_identity — not persisted
         in env, so it stays fresh if the user renames the bot later."""
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test",
                 "app_secret": "secret_test",
@@ -110,7 +122,7 @@ class TestSetupFeishuConnectionMode:
     """Connection mode: QR always websocket, manual path lets user choose."""
 
     def test_qr_path_defaults_to_websocket(self):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
                 "open_id": None, "bot_name": None, "bot_open_id": None,
@@ -122,7 +134,7 @@ class TestSetupFeishuConnectionMode:
 
     @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
     def test_manual_path_websocket(self, _mock_probe):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result=None,
             prompt_choice_responses=[1, 0, 0, 0, 0],  # method=manual, domain=feishu, connection=ws, dm=pairing, group=open
             prompt_responses=["cli_manual", "secret_manual", ""],  # app_id, app_secret, home_channel
@@ -131,7 +143,7 @@ class TestSetupFeishuConnectionMode:
 
     @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
     def test_manual_path_webhook(self, _mock_probe):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result=None,
             prompt_choice_responses=[1, 0, 1, 0, 0],  # method=manual, domain=feishu, connection=webhook, dm=pairing, group=open
             prompt_responses=["cli_manual", "secret_manual", ""],  # app_id, app_secret, home_channel
@@ -147,7 +159,7 @@ class TestSetupFeishuDmPolicy:
     """DM policy must use platform-scoped FEISHU_ALLOW_ALL_USERS, not the global flag."""
 
     def _run_with_dm_choice(self, dm_choice_idx, prompt_responses=None):
-        return _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
                 "open_id": "ou_owner", "bot_name": None, "bot_open_id": None,
@@ -156,6 +168,7 @@ class TestSetupFeishuDmPolicy:
             prompt_choice_responses=[0, dm_choice_idx, 0],  # method=QR, dm=<choice>, group=open
             prompt_responses=prompt_responses or [""],
         )
+        return env
 
     def test_pairing_sets_feishu_allow_all_false(self):
         env = self._run_with_dm_choice(0)
@@ -190,7 +203,7 @@ class TestSetupFeishuDmPolicy:
 class TestSetupFeishuGroupPolicy:
 
     def test_open_with_mention(self):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
                 "open_id": None, "bot_name": None, "bot_open_id": None,
@@ -202,7 +215,7 @@ class TestSetupFeishuGroupPolicy:
         assert env["FEISHU_GROUP_POLICY"] == "open"
 
     def test_disabled(self):
-        env = _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
                 "open_id": None, "bot_name": None, "bot_open_id": None,
@@ -212,6 +225,70 @@ class TestSetupFeishuGroupPolicy:
             prompt_responses=[""],
         )
         assert env["FEISHU_GROUP_POLICY"] == "disabled"
+
+
+# ---------------------------------------------------------------------------
+# Home channel (optional clear — Issue #12423)
+# ---------------------------------------------------------------------------
+
+class TestSetupFeishuHomeChannel:
+    """Blank home-channel answer must clear FEISHU_HOME_CHANNEL."""
+
+    def test_blank_removes_existing_home_channel(self):
+        env, removed = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=[""],
+            existing_env={"FEISHU_HOME_CHANNEL": "chat_old"},
+        )
+        assert "FEISHU_HOME_CHANNEL" in removed
+        assert "FEISHU_HOME_CHANNEL" not in env
+
+    def test_blank_without_prior_home_still_attempts_remove(self):
+        _, removed = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=[""],
+            existing_env={},
+        )
+        assert removed.count("FEISHU_HOME_CHANNEL") == 1
+
+    def test_nonempty_saves_home_channel(self):
+        env, removed = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=["oc_chat123"],
+            existing_env={},
+        )
+        assert env["FEISHU_HOME_CHANNEL"] == "oc_chat123"
+        assert "FEISHU_HOME_CHANNEL" not in removed
+
+    def test_whitespace_only_clears_home_channel(self):
+        """Whitespace-only input should clear, not save."""
+        env, removed = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=["   "],
+            existing_env={"FEISHU_HOME_CHANNEL": "chat_old"},
+        )
+        assert "FEISHU_HOME_CHANNEL" in removed
+        assert "FEISHU_HOME_CHANNEL" not in env
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +304,7 @@ class TestSetupFeishuAdapterIntegration:
 
     def _make_env_from_setup(self, dm_idx=0, group_idx=0):
         """Run _setup_feishu via QR path and return the env vars it would write."""
-        return _run_setup_feishu(
+        env, _ = _run_setup_feishu(
             qr_result={
                 "app_id": "cli_test_app",
                 "app_secret": "test_secret_value",
@@ -240,6 +317,7 @@ class TestSetupFeishuAdapterIntegration:
             prompt_choice_responses=[0, dm_idx, group_idx],  # method=QR, dm, group
             prompt_responses=[""],
         )
+        return env
 
     @patch.dict(os.environ, {}, clear=True)
     def test_qr_env_produces_valid_adapter_settings(self):

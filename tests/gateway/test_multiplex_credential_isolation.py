@@ -191,3 +191,40 @@ class TestMultiplexEnvOverrides:
 
         assert config.platforms[Platform.DISCORD].token == "secondary-discord-token"
 
+    def test_secondary_profile_force_disables_all_port_binding_platforms(self, tmp_path):
+        from gateway.config import load_gateway_config, Platform
+        from gateway.run import _profile_runtime_scope
+        from agent import secret_scope as ss
+
+        # Prepare a temporary folder representing secondary profile
+        profile_home = tmp_path / "profiles" / "secondary_profile"
+        profile_home.mkdir(parents=True, exist_ok=True)
+        
+        # Write config.yaml enabling feishu and sms
+        config_content = """
+gateway:
+  multiplex_profiles: true
+platforms:
+  feishu:
+    enabled: true
+  sms:
+    enabled: true
+  telegram:
+    enabled: true
+"""
+        (profile_home / "config.yaml").write_text(config_content, encoding="utf-8")
+
+        ss.set_multiplex_active(True)
+        try:
+            with _profile_runtime_scope(profile_home):
+                config = load_gateway_config()
+        finally:
+            ss.set_multiplex_active(False)
+
+        # feishu and sms (port-binding) must be force-disabled
+        assert config.platforms[Platform.FEISHU].enabled is False
+        assert config.platforms[Platform.SMS].enabled is False
+        # telegram (non-port-binding) should remain enabled
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+

@@ -2220,13 +2220,12 @@ def _load_gateway_config() -> dict:
     gateway honors administrator-pinned values — neither read_raw_config nor a
     direct yaml.safe_load carries the managed merge on its own. Fail-open.
     """
-    _active_hermes_home = get_hermes_home()
-    config_path = _active_hermes_home / 'config.yaml'
+    config_path = _hermes_home / 'config.yaml'
     raw: dict = {}
     used_canonical = False
     try:
         from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path: if active hermes home agrees with the canonical config
+        # Fast path: if _hermes_home agrees with the canonical config
         # location, reuse the shared cache. Otherwise fall through to a
         # direct read (keeps secondary profiles in multiplex mode working,
         # as well as test fixtures with a monkeypatched _hermes_home).

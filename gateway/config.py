@@ -928,10 +928,11 @@ def load_gateway_config() -> GatewayConfig:
             # gateway.multiplex_profiles form (from_dict resolves the nested
             # fallback, but surface the top-level key here for parity with the
             # other session-scope flags above).
+            gateway_section = yaml_cfg.get("gateway")
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
-
-            gateway_section = yaml_cfg.get("gateway")
+            elif isinstance(gateway_section, dict) and "multiplex_profiles" in gateway_section:
+                gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 
@@ -1240,8 +1241,17 @@ def load_gateway_config() -> GatewayConfig:
     active_home = _hermes_constants_local.get_hermes_home().resolve()
     is_secondary_override = active_home != primary_home
     if is_secondary_override and getattr(config, "multiplex_profiles", False):
-        for plat_type in (Platform.API_SERVER, Platform.WEBHOOK):
-            if plat_type in config.platforms:
+        _PORT_BINDING_PLATFORMS = {
+            "webhook",
+            "api_server",
+            "msgraph_webhook",
+            "feishu",
+            "wecom_callback",
+            "bluebubbles",
+            "sms",
+        }
+        for plat_type in list(config.platforms.keys()):
+            if plat_type.value in _PORT_BINDING_PLATFORMS:
                 config.platforms[plat_type].enabled = False
 
     # --- Validate loaded values ---

@@ -1680,6 +1680,7 @@ class SessionDB:
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        profile_namespace: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -1690,6 +1691,11 @@ class SessionDB:
         cleanup's ``agent_close`` bug are treated as recoverable; explicit
         conversation boundaries such as /new, /resume switches, and compression
         splits are not.
+
+        ``profile_namespace`` (e.g. ``"agent:main"``) scopes the peer fallback
+        to rows whose ``session_key`` starts with that prefix, preventing stale
+        multi-profile sessions from the same peer tuple leaking into the wrong
+        profile when ``gateway.multiplex_profiles`` is toggled off (#58032).
         """
         if not session_key:
             return None
@@ -1714,25 +1720,51 @@ class SessionDB:
             # Conservative fallback for rows created by current code but with a
             # temporarily-missing exact key: still require the complete peer
             # tuple so we never cross chats/threads/users.
+            #
+            # If profile_namespace is given, restrict to rows whose session_key
+            # starts with that prefix so stale sessions from a different profile
+            # (e.g. ``agent:profile-b:…``) never bleed into the current
+            # profile's routing when multiplex_profiles is off (#58032).
             if chat_id is None or chat_type is None:
                 return None
-            row = self._conn.execute(
-                """
-                SELECT * FROM sessions
-                WHERE source = ?
-                  AND COALESCE(user_id, '') = COALESCE(?, '')
-                  AND COALESCE(chat_id, '') = COALESCE(?, '')
-                  AND COALESCE(chat_type, '') = COALESCE(?, '')
-                  AND COALESCE(thread_id, '') = COALESCE(?, '')
-                  AND (ended_at IS NULL OR end_reason = 'agent_close')
-                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
-                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
-                  ))
-                ORDER BY started_at DESC
-                LIMIT 1
-                """,
-                (source, user_id, chat_id, chat_type, thread_id),
-            ).fetchone()
+            _ns_like = (profile_namespace + ":%") if profile_namespace else None
+            if _ns_like:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM sessions
+                    WHERE source = ?
+                      AND session_key LIKE ?
+                      AND COALESCE(user_id, '') = COALESCE(?, '')
+                      AND COALESCE(chat_id, '') = COALESCE(?, '')
+                      AND COALESCE(chat_type, '') = COALESCE(?, '')
+                      AND COALESCE(thread_id, '') = COALESCE(?, '')
+                      AND (ended_at IS NULL OR end_reason = 'agent_close')
+                      AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                          SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                      ))
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (source, _ns_like, user_id, chat_id, chat_type, thread_id),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM sessions
+                    WHERE source = ?
+                      AND COALESCE(user_id, '') = COALESCE(?, '')
+                      AND COALESCE(chat_id, '') = COALESCE(?, '')
+                      AND COALESCE(chat_type, '') = COALESCE(?, '')
+                      AND COALESCE(thread_id, '') = COALESCE(?, '')
+                      AND (ended_at IS NULL OR end_reason = 'agent_close')
+                      AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                          SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                      ))
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (source, user_id, chat_id, chat_type, thread_id),
+                ).fetchone()
         return dict(row) if row else None
 
     def end_session(self, session_id: str, end_reason: str) -> None:

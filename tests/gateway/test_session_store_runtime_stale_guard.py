@@ -202,3 +202,38 @@ class TestRuntimeStaleGuard:
 
         assert result.session_id != "sid_old"
         db.get_session.assert_not_called()
+
+    def test_stale_cross_profile_session_ignored_when_multiplex_off(self, tmp_path):
+        """Stale profile-b row with same peer tuple is ignored when
+        multiplex_profiles is off — the recovery creates a fresh session
+        because the namespace filter excludes the stale row (#58032)."""
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none"),
+            multiplex_profiles=False,
+        )
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+
+        db = MagicMock()
+        db.get_session.side_effect = lambda sid: {
+            "sid_stale": {"end_reason": "agent_close", "id": "sid_stale"},
+        }.get(sid)
+        # finder returns None — namespace filter excludes agent:profile-b rows.
+        db.find_latest_gateway_session_for_peer.return_value = None
+        db.get_compression_tip.side_effect = lambda sid: sid
+        store._db = db
+
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_stale")
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_stale"
+        db.create_session.assert_called_once()
+        _call_kwargs = db.find_latest_gateway_session_for_peer.call_args.kwargs
+        assert _call_kwargs.get("profile_namespace") == "agent:main", (
+            f"Expected profile_namespace='agent:main', got "
+            f"{_call_kwargs.get('profile_namespace')}"
+        )

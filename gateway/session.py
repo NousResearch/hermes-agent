@@ -1173,6 +1173,14 @@ class SessionStore:
         if not callable(finder):
             return None
         try:
+            # Derive the profile namespace from the session_key prefix so the
+            # peer-fallback query inside find_latest_gateway_session_for_peer
+            # scopes to rows whose session_key belongs to the same profile,
+            # preventing stale multi-profile rows from bleeding in when
+            # multiplex_profiles is off (#58032).
+            _profile_ns = _session_key_namespace(
+                self._resolve_profile_for_key(source)
+            )
             recovered = finder(
                 source=source.platform.value,
                 user_id=source.user_id,
@@ -1180,6 +1188,7 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                profile_namespace=_profile_ns,
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)

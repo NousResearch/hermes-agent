@@ -4881,3 +4881,148 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+def test_gateway_session_recovery_scopes_to_profile_namespace(db):
+    """Peer-fallback recovery with profile_namespace filters stale profiles.
+
+    Same peer tuple (source + chat_id + chat_type) with two session rows
+    under different namespace prefixes — the caller's namespace must scope
+    the fallback so the wrong-profile row is never recovered (#58032).
+    """
+    peer_kw = dict(
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    db.create_session(
+        "profile-b-stale",
+        source="telegram",
+        session_key="agent:profile-b:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db.append_message("profile-b-stale", "user", "hello from profile-b")
+
+    db.create_session(
+        "main-session",
+        source="telegram",
+        session_key="agent:main:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db.append_message("main-session", "user", "hello from main")
+
+    # Recover with profile_namespace="agent:main" — must return the main row,
+    # not the profile-b row, even though both match the peer tuple.
+    recovered = db.find_latest_gateway_session_for_peer(
+        session_key="agent:main:telegram:dm:chat-1",
+        source="telegram",
+        profile_namespace="agent:main",
+        **peer_kw,
+    )
+    assert recovered is not None
+    assert recovered["id"] == "main-session", (
+        f"Expected main-session, got {recovered['id']} — "
+        "profile_namespace filter should exclude agent:profile-b rows"
+    )
+
+    # Recover with profile_namespace="agent:profile-b" — must return the
+    # profile-b row.
+    recovered_b = db.find_latest_gateway_session_for_peer(
+        session_key="agent:profile-b:telegram:dm:chat-1",
+        source="telegram",
+        profile_namespace="agent:profile-b",
+        **peer_kw,
+    )
+    assert recovered_b is not None
+    assert recovered_b["id"] == "profile-b-stale"
+
+
+def test_gateway_session_recovery_no_namespace_returns_newest(db):
+    """Without profile_namespace, peer fallback returns newest row.
+
+    For callers that don't pass profile_namespace, the peer fallback
+    path is reached when the exact session_key didn't match — i.e. the
+    caller passed a session_key the row doesn't have but the peer tuple
+    still matches. The space-prefix trick makes the exact-key match
+    miss while the LIKE prefix still allows the tuple fallback.
+    """
+    peer_kw = dict(
+        source="telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    db.create_session(
+        "older",
+        session_key="agent:main:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?", (1000.0, "older")
+    )
+    db._conn.commit()
+    db.append_message("older", "user", "hi")
+
+    db.create_session(
+        "newer",
+        session_key="agent:main:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?", (2000.0, "newer")
+    )
+    db._conn.commit()
+    db.append_message("newer", "user", "hi")
+
+    # Caller passes a key that won't exact-match anything — forces the
+    # peer-tuple fallback path.
+    recovered = db.find_latest_gateway_session_for_peer(
+        session_key="agent:main:telegram:dm:chat-999",  # chat-999 not in DB
+        # No profile_namespace — namespace filter not applied.
+        **peer_kw,
+    )
+    assert recovered is not None
+    assert recovered["id"] == "newer", (
+        f"Without namespace, peer fallback returns newest row; "
+        f"got {recovered['id']}, expected 'newer'"
+    )
+
+
+def test_gateway_session_recovery_namespace_rejects_wrong_profile(db):
+    """All peer rows are wrong-profile; namespace filter returns None."""
+    peer_kw = dict(
+        source="telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    db.create_session(
+        "profile-b-1",
+        session_key="agent:profile-b:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db.append_message("profile-b-1", "user", "hi")
+
+    db.create_session(
+        "profile-b-2",
+        session_key="agent:profile-b:telegram:dm:chat-1",
+        **peer_kw,
+    )
+    db.append_message("profile-b-2", "user", "hi again")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        session_key="agent:main:telegram:dm:chat-1",
+        profile_namespace="agent:main",
+        **peer_kw,
+    )
+    assert recovered is None, (
+        f"Expected None (no agent:main rows), "
+        f"got {recovered['id'] if recovered else 'None'} — "
+        "should not recover wrong-profile sessions"
+    )

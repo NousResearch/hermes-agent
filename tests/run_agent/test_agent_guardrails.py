@@ -318,3 +318,126 @@ class TestGetToolCallNameStatic:
     def test_object_without_function_attr(self):
         tc = types.SimpleNamespace(id="call_1")
         assert AIAgent._get_tool_call_name_static(tc) == ""
+
+
+# ---------------------------------------------------------------------------
+# sanitize_api_messages — empty-content-with-tool-calls normalization
+# ---------------------------------------------------------------------------
+#
+# Some OpenAI-compatible upstreams (Anthropic-compatible shims, certain proxy
+# gateways) hard-reject an assistant message that carries BOTH tool_calls and
+# an empty string content with:
+#     400 "messages: text content blocks must be non-empty"
+#
+# Both OpenAI and Anthropic accept ``content=None`` when tool_calls carry the
+# assistant turn, so sanitize_api_messages() coerces empty content to None at
+# the last moment before the request is sent.
+
+
+class TestEmptyContentWithToolCalls:
+
+    @staticmethod
+    def _tc(call_id: str = "c1", name: str = "ping", arguments: str = "{}") -> dict:
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+
+    def test_normalizes_empty_string_content_when_tool_calls_present(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [self._tc()]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[1]["content"] is None
+        assert len(out[1]["tool_calls"]) == 1
+        # tool_calls payload preserved verbatim
+        assert out[1]["tool_calls"][0]["function"]["name"] == "ping"
+
+    def test_normalizes_empty_list_content_when_tool_calls_present(self):
+        msgs = [
+            {"role": "assistant", "content": [], "tool_calls": [self._tc()]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] is None
+
+    def test_normalizes_list_of_empty_text_blocks(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": ""}],
+                "tool_calls": [self._tc()],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] is None
+
+    def test_keeps_assistant_text_when_present(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "thinking...",
+                "tool_calls": [self._tc()],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "thinking..."
+
+    def test_keeps_non_empty_text_block_list(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "tool_calls": [self._tc()],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == [{"type": "text", "text": "hi"}]
+
+    def test_keeps_non_text_content_blocks(self):
+        # Image/other non-text blocks must not be coerced — they carry payload
+        # the model needs even without an accompanying text block.
+        image_block = [
+            {"type": "image_url", "image_url": {"url": "https://example/x.png"}}
+        ]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": image_block,
+                "tool_calls": [self._tc()],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == image_block
+
+    def test_does_not_touch_assistant_without_tool_calls(self):
+        # Assistant with empty content but NO tool_calls is left alone — could
+        # be a legitimate "model wants to stay silent" turn handled elsewhere.
+        msgs = [{"role": "assistant", "content": ""}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == ""
+
+    def test_does_not_touch_user_or_system_messages(self):
+        msgs = [
+            {"role": "system", "content": ""},
+            {"role": "user", "content": ""},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == ""
+        assert out[1]["content"] == ""
+
+    def test_preserves_existing_none_content(self):
+        msgs = [
+            {"role": "assistant", "content": None, "tool_calls": [self._tc()]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] is None
+        assert len(out[0]["tool_calls"]) == 1

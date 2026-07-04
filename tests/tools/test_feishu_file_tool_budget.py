@@ -150,7 +150,10 @@ def test_feishu_search_files_defaults_to_files_only_and_limit_twenty(tmp_path):
 def test_feishu_search_files_blocks_default_home_root(monkeypatch):
     task_id = "feishu-search-home-root"
     _clear_task(task_id)
-    monkeypatch.setattr("tools.file_tools._resolve_base_dir", lambda _task_id="default": Path.home())
+    monkeypatch.setattr(
+        "tools.file_tools._resolve_base_dir",
+        lambda _task_id="default", **_kwargs: Path.home(),
+    )
 
     result = json.loads(search_tool("needle", task_id=task_id, platform="feishu"))
 

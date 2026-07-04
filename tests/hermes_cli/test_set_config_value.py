@@ -301,3 +301,54 @@ class TestSecretRedactionInDisplay:
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Enum validation — regression tests for #50710
+# ---------------------------------------------------------------------------
+
+class TestEnumValidation:
+    """`hermes config set display.tool_progress <value>` must reject values
+    outside the documented enum (off|new|all|verbose) — see #50710. Before
+    the fix, ``set_config_value`` wrote the raw string into config.yaml with
+    no validation, so a user setting ``none`` (or any typo) got a green
+    "✓ Set" echo, but the gateway kept streaming tool progress because
+    ``tool_progress_enabled = mode != "off"``.
+    """
+
+    _VALID_MODES = {"off", "new", "all", "verbose"}
+
+    @pytest.mark.parametrize("mode", ["off", "new", "all", "verbose"])
+    def test_valid_mode_is_accepted(self, mode, _isolated_hermes_home):
+        set_config_value("display.tool_progress", mode)
+        config = _read_config(_isolated_hermes_home)
+        import yaml
+        loaded = yaml.safe_load(config) if config.strip() else {}
+        assert loaded.get("display", {}).get("tool_progress") == mode
+
+    @pytest.mark.parametrize("bogus", ["none", "NONE", "true", "false", "0", "1", "always", "Verbose"])
+    def test_invalid_mode_rejected(self, bogus, _isolated_hermes_home, capsys):
+        """Unknown values must exit non-zero and must NOT be written to config."""
+        with pytest.raises(SystemExit) as excinfo:
+            set_config_value("display.tool_progress", bogus)
+        assert excinfo.value.code != 0
+
+        # Nothing was written to config.yaml
+        config = _read_config(_isolated_hermes_home)
+        assert bogus not in config
+        # And we should have told the user why
+        captured = capsys.readouterr()
+        err = (captured.err or "") + (captured.out or "")
+        assert "tool_progress" in err
+        # Help text lists the valid options
+        assert "off" in err and "verbose" in err
+
+    def test_invalid_value_does_not_clobber_existing(self, _isolated_hermes_home):
+        """A bad `set` call must not overwrite a previously-good value."""
+        set_config_value("display.tool_progress", "off")
+        with pytest.raises(SystemExit):
+            set_config_value("display.tool_progress", "none")
+        # The earlier 'off' should still be in config.yaml
+        import yaml
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home)) or {}
+        assert loaded.get("display", {}).get("tool_progress") == "off"

@@ -7787,15 +7787,49 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Enumerated config keys that must be validated against a fixed set of
+    # string values. The CLI has always accepted these as raw strings, so a
+    # typo like `display.tool_progress none` would silently land in
+    # config.yaml and never reach the runtime gate (`mode != "off"`), with no
+    # error to the user — see #50710. The runtime check in
+    # gateway/display_config.py + the interactive wizard in hermes_cli/setup.py
+    # both already agree on these sets, so the writer must enforce them too.
+    # We validate *before* the bool/int/float coercion below, otherwise the
+    # 'off' string would silently turn into the bool `False` and the check
+    # would never match the documented string set.
+    _ENUM_CONFIG_KEYS = {
+        "display.tool_progress": ("off", "new", "all", "verbose"),
+    }
+    if key in _ENUM_CONFIG_KEYS:
+        allowed = _ENUM_CONFIG_KEYS[key]
+        if not isinstance(value, str) or value not in allowed:
+            allowed_str = "|".join(allowed)
+            print(
+                f"Error: '{key}' must be one of {{{allowed_str}}}, got {value!r}.",
+                file=sys.stderr,
+            )
+            print(
+                f"  e.g. hermes config set {key} {allowed[0]}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Pass the validated string through unchanged — skip the bool/int
+        # coercion below so that "off" stays the string "off", not the bool
+        # False.
+        _skip_type_coercion = True
+    else:
+        _skip_type_coercion = False
+
+    # Convert value to appropriate type (skipped for enum keys, see above)
+    if not _skip_type_coercion:
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),

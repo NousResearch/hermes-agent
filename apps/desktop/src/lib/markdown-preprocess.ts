@@ -16,6 +16,90 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
 const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+
+// File-path autolink matcher. Wraps filesystem paths the model references in
+// prose as `[path](file://path)` markdown so MarkdownLink can render them as
+// hyperlinks with a right-click context menu (copy / reveal / open / open-with).
+//
+// Scope is deliberately narrow to keep false positives low — this runs on prose
+// only (code fences and inline code spans are carved out by CODE_FENCE_SPLIT_RE
+// / INLINE_CODE_SPLIT_RE before this runs). Four unambiguous path shapes are
+// matched:
+//
+//   1. Windows drive paths  — C:\Users\me\src\main.ts
+//   2. UNC paths            — \\server\share\file.txt
+//   3. Unix absolute paths  — /home/me/src/main.ts
+//   4. Dot-relative paths   — ./config/settings.yaml, ../src/App.tsx
+//
+// Bare relative paths (src/components/App.tsx) are intentionally NOT matched —
+// their false-positive rate against natural language and code-like prose is too
+// high. Models wrap such paths in backticks often enough that the inline-code
+// carve-out is the safer home for a future phase-2 pass.
+//
+// Each branch captures an optional `:line` / `:line:col` suffix (e.g.
+// `src/App.tsx:42:10`); the suffix travels in the visible text but, per the
+// file:// URL spec, is NOT encoded into the href (there's no standard way to
+// carry line info in a file:// URL — Claude Code and the community `termlink`
+// tool handle it the same way). The component keeps the suffix in the label.
+//
+// Lookbehinds keep the path from matching mid-token: a Windows drive letter or
+// Unix root must not be preceded by a path character (so we don't double-link a
+// path that's already part of a URL or another path). The character classes
+// exclude whitespace, quotes, and shell glob/redirect chars (`*?<>|"`) that
+// can't appear in a real path. Trailing punctuation is peeled off so a path at
+// the end of a sentence (`.../main.ts.`) doesn't swallow the period.
+const FILE_PATH_RE =
+  /(?<![\w/\\])(?:([A-Za-z]:[\\/](?:[^\s*?<>|"]*[\\/])+[^\s*?<>|"\\/]+(?:\.[A-Za-z0-9]+))|(\\\\[^\s*?<>|"\\]+(?:\\[^\s*?<>|"\\]+)+)|(\/(?:[^\s*?<>|"]+\/)+[^\s*?<>|"/]+(?:\.[A-Za-z0-9]+))|(\.{1,2}\/(?:[^\s*?<>|"]+\/)*[^\s*?<>|"/]+(?:\.[A-Za-z0-9]+)))(?::(\d+)(?::(\d+))?)?/g
+
+// Trailing punctuation/quote characters that can legitimately end a sentence
+// containing a path but are never part of the path itself. Peeled off after
+// matching so the href stays clean.
+const FILE_PATH_TRAILING_PUNCT = /[.,;:!?)\]"'`*]+$/
+
+// Encode a filesystem path into a `file://` URL. Mirrors Node's
+// `pathToFileURL` for the cases we handle: backslashes → forward slashes,
+// percent-encode spaces and other reserved chars, and keep the leading
+// drive-letter form intact. We don't import url/pathToFileURL here because this
+// module runs in both the renderer bundle and vitest (jsdom) — a hand-rolled
+// encodeURI keeps the behaviour identical across both.
+function pathToFileUrl(filePath: string): string {
+  const forwardSlashed = filePath.replace(/\\/g, '/')
+  // drive-letter paths (C:/...) become file:///C:/... ; UNC (//server/...)
+  // becomes file://server/... ; POSIX (/home/...) becomes file:///home/...
+  const prefix = /^[A-Za-z]:\//.test(forwardSlashed) ? 'file:///' : 'file://'
+  return prefix + encodeURI(forwardSlashed)
+}
+
+function linkifyFilePaths(text: string): string {
+  return text.replace(FILE_PATH_RE, match => {
+    let path = match
+    let trailing = ''
+
+    // Separate the path from its optional :line:col tail so the href targets
+    // the file only, while the label keeps the suffix the model wrote.
+    const lineMatch = path.match(/^(.*?)(?::(\d+)(?::(\d+))?)?$/)
+    if (lineMatch) {
+      path = lineMatch[1]
+    }
+
+    // Peel trailing punctuation that isn't part of the path.
+    const punctMatch = path.match(FILE_PATH_TRAILING_PUNCT)
+    if (punctMatch) {
+      trailing = punctMatch[0]
+      path = path.slice(0, -punctMatch[0].length)
+    }
+
+    if (!path) return match
+
+    const href = pathToFileUrl(path)
+    // Use the original matched text (path + optional :line:col) as the label
+    // so the user sees exactly what the model wrote. Escape any `]` in the
+    // label so it doesn't break the `[label](href)` markdown structure.
+    const label = (path + (match.slice(path.length) || '')).replace(/([[\]])/g, '\\$1')
+
+    return `[${label}](${href})${trailing}`
+  })
+}
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
@@ -144,8 +228,10 @@ function normalizeVisibleProse(text: string): string {
     .map(part =>
       part.startsWith('`')
         ? part
-        : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        : linkifyFilePaths(
+            autoLinkRawUrls(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')

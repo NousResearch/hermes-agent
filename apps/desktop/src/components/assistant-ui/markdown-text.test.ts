@@ -210,4 +210,77 @@ describe('preprocessMarkdown', () => {
 
     expect(() => preprocessMarkdown(input)).not.toThrow()
   })
+
+  describe('file-path linkification', () => {
+    it('linkifies a Windows drive path in prose', () => {
+      const output = preprocessMarkdown('I updated C:\\Users\\me\\src\\main.ts for you.')
+
+      expect(output).toContain('[C:\\Users\\me\\src\\main.ts](file:///C:/Users/me/src/main.ts)')
+    })
+
+    it('linkifies a Unix absolute path in prose', () => {
+      const output = preprocessMarkdown('See /home/me/src/main.ts for details.')
+
+      expect(output).toContain('[/home/me/src/main.ts](file:///home/me/src/main.ts)')
+    })
+
+    it('linkifies a dot-relative path in prose', () => {
+      expect(preprocessMarkdown('Config at ./config/settings.yaml')).toContain(
+        '[./config/settings.yaml](file://./config/settings.yaml)'
+      )
+      expect(preprocessMarkdown('Parent at ../src/App.tsx')).toContain(
+        '[../src/App.tsx](file://../src/App.tsx)'
+      )
+    })
+
+    it('keeps a line:col suffix in the label but not the href', () => {
+      const output = preprocessMarkdown('Line ref: /home/me/src/main.ts:42:10')
+
+      // The href targets the file only (file:// can't carry line info); the
+      // visible label keeps the :42:10 suffix the model wrote.
+      expect(output).toContain('[/home/me/src/main.ts:42:10](file:///home/me/src/main.ts)')
+    })
+
+    it('peels trailing sentence punctuation off the path', () => {
+      const output = preprocessMarkdown('Sentence end: /home/me/main.ts.')
+
+      expect(output).toContain('[/home/me/main.ts](file:///home/me/main.ts).')
+    })
+
+    it('does not linkify paths inside inline code spans', () => {
+      const output = preprocessMarkdown('See `src/components/App.tsx` for the component.')
+
+      expect(output).not.toContain('file://')
+      expect(output).toContain('`src/components/App.tsx`')
+    })
+
+    it('does not linkify paths inside fenced code blocks', () => {
+      const output = preprocessMarkdown('```ts\nconst p = "/home/me/src/main.ts"\n```')
+
+      expect(output).not.toContain('file://')
+    })
+
+    it('does not linkify bare relative paths without a dot prefix', () => {
+      // Bare relative paths (src/components/App.tsx) are intentionally not
+      // matched — their false-positive rate is too high. Phase 1 links prose
+      // paths only when they start with a drive letter, /, ./, or ../.
+      const output = preprocessMarkdown('The file src/components/App.tsx was changed.')
+
+      expect(output).not.toContain('file://')
+    })
+
+    it('does not linkify http(s) urls as file paths', () => {
+      const output = preprocessMarkdown('Docs at https://example.com/page')
+
+      expect(output).not.toContain('file://')
+      expect(output).toContain('<https://example.com/page>')
+    })
+
+    it('linkifies multiple paths in one message', () => {
+      const output = preprocessMarkdown('See /a/b/c.py and /d/e/f.go for the changes.')
+
+      expect(output).toContain('[/a/b/c.py](file:///a/b/c.py)')
+      expect(output).toContain('[/d/e/f.go](file:///d/e/f.go)')
+    })
+  })
 })

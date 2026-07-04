@@ -1386,7 +1386,13 @@ def _profile_runtime_scope(profile_home: "Path"):
     ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
     returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
     from inheriting cross-profile secrets.
+
+    Additionally, profile-specific env overrides are injected into ``os.environ``
+    so that ``os.getenv()`` calls inside profile-scoped config loading (e.g.
+    ``load_gateway_config``) see profile values like ``API_SERVER_ENABLED=false``
+    rather than the main process's env. Original values are restored on exit.
     """
+    import os as _os
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -1396,9 +1402,29 @@ def _profile_runtime_scope(profile_home: "Path"):
 
     home_token = set_hermes_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    # Inject profile .env overrides into os.environ so load_gateway_config's
+    # os.getenv() calls see profile-level env vars (e.g. API_SERVER_ENABLED).
+    _profile_env = {}
+    _profile_dotenv = Path(profile_home) / ".env"
+    if _profile_dotenv.exists():
+        try:
+            from dotenv import dotenv_values
+            _profile_env = dotenv_values(_profile_dotenv)
+        except Exception:
+            _profile_env = {}
+    _saved_env = {}
+    for _k, _v in _profile_env.items():
+        if _k in _os.environ:
+            _saved_env[_k] = _os.environ[_k]
+        _os.environ[_k] = _v
     try:
         yield
     finally:
+        for _k in _profile_env:
+            if _k in _saved_env:
+                _os.environ[_k] = _saved_env[_k]
+            else:
+                _os.environ.pop(_k, None)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
@@ -8349,6 +8375,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(val, str) and val.strip():
                 token = val.strip()
                 break
+        # Also check adapter.config for adapters that store their credential
+        # in a config attribute (profile-scoped credentials go through the
+        # config path rather than adapter-level attr).
+        if not token and hasattr(adapter, "config"):
+            cfg_tok = getattr(adapter.config, "token", None)
+            if isinstance(cfg_tok, str) and cfg_tok.strip():
+                token = cfg_tok.strip()
         if not token:
             return None
         import hashlib

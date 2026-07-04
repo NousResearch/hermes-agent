@@ -279,6 +279,15 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    # OpenRouter returns 404 with this message when none of the candidate
+    # endpoints for the selected model support tool/function calling.
+    # Classifying this as model_not_found triggers fallback to a different
+    # model or provider that does support tools.  Without this entry the
+    # pattern falls through to ``unknown`` with ``retryable=True``, the
+    # retry loop burns all attempts on the same deterministic rejection,
+    # and the error surfaces as a confusing "model not found" message
+    # instead of automatically failing over.  See PR #58446.
+    "no endpoints found that support tool use",
 ]
 
 # Request-validation patterns — the request is malformed and will fail

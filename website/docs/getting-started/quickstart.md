@@ -273,8 +273,6 @@ hermes config set terminal.backend docker    # Docker isolation
 hermes config set terminal.backend ssh       # Remote server
 ```
 
-For Docker sandboxes, you can also enable the **egress credential-injection proxy** so the sandbox never sees your real API keys — only opaque proxy tokens that work exclusively from behind a local TLS-intercepting daemon. See [Egress proxy](../user-guide/egress/iron-proxy.md). Setup is `hermes egress setup && hermes egress start`; `hermes setup terminal` also points Docker users at it. Modal, SSH, Daytona, and Singularity are not wired yet.
-
 ### Voice mode
 
 ```bash

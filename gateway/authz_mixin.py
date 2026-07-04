@@ -28,6 +28,35 @@ from gateway.whatsapp_identity import (
 )
 
 
+# Single source of truth for the per-platform "allowed users" env var.
+# Both ``_is_user_authorized`` and ``_get_unauthorized_dm_behavior`` read from
+# this map. Keeping it in one place prevents the recurring drift where a
+# configured allowlist still answered strangers with pairing codes because one
+# method's copy of the map lagged the other (#9337 QQBot regression; the same
+# gap had been left open for Yuanbao). Dynamic plugin platforms (e.g. SimpleX)
+# are resolved separately via ``_registry_auth_env``.
+_PLATFORM_ALLOWED_USERS_ENV = {
+    Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+    Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+    Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+    Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
+    Platform.SLACK: "SLACK_ALLOWED_USERS",
+    Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+    Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+    Platform.SMS: "SMS_ALLOWED_USERS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+    Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+    Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+    Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+    Platform.WECOM: "WECOM_ALLOWED_USERS",
+    Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+    Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+    Platform.QQBOT: "QQ_ALLOWED_USERS",
+    Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+}
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -242,6 +271,27 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _registry_auth_env(self, platform: Optional[Platform]) -> tuple[str, str]:
+        """Resolve ``(allowed_users_env, allow_all_env)`` for a plugin platform.
+
+        Built-in platforms live in ``_PLATFORM_ALLOWED_USERS_ENV``; dynamic
+        plugin platforms (e.g. SimpleX) declare their auth env var names on
+        their ``PlatformEntry``. Returns ``("", "")`` when the platform is
+        unknown or the registry lookup fails, so callers can treat an empty
+        name as "no allowlist env for this platform".
+        """
+        if platform is None:
+            return "", ""
+        try:
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get(platform.value)
+            if entry:
+                return entry.allowed_users_env or "", entry.allow_all_env or ""
+        except Exception:
+            pass
+        return "", ""
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -343,26 +393,7 @@ class GatewayAuthorizationMixin:
         if not user_id:
             return False
 
-        platform_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
-            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
-            Platform.SLACK: "SLACK_ALLOWED_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
-            Platform.WECOM: "WECOM_ALLOWED_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-            Platform.QQBOT: "QQ_ALLOWED_USERS",
-            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
-        }
+        platform_env_map = dict(_PLATFORM_ALLOWED_USERS_ENV)
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
         }
@@ -393,16 +424,11 @@ class GatewayAuthorizationMixin:
 
         # Plugin platforms: check the registry for auth env var names
         if source.platform not in platform_env_map:
-            try:
-                from gateway.platform_registry import platform_registry
-                entry = platform_registry.get(source.platform.value)
-                if entry:
-                    if entry.allowed_users_env:
-                        platform_env_map[source.platform] = entry.allowed_users_env
-                    if entry.allow_all_env:
-                        platform_allow_all_map[source.platform] = entry.allow_all_env
-            except Exception:
-                pass
+            allowed_users_env, allow_all_env = self._registry_auth_env(source.platform)
+            if allowed_users_env:
+                platform_env_map[source.platform] = allowed_users_env
+            if allow_all_env:
+                platform_allow_all_map[source.platform] = allow_all_env
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
@@ -649,25 +675,13 @@ class GatewayAuthorizationMixin:
         # if any allowlist is configured for this platform, silently drop
         # unauthorized messages instead of sending pairing codes.
         if platform:
-            platform_env_map = {
-                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
-                Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
-                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-                Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
-                Platform.SLACK:    "SLACK_ALLOWED_USERS",
-                Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
-                Platform.EMAIL:    "EMAIL_ALLOWED_USERS",
-                Platform.SMS:      "SMS_ALLOWED_USERS",
-                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-                Platform.MATRIX:   "MATRIX_ALLOWED_USERS",
-                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-                Platform.FEISHU:   "FEISHU_ALLOWED_USERS",
-                Platform.WECOM:    "WECOM_ALLOWED_USERS",
-                Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-                Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
-                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-                Platform.QQBOT:    "QQ_ALLOWED_USERS",
-            }
+            # Built-in platforms come from the shared map; dynamic plugin
+            # platforms (e.g. SimpleX) declare their allowlist env var on the
+            # registry. Resolving both here mirrors _is_user_authorized so a
+            # configured allowlist never falls through to pairing codes.
+            platform_allowlist_env = _PLATFORM_ALLOWED_USERS_ENV.get(platform, "")
+            if not platform_allowlist_env:
+                platform_allowlist_env, _ = self._registry_auth_env(platform)
             platform_group_env_map = {
                 Platform.TELEGRAM: (
                     "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -675,7 +689,7 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            if os.getenv(platform_allowlist_env, "").strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
                 if os.getenv(env_key, "").strip():

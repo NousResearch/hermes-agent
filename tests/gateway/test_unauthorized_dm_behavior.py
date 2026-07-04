@@ -973,3 +973,69 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
+
+
+def test_yuanbao_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """YUANBAO is included in the allowlist-aware default (YUANBAO_ALLOWED_USERS).
+
+    Regression guard, same drift class as the QQBOT test above: _is_user_authorized
+    maps YUANBAO to YUANBAO_ALLOWED_USERS, but _get_unauthorized_dm_behavior's
+    copy of the map omitted it — so a Yuanbao operator with a strict user
+    allowlist would still get pairing codes sent to strangers.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("YUANBAO_ALLOWED_USERS", "allowed-yuanbao-1")
+
+    config = GatewayConfig(
+        platforms={Platform.YUANBAO: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.YUANBAO, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.YUANBAO)
+    assert behavior == "ignore"
+
+
+def test_yuanbao_without_allowlist_returns_pair(monkeypatch):
+    """Sanity: with no allowlist configured, Yuanbao still defaults to 'pair'."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("YUANBAO_ALLOWED_USERS", raising=False)
+
+    config = GatewayConfig(
+        platforms={Platform.YUANBAO: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.YUANBAO, config)
+
+    assert runner._get_unauthorized_dm_behavior(Platform.YUANBAO) == "pair"
+
+
+def test_plugin_platform_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """Dynamic plugin platforms must drive the allowlist-aware default too.
+
+    A plugin declares its allowlist env var on its PlatformEntry
+    (``allowed_users_env``). _is_user_authorized resolves that from the
+    registry; _get_unauthorized_dm_behavior must do the same so a configured
+    plugin allowlist silently drops strangers instead of answering them with
+    pairing codes (the SimpleX-style dynamic-platform analog of the QQBot/
+    Yuanbao drift).
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("FAKE_PLUGIN_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("FAKE_PLUGIN_ALLOWED_USERS", "allowed-1")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="fakeplugin",
+        label="Fake Plugin",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="FAKE_PLUGIN_ALLOWED_USERS",
+        allow_all_env="FAKE_PLUGIN_ALLOW_ALL_USERS",
+    ))
+    try:
+        fake = Platform("fakeplugin")
+        config = GatewayConfig(platforms={fake: PlatformConfig(enabled=True)})
+        runner, _adapter = _make_runner(fake, config)
+
+        assert runner._get_unauthorized_dm_behavior(fake) == "ignore"
+    finally:
+        platform_registry.unregister("fakeplugin")

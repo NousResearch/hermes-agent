@@ -560,3 +560,121 @@ def test_sensitive_env_case_insensitive_blocked(forced_files_client):
         p.write_text("SECRET=abc123")
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403
+
+
+def test_envrc_blocked(forced_files_client):
+    """Regression: .envrc (direnv) is a distinct basename from .env.<suffix> and
+    was not caught by the old ``== ".env" or startswith(".env.")`` check."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    p = root / ".envrc"
+    p.write_text("export SECRET_KEY=abc123")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert ".envrc" not in [e["name"] for e in listing.json()["entries"]]
+    assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403
+    assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403
+
+
+def test_other_credential_store_basenames_blocked(forced_files_client):
+    """Regression: the managed-files guard must cover the same credential
+    basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and
+    agent.file_safety.get_read_block_error, not just .env — an operator can
+    point the managed root at HERMES_HOME itself (#57505), which contains
+    all of these live secret stores."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for name in (
+        "auth.json",
+        "auth.lock",
+        "credentials",
+        "config.yaml",
+        ".anthropic_oauth.json",
+        "google_token.json",
+        "google_oauth_pending.json",
+        "google_oauth.json",
+        "webhook_subscriptions.json",
+        "bws_cache.json",
+    ):
+        p = root / name
+        p.write_text("SECRET=abc123")
+        assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, name
+        assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, name
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    names = [e["name"] for e in listing.json()["entries"]]
+    assert names == []
+
+
+def test_git_credentials_blocked(forced_files_client):
+    """Regression: .git-credentials (git's credential-store helper cache) is
+    blocked by agent.file_safety; the dashboard guard must cover it too."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    p = root / ".git-credentials"
+    p.write_text("https://user:token@github.com\n")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert ".git-credentials" not in [e["name"] for e in listing.json()["entries"]]
+    assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403
+    assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403
+
+
+def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
+    """Regression: mcp-tokens/ (live MCP OAuth tokens) and pairing/ are denied
+    as whole directory trees by both canonical guards
+    (gateway.platforms.base._ROOT_CREDENTIAL_DIRS and
+    agent.file_safety). A basename-only check would still expose their
+    per-server files (e.g. ``mcp-tokens/github.json``) once the browser
+    descends into the subdir. The managed-files guard must block any path with
+    a credential-directory component, not just leaf basenames."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    # A per-server MCP token file with a NON-canonical basename that the
+    # basename denylist alone would not catch.
+    mcp_dir = root / "mcp-tokens"
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    mcp_file = mcp_dir / "github.json"
+    mcp_file.write_text('{"access_token": "SECRET"}\n')
+
+    pairing_dir = root / "pairing"
+    pairing_dir.mkdir(parents=True, exist_ok=True)
+    pairing_file = pairing_dir / "device-abc"
+    pairing_file.write_text("PAIRING-SECRET\n")
+
+    # The token dirs themselves must not appear in the root listing.
+    root_names = [e["name"] for e in client.get(
+        "/api/files", params={"path": str(root)}).json()["entries"]]
+    assert "mcp-tokens" not in root_names
+    assert "pairing" not in root_names
+
+    # Read/download of the per-server files must be denied even though their
+    # basenames aren't in _SENSITIVE_MANAGED_FILE_BASENAMES.
+    for p in (mcp_file, pairing_file):
+        assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
+        assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
+
+    # Listing the credential dir itself yields nothing exploitable: every child
+    # is filtered because the parent component is a credential dir.
+    mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
+    assert [e["name"] for e in mcp_listing.json()["entries"]] == []
+
+
+def test_benign_subdir_file_still_browsable(forced_files_client):
+    """Positive control: the directory-component guard must NOT over-block a
+    benign subdir. A normal file under a normal subdir stays listable/readable."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    sub = root / "notes"
+    sub.mkdir(parents=True, exist_ok=True)
+    p = sub / "todo.txt"
+    p.write_text("buy milk\n")
+
+    listing = client.get("/api/files", params={"path": str(sub)})
+    assert "todo.txt" in [e["name"] for e in listing.json()["entries"]]
+    assert client.get("/api/files/read", params={"path": str(p)}).status_code == 200

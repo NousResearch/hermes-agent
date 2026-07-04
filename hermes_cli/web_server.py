@@ -1194,15 +1194,86 @@ _FS_READDIR_HIDDEN = {
 # Filenames that must never be listed, read, or downloaded through the
 # managed-files API.  These typically contain credentials (API keys, tokens)
 # and exposing them through the dashboard file browser is a security leak —
-# see issue #57505.
-def _is_sensitive_filename(name: str) -> bool:
-    """Return True for ``.env`` and any ``.env.<suffix>`` variant.
+# see issue #57505. The set mirrors the credential-file basenames of the two
+# canonical credential guards elsewhere in the codebase
+# (agent.file_safety.get_read_block_error and
+# gateway.platforms.base._ROOT_CREDENTIAL_FILES) so the dashboard Files tab
+# doesn't lag behind them — an operator can point the managed root at
+# HERMES_HOME itself, at which point every one of these basenames is a live
+# secret store sitting in the browsable tree.
+_SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
+    "auth.json",
+    "auth.lock",
+    "credentials",
+    "config.yaml",
+    ".anthropic_oauth.json",
+    "google_token.json",
+    "google_oauth_pending.json",
+    "google_oauth.json",
+    "webhook_subscriptions.json",
+    "bws_cache.json",
+    # git's credential-store helper cache (agent.file_safety blocks this too).
+    ".git-credentials",
+})
 
-    Case-insensitive so ``.ENV`` / ``.Env.local`` on case-insensitive
-    filesystems (macOS/Windows mounts) can't slip past the guard.
+# Directory names whose entire subtree is credential material. Both canonical
+# guards deny these as directory trees, not basenames:
+#   * gateway.platforms.base._ROOT_CREDENTIAL_DIRS = {"pairing", "mcp-tokens"}
+#   * agent.file_safety.get_read_block_error (mcp-tokens/ prefix match)
+# The managed-files API lets the browser descend into subdirs, so a
+# basename-only guard would still expose e.g. ``mcp-tokens/<server>.json``
+# (live MCP OAuth tokens) and ``pairing/<x>``. We match on ANY path component
+# so these trees are blocked wherever they appear under the browsable root,
+# without needing to resolve them relative to HERMES_HOME.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({
+    "mcp-tokens",
+    "pairing",
+})
+
+
+def _is_sensitive_filename(name: str) -> bool:
+    """Return True for a basename the managed-files API must never expose.
+
+    Covers ``.env`` / ``.env.<suffix>`` / ``.envrc`` variants plus the
+    canonical Hermes credential-store basenames (see
+    ``_SENSITIVE_MANAGED_FILE_BASENAMES`` above).
+
+    Case-insensitive so ``.ENV`` / ``.Env.local`` / ``Auth.JSON`` on
+    case-insensitive filesystems (macOS/Windows mounts) can't slip past
+    the guard.
+
+    Basename-only: for the directory-tree credential stores
+    (``mcp-tokens/``, ``pairing/``) that the canonical guards also deny,
+    use :func:`_is_sensitive_path`, which the API call sites route through.
     """
     lowered = name.lower()
-    return lowered == ".env" or lowered.startswith(".env.")
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
+
+
+def _is_sensitive_path(path: Path) -> bool:
+    """Return True for any path the managed-files API must never expose.
+
+    Combines the basename denylist (:func:`_is_sensitive_filename`) with a
+    credential-directory-tree check: a path is sensitive if its own basename
+    is sensitive OR any of its path components is a credential directory
+    (``mcp-tokens`` / ``pairing``). The component match is case-insensitive
+    and needs no HERMES_HOME resolution, so it blocks these trees wherever
+    they sit under the operator-configured managed root — closing the gap
+    the canonical guards cover as directory trees but a basename-only check
+    would miss.
+
+    Read-side only: this guards list/read/download (the #57505 exfil surface).
+    The write endpoints (upload/mkdir/delete) are a separate threat class
+    handled by the write-path checks; extending this guard to them is out of
+    scope for this fix.
+    """
+    if _is_sensitive_filename(path.name):
+        return True
+    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+
+
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -1636,7 +1707,7 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         entries = [
             _managed_file_entry(policy, child)
             for child in target.iterdir()
-            if not _is_sensitive_filename(child.name)
+            if not _is_sensitive_path(child)
         ]
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
@@ -1663,7 +1734,7 @@ async def read_managed_file(request: Request, path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_filename(target.name):
+    if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:
@@ -1707,7 +1778,7 @@ async def download_managed_file(request: Request, path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_filename(target.name):
+    if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
     try:

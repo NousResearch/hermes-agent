@@ -1,27 +1,151 @@
 """Regression tests for Hermes' Spectrum mixed text+attachment workaround."""
+
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import socket
 import subprocess
 import textwrap
+import time
+import urllib.request
 from pathlib import Path
 
 
 _PATCHER = Path("plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs")
 
 
-def test_sidecar_applies_spectrum_patch_before_importing_sdk() -> None:
-    """Existing installs should self-heal at runtime, not only during npm postinstall."""
-    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
-    assert "import { patchSpectrumTs }" in index
-    assert "patchSpectrumTs();" in index
-    assert index.index("patchSpectrumTs();") < index.index('await import("spectrum-ts")')
+def _sidecar_env(port: int) -> dict[str, str]:
+    return {
+        **os.environ,
+        "PHOTON_PROJECT_ID": "test-project",
+        "PHOTON_PROJECT_SECRET": "test-secret",
+        "PHOTON_SIDECAR_PORT": str(port),
+        "PHOTON_SIDECAR_TOKEN": "test-token",
+    }
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
+    sidecar = tmp_path / "sidecar"
+    sidecar.mkdir()
+    shutil.copyfile("plugins/platforms/photon/sidecar/index.mjs", sidecar / "index.mjs")
+    (sidecar / "patch-spectrum-mixed-attachments.mjs").write_text(
+        "export function patchSpectrumTs() { throw new Error('forced patch failure'); }\n",
+        encoding="utf-8",
+    )
+
+    if not sdk_available:
+        return sidecar
+
+    package = sidecar / "node_modules" / "spectrum-ts"
+    (package / "providers").mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "spectrum-ts",
+                "type": "module",
+                "exports": {
+                    ".": "./index.js",
+                    "./providers/imessage": "./providers/imessage.js",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (package / "index.js").write_text(
+        textwrap.dedent(
+            """
+            export async function Spectrum() {
+              return {
+                messages: { [Symbol.asyncIterator]() { return { next: () => new Promise(() => {}) }; } },
+                stop: async () => undefined,
+              };
+            }
+            export const attachment = value => value;
+            export const voice = value => value;
+            export const text = value => value;
+            export const markdown = value => value;
+            export const typing = value => value;
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    (package / "providers" / "imessage.js").write_text(
+        "export function imessage() { return {}; }\nimessage.config = () => ({});\n",
+        encoding="utf-8",
+    )
+    return sidecar
+
+
+def test_sidecar_patch_failure_still_reaches_health_endpoint(tmp_path: Path) -> None:
+    """The compatibility patch is optional when the SDK itself remains usable."""
+    sidecar = _write_sidecar_fixture(tmp_path, sdk_available=True)
+    port = _free_port()
+    proc = subprocess.Popen(
+        ["node", "index.mjs"],
+        cwd=sidecar,
+        env=_sidecar_env(port),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/healthz",
+        data=b"{}",
+        headers={"X-Hermes-Sidecar-Token": "test-token"},
+        method="POST",
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with urllib.request.urlopen(request, timeout=0.5) as response:
+                    payload = json.load(response)
+                break
+            except OSError:
+                if proc.poll() is not None or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
+        assert payload["ok"] is True
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        _, stderr = proc.communicate(timeout=5)
+
+    assert "forced patch failure" in stderr
+
+
+def test_sidecar_missing_sdk_remains_fatal_after_patch_failure(tmp_path: Path) -> None:
+    sidecar = _write_sidecar_fixture(tmp_path, sdk_available=False)
+    result = subprocess.run(
+        ["node", "index.mjs"],
+        cwd=sidecar,
+        env=_sidecar_env(_free_port()),
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert "spectrum-ts is not installed" in result.stderr
 
 
 def test_sidecar_healthz_reports_stream_health() -> None:
     """Local process health must include upstream stream health."""
-    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(
+        encoding="utf-8"
+    )
     assert "function streamHealthSnapshot()" in index
-    assert 'return ok(res, { stream: streamHealthSnapshot() });' in index
+    assert "return ok(res, { stream: streamHealthSnapshot() });" in index
     assert "STREAM_INTERRUPTED_DEGRADE_COUNT" in index
     assert "process.exit(75);" in index
 
@@ -35,7 +159,9 @@ def test_sidecar_intercepts_both_console_channels() -> None:
     only console.error would miss every interrupt burst (the primary silent-
     inbound symptom), so both channels must be intercepted.
     """
-    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(
+        encoding="utf-8"
+    )
     assert "function classifyStreamLog(" in index
     assert "console.error = (...args) =>" in index
     assert "console.log = (...args) =>" in index
@@ -45,7 +171,9 @@ def test_sidecar_intercepts_both_console_channels() -> None:
 
 def test_sidecar_labels_catchup_internal_errors_as_upstream_photon() -> None:
     """Photon cloud stream failures should not look like local auth problems."""
-    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(
+        encoding="utf-8"
+    )
     assert "function inboundStreamErrorMessage" in index
     assert "EventService/CatchUpEvents" in index
     assert "this is upstream of Hermes" in index

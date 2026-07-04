@@ -106,6 +106,60 @@ def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert after["untracked"] == 1
 
 
+def test_review_stage_rejects_untracked_env_file(client, repo):
+    secret = repo / ".env"
+    secret.write_text("OPENAI_API_KEY=sk-secret\n")
+
+    response = client.post(
+        "/api/git/review/stage",
+        json={"path": str(repo), "file": ".env"},
+    )
+
+    assert response.status_code == 403
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", ".env"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status.startswith("??")
+
+
+def test_review_revert_rejects_untracked_env_file(client, repo):
+    secret = repo / ".env"
+    secret.write_text("OPENAI_API_KEY=sk-secret\n")
+
+    response = client.post(
+        "/api/git/review/revert",
+        json={"path": str(repo), "file": ".env"},
+    )
+
+    assert response.status_code == 403
+    assert secret.read_text() == "OPENAI_API_KEY=sk-secret\n"
+
+
+def test_commit_without_staged_changes_does_not_auto_stage_env(client, repo):
+    secret = repo / ".env"
+    secret.write_text("OPENAI_API_KEY=sk-secret\n")
+
+    response = client.post(
+        "/api/git/review/commit",
+        json={"path": str(repo), "message": "commit all", "push": False},
+    )
+
+    assert response.status_code == 200
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", ".env"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert tracked == ""
+    assert secret.exists()
+
+
 def test_commit_with_nothing_staged_commits_all_changes(client, repo):
     assert client.post(
         "/api/git/review/commit", json={"path": str(repo), "message": "commit all", "push": False}

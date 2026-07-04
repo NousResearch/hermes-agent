@@ -2022,6 +2022,8 @@ async def _git_op(fn, *args):
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(None, fn, *args)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc) or "git operation blocked")
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
 

@@ -119,6 +119,31 @@ def _fill_untracked_counts(cwd: str, files: list[dict]) -> None:
             file["added"] = _untracked_insertions(cwd, file["path"])
 
 
+def _protected_git_path(cwd: str, rel: str) -> bool:
+    try:
+        from agent.file_safety import get_read_block_error, is_write_denied
+    except Exception:
+        return False
+    raw = Path(str(rel or ""))
+    target = raw if raw.is_absolute() else Path(cwd) / raw
+    target_text = str(target)
+    return get_read_block_error(target_text) is not None or is_write_denied(target_text)
+
+
+def _changed_paths(cwd: str) -> list[tuple[str, str]]:
+    _, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
+    return [(tag, path) for tag, _xy, path in _walk_entries(raw)]
+
+
+def _safe_changed_paths(cwd: str) -> list[str]:
+    return [path for _tag, path in _changed_paths(cwd) if not _protected_git_path(cwd, path)]
+
+
+def _reject_protected_git_path(cwd: str, rel: str | None) -> None:
+    if rel and _protected_git_path(cwd, rel):
+        raise PermissionError("Git review cannot mutate protected credential files")
+
+
 def _branch_base(cwd: str) -> str | None:
     """Merge-base with the remote default branch for "all branch changes"."""
     candidates: list[str] = []
@@ -339,7 +364,10 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
+    _reject_protected_git_path(cwd, file_path)
+    paths = [file_path] if file_path else _safe_changed_paths(cwd)
+    if paths:
+        _git_ok(cwd, ["add", "--", *paths])
     return {"ok": True}
 
 
@@ -350,9 +378,13 @@ def review_unstage(cwd: str, file_path: str | None) -> dict:
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
-    target = ["--", file_path] if file_path else ["--", "."]
-    _git(cwd, ["checkout", "HEAD", *target])
-    _git(cwd, ["clean", "-fd", *target])
+    _reject_protected_git_path(cwd, file_path)
+    targets = [file_path] if file_path else _safe_changed_paths(cwd)
+    if not targets:
+        return {"ok": True}
+    target_args = ["--", *targets]
+    _git(cwd, ["checkout", "HEAD", *target_args])
+    _git(cwd, ["clean", "-fd", *target_args])
     return {"ok": True}
 
 
@@ -365,7 +397,9 @@ def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
     _, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
     if not any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw)):
-        _git_ok(cwd, ["add", "-A"])
+        paths = _safe_changed_paths(cwd)
+        if paths:
+            _git_ok(cwd, ["add", "--", *paths])
     _git_ok(cwd, ["commit", "-m", message])
     if push:
         _review_push(cwd)

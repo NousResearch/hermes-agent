@@ -3666,9 +3666,14 @@ class GatewaySlashCommandsMixin:
         source = event.source
         raw_args = event.get_command_args().strip()
         try:
-            include_all, include_unnamed, target = parse_session_listing_args(raw_args)
+            include_all, include_unnamed, target, search_query = (
+                parse_session_listing_args(raw_args)
+            )
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
+
+        if search_query == "":
+            return "Usage: `/sessions search <query>`"
 
         if target:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
@@ -3688,7 +3693,10 @@ class GatewaySlashCommandsMixin:
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
-            limit=10,
+            search_query=search_query,
+            # Search filters at SQL level, so over-fetch before the visibility
+            # cut: origin-invisible matches would otherwise consume the page.
+            limit=50 if search_query else 10,
             exclude_sources=["tool"],
         )
         if not cross_origin:
@@ -3698,10 +3706,15 @@ class GatewaySlashCommandsMixin:
                 row for row in rows
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
+        rows = rows[:10]
+        if search_query:
+            title = f"Sessions matching “{search_query}”"
+        else:
+            title = "Sessions" if include_unnamed else "Named Sessions"
         return format_gateway_session_listing(
             rows,
             include_source=cross_origin,
-            title="Sessions" if include_unnamed else "Named Sessions",
+            title=title,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:

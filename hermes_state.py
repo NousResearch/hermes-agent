@@ -2712,6 +2712,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        search_query: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -2739,6 +2740,12 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        ``search_query`` matches case-insensitive substrings against each
+        surfaced row's title and id (and, like ``id_query``, every title/id in
+        its forward compression chain). A punctuation-stripped variant is also
+        matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
+        ``order_by_last_active`` path.
         """
         where_clauses = []
         params = []
@@ -2791,6 +2798,7 @@ class SessionDB:
         # order_by_last_active path (which builds the chain CTE); other callers
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
+        search_needle = (search_query or "").strip().lower()
         if order_by_last_active:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
@@ -2807,25 +2815,53 @@ class SessionDB:
             # the timestamp test and hijack resume/list projection.
             outer_where = where_sql
             id_params: List[Any] = []
+            filter_clauses: List[str] = []
+
+            def _like_pattern(needle: str) -> str:
+                escaped = (
+                    needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                return f"%{escaped}%"
+
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
                 # compression chain matches the needle. LIKE with a leading
                 # wildcard can't use an index, but the chain membership and
                 # the small result set keep this bounded — far cheaper than
                 # fetching every session and scanning in Python.
-                id_clause = (
+                filter_clauses.append(
                     "EXISTS (SELECT 1 FROM chain cq"
                     "        WHERE cq.root_id = s.id"
                     "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
                 )
-                like_pattern = (
-                    "%"
-                    + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    + "%"
+                id_params.append(_like_pattern(id_needle))
+            if search_needle:
+                # Same chain-membership trick as id_query, but matching either
+                # the title or the id of any session in the chain. The compact
+                # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                compact_needle = re.sub(r"[\W_]+", "", search_needle)
+                compact_sql = (
+                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
+                    " '-', ''), '_', ''), '.', ''), ' ', '')"
                 )
-                id_params = [like_pattern]
+                search_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    " JOIN sessions cs ON cs.id = cq.cur_id"
+                    " WHERE cq.root_id = s.id"
+                    " AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                    " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
+                )
+                id_params.extend([_like_pattern(search_needle)] * 2)
+                if compact_needle:
+                    search_clause += (
+                        f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                    )
+                    id_params.append(_like_pattern(compact_needle))
+                filter_clauses.append(search_clause + "))")
+            if filter_clauses:
+                combined = " AND ".join(filter_clauses)
                 outer_where = (
-                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                    f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (

@@ -1652,6 +1652,25 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     parser.add_argument("--session-id")
     ns = parser.parse_args(args)
 
+    output_path = ns.output
+    if _engine.context == "hosted" and output_path != "-":
+        # `sessions export` writes an arbitrary file to disk, which had no
+        # path restriction of its own — an authenticated hosted console
+        # session could write outside the managed data root the dashboard's
+        # Files page is locked to. Route it through the same
+        # ManagedFilesPolicy root-lock so the two surfaces can't drift.
+        from fastapi import HTTPException
+        from hermes_cli.web_server import _resolve_managed_path
+
+        try:
+            _, _resolved, output_path = _resolve_managed_path(
+                output_path, None, for_write=True
+            )
+        except HTTPException as exc:
+            raise ConsoleCommandError(
+                f"`sessions export` in hosted Hermes Console: {exc.detail}"
+            ) from exc
+
     def _run() -> None:
         from hermes_state import SessionDB
 
@@ -1672,11 +1691,11 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
             text = "\n".join(lines)
             if text:
                 text += "\n"
-            if ns.output == "-":
+            if output_path == "-":
                 sys.stdout.write(text)
             else:
-                Path(ns.output).expanduser().write_text(text, encoding="utf-8")
-                print(f"Exported {len(rows)} session(s) to {ns.output}")
+                Path(output_path).expanduser().write_text(text, encoding="utf-8")
+                print(f"Exported {len(rows)} session(s) to {output_path}")
         finally:
             db.close()
 

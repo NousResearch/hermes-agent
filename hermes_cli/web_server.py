@@ -1516,7 +1516,7 @@ def _dashboard_local_update_managed_externally() -> bool:
     return True
 
 
-def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+def _managed_files_policy(request: Request | None, *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
@@ -1537,7 +1537,7 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
 
 def _resolve_managed_path(
     raw_path: str | None,
-    request: Request,
+    request: Request | None,
     *,
     for_write: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:

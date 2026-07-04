@@ -601,6 +601,69 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "Listable sessions: 1" in stats.output
 
 
+def test_hosted_sessions_export_blocks_path_outside_managed_root(
+    _isolate_hermes_home, monkeypatch, tmp_path
+):
+    """A hosted console session must not be able to write ``sessions export``
+    output outside the dashboard's managed-files root, the same way the
+    Files page's ManagedFilesPolicy locks path-browsing/writes for hosted
+    deployments."""
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(managed_root))
+    outside_target = tmp_path / "outside" / "escaped.jsonl"
+
+    engine = HermesConsoleEngine(context="hosted")
+    result = engine.execute(
+        f"sessions export {outside_target}", confirmed=True
+    )
+
+    assert result.status == "error"
+    assert not outside_target.exists()
+
+
+def test_hosted_sessions_export_allows_path_inside_managed_root(
+    _isolate_hermes_home, monkeypatch, tmp_path
+):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("chat-session", source="cli", model="test/model")
+    finally:
+        db.close()
+
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(managed_root))
+    inside_target = managed_root / "export.jsonl"
+
+    engine = HermesConsoleEngine(context="hosted")
+    result = engine.execute(
+        f"sessions export {inside_target}", confirmed=True
+    )
+
+    assert result.status == "ok"
+    assert inside_target.exists()
+
+
+def test_local_sessions_export_is_not_restricted_to_managed_root(
+    _isolate_hermes_home, monkeypatch, tmp_path
+):
+    """The local console keeps full filesystem access — only the hosted
+    context is confined to the managed-files root."""
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(managed_root))
+    outside_target = tmp_path / "escaped.jsonl"
+
+    engine = HermesConsoleEngine(context="local")
+    result = engine.execute(f"sessions export {outside_target}", confirmed=True)
+
+    assert result.status == "ok"
+    assert outside_target.exists()
+
+
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     from cron.jobs import create_job, get_job
 

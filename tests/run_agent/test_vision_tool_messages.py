@@ -135,6 +135,19 @@ class TestToolResultContentProactiveDowngrade:
 
         assert content == "plain text result"
 
+    def test_opencode_go_mimo_downgrades_to_text(self):
+        """Integration: opencode-go (supports_vision_tool_messages=True) + mimo-v2.5 → text.
+        Unlike xiaomi which has supports_vision_tool_messages=False in its provider profile,
+        opencode-go relies on the model-family check to trigger the downgrade."""
+        agent = _make_agent("opencode-go", "mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+
+        assert isinstance(content, str)
+        assert "screenshot captured" in content
+
     def test_openrouter_vision_keeps_list_content(self):
         """OpenRouter with vision: list content preserved."""
         agent = _make_agent("openrouter", "gpt-4o")

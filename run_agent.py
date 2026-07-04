@@ -4890,9 +4890,14 @@ class AIAgent:
 
         Note: mimo-v2.5-pro is text-only (delegates vision to a separate model)
         and is not affected by this limitation.
+
+        The vendor-prefix strip (``rsplit("/", 1)[-1]``) handles normalized
+        model names from aggregators such as OpenRouter
+        (``xiaomi/mimo-v2.5`` → ``mimo-v2.5``).
         """
         model = (getattr(self, "model", "") or "").strip().lower()
-        if model.startswith("mimo"):
+        bare_model = model.rsplit("/", 1)[-1]
+        if bare_model.startswith("mimo"):
             return False
         return True
 

@@ -259,6 +259,37 @@ moa:
     assert s["model_override"]["model"] == "default"
 
 
+
+
+def test_moa_aggregate_uses_aggregator_without_moa_provider(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default: {}
+    review:
+      reference_models:
+        - provider: openrouter
+          model: deepseek/deepseek-v4-pro
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, s = session
+    s["model_override"] = {"provider": "moa", "model": "review"}
+
+    r = _call(server, "command.dispatch", name="moa", arg="aggregate document this analysis", session_id=sid)
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "document this analysis"
+    assert "aggregator-only" in result["notice"]
+    assert s["model_override"] == {
+        "provider": "openrouter",
+        "model": "anthropic/claude-opus-4.8",
+    }
+
+
 def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):
     _write_moa_config(hermes_home, """
 moa:

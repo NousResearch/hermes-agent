@@ -1,4 +1,5 @@
 import queue
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cli import HermesCLI
@@ -80,3 +81,31 @@ def test_decode_legacy_encoded_moa_turn_still_works():
     prompt, cfg = decode_moa_turn(encoded)
     assert prompt == "hello"
     assert cfg["reference_models"] == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+
+
+def test_moa_aggregate_one_shot_routes_to_current_preset_aggregator_only():
+    cli = _make_cli()
+    cli.provider = "moa"
+    cli.requested_provider = "moa"
+    cli.model = "review"
+    result = SimpleNamespace(
+        success=True,
+        target_provider="openrouter",
+        new_model="anthropic/claude-opus-4.8",
+        api_key="resolved-key",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+    )
+    with patch("cli._cprint"), patch("hermes_cli.model_switch.switch_model", return_value=result) as switch:
+        cli.process_command("/moa aggregate document the analysis")
+
+    switch.assert_called_once()
+    kwargs = switch.call_args.kwargs
+    assert kwargs["explicit_provider"] == "openrouter"
+    assert kwargs["raw_input"] == "anthropic/claude-opus-4.8"
+    assert cli._pending_agent_seed == "document the analysis"
+    assert cli._pending_moa_disable_after_turn is True
+    assert cli.provider == "openrouter"
+    assert cli.model == "anthropic/claude-opus-4.8"
+    assert cli._pending_moa_restore_model["provider"] == "moa"
+    assert cli._pending_moa_restore_model["model"] == "review"

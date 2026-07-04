@@ -12,7 +12,7 @@ v2.2:     เพิ่ม fable (สมองพิเศษ · --tool fable · 
           ยืนเดี่ยวไม่เข้าสาย coder) · เพดานรอบต่อ issue นับข้าม coder · cooldown ตัวที่พังซ้ำ ·
           อ่าน YAML ได้แม้ไม่มี PyYAML (ตัวอ่านสำรองในตัว)
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys, time
+import argparse, glob, json, os, re, shutil, socket, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +32,23 @@ ALLOWED_BINS = {"grok", "gemini", "ollama", "codex", "claude"}
 def allowed_bins():
     extra = os.environ.get("RELAY_EXTRA_BINS", "")
     return ALLOWED_BINS | {b for b in extra.split(":") if b}
+
+# ด่านกัน Fable ตามเครื่อง (ข้อกำหนดเจ้าของ): Fable (สมองพิเศษ premium) ทำงานได้เฉพาะเครื่อง
+# ในรายชื่อนี้เท่านั้น = โน้ตบุ๊กเจ้าของ + VPS · เครื่องอื่นที่ใช้ ID Claude เดียวกัน (เช่นโน้ตบุ๊กพนักงาน)
+# จะถูกตัด Fable ออก แล้วสลับไปใช้สมองสำรอง (Opus 4.8) อัตโนมัติ
+# เพิ่ม/แทนรายชื่อได้ทาง env RELAY_FABLE_HOSTS=host1:host2 (ตั้งโดยคนคุมเครื่อง ไม่ใช่ไฟล์ใน worktree)
+FABLE_MACHINE_ALLOWLIST = {"Rattanasaks-MacBook-Pro.local", "linux-nat"}
+def fable_allowed_here(host=None):
+    extra = os.environ.get("RELAY_FABLE_HOSTS", "")
+    allow = FABLE_MACHINE_ALLOWLIST | {h for h in extra.split(":") if h}
+    allow |= {h.split(".")[0] for h in allow}  # รับทั้งชื่อเต็มและชื่อสั้น
+    if host is None:
+        try:
+            host = socket.gethostname()
+        except Exception:
+            return False
+    cands = {host, host.split(".")[0]}
+    return bool(cands & allow)
 
 # ---- ค่าปริยาย (ใช้เมื่อไม่มีไฟล์ตั้งค่า) ----
 DEFAULT_ADAPTERS = {
@@ -368,10 +385,17 @@ def main():
     # เพดานแยกของสมองพิเศษ (fable แพงสุด · นับต่างหาก) · เกินเพดาน = ไม่หยุด แต่สลับไปสมองสำรอง (opus) อัตโนมัติ
     is_premium = bool(adapters.get(a.tool, {}).get("premium"))
     premium_over_cap = False
+    premium_skip_reason = ""   # "machine" = เครื่องนี้ไม่อยู่ในรายชื่ออนุญาต · "cap" = เกินเพดานเรียก
     if is_premium:
-        fable_calls = bump_counter(cwd, ".session-fable-calls", session_hours=session_hours)
-        if limits.get("max_fable_calls_per_session") and fable_calls > limits["max_fable_calls_per_session"]:
-            premium_over_cap = True  # เกินเพดาน fable → ตัดออกจากสาย ใช้ opus แทน
+        if not fable_allowed_here():
+            # เครื่องนี้ไม่ใช่เครื่องเจ้าของ → ตัด Fable ออก ใช้สมองสำรอง (opus) แทน · ไม่นับเป็นการเรียก
+            premium_over_cap = True
+            premium_skip_reason = "machine"
+        else:
+            fable_calls = bump_counter(cwd, ".session-fable-calls", session_hours=session_hours)
+            if limits.get("max_fable_calls_per_session") and fable_calls > limits["max_fable_calls_per_session"]:
+                premium_over_cap = True  # เกินเพดาน fable → ตัดออกจากสาย ใช้ opus แทน
+                premium_skip_reason = "cap"
 
     # เพดานรอบแก้ต่อ issue (นับข้ามทุก coder · ไม่รีเซ็ตตอนสลับ) · สมองพิเศษไม่กินรอบ coder
     safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", a.task_id)
@@ -393,12 +417,16 @@ def main():
         chain = [a.tool] + brain_fallback
         chain = [t for t in chain if t in adapters and adapters[t].get("brain")]
         if premium_over_cap:
-            # fable เกินเพดาน → เอา premium ออกจากสาย เหลือแต่สมองสำรอง (opus)
+            # fable ถูกตัด (เครื่องไม่อนุญาต หรือเกินเพดาน) → เอา premium ออกจากสาย เหลือแต่สมองสำรอง (opus)
             chain = [t for t in chain if not adapters[t].get("premium")]
             prerotated = a.tool
             if not chain:
+                if premium_skip_reason == "machine":
+                    why = "Fable ใช้ได้เฉพาะเครื่องเจ้าของ (โน้ตบุ๊ก + VPS) · เครื่องนี้ไม่อยู่ในรายชื่ออนุญาต และไม่มีสมองสำรอง (opus) ตั้งไว้ · เพิ่ม opus ใน adapters หรือถามเจ้าของ"
+                else:
+                    why = f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) และไม่มีสมองสำรอง (opus) ตั้งไว้ · เพิ่ม opus ใน adapters หรือถามเจ้าของ"
                 out = {"status":"limit_exceeded","tool":a.tool,
-                       "reason_human":f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) และไม่มีสมองสำรอง (opus) ตั้งไว้ · เพิ่ม opus ใน adapters หรือถามเจ้าของ",
+                       "reason_human":why,
                        "calls_used":calls,"ledger_written":False}
                 print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
     else:
@@ -422,8 +450,10 @@ def main():
 
     rotated_from = prerotated
     if prerotated:
-        # จดว่า fable ถูก "ข้ามเพราะเกินเพดาน" (ไม่ใช่เรียกจริง) แล้วสลับไปสมองสำรอง · relay-report ไม่นับเป็นการเรียก
-        attempt_row(prerotated, "skipped_by_cap", "")
+        # จดว่า fable ถูก "ข้าม" (ไม่ใช่เรียกจริง) แล้วสลับไปสมองสำรอง · relay-report ไม่นับเป็นการเรียก
+        # machine = เครื่องไม่อยู่ในรายชื่ออนุญาต · cap = เกินเพดานเรียก
+        skip_status = "skipped_not_owner_machine" if premium_skip_reason == "machine" else "skipped_by_cap"
+        attempt_row(prerotated, skip_status, "")
     for tool in chain:
         # ด่านบัญชีโปรแกรมอนุญาต: กันไฟล์ adapters.yaml ใน worktree ถูกแก้ให้รันคำสั่งอันตราย
         bin_name = Path(str((adapters[tool].get("cmd") or ["?"])[0])).name

@@ -149,3 +149,25 @@ def test_run_once_strips_claude_token_by_full_path():
     finally:
         os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_fable_allowed_only_on_owner_machines():
+    os.environ.pop("RELAY_FABLE_HOSTS", None)
+    # เครื่องเจ้าของ (โน้ตบุ๊ก + VPS) → อนุญาต · รับทั้งชื่อเต็มและชื่อสั้น
+    assert relay_call.fable_allowed_here("Rattanasaks-MacBook-Pro.local") is True
+    assert relay_call.fable_allowed_here("Rattanasaks-MacBook-Pro") is True
+    assert relay_call.fable_allowed_here("linux-nat") is True
+    # เครื่องพนักงาน (ใช้ ID Claude เดียวกันแต่คนละเครื่อง) → ไม่อนุญาต
+    assert relay_call.fable_allowed_here("staff-laptop") is False
+    assert relay_call.fable_allowed_here("some-random-host.local") is False
+
+
+def test_fable_allowlist_env_override_adds_host():
+    os.environ["RELAY_FABLE_HOSTS"] = "extra-owner-box"
+    try:
+        assert relay_call.fable_allowed_here("extra-owner-box") is True
+        # ของเดิมยังอนุญาตอยู่ · เครื่องนอกรายชื่อยังถูกกัน
+        assert relay_call.fable_allowed_here("linux-nat") is True
+        assert relay_call.fable_allowed_here("staff-laptop") is False
+    finally:
+        os.environ.pop("RELAY_FABLE_HOSTS", None)

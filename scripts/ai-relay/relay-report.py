@@ -64,8 +64,8 @@ def main():
         tool = r.get("tool") or "?"
         status = (r.get("status") or "").strip()
         e = days[day][tool]
-        if status == "skipped_by_cap":
-            # ไม่ใช่การเรียกจริง · แค่บันทึกว่าโดนเพดานแล้วสลับไปสมองสำรอง
+        if status in ("skipped_by_cap", "skipped_not_owner_machine"):
+            # ไม่ใช่การเรียกจริง · fable ถูกข้ามไปสมองสำรอง (เกินเพดาน หรือเครื่องไม่อยู่ในรายชื่ออนุญาต)
             e["skipped"] += 1
             if tool == "fable":
                 fable_skipped_total += 1

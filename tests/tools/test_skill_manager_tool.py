@@ -742,6 +742,7 @@ def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
     get_all_skills_dirs() returns [local_dir, external_dir] in order."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+         patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_dir]), \
          patch("agent.skill_utils.get_all_skills_dirs",
                return_value=[local_dir, external_dir]):
         yield
@@ -863,9 +864,8 @@ class TestExternalSkillMutations:
         assert not cat_dir.exists()  # empty category cleaned up
         assert external.exists()     # but never the external root
 
-    def test_create_still_writes_to_local_root(self, tmp_path):
-        """Creating a new skill always lands in local SKILLS_DIR, never
-        external_dirs — create is unchanged by this PR."""
+    def test_create_defaults_to_first_external_root(self, tmp_path):
+        """Creating a new skill should honor the first configured external root."""
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
@@ -875,8 +875,8 @@ class TestExternalSkillMutations:
                 "name: test-skill", "name: fresh-skill"))
 
         assert result["success"] is True, result
-        assert (local / "fresh-skill" / "SKILL.md").exists()
-        assert not (external / "fresh-skill").exists()
+        assert (external / "fresh-skill" / "SKILL.md").exists()
+        assert not (local / "fresh-skill").exists()
 
     def test_background_review_refuses_to_patch_external_skill(self, tmp_path):
         """Autonomous curator runs treat skills.external_dirs as read-only."""

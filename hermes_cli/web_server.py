@@ -949,6 +949,10 @@ class MoaPresetPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    # None = uncapped reference/advisor output, matching prior behavior.
+    reference_max_tokens: Optional[int] = None
+    # Reference fan-out cadence: "per_iteration" (default) or "user_turn".
+    fanout: str = "per_iteration"
     enabled: bool = True
 
 
@@ -963,6 +967,8 @@ class MoaConfigPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    fanout: str = "per_iteration"
     enabled: bool = True
     profile: Optional[str] = None
 
@@ -4391,6 +4397,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                             "reference_temperature": preset.reference_temperature,
                             "aggregator_temperature": preset.aggregator_temperature,
                             "max_tokens": preset.max_tokens,
+                            "reference_max_tokens": preset.reference_max_tokens,
+                            "fanout": preset.fanout,
                             "enabled": preset.enabled,
                         }
                         for name, preset in body.presets.items()
@@ -4403,6 +4411,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "reference_temperature": body.reference_temperature,
                     "aggregator_temperature": body.aggregator_temperature,
                     "max_tokens": body.max_tokens,
+                    "reference_max_tokens": body.reference_max_tokens,
+                    "fanout": body.fanout,
                     "enabled": body.enabled,
                 }
             normalized = normalize_moa_config(raw)

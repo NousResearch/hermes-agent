@@ -510,6 +510,57 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_preserves_fanout_and_reference_max_tokens(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "default",
+            "active_preset": "default",
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                    "reference_temperature": 0.6,
+                    "aggregator_temperature": 0.4,
+                    "max_tokens": 4096,
+                    "reference_max_tokens": 600,
+                    "fanout": "user_turn",
+                    "enabled": True,
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        preset = cfg["moa"]["presets"]["default"]
+        assert preset["reference_max_tokens"] == 600
+        assert preset["fanout"] == "user_turn"
+
+    def test_put_moa_models_flat_payload_preserves_fanout_and_reference_max_tokens(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "reference_temperature": 0.6,
+            "aggregator_temperature": 0.4,
+            "max_tokens": 4096,
+            "reference_max_tokens": 600,
+            "fanout": "user_turn",
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        # The flat payload becomes the default preset.
+        preset = cfg["moa"]["presets"]["default"]
+        assert preset["reference_max_tokens"] == 600
+        assert preset["fanout"] == "user_turn"
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

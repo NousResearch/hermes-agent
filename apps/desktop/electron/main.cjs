@@ -3260,7 +3260,7 @@ function fetchJson(url, token, options = {}) {
         method: options.method || 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'X-Hermes-Session-Token': token,
+          ...(token ? { 'X-Hermes-Session-Token': token } : {}),
           ...(body ? { 'Content-Length': String(body.length) } : {})
         }
       },

@@ -215,8 +215,16 @@ test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
 
 // --- authModeFromStatus ---
 
-test('authModeFromStatus returns oauth when auth_required is true', () => {
+test('authModeFromStatus returns oauth when auth_required is true (OAuth provider)', () => {
   assert.equal(authModeFromStatus({ auth_required: true, auth_providers: ['nous'] }), 'oauth')
+})
+
+test('authModeFromStatus returns oauth when auth_required is true (basic/password provider)', () => {
+  // Username/password auth also returns 'oauth' because the login flow
+  // (sign-in window → session cookies → ws-ticket mint) is shared with
+  // OAuth. The UI differentiates via the supports_password flag from
+  // /api/auth/providers.
+  assert.equal(authModeFromStatus({ auth_required: true, auth_providers: ['basic'] }), 'oauth')
 })
 
 test('authModeFromStatus returns token when auth_required is false/missing', () => {

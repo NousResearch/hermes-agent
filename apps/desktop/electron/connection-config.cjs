@@ -211,7 +211,13 @@ function tokenPreview(value) {
 
 /**
  * Classify a gateway's auth mode from its public /api/status body.
- * `auth_required: true` → OAuth gate engaged; otherwise legacy token auth.
+ * `auth_required: true` → auth gate is engaged (OAuth or username/password).
+ * Otherwise legacy token auth (--insecure / loopback).
+ *
+ * NOTE: Both OAuth and username/password (basic) auth use the same 'oauth'
+ * return value because they share the same login flow (sign-in window →
+ * session cookies → ws-ticket mint). The UI differentiates them via
+ * the supports_password flag from /api/auth/providers.
  * Returns 'oauth' | 'token'.
  */
 function authModeFromStatus(statusBody) {

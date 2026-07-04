@@ -115,6 +115,52 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+# Internal-only keys that are valid on a Hermes transcript message/part but are
+# NOT part of the OpenAI Chat Completions content-part schema. They must be
+# scrubbed from multimodal ``content`` list parts before the request goes
+# upstream, the same way they are from the top-level message object.
+_CONTENT_PART_INTERNAL_KEYS: frozenset[str] = frozenset({"timestamp", "observed"})
+
+
+def _content_part_has_internal_keys(part: Any) -> bool:
+    """True when a single content-list part carries an internal-only key.
+
+    Internal keys are the explicit bookkeeping fields (``timestamp``,
+    ``observed``) plus any Hermes ``_``-prefixed scaffolding marker. OpenAI's
+    content-part schema has none of these, so their presence means the part
+    needs a sanitize pass.
+    """
+    if not isinstance(part, dict):
+        return False
+    if any(k in part for k in _CONTENT_PART_INTERNAL_KEYS):
+        return True
+    return any(isinstance(k, str) and k.startswith("_") for k in part)
+
+
+def _content_parts_need_sanitize(content: Any) -> bool:
+    """True when a message ``content`` is a parts list with any internal key."""
+    if not isinstance(content, list):
+        return False
+    return any(_content_part_has_internal_keys(part) for part in content)
+
+
+def _strip_content_part_internal_keys(content: Any) -> None:
+    """Remove internal-only keys from each part of a multimodal content list.
+
+    Mutates in place (callers operate on a deepcopy). No-op when ``content``
+    is not a list (plain-string content carries no per-part metadata).
+    """
+    if not isinstance(content, list):
+        return
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        for key in _CONTENT_PART_INTERNAL_KEYS:
+            part.pop(key, None)
+        for key in [k for k in part if isinstance(k, str) and k.startswith("_")]:
+            part.pop(key, None)
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -179,6 +225,15 @@ class ChatCompletionsTransport(ProviderTransport):
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
+            # A multimodal ``content`` list can carry the same internal-only
+            # keys on individual parts (e.g. a per-part ``timestamp`` inherited
+            # from the transcript store). The shallow top-level strip misses
+            # them, so strict providers still reject the whole request with
+            # HTTP 422 ``loc: [...,messages,N,user,timestamp]`` — the
+            # 2026-06-23 TDM 502 / timestamp incident. Detect them here too.
+            if _content_parts_need_sanitize(msg.get("content")):
+                needs_sanitize = True
+                break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -208,6 +263,10 @@ class ChatCompletionsTransport(ProviderTransport):
             # is safe and future-proofs against new markers being added.
             for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
                 msg.pop(key, None)
+            # Same scrub for multimodal content-list parts — a nested
+            # ``timestamp`` (or ``_``-prefixed marker) on a part is just as
+            # schema-foreign to strict providers as a top-level one.
+            _strip_content_part_internal_keys(msg.get("content"))
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

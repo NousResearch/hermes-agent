@@ -3632,8 +3632,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._flush_text_batch,
         )
 
-    @staticmethod
     def _reschedule_batch_task(
+        self,
         task_map: Dict[str, asyncio.Task],
         key: str,
         flush_fn: Any,
@@ -3641,7 +3641,9 @@ class FeishuAdapter(BasePlatformAdapter):
         prior_task = task_map.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
-        task_map[key] = asyncio.create_task(flush_fn(key))
+        task = asyncio.create_task(flush_fn(key))
+        task.add_done_callback(self._log_background_failure)
+        task_map[key] = task
 
     async def _flush_text_batch(self, key: str) -> None:
         """Flush a pending text batch after the quiet period.
@@ -4167,6 +4169,8 @@ class FeishuAdapter(BasePlatformAdapter):
     def _log_background_failure(future: Any) -> None:
         try:
             future.result()
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            return
         except Exception:
             logger.exception("[Feishu] Background inbound processing failed")
 

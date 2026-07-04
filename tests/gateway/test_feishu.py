@@ -1705,6 +1705,69 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(first.text, "A\nB")
         self.assertEqual(second.text, "C")
 
+    def test_text_batch_flush_task_consumes_dispatch_errors(self):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from plugins.platforms.feishu.adapter import FeishuAdapter, FeishuBatchState
+        from gateway.session import SessionSource
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._platform = Platform.FEISHU
+        adapter.config = PlatformConfig()
+        batch_state = FeishuBatchState()
+        adapter._pending_text_batches = batch_state.events
+        adapter._pending_text_batch_tasks = batch_state.tasks
+        adapter._pending_text_batch_counts = batch_state.counts
+        adapter._text_batch_max_messages = 20
+        adapter._text_batch_max_chars = 50000
+        adapter._text_batch_delay_seconds = 0
+        adapter._text_batch_split_delay_seconds = 0
+        adapter._handle_message_with_guards = AsyncMock(
+            side_effect=RuntimeError("dispatch failed")
+        )
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="Zhang San",
+        )
+
+        async def _run() -> list[dict]:
+            loop = asyncio.get_running_loop()
+            previous_handler = loop.get_exception_handler()
+            loop_errors: list[dict] = []
+            loop.set_exception_handler(
+                lambda _loop, context: loop_errors.append(context)
+            )
+            try:
+                with patch(
+                    "plugins.platforms.feishu.adapter.logger.exception"
+                ) as log_exception:
+                    await adapter._dispatch_inbound_event(
+                        MessageEvent(
+                            text="A",
+                            message_type=MessageType.TEXT,
+                            source=source,
+                            message_id="om_1",
+                        )
+                    )
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                log_exception.assert_called_once_with(
+                    "[Feishu] Background inbound processing failed"
+                )
+            finally:
+                loop.set_exception_handler(previous_handler)
+            return loop_errors
+
+        loop_errors = asyncio.run(_run())
+
+        adapter._handle_message_with_guards.assert_awaited_once()
+        self.assertEqual(loop_errors, [])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig

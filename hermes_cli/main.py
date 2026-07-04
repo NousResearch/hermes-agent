@@ -1355,7 +1355,6 @@ def _print_tui_exit_summary(
             + output_tokens
             + cache_read_tokens
             + cache_write_tokens
-            + reasoning_tokens
         )
     except Exception:
         return

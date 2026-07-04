@@ -4176,6 +4176,43 @@ class TestNewEndpoints:
         assert row["api_calls"] == 9
         assert row["avg_tokens_per_session"] == 13_550
 
+    def test_models_analytics_capabilities_use_provider_aware_context(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="codex-gpt55",
+                source="cli",
+                model="gpt-5.5",
+            )
+            db.update_token_counts(
+                "codex-gpt55",
+                input_tokens=1234,
+                output_tokens=56,
+                billing_provider="openai-codex",
+            )
+        finally:
+            db.close()
+
+        mock_caps = MagicMock()
+        mock_caps.supports_tools = True
+        mock_caps.supports_vision = True
+        mock_caps.supports_reasoning = True
+        mock_caps.context_window = 1_050_000
+        mock_caps.max_output_tokens = 128_000
+        mock_caps.model_family = "gpt-5"
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=272_000), \
+             patch("agent.models_dev.get_model_capabilities", return_value=mock_caps):
+            resp = self.client.get("/api/analytics/models?days=7")
+
+        assert resp.status_code == 200
+        row = next(r for r in resp.json()["models"] if r["model"] == "gpt-5.5")
+        assert row["provider"] == "openai-codex"
+        assert row["capabilities"]["context_window"] == 272_000
+        assert row["capabilities"]["catalog_context_window"] == 1_050_000
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 
@@ -4602,6 +4639,33 @@ class TestModelInfoEndpoint:
         assert caps["supports_reasoning"] is True
         assert caps["max_output_tokens"] == 32000
         assert caps["model_family"] == "claude-opus"
+
+    def test_model_info_capabilities_use_provider_aware_context(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        })
+
+        mock_caps = MagicMock()
+        mock_caps.supports_tools = True
+        mock_caps.supports_vision = True
+        mock_caps.supports_reasoning = True
+        mock_caps.context_window = 1_050_000
+        mock_caps.max_output_tokens = 128_000
+        mock_caps.model_family = "gpt-5"
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=272_000), \
+             patch("agent.models_dev.get_model_capabilities", return_value=mock_caps):
+            resp = self.client.get("/api/model/info")
+
+        caps = resp.json()["capabilities"]
+        assert caps["context_window"] == 272_000
+        assert caps["catalog_context_window"] == 1_050_000
 
     def test_model_info_graceful_on_metadata_error(self, monkeypatch):
         """Endpoint should return zeros on import/resolution errors, not 500."""

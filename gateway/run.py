@@ -5530,6 +5530,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
+        if getattr(self.config, "silent_shutdown_notifications", False):
+            logger.info(
+                "Gateway shutdown/restart notifications suppressed by "
+                "gateway.silent_shutdown_notifications=true"
+            )
+            return
+
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
@@ -14283,6 +14290,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
+        if getattr(self.config, "silent_shutdown_notifications", False):
+            logger.info(
+                "Restart notification suppressed by "
+                "gateway.silent_shutdown_notifications=true"
+            )
+            notify_path.unlink(missing_ok=True)
+            return None
 
         try:
             data = json.loads(notify_path.read_text())
@@ -14361,6 +14375,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         home channel. ``skip_targets`` lets startup avoid duplicate messages
         when a more specific restart notification is queued for the same chat.
         """
+        if getattr(self.config, "silent_shutdown_notifications", False):
+            logger.info(
+                "Home-channel startup notifications suppressed by "
+                "gateway.silent_shutdown_notifications=true"
+            )
+            return set()
+
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."

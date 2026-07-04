@@ -559,6 +559,28 @@ async def test_send_home_channel_startup_notification_skipped_when_flag_disabled
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_globally_suppressed(
+    tmp_path, monkeypatch
+):
+    """Global lifecycle silence mutes home-channel startup pings."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.silent_shutdown_notifications = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_default_flag_true(
     tmp_path, monkeypatch
 ):
@@ -603,6 +625,30 @@ async def test_send_restart_notification_skipped_when_flag_disabled(
 
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_globally_suppressed_cleans_marker(
+    tmp_path, monkeypatch
+):
+    """Global lifecycle silence mutes /restart completion and clears its marker."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.silent_shutdown_notifications = True
     adapter.send = AsyncMock()
 
     delivered_target = await runner._send_restart_notification()

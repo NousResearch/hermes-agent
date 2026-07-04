@@ -164,7 +164,15 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
         try:
             compressor.update_from_response(usage_dict)
             context_window = getattr(turn, "model_context_window", None)
-            if isinstance(context_window, int) and context_window > 0:
+            config_context_length = getattr(agent, "_config_context_length", None)
+            has_config_context_length = (
+                isinstance(config_context_length, int) and config_context_length > 0
+            )
+            if (
+                isinstance(context_window, int)
+                and context_window > 0
+                and not has_config_context_length
+            ):
                 compressor.context_length = context_window
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)

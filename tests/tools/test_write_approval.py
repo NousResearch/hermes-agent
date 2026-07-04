@@ -32,6 +32,14 @@ def _set_approval(subsystem, enabled):
     cfg.save_config(c)
 
 
+def _set_approval_dict(subsystem, value):
+    """Set the write_approval value as a dict (config v33+ shape)."""
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault(subsystem, {})["write_approval"] = value
+    cfg.save_config(c)
+
+
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
@@ -61,6 +69,106 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("off") is False
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
+    # Dict (config v33+ shape) → reads the 'enabled' sub-key.
+    assert wa._normalize_enabled({"enabled": True, "only": [], "exclude": []}) is True
+    assert wa._normalize_enabled({"enabled": False}) is False
+    assert wa._normalize_enabled({}) is False
+
+
+# ---------------------------------------------------------------------------
+# should_gate_skill — only/exclude filtering
+# ---------------------------------------------------------------------------
+
+
+def test_should_gate_skill_gate_off(hermes_home):
+    """Gate off → never gate, regardless of only/exclude."""
+    from tools import write_approval as wa
+    # Gate is off by default
+    assert wa.should_gate_skill("any-skill") is False
+
+
+def test_should_gate_skill_gate_on_no_lists(hermes_home):
+    """Gate on, no only/exclude → gate everything (pre-v33 behaviour)."""
+    from tools import write_approval as wa
+    _set_approval_dict("skills", {"enabled": True, "only": [], "exclude": []})
+    assert wa.should_gate_skill("any-skill") is True
+
+
+def test_should_gate_skill_only_list(hermes_home):
+    """Gate on with only list → only gate skills in the list."""
+    from tools import write_approval as wa
+    _set_approval_dict("skills",
+                       {"enabled": True, "only": ["important-skill"], "exclude": []})
+    assert wa.should_gate_skill("important-skill") is True
+    assert wa.should_gate_skill("scratch-skill") is False
+
+
+def test_should_gate_skill_exclude_list(hermes_home):
+    """Gate on with exclude list → gate everything except excluded skills."""
+    from tools import write_approval as wa
+    _set_approval_dict("skills",
+                       {"enabled": True, "only": [], "exclude": ["scratch-skill"]})
+    assert wa.should_gate_skill("scratch-skill") is False
+    assert wa.should_gate_skill("other-skill") is True
+
+
+def test_should_gate_skill_only_takes_precedence(hermes_home):
+    """When both only and exclude are set, only wins (more restrictive)."""
+    from tools import write_approval as wa
+    _set_approval_dict("skills",
+                       {"enabled": True, "only": ["important-skill"], "exclude": ["important-skill"]})
+    # only is non-empty → only skills in 'only' are gated.
+    assert wa.should_gate_skill("important-skill") is True
+
+
+def test_skill_gate_with_only_skips_excluded_skills(hermes_home):
+    """skill_manage with only list: write to unlisted skill bypasses gate."""
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    _set_approval_dict("skills",
+                       {"enabled": True, "only": ["gated-skill"], "exclude": []})
+
+    # Skill NOT in the 'only' list → write flows freely (not staged).
+    r = smt.skill_manage("create", "free-skill",
+                          content="---\nname: free-skill\ndescription: x\n---\nbody\n")
+    result = json.loads(r)
+    assert result.get("success") is True
+    assert result.get("staged") is None or result.get("staged") is False
+    assert wa.pending_count("skills") == 0
+
+    # Skill IN the 'only' list → staged for approval.
+    r2 = smt.skill_manage("create", "gated-skill",
+                           content="---\nname: gated-skill\ndescription: x\n---\nbody\n")
+    result2 = json.loads(r2)
+    assert result2.get("staged") is True
+    assert wa.pending_count("skills") == 1
+
+
+def test_skill_gate_with_exclude_bypasses_excluded(hermes_home):
+    """skill_manage with exclude list: write to excluded skill bypasses gate."""
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    _set_approval_dict("skills",
+                       {"enabled": True, "only": [], "exclude": ["scratch-skill"]})
+
+    # Excluded skill → write flows freely.
+    r = smt.skill_manage("create", "scratch-skill",
+                          content="---\nname: scratch-skill\ndescription: x\n---\nbody\n")
+    result = json.loads(r)
+    assert result.get("success") is True
+    assert result.get("staged") is None or result.get("staged") is False
+    assert wa.pending_count("skills") == 0
+
+    # Non-excluded skill → staged for approval.
+    r2 = smt.skill_manage("create", "real-skill",
+                           content="---\nname: real-skill\ndescription: x\n---\nbody\n")
+    result2 = json.loads(r2)
+    assert result2.get("staged") is True
+    assert wa.pending_count("skills") == 1
 
 
 # ---------------------------------------------------------------------------

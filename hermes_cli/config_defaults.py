@@ -2102,7 +2102,13 @@ DEFAULT_CONFIG = {
         #                     /skills diff <id> (full diff — CLI/dashboard/file,
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
+        # New in config: expanded from a bare bool to a dict with sub-keys
+        #   enabled: true/false    — gate toggle (same semantic as the old bool)
+        #   only: [skill names]    — if non-empty, gate ONLY these skill names
+        #   exclude: [skill names] — if non-empty, gate ALL skills EXCEPT these
+        #                            only and exclude are mutually exclusive
+        #                            in effect: only takes precedence. 
+        "write_approval": {"enabled": False, "only": [], "exclude": []},
         # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
         # — curator, agent, or user — appends one JSONL entry to
         # ~/.hermes/skills/.curator_ledger.jsonl with before/after file

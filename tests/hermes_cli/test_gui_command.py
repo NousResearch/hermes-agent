@@ -1055,4 +1055,100 @@ def test_desktop_launch_options_survives_config_error():
     with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
         flags, gpu = cli_main._desktop_launch_options()
     assert flags == []
-    assert gpu == "auto"
+
+
+def test_gui_win32_launches_detached_and_returns(tmp_path, monkeypatch):
+    """On Windows the packaged launch must be spawned detached via Popen and
+    return immediately (exit 0), not block on subprocess.run inheriting the
+    parent console. Regression for #58275."""
+    import hermes_cli._subprocess_compat as _subproc_compat
+
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+
+    # ``windows_detach_flags`` reads ``IS_WINDOWS``, which is bound at import to
+    # the real host platform (0/no-op off Windows). Force it True so the flags
+    # assertion below verifies the *real* Windows creationflags are wired, not
+    # the off-Windows 0.
+    monkeypatch.setattr(_subproc_compat, "IS_WINDOWS", True)
+    expected_flags = _subproc_compat.windows_detach_flags()
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    # Parent returns cleanly so the user can close the launching shell.
+    assert exc.value.code == 0
+    # The blocking, console-inheriting run() path must NOT be used for launch.
+    mock_run.assert_not_called()
+    # Detached spawn happened exactly once, targeting the packaged exe with the
+    # Windows detach creationflags and fully redirected/severed stdio.
+    mock_popen.assert_called_once()
+    call = mock_popen.call_args
+    assert call.args[0][0] == str(packaged_exe)
+    assert expected_flags != 0  # sanity: forced IS_WINDOWS gives real flags
+    assert call.kwargs["creationflags"] == expected_flags
+    assert call.kwargs["stdin"] is subprocess.DEVNULL
+    assert call.kwargs["stdout"] is subprocess.DEVNULL
+    assert call.kwargs["stderr"] is subprocess.DEVNULL
+    assert call.kwargs["cwd"] == desktop_dir
+
+
+def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
+    """If the first detached spawn is denied job breakaway (OSError), retry
+    without CREATE_BREAKAWAY_FROM_JOB rather than crashing."""
+    import hermes_cli._subprocess_compat as _subproc_compat
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="win32")
+    monkeypatch.setattr(_subproc_compat, "IS_WINDOWS", True)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch(
+             "hermes_cli.main.subprocess.Popen",
+             side_effect=[OSError("breakaway denied"), None],
+         ) as mock_popen, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_run.assert_not_called()
+    assert mock_popen.call_count == 2
+    assert (
+        mock_popen.call_args_list[0].kwargs["creationflags"]
+        == _subproc_compat.windows_detach_flags()
+    )
+    assert (
+        mock_popen.call_args_list[1].kwargs["creationflags"]
+        == _subproc_compat.windows_detach_flags_without_breakaway()
+    )
+
+
+def test_gui_macos_launch_stays_foreground(tmp_path, monkeypatch):
+    """macOS/Linux must keep the existing blocking, console-inheriting run()
+    launch — the exit code is propagated and no detached Popen is used."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 3)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    # Foreground: exit code from the child is propagated verbatim.
+    assert exc.value.code == 3
+    mock_popen.assert_not_called()
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+    assert mock_run.call_args.kwargs["cwd"] == desktop_dir

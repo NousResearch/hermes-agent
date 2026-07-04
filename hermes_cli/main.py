@@ -5785,6 +5785,42 @@ def cmd_gui(args: argparse.Namespace):
 
     launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    if sys.platform == "win32":
+        # Detach the packaged Desktop from the parent console + process group so
+        # (a) closing the launching shell doesn't send CTRL_CLOSE_EVENT down the
+        # group and kill Desktop, and (b) Electron/Node stdout+stderr don't flood
+        # (and, under cp936, mojibake) the parent terminal. Mirrors the
+        # installer's own detached relaunch and gateway_windows._spawn_detached.
+        # macOS/Linux keep the foreground, console-inheriting run below.
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
+        )
+
+        popen_kwargs = dict(
+            cwd=desktop_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            subprocess.Popen(
+                launch_command,
+                creationflags=windows_detach_flags(),
+                **popen_kwargs,
+            )
+        except OSError:
+            # The parent's job object disallows breakaway (rare — no
+            # JOB_OBJECT_LIMIT_BREAKAWAY_OK); retry without the breakaway bit.
+            subprocess.Popen(
+                launch_command,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **popen_kwargs,
+            )
+        print("✓ Hermes Desktop launched in a detached window; you can close this shell.")
+        sys.exit(0)
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 

@@ -1,6 +1,6 @@
 # RCA: Dual-venv drift between `.venv/` and `venv/`
 
-**Status:** Partially implemented — Step 1 (drift detector + warning) merged in commit `ffcf901e3` on branch `advisor/001-venv-collapse`. Step 2-5 (junction creation) approved in `.plans/001-step2-revision-junction-after-install.md`; implementation pending. (Once Step 2-5 lands, update this line to "Resolved by `<commit SHA>`".)
+**Status:** Resolved by `7cf974bff`. Stage 1 detector landed in `ffcf901e3`; Stage 2 (junction stage + canonical-venv declaration) landed in `28c6c9377` and `baebea273` on branch `advisor/001-venv-collapse`.
 **Severity:** P2 — degrades `hermes doctor`, breaks editable-install `.pth` resolution, and can manifest as daemon startup failures after a partial Python upgrade.
 
 ## Summary

@@ -295,13 +295,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
 
         Must be async because httpx.AsyncClient awaits event hooks.
         """
-        if response.is_redirect and response.next_request:
-            redirect_url = str(response.next_request.url)
-            from tools.url_safety import async_is_safe_url
-            if not await async_is_safe_url(redirect_url):
-                raise ValueError(
-                    f"Blocked redirect to private/internal address: {redirect_url}"
-                )
+        from tools.url_safety import async_is_safe_url, redirect_target_from_response
+        redirect_url = redirect_target_from_response(response)
+        if redirect_url and not await async_is_safe_url(redirect_url):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {redirect_url}"
+            )
 
     last_error = None
     for attempt in range(max_retries):
@@ -1357,7 +1356,18 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    # Prefer config.yaml auxiliary.vision.model; env var is a legacy override.
+    model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _vmodel = cfg_get(_cfg, "auxiliary", "vision", "model")
+        if _vmodel:
+            model = str(_vmodel).strip() or None
+    except Exception:
+        pass
+    if not model:
+        model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return await vision_analyze_tool(image_url, full_prompt, model)
 
 
@@ -1412,13 +1422,12 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     async def _ssrf_redirect_guard(response):
-        if response.is_redirect and response.next_request:
-            redirect_url = str(response.next_request.url)
-            from tools.url_safety import async_is_safe_url
-            if not await async_is_safe_url(redirect_url):
-                raise ValueError(
-                    f"Blocked redirect to private/internal address: {redirect_url}"
-                )
+        from tools.url_safety import async_is_safe_url, redirect_target_from_response
+        redirect_url = redirect_target_from_response(response)
+        if redirect_url and not await async_is_safe_url(redirect_url):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {redirect_url}"
+            )
 
     last_error = None
     for attempt in range(max_retries):
@@ -1720,7 +1729,19 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    # Prefer config.yaml auxiliary.video.model (falling back to vision);
+    # env vars are a legacy override.
+    model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _vmodel = cfg_get(_cfg, "auxiliary", "video", "model") or cfg_get(_cfg, "auxiliary", "vision", "model")
+        if _vmodel:
+            model = str(_vmodel).strip() or None
+    except Exception:
+        pass
+    if not model:
+        model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return video_analyze_tool(video_url, full_prompt, model)
 
 

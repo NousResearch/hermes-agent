@@ -157,7 +157,7 @@ present (may be `null`); the rest are included only when set.
 | `user_id_alt` | string | no | Platform-specific stable alt id (Signal UUID, Feishu union_id). |
 | `chat_id_alt` | string | no | Alternate chat id (e.g. Signal group internal id). |
 | `scope_id` | string | no | Platform-neutral **scope** discriminator: Discord guild / Slack workspace / Matrix server. **REQUIRED for Discord/Slack scope isolation.** Session-key discriminator. (Canonical name as of the D-Q2.5 wire migration.) |
-| `guild_id` | string | no | **Deprecated alias for `scope_id`** — still emitted and read during the cross-repo dual-read/dual-write overlap; readers resolve `scope_id ?? guild_id`. Dropped once both repos deploy on `scope_id`. |
+| `guild_id` | string | no | **Legacy alias, no longer read by the connector.** As of D-Q2.5c the connector reads and writes only `scope_id`; the gateway's agent-wide `SessionSource.to_dict()` still emits `guild_id` (mirrored to `scope_id`) for non-relay session persistence, so it may still appear on the wire but the connector ignores it. Do not depend on it. |
 | `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
 | `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
 
@@ -168,7 +168,7 @@ present (may be `null`); the rest are included only when set.
 
 ### SessionSource discriminators per platform
 
-| Platform | chat_id | chat_type | user_id | thread_id | guild_id |
+| Platform | chat_id | chat_type | user_id | thread_id | scope_id |
 | --- | --- | --- | --- | --- | --- |
 | **Discord** | channel id | `dm`/`group`/`thread` | author id | thread channel id (threads) | **guild id** (REQUIRED for server isolation) |
 | **Telegram** | chat id | `dm`/`group`/`forum` | from id | forum topic id (forums) | — |

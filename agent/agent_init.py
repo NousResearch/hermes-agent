@@ -974,6 +974,34 @@ def init_agent(
         # this mutation is reflected in the client built just below.
         agent._apply_user_default_headers()
 
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_extra_headers_to_client_kwargs,
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config,
+            )
+
+            _cp_config = load_config()
+            _cp_entries = get_compatible_custom_providers(_cp_config)
+            _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
+            apply_custom_provider_tls_to_client_kwargs(
+                client_kwargs,
+                _cp_base_url,
+                _cp_entries,
+            )
+            # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+            # custom_providers[].extra_headers) — proxies, gateways, custom
+            # auth. Applied last so the most specific config level wins.
+            # SECURITY: values may carry credentials — never log them.
+            apply_custom_provider_extra_headers_to_client_kwargs(
+                client_kwargs,
+                _cp_base_url,
+                _cp_entries,
+            )
+        except Exception:
+            logger.debug("custom-provider TLS resolution skipped", exc_info=True)
+
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
         try:
@@ -1167,6 +1195,11 @@ def init_agent(
     # continuation row that must remain open after the helper is torn down;
     # those callers explicitly set this flag to False.
     agent._end_session_on_close = True
+    # When True, this agent NEVER persists to the canonical session store
+    # (state.db) or the JSON snapshot, regardless of session_id. Set on the
+    # background skill/memory review fork so its harness turn can't leak into
+    # the user's real session and hijack the next live turn. Default False.
+    agent._persist_disabled = False
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1687,6 +1720,33 @@ def init_agent(
             f"model.context_length in config.yaml to the real value "
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
+
+    # Nous Hermes 3/4 are chat models, not tool-call-tuned. The interactive
+    # CLI already warns via cli.py show_banner() (richer output + /model hint),
+    # so skip platform=="cli" here to avoid emitting the warning twice per
+    # startup. (Gateway/TUI/cron construct with quiet_mode=True and are already
+    # gated off by the `not agent.quiet_mode` check above; this guard's active
+    # job is the CLI dedup, and it leaves the door open for any non-quiet
+    # non-CLI surface to still surface the warning.)
+    if not agent.quiet_mode and (agent.platform or "cli") != "cli":
+        try:
+            from hermes_cli.model_switch import _check_hermes_model_warning
+
+            _hermes_warn = _check_hermes_model_warning(agent.model or "")
+            if _hermes_warn:
+                _user_msg = (
+                    "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
+                    "lack reliable tool-calling for agent workflows (delegation, "
+                    "cron, proactive tools). Consider an agentic model instead "
+                    "(Claude, GPT, Gemini, Qwen-Coder, etc.)."
+                )
+                if hasattr(agent, "_emit_warning"):
+                    agent._emit_warning(_user_msg)
+                else:
+                    print(f"\n{_user_msg}\n", file=sys.stderr)
+                _ra().logger.warning(_hermes_warn)
+        except Exception:
+            pass
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
     # Skip names that are already present — the _ra().get_tool_definitions()

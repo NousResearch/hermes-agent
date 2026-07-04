@@ -1816,6 +1816,26 @@ class TestSkillMetaToDict:
 # ---------------------------------------------------------------------------
 
 
+class TestOptionalSkillSourceMetadata:
+    def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "3-statement-model"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 3-statement-model\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        meta = src.inspect("official/finance/3-statement-model")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/finance/3-statement-model"
+
+
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"

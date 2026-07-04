@@ -738,7 +738,10 @@ class GatewayConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
         platforms = {}
-        for platform_name, platform_data in data.get("platforms", {}).items():
+        platforms_data = data.get("platforms", {})
+        if not isinstance(platforms_data, dict):
+            platforms_data = {}
+        for platform_name, platform_data in platforms_data.items():
             try:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)

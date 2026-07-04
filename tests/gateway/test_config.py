@@ -363,6 +363,10 @@ class TestGatewayConfigRoundtrip:
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
 
+    def test_from_dict_ignores_non_mapping_platforms(self):
+        restored = GatewayConfig.from_dict({"platforms": []})
+        assert restored.platforms == {}
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}

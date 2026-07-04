@@ -504,7 +504,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         notifyError(err, m.defaultsFailed)
       }
     },
-    [config, m.defaultsFailed]
+    [config, m.defaultsFailed, setConfig]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then

@@ -199,6 +199,38 @@ class TestCreateProfile:
         with pytest.raises(FileExistsError):
             create_profile("coder", no_alias=True)
 
+    def test_create_profile_failure_does_not_remove_existing_profile(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        marker = profile_dir / "marker.txt"
+        marker.write_text("keep me", encoding="utf-8")
+
+        with pytest.raises(FileExistsError):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert profile_dir.exists()
+
+    def test_create_profile_cleans_partial_dir_on_clone_failure(
+        self,
+        profile_env,
+        monkeypatch,
+    ):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model:\n  default: test\n")
+
+        import hermes_cli.profiles as profiles
+
+        def fail_copy2(*args, **kwargs):
+            raise RuntimeError("copy failed")
+
+        monkeypatch.setattr(profiles.shutil, "copy2", fail_copy2)
+
+        with pytest.raises(RuntimeError, match="copy failed"):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not get_profile_dir("coder").exists()
+
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):
             create_profile("default", no_alias=True)
@@ -254,6 +286,27 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_skips_dangling_skill_symlinks(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skills_dir = default_home / "skills"
+        valid_skill = skills_dir / "valid-skill"
+        valid_skill.mkdir(parents=True)
+        (valid_skill / "SKILL.md").write_text("---\nname: valid-skill\n---\n")
+        linked_skill = skills_dir / "linked-skill"
+        dangling = skills_dir / "missing-plugin-skill"
+        try:
+            linked_skill.symlink_to("valid-skill")
+            dangling.symlink_to("missing-plugin-skill")
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (profile_dir / "skills" / "valid-skill" / "SKILL.md").exists()
+        assert (profile_dir / "skills" / "linked-skill" / "SKILL.md").exists()
+        assert not (profile_dir / "skills" / "missing-plugin-skill").exists()
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -261,7 +314,7 @@ class TestCreateProfile:
         (default_home / "memories").mkdir(exist_ok=True)
         (default_home / "memories" / "note.md").write_text("remember this")
         (default_home / "config.yaml").write_text("model: gpt-4")
-        # Runtime files that should be stripped
+        # Runtime files should be stripped
         (default_home / "gateway.pid").write_text("12345")
         (default_home / "gateway_state.json").write_text("{}")
         (default_home / "processes.json").write_text("[]")
@@ -271,10 +324,28 @@ class TestCreateProfile:
         # Content should be copied
         assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
-        # Runtime files should be stripped
+        # Runtime files stripped
         assert not (profile_dir / "gateway.pid").exists()
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
+
+    def test_clone_all_skips_dangling_skill_symlinks(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skills_dir = default_home / "skills"
+        valid_skill = skills_dir / "valid-skill"
+        valid_skill.mkdir(parents=True)
+        (valid_skill / "SKILL.md").write_text("---\nname: valid-skill\n---\n")
+        dangling = skills_dir / "missing-plugin-skill"
+        try:
+            dangling.symlink_to("missing-plugin-skill")
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "skills" / "valid-skill" / "SKILL.md").exists()
+        assert not (profile_dir / "skills" / "missing-plugin-skill").exists()
 
     def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
         """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""

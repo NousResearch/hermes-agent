@@ -1239,8 +1239,8 @@ def load_gateway_config() -> GatewayConfig:
     import hermes_constants as _hermes_constants_local
     primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
     active_home = _hermes_constants_local.get_hermes_home().resolve()
-    is_secondary_override = active_home != primary_home
-    if is_secondary_override:
+    from agent.secret_scope import is_multiplex_active
+    if is_secondary_override and is_multiplex_active():
         _PORT_BINDING_PLATFORMS = {
             "webhook",
             "api_server",
@@ -1249,6 +1249,8 @@ def load_gateway_config() -> GatewayConfig:
             "wecom_callback",
             "bluebubbles",
             "sms",
+            "whatsapp_cloud",
+            "line",
         }
         for plat_type in list(config.platforms.keys()):
             if plat_type.value in _PORT_BINDING_PLATFORMS:

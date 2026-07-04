@@ -1356,6 +1356,8 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "wecom_callback",
     "bluebubbles",
     "sms",
+    "whatsapp_cloud",
+    "line",
 })
 
 
@@ -3534,6 +3536,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
+        profile_name: Optional[str] = None,
     ) -> Optional[str]:
         """Pin DM-topic routing to the user's last-active topic.
 
@@ -3577,7 +3580,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not bindings:
             return None
         user_id = str(source.user_id)
-        profile = source.profile
+        profile = profile_name or source.profile
         if not profile or profile == "default":
             profile = "main"
         ns = f"agent:{profile}:"
@@ -8300,7 +8303,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            import functools
+            adapter.set_topic_recovery_fn(
+                functools.partial(self._recover_telegram_topic_thread_id, profile_name=profile_name)
+            )
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
 

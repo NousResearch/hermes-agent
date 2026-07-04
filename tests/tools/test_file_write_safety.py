@@ -4,6 +4,7 @@ Based on PR #1085 by ismoilh (salvaged).
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,11 @@ class TestCheckSensitivePathMacOSBypass:
     def test_private_var_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
+
+    def test_platform_tempdir_allowed_even_under_private_var(self):
+        from tools.file_tools import _check_sensitive_path
+        temp_file = Path(tempfile.gettempdir()) / "hermes-safe-temp-write.txt"
+        assert _check_sensitive_path(str(temp_file)) is None
 
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path

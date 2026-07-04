@@ -662,16 +662,43 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     return None
 
 
-def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:
+def _configured_zai_base_url() -> str:
+    """Return model.base_url when config.yaml explicitly selects the Z.AI provider."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return ""
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return ""
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    if provider not in {"zai", "glm", "z-ai", "z.ai", "zhipu"}:
+        return ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+
+def _resolve_zai_base_url(
+    api_key: str,
+    default_url: str,
+    env_override: str,
+    config_override: str = "",
+) -> str:
     """Return the correct Z.AI base URL by probing endpoints.
 
     If the user has explicitly set GLM_BASE_URL, that always wins.
-    Otherwise, probe the candidate endpoints to find one that accepts the
-    key.  The detected endpoint is cached in provider state (auth.json) keyed
-    on a hash of the API key so subsequent starts skip the probe.
+    A matching ``model.provider: zai`` + ``model.base_url`` config value wins
+    next, so users can deliberately pick the standard vs coding endpoint in
+    config.yaml. Otherwise, probe the candidate endpoints to find one that
+    accepts the key.  The detected endpoint is cached in provider state
+    (auth.json) keyed on a hash of the API key so subsequent starts skip the
+    probe.
     """
     if env_override:
         return env_override
+    if config_override:
+        return config_override
 
     # No API key set → don't probe (would fire N×M HTTPS requests with an
     # empty Bearer token, all returning 401).  This path is hit during
@@ -6225,7 +6252,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
-        base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+        base_url = _resolve_zai_base_url(
+            api_key,
+            pconfig.inference_base_url,
+            env_url,
+            _configured_zai_base_url(),
+        )
     elif provider_id == "copilot":
         # Resolve the Copilot API base URL from the token-exchange response
         # (endpoints.api, with a proxy-ep fallback), which is authoritative

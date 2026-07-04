@@ -51,9 +51,14 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "${GITHUB__USER_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
   export GITHUB__USER_TOKEN="$(gh auth token 2>/dev/null || true)"
 fi
-# GitLab (สำหรับ repo งานทีมบน GitLab): ตั้ง GITLAB__PERSONAL_ACCESS_TOKEN ใน ~/.hermes/.env
+# GitLab (สำหรับ repo งานทีมบน GitLab): ตั้ง 2 ค่านี้ใน ~/.hermes/.env
+#   GITLAB__PERSONAL_ACCESS_TOKEN=<token สิทธิ์ api>
+#   GITLAB_URL=https://<gitlab-ของทีม>   (เฉพาะ GitLab แบบติดตั้งเอง)
 if [ -n "${GITLAB__PERSONAL_ACCESS_TOKEN:-}" ] && [[ "${PR_URL}" != *github.com* ]]; then
   export CONFIG__GIT_PROVIDER="gitlab"
+  if [ -n "${GITLAB_URL:-}" ]; then
+    export GITLAB__URL="${GITLAB_URL}"
+  fi
 fi
 # ส่งคีย์ Gemini ให้ pr-agent ทั้งสองชื่อที่มันรองรับ
 if [ -n "${GEMINI_API_KEY:-}" ]; then

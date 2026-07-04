@@ -32,12 +32,17 @@ pr-review <ลิงก์ PR> improve                                     # ข
 - ไฟล์ราย repo: วาง `.pr_agent.toml` ที่รากของ repo นั้น — PR-Agent อ่านเองอัตโนมัติ (repo นี้มีให้เป็นตัวอย่างแล้ว)
 - เปลี่ยนรุ่น AI ชั่วคราว: `PR_REVIEW_MODEL="openrouter/anthropic/claude-haiku-4.5" pr-review <ลิงก์>`
 
-## ใช้กับ GitLab ของทีม (เฟสถัดไป)
+## ใช้กับ GitLab ของทีม
 
-1. สร้าง Personal Access Token ใน GitLab (สิทธิ์ api) — งานคน ~5 นาที
-2. เพิ่ม `GITLAB__PERSONAL_ACCESS_TOKEN=...` ใน `~/.hermes/.env` บน VPS
+1. สร้าง Personal Access Token ใน GitLab ของทีม (สิทธิ์ `api`) — งานคน ~5 นาที
+   (GitLab → รูปโปรไฟล์ → Preferences → Access Tokens → เลือก scope `api`)
+2. เพิ่ม 2 บรรทัดใน `~/.hermes/.env` บน VPS (URL ไม่ commit ลง repo เพราะเป็นข้อมูลภายใน):
+   ```
+   GITLAB__PERSONAL_ACCESS_TOKEN=<token>
+   GITLAB_URL=https://<gitlab-ของทีม>
+   ```
 3. `pr-review <ลิงก์ MR>` — ตัว wrapper สลับเป็น GitLab ให้เองเมื่อลิงก์ไม่ใช่ github.com
-4. ขั้นบังคับทั้งทีม (แนะนำทำต่อ): ตั้ง webhook ให้รีวิวอัตโนมัติทุก MR + ผูกเป็นด่านใน save-git stage 2
+4. ขั้นบังคับทั้งทีม (เฟสถัดไป): ตั้ง webhook ให้รีวิวอัตโนมัติทุก MR + ผูกเป็นด่านใน save-git stage 2
 
 ## ข้อจำกัดที่บอกตรงๆ
 

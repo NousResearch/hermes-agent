@@ -610,7 +610,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category, source).
+        ``source`` is ``"local"`` for skills under ``~/.hermes/skills/`` and
+        ``"external"`` for skills discovered via ``skills.external_dirs`` —
+        consumed by the TUI Gateway sidebar (#30119) and other surfaces
+        that need to distinguish operator-managed external skills from
+        bundled ones.
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
@@ -620,13 +625,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
+    # Scan local dir first, then external dirs (local takes precedence).
+    # Track per-dir origin so each emitted skill carries a ``source``
+    # field — without it, downstream surfaces (banner sidebar, web UI)
+    # cannot tell external_dirs entries from bundled ones, which is the
+    # symptom in #30119 ("external_dirs skills not shown in left
+    # sidebar"): they ARE in ``info.skills`` but get crowded out of the
+    # SKILLS_MAX=8 display slot by the 25+ built-in categories.
+    dirs_to_scan: list[tuple[Path, str]] = []
     if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+        dirs_to_scan.append((SKILLS_DIR, "local"))
+    for ext_dir in get_external_skills_dirs():
+        dirs_to_scan.append((ext_dir, "external"))
 
-    for scan_dir in dirs_to_scan:
+    for scan_dir, source in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
@@ -667,6 +679,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "source": source,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -701,19 +714,29 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        # Best-effort create the local SKILLS_DIR so future installs land
+        # in a known place, but DO NOT short-circuit on emptiness — when
+        # the operator has only configured ``skills.external_dirs`` (no
+        # bundled ``~/.hermes/skills/`` yet, e.g. a fresh profile),
+        # bailing here used to hide every external skill from
+        # ``skills_list`` even though ``_find_all_skills`` itself scans
+        # external_dirs correctly. ``skill_view`` always honoured
+        # external_dirs in that scenario, which made the inconsistency
+        # invisible until #30119 surfaced the same gap in the TUI
+        # sidebar.
         if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
+            try:
+                SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                # Read-only ``~/.hermes`` (Docker bind-mount, locked-down
+                # profile, …) — don't fail the listing; external_dirs
+                # may still be configured and accessible.
+                logger.debug(
+                    "Could not create local skills dir %s: %s",
+                    SKILLS_DIR, e,
+                )
 
-        # Find all skills
+        # Find all skills (handles missing SKILLS_DIR + external_dirs).
         all_skills = _find_all_skills()
 
         if not all_skills:

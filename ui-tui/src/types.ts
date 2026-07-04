@@ -149,6 +149,14 @@ export interface McpServerStatus {
 
 export interface SessionInfo {
   cwd?: string
+  /**
+   * Sorted list of categories whose membership includes at least one
+   * ``skills.external_dirs`` skill — the gateway populates this so the
+   * branding sidebar can keep operator-managed external categories
+   * pinned at the top instead of letting them sink past SKILLS_MAX
+   * into the "(and N more…)" overflow (issue #30119).
+   */
+  external_skill_categories?: string[]
   fast?: boolean
   lazy?: boolean
   mcp_servers?: McpServerStatus[]

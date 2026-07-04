@@ -110,6 +110,44 @@ def get_available_skills() -> Dict[str, List[str]]:
     return skills_by_category
 
 
+def get_external_skill_categories() -> List[str]:
+    """Return the sorted set of categories that contain at least one
+    ``skills.external_dirs`` skill.
+
+    The TUI Gateway sidebar (and the web dashboard's skills panel)
+    consume this so they can keep operator-managed external categories
+    visible even when the bundled skill tree has enough categories to
+    push them out of a fixed-size display slot — see #30119
+    ("TUI Gateway (8648): external_dirs skills not shown in left
+    sidebar"). With 25+ built-in categories and a default cap of 8
+    in ``ui-tui/src/components/branding.tsx``, an external category
+    sorted past position 8 (e.g. ``general`` for un-categorised
+    external skills) used to disappear into the "(and N more
+    categories…)" overflow line.
+
+    Returns the alphabetically-sorted list of categories whose
+    membership includes at least one external skill. ``general``
+    is used for external skills that don't live under a category
+    subdir, matching ``get_available_skills`` bucketing. A category
+    that has BOTH local and external skills (i.e. an external dir
+    that happens to share a category name with a bundled one) is
+    reported because it carries at least one external skill the
+    operator needs to see.
+    """
+    try:
+        from tools.skills_tool import _find_all_skills
+        all_skills = _find_all_skills()
+    except Exception:
+        return []
+
+    external: set[str] = set()
+    for skill in all_skills:
+        if skill.get("source") != "external":
+            continue
+        external.add(skill.get("category") or "general")
+    return sorted(external)
+
+
 # =========================================================================
 # Update check
 # =========================================================================

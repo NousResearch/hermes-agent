@@ -3177,9 +3177,19 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         pass
     try:
-        from hermes_cli.banner import get_available_skills
+        from hermes_cli.banner import (
+            get_available_skills,
+            get_external_skill_categories,
+        )
 
         info["skills"] = get_available_skills()
+        # Forward the list of categories that contain at least one
+        # ``skills.external_dirs`` skill so the Ink branding sidebar
+        # (``ui-tui/src/components/branding.tsx``) can keep them
+        # visible even when the bundled 25+ category baseline would
+        # otherwise push them into the SKILLS_MAX overflow tail
+        # (#30119).
+        info["external_skill_categories"] = get_external_skill_categories()
     except Exception:
         pass
     try:

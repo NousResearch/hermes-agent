@@ -193,21 +193,39 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible skills section ──
-  const skillEntries = Object.entries(info.skills).sort()
+  //
+  // Categories sourced from ``skills.external_dirs`` are pinned to the
+  // top of the list and exempt from the SKILLS_MAX truncation so the
+  // user can confirm at a glance that their config was picked up.
+  // Without this guarantee, an external category sorted past slot 8
+  // (e.g. ``general`` for un-categorised externals) silently disappears
+  // into the "(and N more categories…)" overflow when the bundled
+  // skill tree contributes 25+ categories — see #30119.
+  const externalCats = new Set(info.external_skill_categories ?? [])
+  const allEntries = Object.entries(info.skills).sort()
+  const externalEntries = allEntries.filter(([k]) => externalCats.has(k))
+  const builtinEntries = allEntries.filter(([k]) => !externalCats.has(k))
   const skillsTotal = flat(info.skills).length
-  const skillsCatCount = skillEntries.length
+  const skillsCatCount = allEntries.length
 
   const skillsBody = () => {
-    if (info.lazy && skillEntries.length === 0) {
+    if (info.lazy && allEntries.length === 0) {
       return <InlineLoader label="scanning skills" t={t} />
     }
 
-    const shown = skillEntries.slice(0, SKILLS_MAX)
-    const overflow = skillEntries.length - SKILLS_MAX
+    const builtinShown = builtinEntries.slice(0, SKILLS_MAX)
+    const overflow = builtinEntries.length - builtinShown.length
 
     return (
       <>
-        {shown.map(([k, vs]) => (
+        {externalEntries.map(([k, vs]) => (
+          <Text key={`ext:${k}`} wrap="truncate">
+            <Text color={t.color.accent}>★ </Text>
+            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.text}>{truncLine(`★ ${strip(k)}: `, vs)}</Text>
+          </Text>
+        ))}
+        {builtinShown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
             <Text color={t.color.muted}>{strip(k)}: </Text>
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>

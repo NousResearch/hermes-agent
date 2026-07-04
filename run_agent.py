@@ -5412,8 +5412,46 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
+        if getattr(self, "_adaptive_reasoning", False):
+            self._resolve_adaptive_reasoning(api_messages)
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages)
+
+    def _resolve_adaptive_reasoning(self, api_messages: list) -> None:
+        """Classify this turn's message and set a concrete reasoning effort.
+
+        Only called when ``agent.reasoning_effort: adaptive`` is configured
+        (``self._adaptive_reasoning`` set once in agent_init.py). Overwrites
+        ``self.reasoning_config`` with a concrete
+        ``{"enabled": True, "effort": <minimal|low|medium|high|xhigh|max>}``
+        for this API call only — every downstream provider-specific code
+        path (OpenRouter, Kimi, LM Studio, GitHub Models, Anthropic, Codex)
+        keeps working unmodified since it only ever sees a concrete level.
+        """
+        last_user_message = ""
+        for msg in reversed(api_messages or []):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    last_user_message = content
+                elif isinstance(content, list):
+                    # Multimodal content blocks — join text parts only.
+                    last_user_message = " ".join(
+                        block.get("text", "") for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
+                break
+
+        from agent.adaptive_reasoning import classify_reasoning_effort
+        effort = classify_reasoning_effort(
+            last_user_message,
+            provider=self.provider,
+            model=self.model,
+            base_url=self.base_url,
+            api_key=getattr(self, "api_key", None),
+        )
+        logger.info("Adaptive reasoning: classified this turn as %r", effort)
+        self.reasoning_config = {"enabled": True, "effort": effort}
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.

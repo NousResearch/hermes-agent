@@ -795,18 +795,30 @@ VALID_REASONING_EFFORTS = (
     "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )
 
+# "adaptive" is accepted alongside the concrete levels above but is handled
+# specially: it is never sent to a provider directly. Before each request,
+# AIAgent._resolve_adaptive_reasoning() (run_agent.py) classifies the
+# upcoming message into one of VALID_REASONING_EFFORTS via a small, cheap
+# local call (agent/adaptive_reasoning.py) and substitutes that concrete
+# value into self.reasoning_config for the outgoing request only. Kept as a
+# separate constant (not merged into VALID_REASONING_EFFORTS) so any code
+# that does `effort in VALID_REASONING_EFFORTS` to mean "a concrete,
+# provider-sendable level" keeps working unchanged.
+ADAPTIVE_REASONING_EFFORT = "adaptive"
+
 
 def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
     Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max",
-    "ultra".
+    "ultra", "adaptive".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none" (aliases: "false", "disabled", and
     YAML boolean False — users write ``reasoning_effort: false``/``off``/``no``
     in config.yaml and YAML hands us a bool, which must mean disabled, not
     "fall back to the default and keep thinking").
-    Returns {"enabled": True, "effort": <level>} for valid effort levels.
+    Returns {"enabled": True, "effort": <level>} for valid effort levels,
+    including "adaptive" (resolved to a concrete level per-turn elsewhere).
     """
     if effort is False:
         return {"enabled": False}
@@ -820,6 +832,8 @@ def parse_reasoning_effort(effort) -> dict | None:
         return {"enabled": False}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
+    if effort == ADAPTIVE_REASONING_EFFORT:
+        return {"enabled": True, "effort": ADAPTIVE_REASONING_EFFORT}
     return None
 
 

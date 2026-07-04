@@ -453,6 +453,13 @@ class TestParseReasoningEffort:
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
         assert parse_reasoning_effort(level) == {"enabled": True, "effort": level}
 
+    def test_adaptive_is_accepted_as_a_meta_value(self):
+        """"adaptive" is a distinct meta-value (not merged into
+        VALID_REASONING_EFFORTS) that AIAgent resolves to a concrete level
+        per-turn — see agent.adaptive_reasoning."""
+        assert parse_reasoning_effort("adaptive") == {"enabled": True, "effort": "adaptive"}
+        assert "adaptive" not in VALID_REASONING_EFFORTS
+
     @pytest.mark.parametrize(
         "raw, expected_effort",
         [

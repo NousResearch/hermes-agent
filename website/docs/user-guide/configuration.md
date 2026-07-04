@@ -1294,7 +1294,7 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium. Options: none, minimal, low, medium, high, xhigh, max, ultra
+  reasoning_effort: ""   # empty = medium. Options: none, minimal, low, medium, high, xhigh, max, ultra, adaptive
 ```
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
@@ -1308,6 +1308,39 @@ the levels supported by the selected model. `none` (or unset) leaves the model
 on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
+
+### `reasoning_effort: adaptive`
+
+Not to be confused with the provider-native adaptive thinking described
+above — this is a Hermes-side mechanism that works with **any** model,
+including ones with no thinking-effort concept of their own:
+
+```yaml
+agent:
+  reasoning_effort: adaptive
+```
+
+Before each turn, Hermes sends a small, cheap classification request asking
+the model to pick a level (`minimal`/`low`/`medium`/`high`/`xhigh`) for the
+message it's about to answer, then uses that concrete level for the real
+response. This solves a specific problem with a fixed high effort setting:
+a trivial message ("hi", "thanks") forced through `xhigh` burns hundreds of
+extra tokens and several seconds thinking about how to say hello, while a
+fixed `low`/`medium` setting under-thinks genuinely hard requests.
+
+The classification call is deliberately minimal-cost — a handful of output
+tokens, thinking disabled for that one call
+(`chat_template_kwargs: {"enable_thinking": false}` for models that support
+it) — and never raises: any failure (timeout, malformed response, provider
+error) falls back to `"medium"` so a classification hiccup can never break
+the actual response. It always resolves to one of the standard concrete
+levels before reaching any provider-specific code, so every existing
+provider path (OpenRouter, Kimi, LM Studio, GitHub Models, Anthropic, Codex)
+works with it unmodified.
+
+Best suited to local/self-hosted models where the classification call has
+no marginal API cost — with a metered cloud provider, this adds one extra
+small request per turn.
 
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 

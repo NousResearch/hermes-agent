@@ -1222,6 +1222,16 @@ extra_body:
     enable_thinking: false
 ```
 
+**Reasoning-content echo for self-hosted thinking models.** Backends like llama.cpp serving a thinking model (e.g. Qwen) expect the prior assistant turn's `reasoning_content` to be replayed back on the next request. This isn't an official requirement from any single vendor, but it's widely considered community best practice for multi-turn tool use with thinking models — dropping it tends to degrade reasoning quality across turns. Hosted vendors that require this (DeepSeek, Kimi/Moonshot, Xiaomi MiMo) are detected automatically by host/model name, but Hermes has no reliable way to detect this for an arbitrary self-hosted endpoint, so opt in explicitly with `needs_reasoning_content: true`:
+
+```yaml
+custom_providers:
+  - name: local-llamacpp
+    base_url: http://localhost:8080/v1
+    model: unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q4_K_XL
+    needs_reasoning_content: true   # echo reasoning_content back on replay (community best practice for llama.cpp + Qwen)
+```
+
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

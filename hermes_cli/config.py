@@ -4501,7 +4501,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "needs_reasoning_content",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4604,6 +4604,10 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    needs_reasoning_content = entry.get("needs_reasoning_content")
+    if isinstance(needs_reasoning_content, bool):
+        normalized["needs_reasoning_content"] = needs_reasoning_content
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -4655,6 +4659,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
+        "needs_reasoning_content",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -4846,6 +4851,37 @@ def get_custom_provider_extra_headers(
             continue
         return normalize_extra_headers(entry.get("extra_headers"))
     return {}
+
+
+def get_custom_provider_needs_reasoning_content(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether a matching custom provider needs reasoning_content echoed back.
+
+    Matches the entry whose ``base_url`` equals *base_url* (trailing-slash and
+    case insensitive, mirroring :func:`get_custom_provider_tls_settings`). Opt-in
+    via ``needs_reasoning_content: true`` — there's no reliable host/model
+    heuristic for self-hosted deployments the way there is for DeepSeek/Kimi/MiMo.
+    """
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return False
+
+    target_url = (base_url or "").rstrip("/").lower()
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        if not entry_url or entry_url != target_url:
+            continue
+        return bool(entry.get("needs_reasoning_content"))
+    return False
 
 
 def apply_custom_provider_extra_headers_to_client_kwargs(

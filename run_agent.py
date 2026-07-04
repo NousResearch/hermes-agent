@@ -5415,6 +5415,7 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._needs_custom_provider_tool_reasoning()
         )
         self._thinking_pad_cache = (key, result)
         return result
@@ -5469,6 +5470,32 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "api.xiaomimimo.com")
             or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
+
+    def _needs_custom_provider_tool_reasoning(self) -> bool:
+        """Return True when the matching custom-provider config opts into reasoning_content echo.
+
+        Unlike DeepSeek/Kimi/MiMo, self-hosted backends have no reliable
+        host/model signal, so this reads the explicit
+        ``needs_reasoning_content`` opt-in from the matching
+        ``custom_providers`` / ``providers`` entry.
+        """
+        try:
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                get_custom_provider_needs_reasoning_content,
+                load_config_readonly,
+            )
+
+            # Read from live config (not the init-time snapshot on
+            # ``self._custom_providers``) so edits are honored when
+            # switching mid-session, matching the TLS-settings reload
+            # in ``switch_model()`` (#15779).
+            return get_custom_provider_needs_reasoning_content(
+                str(self.base_url or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            return False
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.copy_reasoning_content_for_api``."""

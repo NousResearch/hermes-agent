@@ -299,6 +299,22 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+# Tool-call output validation errors. These are produced by some
+# OpenAI-compatible gateways after the model has already chosen a tool call
+# but emitted malformed arguments. Switching to the next fallback provider
+# sends the same prompt/tool schema through another model and usually just
+# burns the fallback chain; the normal in-turn tool-call repair path is the
+# right recovery surface when we can reach it.
+_MODEL_OUTPUT_TOOL_CALL_PATTERNS = [
+    "invalid tool call",
+    "invalid_tool_call",
+    "tool call arguments",
+    "tool_call arguments",
+    "tool_calls arguments",
+    "function call arguments",
+    "function_call arguments",
+]
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -1117,6 +1133,13 @@ def _classify_400(
             FailoverReason.format_error,
             retryable=False,
             should_fallback=True,
+        )
+
+    if any(p in error_msg for p in _MODEL_OUTPUT_TOOL_CALL_PATTERNS):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
         )
 
     # Context overflow from 400

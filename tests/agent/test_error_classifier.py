@@ -1137,6 +1137,37 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.should_compress is False
 
+    def test_400_invalid_tool_call_arguments_does_not_fallback(self):
+        """Malformed model-emitted tool arguments are not provider failures.
+
+        Ollama's OpenAI-compatible proxy rejects malformed tool-call JSON as a
+        400 before Hermes can run the in-turn repair path. Cascading through
+        fallback providers just repeats the same prompt/tool schema and burns
+        latency, so classify it as a terminal format error for this attempt.
+        """
+        msg = "invalid tool call arguments: failed to parse JSON"
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, approx_tokens=1000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+        assert result.should_fallback is False
+
+    def test_400_function_call_arguments_does_not_fallback(self):
+        msg = "function_call arguments must be valid JSON"
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg}},
+        )
+        result = classify_api_error(e, approx_tokens=1000)
+        assert result.reason == FailoverReason.format_error
+        assert result.should_fallback is False
+
     def test_400_real_overflow_with_invalid_request_error_code_still_compresses(self):
         """Guard the guard: OpenAI stamps genuine context-overflow 400s with
         the generic 'invalid_request_error' code. The request-validation guard

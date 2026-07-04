@@ -150,6 +150,13 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``name`` on tool-result messages — a leftover from the legacy
+          ``role: function`` dialect, written alongside ``tool_name`` by
+          ``make_tool_result_message()``, but absent from the Chat
+          Completions schema for ``role: tool``. Strict providers (aki.io)
+          reject any payload containing it with
+          ``contains item with unknown key name``. Stripped only on
+          ``role: tool`` — other roles keep ``name`` for the legacy dialect.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -173,6 +180,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "codex_message_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or (msg.get("role") == "tool" and "name" in msg)
             ):
                 needs_sanitize = True
                 break
@@ -203,6 +211,8 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers
+            if msg.get("role") == "tool":
+                msg.pop("name", None)  # legacy function-call dialect — tool role only
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

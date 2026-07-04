@@ -848,6 +848,20 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
+        # Validate backend availability at dispatch time (not just at
+        # registration). The registry's check_fn runs once at startup;
+        # backends installed after startup, or whose dependency was
+        # uninstalled between sessions, would otherwise fail silently.
+        if backend and not _is_backend_available(backend):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Web search backend '{backend}' is not available. "
+                    "Install the required package or set a different backend: "
+                    f"hermes config set web.backend <name>"
+                ),
+            })
+
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             # Fall back to availability-walked active provider when the

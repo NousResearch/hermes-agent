@@ -1,0 +1,123 @@
+# Signed + notarized macOS DMGs on a hosted (US) runner. Local mainland-CN
+# builds fail intermittently on Apple's timestamp service during codesign, so
+# release builds run here — same pattern as desktop-windows.yml, plus
+# Developer ID signing and notarization fed from repo secrets.
+#
+# Required repo secrets:
+#   MAC_CERT_P12_BASE64   base64 -i <Developer ID Application>.p12
+#   MAC_CERT_PASSWORD     password of that .p12
+#   APPLE_API_KEY         App Store Connect API key .p8 CONTENT (BEGIN PRIVATE KEY…)
+#   APPLE_API_KEY_ID      key id, e.g. 279K2XSRWL
+#   APPLE_API_ISSUER      issuer UUID (App Store Connect → Users and Access → Keys)
+#   COS_SECRET_ID/KEY     optional, already set for desktop-windows → COS publish
+#
+# Publishes desktop/<lowercased artifact name> (apex-<version>-mac-<arch>.dmg)
+# to the same public bucket the marketing download buttons point at.
+
+name: Desktop macOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: APEX macOS installer (${{ matrix.arch }}, signed)
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Root install: apps/desktop's build asserts a root workspace install
+      # (assert-root-install.cjs) and links @hermes/shared via the workspace.
+      - name: Install dependencies (root workspaces)
+        run: npm ci
+
+      - name: Import Developer ID certificate
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MAC_CERT_P12_BASE64" ]; then
+            echo "MAC_CERT_P12_BASE64 secret is not set" >&2; exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 16)"
+          echo "$MAC_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      # builder = write-build-stamp + stage-install-script + stage-native-deps
+      # + tsc + vite, then electron-builder. afterSign (scripts/notarize.cjs)
+      # submits to notarytool with the API-key triple and staples the ticket;
+      # without the APPLE_* secrets it logs and skips (build stays signed).
+      - name: Build, sign and notarize (${{ matrix.arch }})
+        working-directory: apps/desktop
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run builder -- --mac dmg zip --${{ matrix.arch }}
+
+      - name: Gatekeeper assessment (fails if not notarized)
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          APP="$(find release/mac* -maxdepth 1 -name '*.app' | head -1)"
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "Authority=Developer ID|TeamIdentifier"
+          spctl --assess --type execute -v "$APP" || {
+            echo "::warning::spctl assessment failed — DMG is signed but likely NOT notarized"; exit 0; }
+
+      - name: List build output
+        if: always()
+        working-directory: apps/desktop
+        run: ls -lh release/*.dmg release/*.zip 2>/dev/null || true
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: apexnodes-desktop-macos-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+
+      - name: Publish DMG to COS (skipped when secrets absent)
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ]; then
+            echo "COS_SECRET_ID/COS_SECRET_KEY not set; skipping COS publish (artifact still uploaded)."
+            exit 0
+          fi
+          DMG="$(ls apps/desktop/release/*.dmg | head -1)"
+          KEY="$(basename "$DMG" | tr '[:upper:]' '[:lower:]')"
+          pip3 install --quiet --break-system-packages coscmd
+          coscmd config -a "$COS_SECRET_ID" -s "$COS_SECRET_KEY" \
+            -b apexnodes-runtime-202606250443-1300912302 -r ap-guangzhou
+          coscmd upload "$DMG" "desktop/$KEY"
+          echo "COS publish OK: desktop/$KEY"

@@ -337,6 +337,118 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["runs"][-1]["metadata"] == handoff
 
 
+def test_complete_persists_artifacts_before_scratch_cleanup(worker_env):
+    """Explicit completion artifacts survive scratch workspace deletion."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, worker_env, ws)
+    finally:
+        conn.close()
+
+    report = Path(ws) / "report.md"
+    report.write_text("durable evidence", encoding="utf-8")
+
+    complete_out = kt._handle_complete({
+        "summary": "finished with artifact",
+        "artifacts": [str(report)],
+    })
+    assert json.loads(complete_out)["ok"] is True
+    assert not report.exists(), "scratch workspace should still be cleaned up"
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        stored = run.metadata["artifacts"][0]
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (worker_env,),
+        ).fetchone()
+        assert event is not None
+    finally:
+        conn.close()
+
+    stored_path = Path(stored)
+    assert stored_path.is_file()
+    assert stored_path.read_text(encoding="utf-8") == "durable evidence"
+    stored_path.resolve(strict=True).relative_to(
+        (kb.task_attachments_dir(worker_env) / "outputs").resolve(strict=True)
+    )
+    assert str(stored_path).endswith(f"kanban/attachments/{worker_env}/outputs/report.md")
+    assert json.loads(event["payload"])["artifacts"] == [str(stored_path)]
+
+
+def test_complete_invalid_task_id_with_artifacts_has_no_filesystem_side_effect(
+    monkeypatch, tmp_path, worker_env
+):
+    """An orchestrator typo/traversal task_id must not create output dirs."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("should not be copied", encoding="utf-8")
+
+    invalid_tid = "../../escape-review"
+    old_escape_dir = (kb.task_attachments_dir(invalid_tid) / "outputs").resolve(
+        strict=False
+    )
+    assert not old_escape_dir.exists()
+
+    out = kt._handle_complete({
+        "task_id": invalid_tid,
+        "summary": "should not complete",
+        "artifacts": [str(artifact)],
+    })
+    d = json.loads(out)
+
+    assert "error" in d
+    assert "could not complete" in d["error"]
+    assert artifact.read_text(encoding="utf-8") == "should not be copied"
+    assert not old_escape_dir.exists()
+    assert not (Path(old_escape_dir) / artifact.name).exists()
+
+
+def test_complete_rejected_created_cards_with_artifacts_has_no_copy_side_effect(
+    tmp_path, worker_env
+):
+    """Failed completion gates must not persist artifacts before rejection."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("should not be copied", encoding="utf-8")
+    out_dir = kb.task_attachments_dir(worker_env) / "outputs"
+
+    out = kt._handle_complete({
+        "summary": "claimed a phantom card",
+        "created_cards": ["t_phantomdeadbeef"],
+        "artifacts": [str(artifact)],
+    })
+    d = json.loads(out)
+
+    assert "error" in d
+    assert "still in-flight" in d["error"]
+    assert not out_dir.exists()
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 

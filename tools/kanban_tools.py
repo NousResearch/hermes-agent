@@ -132,6 +132,111 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+def _persist_completion_artifacts(
+    kb: Any,
+    task_id: str,
+    artifacts: Optional[list[str]],
+    *,
+    board: Optional[str] = None,
+) -> Optional[list[str]]:
+    """Copy completion artifact files to durable Kanban storage.
+
+    Scratch workspaces are deleted by ``kanban_db.complete_task()`` before the
+    gateway notifier can poll the completed event and upload any paths listed
+    in ``event_payload['artifacts']``.  When a worker explicitly passes
+    ``kanban_complete(artifacts=[...])``, preserve existing files under the
+    board's durable attachments tree first, then publish those durable paths in
+    the completion metadata/event.  Missing paths are left unchanged so the
+    handoff still records what the worker tried to provide.
+    """
+    if not artifacts:
+        return artifacts
+
+    try:
+        import shutil
+        from pathlib import Path
+    except Exception:
+        return artifacts
+
+    try:
+        attachments_root = kb.attachments_root(board=board).resolve(strict=False)
+        task_dir = kb.task_attachments_dir(task_id, board=board).resolve(strict=False)
+        try:
+            task_dir.relative_to(attachments_root)
+        except ValueError:
+            raise ValueError(
+                f"resolved attachment directory escapes board storage: {task_dir}"
+            )
+        out_dir = (task_dir / "outputs").resolve(strict=False)
+        try:
+            out_dir.relative_to(task_dir)
+        except ValueError:
+            raise ValueError(
+                f"resolved output directory escapes task storage: {out_dir}"
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.warning(
+            "kanban_complete: could not create durable artifact directory for %s",
+            task_id,
+            exc_info=True,
+        )
+        return artifacts
+
+    persisted: list[str] = []
+    for idx, raw in enumerate(artifacts, start=1):
+        path = str(raw).strip()
+        if not path:
+            continue
+        try:
+            src = Path(os.path.expanduser(path)).resolve(strict=False)
+            if not src.is_file():
+                persisted.append(path)
+                continue
+            try:
+                # If the worker already points at durable Kanban storage, keep it.
+                src.relative_to(out_dir.resolve(strict=False))
+            except ValueError:
+                name = src.name or f"artifact-{idx}"
+                dest = (out_dir / name).resolve(strict=False)
+                try:
+                    dest.relative_to(out_dir)
+                except ValueError:
+                    persisted.append(path)
+                    continue
+                if dest.exists() and dest.resolve(strict=False) != src:
+                    stem = dest.stem or f"artifact-{idx}"
+                    suffix = dest.suffix
+                    n = 2
+                    while True:
+                        candidate = (out_dir / f"{stem}-{n}{suffix}").resolve(
+                            strict=False
+                        )
+                        try:
+                            candidate.relative_to(out_dir)
+                        except ValueError:
+                            persisted.append(path)
+                            break
+                        if not candidate.exists():
+                            dest = candidate
+                            break
+                        n += 1
+                if dest.resolve(strict=False) != src:
+                    shutil.copy2(src, dest)
+                persisted.append(str(dest))
+            else:
+                persisted.append(str(src))
+        except Exception:
+            logger.warning(
+                "kanban_complete: could not persist artifact %r for %s",
+                path,
+                task_id,
+                exc_info=True,
+            )
+            persisted.append(path)
+    return persisted
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -592,12 +697,28 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if task is None:
+                return tool_error(
+                    f"could not complete {tid} (unknown id or already terminal)"
+                )
+            if task.status not in {"running", "ready", "blocked"}:
+                return tool_error(
+                    f"could not complete {tid} (unknown id or already terminal)"
+                )
+            expected_run_id = _worker_run_id(tid)
+            if (
+                expected_run_id is not None
+                and task.current_run_id != expected_run_id
+            ):
+                return tool_error(
+                    f"could not complete {tid} (unknown id or already terminal)"
+                )
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
-            task = kb.get_task(conn, tid)
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
@@ -623,12 +744,47 @@ def _handle_complete(args: dict, **kw) -> str:
                         f"and keep this task alive."
                     )
 
+            if created_cards:
+                _, phantom_cards = kb._verify_created_cards(conn, tid, created_cards)
+                if phantom_cards:
+                    try:
+                        kb.complete_task(
+                            conn, tid,
+                            result=result, summary=summary, metadata=metadata,
+                            created_cards=created_cards,
+                            expected_run_id=expected_run_id,
+                        )
+                    except kb.HallucinatedCardsError as hall_err:
+                        return tool_error(
+                            f"kanban_complete blocked: the following created_cards "
+                            f"do not exist or were not created by this worker: "
+                            f"{', '.join(hall_err.phantom)}. "
+                            f"Your task is still in-flight (no state change). "
+                            f"Retry kanban_complete with the same summary/metadata "
+                            f"and either drop these ids from created_cards, or pass "
+                            f"created_cards=[] to skip the card-claim check entirely."
+                        )
+                    return tool_error(
+                        "kanban_complete blocked: created_cards verification failed"
+                    )
+
+            if (
+                isinstance(metadata, dict)
+                and isinstance(metadata.get("artifacts"), (list, tuple))
+            ):
+                metadata["artifacts"] = _persist_completion_artifacts(
+                    kb,
+                    tid,
+                    [str(p) for p in metadata["artifacts"]],
+                    board=board,
+                )
+
             try:
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=expected_run_id,
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the

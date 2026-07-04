@@ -245,6 +245,33 @@ class TestCleanShutdownMarker:
         assert agent._end_session_on_close is False
         agent.close.assert_called_once()
 
+    def test_session_expiry_cleanup_preserves_lazy_reset_boundary(self, tmp_path, monkeypatch):
+        """Session expiry cleanup must not turn an expired chat into an agent_close row.
+
+        The expiry watcher only tears down cached resources. The next inbound
+        message owns the reset boundary, creating a fresh session with the
+        normal auto-reset notice. If cleanup lets ``agent.close()`` end the
+        SQLite row as ``agent_close``, stale-route recovery treats it as
+        recoverable and resurrects the expired session instead.
+        """
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        agent._end_session_on_close = True
+
+        async def _run():
+            await GatewayRunner._cleanup_agent_resources_off_loop(
+                runner, agent, context="session expiry"
+            )
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run())
+
+        assert agent._end_session_on_close is False
+        agent.close.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # resume_pending freshness gate (#46934)

@@ -75,7 +75,11 @@ export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
+      {/* The overlay close button floats absolutely at right-3 with
+          w-(--titlebar-control-size) and costs no layout space, and the header
+          rides up into the titlebar band — right-aligned actions must clear it
+          or they render underneath the X. */}
+      {actions ? <div className="flex shrink-0 items-center gap-1.5 pr-6">{actions}</div> : null}
     </header>
   )
 }

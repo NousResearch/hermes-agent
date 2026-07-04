@@ -2123,9 +2123,13 @@ dashboard:
   drain_auth:                 # Drain-control service-credential gate (dashboard_auth/drain plugin)
     scope: "drain"            # capability label on the verified principal
     min_secret_chars: 43      # entropy bar (url-safe-b64 chars; 43 ≈ 256 bits)
+  telegram_miniapp:           # Telegram Mini App dashboard access (dashboard_auth/telegram_miniapp plugin)
+    enabled: false            # off by default — must be explicitly turned on
+    max_age_seconds: 60       # reject a Telegram initData payload older than this (replay window)
 ```
 
 - `theme` — dashboard visual theme.
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
+- `telegram_miniapp` — fail-closed by design: even with `enabled: true`, the provider stays unregistered unless `TELEGRAM_BOT_TOKEN` is also set (there's nothing to verify Telegram's signed `initData` against without it). When active, it exposes a read-only slice of the dashboard (status, skills, cron, and the caller's own DM sessions) inside a Telegram Mini App, gated by the same pairing/allowlist decision (`TELEGRAM_ALLOWED_USERS`) the bot itself uses for DMs, plus an optional `TELEGRAM_DASHBOARD_ADMIN_USERS` allowlist for unrestricted (non-DM-scoped) access.

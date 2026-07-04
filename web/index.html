@@ -8,6 +8,20 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <title>Hermes Agent - Dashboard</title>
+    <!-- Telegram's own Web App SDK. This is what actually populates
+         window.Telegram.WebApp (and its initData) when this page is opened
+         inside Telegram's WebView -- the WebView itself does not inject
+         anything on its own; the page has to load this script, per
+         Telegram's Bot API / Web Apps documentation. A plain (non-module,
+         non-async/defer) tag here executes synchronously in document order,
+         before main.tsx's module script (which the HTML spec defers until
+         after parsing) -- so window.Telegram.WebApp is guaranteed to exist,
+         in a real Telegram context, by the time MiniApp.tsx's mount-time
+         readyAndExpand()/getInitData() calls run. Safe to include
+         unconditionally: outside Telegram it's a harmless no-op script,
+         same as Telegram's own docs recommend including it universally
+         rather than conditionally. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>

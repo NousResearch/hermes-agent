@@ -973,6 +973,28 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+### Telegram Mini App
+
+The bundled `plugins/dashboard_auth/telegram_miniapp` plugin lets you open a read-only slice of the dashboard inside Telegram itself, as a [Mini App](https://core.telegram.org/bots/webapps). It's a non-interactive token provider like drain, not a cookie-session login: the Mini App frontend sends Telegram's own signed `initData` string as `Authorization: Bearer <initData>`, and the provider HMAC-verifies it against your bot token — no separate login flow.
+
+**Off by default** and fail-closed at every step:
+
+```yaml
+dashboard:
+  telegram_miniapp:
+    enabled: false            # must be explicitly turned on
+    max_age_seconds: 60       # reject initData older than this (replay window — the entire
+                               # blast radius of a leaked token, since initData has no nonce)
+```
+
+- Setting `enabled: true` alone isn't enough — the provider also requires `TELEGRAM_BOT_TOKEN` to be set (there's nothing to verify `initData`'s signature against without it). Missing either one leaves the plugin unregistered; it does not error out the rest of the dashboard.
+- Access follows the same trust decision the Telegram bot itself uses for DMs: a user must already be **paired/allowlisted** (`TELEGRAM_ALLOWED_USERS` or the pairing store) to get in at all. There's no separate Mini-App-only allowlist to keep in sync.
+- An optional `TELEGRAM_DASHBOARD_ADMIN_USERS` env var (comma-separated Telegram user IDs) grants a second, higher tier. Unset or empty means **nobody** is admin, even a paired user — ordinary pairing never silently promotes to admin.
+- A paired-but-non-admin user only sees status/skills/cron and **their own** DM sessions — every session list and session-detail/messages route is scoped to sessions where they're the DM counterpart. An admin user sees everything, same as the desktop dashboard operator. Requesting another user's session by ID returns a plain 404, not a 403, so session IDs can't be used to probe for other users' sessions.
+- The routes exposed are a short, explicit allowlist (`/api/status`, `/api/skills`, `/api/skills/content`, `/api/cron/jobs`, `/api/cron/delivery-targets`, `/api/cron/blueprints`, `/api/sessions`, and per-session `/api/sessions/{id}` + `/api/sessions/{id}/messages`) — no chat/PTY access, and none of the destructive or cross-session-search endpoints.
+
+Because every one of those routes is also reachable by the existing cookie-authenticated desktop dashboard, the Mini App's token check doesn't shut the desktop operator out: a request with no `Authorization` header at all is untouched by the token seam and falls through to the normal cookie gate exactly as before.
+
 ### Verifying the gate is on
 
 ```bash

@@ -1312,6 +1312,103 @@ The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing 
 
 When a user sends a message that triggers an agent turn, the Telegram adapter pins that incoming message for the duration of the turn and unpins it when the response is finished — a lightweight visual indicator that the bot is actively working on the message rather than ignoring it. The pin uses `disable_notification=true` to avoid extra pings. No config required.
 
+## Telegram Mini App Dashboard
+
+Hermes can serve a mobile-friendly view of the dashboard *inside Telegram itself*, using Telegram's "Mini App" mechanism — a webpage that opens in Telegram's own in-app browser, reachable from a button on your bot's chat screen. It mirrors the desktop dashboard (status, skills, cron jobs, sessions, user management) on a phone, without needing a separate app or a desktop browser tab.
+
+This feature is **off by default** and requires a few deliberate steps to turn on. Nothing below happens automatically — read through once before starting.
+
+### Step 1: Enable the feature
+
+Two settings control whether the Mini App exists at all, and both must be set — leaving either one out (or at its default) means the feature stays completely inactive.
+
+In `~/.hermes/config.yaml`:
+
+```yaml
+dashboard:
+  telegram_miniapp:
+    enabled: true
+    max_age_seconds: 3600   # optional, this is the default (60 minutes)
+```
+
+- **`enabled`** — the master switch. Defaults to `false`. Nothing described in this section works while this is `false`, regardless of anything else being configured.
+- **`max_age_seconds`** — how long a Mini App session credential stays valid, in seconds (default 60 minutes). Telegram hands the Mini App a single signed credential when it opens and the app reuses it for the whole time it stays open, so this needs to cover a normal session or actions start failing partway through. The connection is HTTPS (Telegram requires it), which is the real protection for the credential in transit; this setting is defense-in-depth on top of that, bounding how long a copied credential would keep working. If you routinely leave the dashboard open longer than an hour, raise it; most operators never need to change it.
+
+You also need the same `TELEGRAM_BOT_TOKEN` in `~/.hermes/.env` that the rest of your Telegram setup already uses (see [Step 5](#step-5-configure-hermes) above) — the Mini App uses it to verify that requests genuinely came from Telegram, not just anyone who found the URL. If `enabled: true` is set but `TELEGRAM_BOT_TOKEN` is missing, the feature stays off (this is intentional — there's nothing to verify Telegram's data against without it), and you'll see a line in the gateway/dashboard logs saying so.
+
+### Step 2: Decide who gets in, and who gets admin
+
+Being able to open the Mini App at all requires the same authorization as being able to message your bot in a DM — see [Group Allowlisting](#group-allowlisting) and [Step 5](#step-5-configure-hermes) above for `TELEGRAM_ALLOWED_USERS` and DM pairing. If a Telegram user isn't allowed to DM your bot, they can't use the Mini App either — opening the link just shows them a plain "not paired" screen, nothing else.
+
+Everyone who *can* get in falls into one of two tiers:
+
+- **Paired / allowlisted (default tier)** — read-only. They can see gateway status, the skill list (names/descriptions/categories only, not the skill instructions themselves), and their own Telegram direct-message sessions. They cannot toggle anything, cannot see other tabs (Cron and Users aren't shown to them at all), and cannot see any other user's sessions.
+- **Admin** — full access. Everything the read-only tier sees, plus: restarting the gateway, updating Hermes, enabling/disabling and reading skills, managing cron jobs (pause/resume/run-now), searching and archiving/deleting *any* session (not just their own), and adding/removing entries in the Telegram user allowlist directly from the Users tab.
+
+Admin is opt-in per person, in `~/.hermes/.env`:
+
+```bash
+TELEGRAM_DASHBOARD_ADMIN_USERS=123456789        # your numeric Telegram user ID
+```
+
+Comma-separate multiple IDs for more than one admin. This is the same kind of numeric ID used everywhere else in this document — see [Step 4: Find Your User ID](#step-4-find-your-user-id) if you don't already have it handy.
+
+Two things worth being precise about, because they're easy to assume wrongly:
+
+- **Being listed here does nothing on its own.** Admin only ever applies on top of already being paired/allowlisted. Listing someone as an admin who isn't otherwise allowed to message the bot grants them nothing — there's no path from "admin-listed" to "authorized" that skips pairing.
+- **Leaving this unset is a safe, complete configuration**, not a half-finished one. `enabled: true` with `TELEGRAM_DASHBOARD_ADMIN_USERS` unset gives every paired/allowlisted user the read-only tier and creates *no* admin at all, for anyone. This is enforced in the code, not just documented behavior — an empty/missing value can never be interpreted as "everyone's an admin" or "the first paired user is the admin."
+
+### Step 3: Expose the page over HTTPS
+
+Telegram requires the Mini App's URL to be HTTPS — the menu-button field described in Step 4 flatly rejects a plain `http://` address, so this step isn't optional. Hermes itself doesn't need a TLS certificate for this: the dashboard serves plain HTTP locally, and something in front of it terminates TLS.
+
+The worked example here uses [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`), since it needs no open inbound firewall port at all — the tunnel daemon makes an outbound connection to Cloudflare, which then proxies public HTTPS traffic back through it. Any reverse proxy that can terminate TLS and forward to a local port works the same way in principle (nginx + Let's Encrypt, Caddy, etc.) — adapt the ingress rule below to your own tool.
+
+1. If you don't already have a tunnel, create one and point a hostname at it: [Cloudflare's tunnel setup guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) covers this from scratch.
+2. In the tunnel's ingress config (`config.yml`), add a rule for the hostname you want the Mini App at. Consider giving it a **separate hostname from your regular dashboard** rather than reusing one, and restricting which paths it forwards — the dashboard and the Mini App are served by the same backend process, so without a path restriction, exposing the Mini App's hostname exposes the whole dashboard behind it too:
+
+   ```yaml
+   ingress:
+     - hostname: miniapp.yourdomain.com
+       path: ^/(miniapp|assets/.*|favicon\.ico|fonts-terminal/.*|api/(miniapp|status|skills|cron|sessions|telegram)(/.*)?)$
+       service: http://localhost:9119
+     - hostname: miniapp.yourdomain.com
+       service: http_status:404
+     - service: http_status:404
+   ```
+
+   Adjust the port (`9119` here) to match whatever `hermes dashboard` is actually bound to.
+3. Create the DNS record for that hostname — adding it to `ingress` alone does not create it:
+   ```bash
+   cloudflared tunnel route dns <your-tunnel-name-or-id> miniapp.yourdomain.com
+   ```
+4. Restart `cloudflared` to pick up the config change, then confirm `https://miniapp.yourdomain.com/miniapp` loads (it'll show the "not paired" screen until Step 2 and Step 4 are both done — that's expected at this point, not a bug).
+
+### Step 4: Add the menu-button link in BotFather
+
+This is a single-field change, not a new Mini App "listing" — don't use BotFather's `/newapp` command, which creates a different kind of standalone Mini App with its own catalog listing that this feature doesn't use.
+
+1. Open a chat with [@BotFather](https://t.me/BotFather).
+2. `/mybots` → select your bot → **Bot Settings** → **Menu Button**.
+3. Choose **Edit Menu Button URL** and paste your HTTPS URL, ending in `/miniapp` — e.g. `https://miniapp.yourdomain.com/miniapp`.
+4. Give it a short label when prompted (e.g. "Dashboard").
+
+(If you'd rather not go through BotFather's UI, the equivalent is one Bot API call — `setChatMenuButton` with `menu_button: {type: "web_app", text: "Dashboard", web_app: {url: "https://miniapp.yourdomain.com/miniapp"}}` — but BotFather is simpler for a one-time setup.)
+
+Open a DM with your bot — a menu button (usually a small icon next to the message box) now opens the dashboard directly in Telegram.
+
+### What's out of scope, and known limitations
+
+This feature does not, and currently cannot:
+
+- **Register the BotFather menu button for you.** Step 4 is manual, every time you change the URL (e.g. moving to a new domain).
+- **Configure your reverse proxy for you.** Step 3 is a worked example, not an automated setup — you're expected to adapt it to your own tunnel/proxy tool and domain.
+- **Guarantee a Telegram user's `@username`/display name for every allowlist entry.** The Users tab makes a best-effort attempt to resolve names via the Bot API (`getChat`), which works for any user who has messaged the bot — in practice, almost everyone on the list, since that's usually how they got allowlisted. But there's no general "look up any numeric ID" API in Telegram: an ID that has genuinely never interacted with the bot (or whose privacy settings hide it) shows as "name unavailable." The numeric ID is always shown and is what actually drives access control regardless of whether a name resolves.
+- **Show a full run transcript from the Cron tab's failure-log popup.** It shows the job's last recorded error text, not a complete step-by-step log of that run.
+- **Provide a true chronological "oldest first" walk through every session** for admins using the sort toggle in the Sessions tab — it reorders whatever's currently loaded on screen rather than re-querying the server in ascending order.
+
+None of these limit what the feature is actually for (day-to-day status checks, skill/cron management, and reviewing sessions from a phone) — they're corners intentionally left uncut rather than built out, and worth knowing about before you rely on one of them.
+
 ## Security
 
 :::warning

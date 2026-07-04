@@ -96,8 +96,8 @@ CAPABILITIES = {
 }
 
 DEFAULTS = {
-    "k": 6, "max_rounds": 3, "floor": 0.12,
-    "output": "response",
+    "k": 6, "max_rounds": 3, "floor": 0.12, "key_gap_threshold": 0.40,
+    "output": "response", "stakes_aware_respond": False,
     "triage": False, "triage_model": "fast", "triage_provider": "ollama-glm",
     "triage_timeout": 60, "judge_model": "deepseek", "judge_provider": "ollama-glm",
     "judge_timeout": 120, "max_assumes": 6,
@@ -202,12 +202,26 @@ def rank(problem, evidence, rank_cfg):
 
 def _tombstone(q, found, text, via="research", rationale=None):
     qt = q.get("question", "")
+    answers = q.get("answers", None)
+    stakes_values = []
+    if isinstance(answers, list):
+        for answer in answers:
+            if not isinstance(answer, dict):
+                continue
+            stakes = answer.get("stakes", None)
+            if stakes is not None:
+                stakes_values.append(stakes)
+    metadata = {
+        "value": q.get("value", None),
+        "stakes": max(stakes_values) if stakes_values else None,
+        "recommendation": q.get("recommendation", None),
+    }
     if found:
         tomb = {"question": qt, "status": "ANSWERED", "fact": text,
-                "evidence": f"{qt} -> {text}", "via": via}
+                "evidence": f"{qt} -> {text}", "via": via, **metadata}
     else:
         tomb = {"question": qt, "status": "NOT_FOUND", "fact": text,
-                "evidence": f"{qt} -> (known gap: {text})", "via": via}
+                "evidence": f"{qt} -> (known gap: {text})", "via": via, **metadata}
     if rationale is not None:
         tomb["rationale"] = rationale
     return tomb
@@ -306,15 +320,44 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
         stop_reason = "max_rounds reached"
 
     evidence_final = seeds + [t["evidence"] for t in tombstones]
+    gaps = [t for t in tombstones if t["status"] == "NOT_FOUND"]
+
+    def gap_value(tomb):
+        value = tomb.get("value", None)
+        return value if value is not None else 0.0
+
+    ranked_gaps = sorted(gaps, key=gap_value, reverse=True)
+    surfaced_gaps = [t for t in ranked_gaps if gap_value(t) >= cfg["key_gap_threshold"]]
+    if ranked_gaps and ranked_gaps[0] not in surfaced_gaps:
+        surfaced_gaps.append(ranked_gaps[0])
+    unresolved_key_questions = []
+    seen_gap_questions = set()
+    for tomb in sorted(surfaced_gaps, key=gap_value, reverse=True):
+        question = tomb.get("question", None)
+        if question in seen_gap_questions:
+            continue
+        seen_gap_questions.add(question)
+        unresolved_key_questions.append({
+            "question": question,
+            "value": tomb.get("value", None),
+            "stakes": tomb.get("stakes", None),
+            "gap_reason": tomb.get("fact", None),
+        })
     output_mode = cfg.get("output", "response")
     refined_prompt = None
     final = None
     if output_mode in ("prompt", "both"):
         refined_prompt = refiner(problem, evidence_final, cfg)
     if output_mode == "both":
-        final = responder(refined_prompt, evidence_final, cfg)
+        responder_cfg = ({**cfg, "tombstones": tombstones,
+                          "unresolved_key_questions": unresolved_key_questions}
+                         if cfg.get("stakes_aware_respond") else cfg)
+        final = responder(refined_prompt, evidence_final, responder_cfg)
     elif output_mode != "prompt":
-        final = responder(problem, evidence_final, cfg)
+        responder_cfg = ({**cfg, "tombstones": tombstones,
+                          "unresolved_key_questions": unresolved_key_questions}
+                         if cfg.get("stakes_aware_respond") else cfg)
+        final = responder(problem, evidence_final, responder_cfg)
     if run_dir and refined_prompt is not None:
         with open(os.path.join(run_dir, REFINED_PROMPT_FILE), "w", encoding="utf-8") as fh:
             fh.write(refined_prompt)
@@ -333,6 +376,7 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, see
                          "rationale": t.get("rationale", "")}
                         for t in tombstones if t.get("via") == "assumed"],
         "next_questions": next_questions,
+        "unresolved_key_questions": unresolved_key_questions,
     }
 
 
@@ -390,14 +434,16 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--problem", required=True)
     p.add_argument("--k", type=int, default=DEFAULTS["k"])
-    p.add_argument("--max-rounds", type=int, default=DEFAULTS["max_rounds"])
+    p.add_argument("--max-rounds", type=int, default=None)
     p.add_argument("--floor", type=float, default=DEFAULTS["floor"])
+    p.add_argument("--key-gap-threshold", type=float, default=None)
     p.add_argument("--capability", choices=["act", "experiment", "read"], default="act",
                    help="full agency (act, default) | reversible experiments | read-only.")
     p.add_argument("--validate", choices=["baseline", "top", "bottom"],
                    help="end-to-end test: respond after answering baseline/top-k/bottom-k.")
     p.add_argument("--dry-run", action="store_true", help="mock answerer/responder (host, no hermes).")
     p.add_argument("--triage", choices=["on", "off"], default=None)
+    p.add_argument("--stakes-aware-respond", choices=["on", "off"], default=None)
     p.add_argument("--output", choices=["prompt", "response", "both"], default=None)
     p.add_argument("--triage-model", default=None)
     p.add_argument("--judge-model", default=None)
@@ -412,6 +458,28 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
+    def _int_env(name, cli_val, default):
+        if cli_val is not None:            # CLI flag wins
+            return cli_val
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return int(raw.strip())
+        except ValueError:
+            p.error(f"{name} must be an integer (got {raw!r})")   # names var; stderr; exit 2
+
+    def _float_env(name, cli_val, default):
+        if cli_val is not None:            # CLI flag wins
+            return cli_val
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return float(raw.strip())
+        except ValueError:
+            p.error(f"{name} must be a float (got {raw!r})")   # names var; stderr; exit 2
+
     seeds = []
     if args.evidence_file:
         with open(args.evidence_file, encoding="utf-8") as fh:
@@ -419,16 +487,25 @@ def main(argv=None):
 
     triage_setting = (args.triage if args.triage is not None
                       else os.environ.get("INVESTIGATOR_TRIAGE", "on"))
+    stakes_aware_setting = (args.stakes_aware_respond if args.stakes_aware_respond is not None
+                            else os.environ.get("INVESTIGATOR_STAKES_AWARE_RESPOND", "off"))
     output_setting = (args.output if args.output is not None
                       else os.environ.get("INVESTIGATOR_OUTPUT", "prompt"))
     triage = triage_setting.lower() == "on"
+    stakes_aware_respond = stakes_aware_setting.lower() == "on"
     triage_model = (args.triage_model or os.environ.get("INVESTIGATOR_TRIAGE_MODEL")
                     or DEFAULTS["triage_model"])
     judge_model = (args.judge_model or os.environ.get("INVESTIGATOR_JUDGE_MODEL")
                    or DEFAULTS["judge_model"])
-    max_assumes = args.max_assumes if args.max_assumes is not None else DEFAULTS["max_assumes"]
-    cfg = apply_capability({"k": args.k, "max_rounds": args.max_rounds, "floor": args.floor,
-                            "run_dir": args.run_dir, "triage": triage, "output": output_setting,
+    max_rounds = _int_env("INVESTIGATOR_MAX_ROUNDS", args.max_rounds, DEFAULTS["max_rounds"])
+    max_assumes = _int_env("INVESTIGATOR_MAX_ASSUMES", args.max_assumes, DEFAULTS["max_assumes"])
+    key_gap_threshold = _float_env("INVESTIGATOR_KEY_GAP_THRESHOLD", args.key_gap_threshold,
+                                   DEFAULTS["key_gap_threshold"])
+    cfg = apply_capability({"k": args.k, "max_rounds": max_rounds, "floor": args.floor,
+                            "key_gap_threshold": key_gap_threshold,
+                            "run_dir": args.run_dir, "triage": triage,
+                            "stakes_aware_respond": stakes_aware_respond,
+                            "output": output_setting,
                             "triage_model": triage_model, "judge_model": judge_model,
                             "max_assumes": max_assumes},
                            args.capability)

@@ -49,6 +49,14 @@ metadata:
       description: Max autonomous judgment-call decisions accepted per run (including resumed) before overflow routes to research
       default: 6
       prompt: Max autonomous assumptions per run?
+    - key: investigator.key_gap_threshold
+      description: Minimum ranked value for surfacing a NOT_FOUND gap as a key unresolved question
+      default: 0.40
+      prompt: Minimum value for a key unresolved question?
+    - key: investigator.stakes_aware_respond
+      description: Bucket final-response evidence and surface unresolved key gaps as material risks
+      default: false
+      prompt: Enable stakes-aware final responses?
     - key: investigator.output
       description: Final output — response (classic final response) | prompt (refined prompt only) | both
       default: response
@@ -112,9 +120,15 @@ TOMBSTONES: 2 ANSWERED, 0 NOT_FOUND   stop_reason: converged (natural)
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>"
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --k 6 --max-rounds 3 --capability read
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --triage on --output prompt
+python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --stakes-aware-respond on
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --run-dir $HERMES_HOME/state/inv-<slug>
 python3 ${HERMES_SKILL_DIR}/scripts/iterate.py --problem "<task>" --dry-run   # loop logic, no model calls
 ```
+
+CLI settings can also fall back to `INVESTIGATOR_TRIAGE`, `INVESTIGATOR_OUTPUT`,
+`INVESTIGATOR_TRIAGE_MODEL`, `INVESTIGATOR_JUDGE_MODEL`, `INVESTIGATOR_MAX_ROUNDS`, and
+`INVESTIGATOR_MAX_ASSUMES`, `INVESTIGATOR_KEY_GAP_THRESHOLD`, and
+`INVESTIGATOR_STAKES_AWARE_RESPOND`. Precedence is CLI flag > env var > built-in default.
 
 ## Durability (`--run-dir`)
 
@@ -218,7 +232,26 @@ When `--run-dir` is set, `prompt`/`both` modes also write `refined-prompt.md` to
 - **ANSWERED** (`Q → A`) — a discovered fact enters the context.
 - **NOT_FOUND** (`Q → gap`) — recorded as a known gap; the final response proceeds with a stated
   assumption. (No revival machinery yet — v1.)
-- **user-only** — a genuine preference no investigation can resolve → surfaced as a clarifying question.
+- **user-only** — a genuine preference no investigation can resolve becomes a NOT_FOUND gap; when
+  it clears `key_gap_threshold` and `stakes_aware_respond` is on, the final response proceeds
+  non-blocking while surfacing it as a material risk and stating the assumption being made. It does
+  not ask a clarifying question or pause the loop.
+
+ANSWERED and NOT_FOUND tombstones may also carry the ranked question's optional, nullable `value`,
+maximum branch `stakes`, and `recommendation`. Old journal tombstones without these additive fields
+remain valid; readers must treat absent values as `None`. The `iterate()` result additionally exposes
+`unresolved_key_questions`: NOT_FOUND gaps at or above `key_gap_threshold` (default `0.40`) plus the
+single highest-value gap, deduplicated by question and sorted by descending value. This key is also
+additive; readers of older result dicts must tolerate its absence.
+
+`stakes_aware_respond` is OFF by default pending an A/B evaluation before any default change. Enable
+it with config key `investigator.stakes_aware_respond`, env var
+`INVESTIGATOR_STAKES_AWARE_RESPOND=on`, or CLI flag `--stakes-aware-respond on`. The final responder
+then buckets context into **Established facts**, **Minor open gaps**, and (when present)
+**⚠️ Unresolved key questions**. It still proceeds without blocking; for every key gap it states the
+working assumption and collects those assumptions in a closing **Material risks — assumptions to
+confirm** section. With no unresolved key questions, the key-gap bucket and material-risk framing are
+omitted.
 
 ## Status (v1, validated with caveats)
 

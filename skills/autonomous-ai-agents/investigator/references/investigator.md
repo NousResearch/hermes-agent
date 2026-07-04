@@ -73,6 +73,24 @@ string alone without needing the `via` field:
 | `q -> decision (assumed: rationale)` | `assumed` | an autonomous judgment call — a decision, not a discovered fact |
 | `q -> (known gap: ...)` | whichever route produced the NOT_FOUND | unresolved; carried forward as a known gap |
 
+Every new tombstone also carries the ranked question's optional, nullable `value`, maximum answer-
+branch `stakes`, and `recommendation`, attached centrally by `_tombstone`. Old journal tombstones
+without these fields remain valid, and readers must use optional access and treat them as `None`.
+The `iterate()` result's additive `unresolved_key_questions` list surfaces NOT_FOUND gaps whose
+value reaches `key_gap_threshold` (default `0.40`) and always includes the single highest-value gap;
+entries are deduplicated by question and value-sorted. Older result dicts without this key remain
+valid as well.
+
+The stakes-aware final responder is gated by `cfg["stakes_aware_respond"]` and is OFF by default
+pending an A/B evaluation before any default change. It can be enabled with config key
+`investigator.stakes_aware_respond`, env var `INVESTIGATOR_STAKES_AWARE_RESPOND=on`, or CLI flag
+`--stakes-aware-respond on`. When enabled, `iterate()` passes the tombstones and
+`unresolved_key_questions` through the existing three-argument responder config. `respond()` buckets
+them into **Established facts**, **Minor open gaps**, and (only when nonempty) **⚠️ Unresolved key
+questions**. It proceeds non-blocking, states the assumption used for each key gap, and collects those
+assumptions in a closing **Material risks — assumptions to confirm** section. With no key gaps, it
+omits both the key-gap bucket and material-risk instruction.
+
 `respond()` is content-gated on the inferred-evidence markers: any evidence string containing
 `"(assumed:"` or `"(derived"` triggers the "treat as inferred, not observed" framing and its
 assumptions/known-gaps ledger; absent those markers its prompt is byte-identical to pre-1.2.0 (a

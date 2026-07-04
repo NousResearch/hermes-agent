@@ -237,10 +237,51 @@ def judgment_call(question, problem, evidence, cfg):
 
 def respond(problem, evidence, cfg):
     """Final response over the enriched context (no tools — synthesize from established facts)."""
-    facts = "\n".join(f"- {e}" for e in evidence) or "(none)"
-    prompt = (f"TASK: {problem}\n\nEstablished facts and known gaps:\n{facts}\n\n"
-              f"Produce the best possible response to the task using what's established. "
-              f"State any assumptions you make for unresolved gaps. Be direct and useful.")
+    if cfg.get("stakes_aware_respond"):
+        tombstones = cfg.get("tombstones", []) or []
+        unresolved = cfg.get("unresolved_key_questions", []) or []
+        key_questions = {gap.get("question") for gap in unresolved if gap.get("question")}
+        tombstone_evidence = {tomb.get("evidence") for tomb in tombstones
+                              if isinstance(tomb.get("evidence"), str)}
+        established = [tomb["evidence"] for tomb in tombstones
+                       if tomb.get("status") == "ANSWERED"
+                       and isinstance(tomb.get("evidence"), str)]
+        established.extend(item for item in evidence
+                           if isinstance(item, str) and item not in tombstone_evidence)
+        minor_gaps = [(tomb.get("evidence") or tomb.get("fact") or tomb.get("question"))
+                      for tomb in tombstones
+                      if tomb.get("status") == "NOT_FOUND"
+                      and tomb.get("question") not in key_questions]
+        key_gaps = [(tomb.get("evidence") or tomb.get("fact") or tomb.get("question"))
+                    for tomb in tombstones
+                    if tomb.get("status") == "NOT_FOUND"
+                    and tomb.get("question") in key_questions]
+
+        def bucket(items):
+            return "\n".join(f"- {item}" for item in items if item) or "(none)"
+
+        prompt = (f"TASK: {problem}\n\nEstablished facts:\n{bucket(established)}\n\n"
+                  f"Minor open gaps:\n{bucket(minor_gaps)}")
+        if key_questions:
+            if not key_gaps:
+                key_gaps = [f"{gap.get('question')} -> (known gap: {gap.get('gap_reason')})"
+                            for gap in unresolved if gap.get("question")]
+            prompt += f"\n\n⚠️ Unresolved key questions:\n{bucket(key_gaps)}"
+            prompt += (
+                "\n\nProduce the best possible response to the task using what's established. "
+                "Proceed without blocking or asking the user a question. For each unresolved key "
+                "gap, state the assumption you are proceeding on, then collect those assumptions "
+                "in a clearly delimited closing section named `Material risks — assumptions to "
+                "confirm`. Be direct and useful."
+            )
+        else:
+            prompt += ("\n\nProduce the best possible response to the task using what's established. "
+                       "State any assumptions you make for unresolved gaps. Be direct and useful.")
+    else:
+        facts = "\n".join(f"- {e}" for e in evidence) or "(none)"
+        prompt = (f"TASK: {problem}\n\nEstablished facts and known gaps:\n{facts}\n\n"
+                  f"Produce the best possible response to the task using what's established. "
+                  f"State any assumptions you make for unresolved gaps. Be direct and useful.")
     if any("(assumed:" in e or "(derived" in e for e in evidence):
         prompt += (
             " Treat derived facts as inferred, not observed: they were not directly verified. "

@@ -7,6 +7,8 @@ INFOGAIN_SCRIPTS_DIR. Run:
     python3 tests/test_iterate.py
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -104,6 +106,82 @@ class LoopLogic(unittest.TestCase):
         self.assertEqual(out["n_answered"], 0)
         self.assertTrue(all(t["status"] == "NOT_FOUND" for t in out["tombstones"]))
         self.assertIn("known gap", out["tombstones"][0]["evidence"])
+
+    def test_tombstones_carry_ranked_value_stakes_and_recommendation(self):
+        ranked = {**q("deployment target", .73), "recommendation": "ASK",
+                  "answers": [{"stakes": .25}, {"stakes": None}, {"stakes": .81}, "invalid"]}
+        answered = iterate._tombstone(ranked, True, "production")
+        gap = iterate._tombstone(ranked, False, "no access")
+        for tomb in (answered, gap):
+            self.assertEqual(tomb["value"], .73)
+            self.assertEqual(tomb["stakes"], .81)
+            self.assertEqual(tomb["recommendation"], "ASK")
+        self.assertIsNone(iterate._tombstone({**q("minimal", .1), "answers": {}},
+                                             False, "unknown")["stakes"])
+
+    def test_unresolved_key_questions_threshold_and_non_top_exclusion(self):
+        self._patch([[q("highest", .8), q("highest", .7), q("at threshold", .4),
+                      q("low", .2)]])
+        out = iterate.iterate(
+            "p", {"k": 4, "max_rounds": 1, "floor": .1, "key_gap_threshold": .4},
+            answerer=notfound_answerer, responder=mock_responder)
+        self.assertEqual(out["unresolved_key_questions"], [
+            {"question": "highest", "value": .8, "stakes": None,
+             "gap_reason": "not discoverable"},
+            {"question": "at threshold", "value": .4, "stakes": None,
+             "gap_reason": "not discoverable"},
+        ])
+
+    def test_unresolved_key_questions_always_includes_highest_below_threshold(self):
+        self._patch([[q("highest", .3), q("lower", .2)]])
+        out = iterate.iterate(
+            "p", {"k": 2, "max_rounds": 1, "floor": .1, "key_gap_threshold": .4},
+            answerer=notfound_answerer, responder=mock_responder)
+        self.assertEqual([gap["question"] for gap in out["unresolved_key_questions"]],
+                         ["highest"])
+
+    def test_no_notfound_tombstones_has_no_unresolved_key_questions(self):
+        self._patch([[q("answered", .9)]])
+        out = iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": .1},
+                              answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out["unresolved_key_questions"], [])
+
+    def test_stakes_aware_responder_receives_tombstones_and_key_gaps(self):
+        self._patch([[q("answered", .9), q("key gap", .8)]])
+        captured = {}
+
+        def mixed_answerer(qq, problem, evidence, cfg):
+            if qq["question"] == "answered":
+                return True, "known"
+            return False, "not discoverable"
+
+        def responder(problem, evidence, cfg):
+            captured.update(cfg)
+            return "response"
+
+        out = iterate.iterate(
+            "p", {"k": 2, "max_rounds": 1, "floor": .1,
+                  "key_gap_threshold": .4, "stakes_aware_respond": True},
+            answerer=mixed_answerer, responder=responder)
+        self.assertEqual(captured["tombstones"], out["tombstones"])
+        self.assertEqual(captured["unresolved_key_questions"], [
+            {"question": "key gap", "value": .8, "stakes": None,
+             "gap_reason": "not discoverable"},
+        ])
+
+    def test_default_responder_cfg_does_not_gain_bucketing_keys(self):
+        self._patch([[q("gap", .8)]])
+        captured = {}
+
+        def responder(problem, evidence, cfg):
+            captured.update(cfg)
+            return "response"
+
+        iterate.iterate(
+            "p", {"k": 1, "max_rounds": 1, "floor": .1, "key_gap_threshold": .4},
+            answerer=notfound_answerer, responder=responder)
+        self.assertNotIn("tombstones", captured)
+        self.assertNotIn("unresolved_key_questions", captured)
 
     def test_context_grows_monotonically(self):
         self._patch([[q("a", .9), q("b", .8)], [q("c", .7), q("d", .6)], [q("e", .5)]])
@@ -266,6 +344,24 @@ class Durability(unittest.TestCase):
                               answerer=found_answerer, responder=mock_responder)
         self.assertEqual(out["n_resumed"], 1)  # the good tombstone survived; torn line skipped
 
+    def test_resume_old_tombstone_without_rank_metadata(self):
+        old_gap = {
+            "question": "legacy gap", "status": "NOT_FOUND", "fact": "not recorded",
+            "evidence": "legacy gap -> (known gap: not recorded)", "via": "research",
+        }
+        with open(os.path.join(self.tmp, iterate.JOURNAL), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"kind": "header", "problem_fp": answerer.fp("p")}) + "\n")
+            fh.write(json.dumps(old_gap) + "\n")
+        self._patch([[]])
+        out = iterate.iterate(
+            "p", {"max_rounds": 1, "run_dir": self.tmp, "key_gap_threshold": .4},
+            answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(out["n_resumed"], 1)
+        self.assertEqual(out["unresolved_key_questions"], [{
+            "question": "legacy gap", "value": None, "stakes": None,
+            "gap_reason": "not recorded",
+        }])
+
     def test_fp_dedup_catches_reworded_question(self):
         self._patch([[q("What's the Stack?", .9)], [q("what's   the STACK!!", .9)]])
         out = iterate.iterate("p", {"k": 1, "max_rounds": 2, "floor": 0.12, "run_dir": self.tmp},
@@ -318,6 +414,7 @@ class DerivedConsumption(unittest.TestCase):
         self.assertEqual(derived_tombs[0], {
             "question": "What port?", "status": "ANSWERED", "fact": "5432",
             "evidence": "What port? -> 5432 (derived during analysis)", "via": "derived",
+            "value": .9, "stakes": None, "recommendation": "DERIVED",
         })
         self.assertEqual(researched, ["What host?"])
         self.assertEqual(out["n_derived"], 1)
@@ -610,6 +707,65 @@ class AssumptionLedger(unittest.TestCase):
         self.assertEqual(ds.call_args[0][1], expected)
 
 
+class StakesAwareRespond(unittest.TestCase):
+    def _respond_prompt(self, problem, evidence, cfg):
+        ds = mock.MagicMock(return_value={"content": "response", "error": None})
+        with mock.patch.object(answerer, "dispatch_single", ds), \
+             mock.patch.object(answerer, "resolve_alias", lambda m: m):
+            answerer.respond(problem, evidence, cfg)
+        ds.assert_called_once()
+        return ds.call_args[0][1]
+
+    def test_explicit_off_preserves_prompt_bytes(self):
+        cfg = {**iterate.DEFAULTS, "stakes_aware_respond": False}
+        problem = "Build the thing"
+        evidence = ["stack -> Python", "deployment -> (known gap: unspecified)"]
+        facts = "\n".join(f"- {e}" for e in evidence) or "(none)"
+        expected = (f"TASK: {problem}\n\nEstablished facts and known gaps:\n{facts}\n\n"
+                    f"Produce the best possible response to the task using what's established. "
+                    f"State any assumptions you make for unresolved gaps. Be direct and useful.")
+        self.assertEqual(self._respond_prompt(problem, evidence, cfg), expected)
+
+    def test_on_buckets_established_minor_and_key_gaps(self):
+        answered = iterate._tombstone(q("Which stack?", .9), True, "Python")
+        minor = iterate._tombstone(q("Which color?", .2), False, "not discoverable")
+        key = iterate._tombstone(q("Which deployment target?", .8), False, "not discoverable")
+        cfg = {
+            **iterate.DEFAULTS,
+            "stakes_aware_respond": True,
+            "tombstones": [answered, minor, key],
+            "unresolved_key_questions": [{
+                "question": "Which deployment target?", "value": .8,
+                "stakes": None, "gap_reason": "not discoverable",
+            }],
+        }
+        prompt = self._respond_prompt(
+            "Build the thing", ["Caller seed fact", answered["evidence"],
+                                minor["evidence"], key["evidence"]], cfg)
+        self.assertIn("Established facts", prompt)
+        self.assertIn("Minor open gaps", prompt)
+        self.assertIn("⚠️ Unresolved key questions", prompt)
+        self.assertIn("Which deployment target?", prompt)
+        self.assertIn("Material risks — assumptions to confirm", prompt)
+        self.assertIn("Caller seed fact", prompt)
+
+    def test_on_without_key_gaps_omits_risk_framing(self):
+        answered = iterate._tombstone(q("Which stack?", .9), True, "Python")
+        minor = iterate._tombstone(q("Which color?", .2), False, "not discoverable")
+        cfg = {
+            **iterate.DEFAULTS,
+            "stakes_aware_respond": True,
+            "tombstones": [answered, minor],
+            "unresolved_key_questions": [],
+        }
+        prompt = self._respond_prompt(
+            "Build the thing", [answered["evidence"], minor["evidence"]], cfg)
+        self.assertIn("Established facts", prompt)
+        self.assertIn("Minor open gaps", prompt)
+        self.assertNotIn("⚠️ Unresolved key questions", prompt)
+        self.assertNotIn("Material risks — assumptions to confirm", prompt)
+
+
 class RefinedPrompt(unittest.TestCase):
     def setUp(self):
         self._orig = iterate.rank
@@ -721,6 +877,128 @@ class RefinedPrompt(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(tmp, iterate.JOURNAL + ".stale")))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class EnvConfig(unittest.TestCase):
+    def _captured_cfg(self, argv):
+        with mock.patch("iterate.iterate", return_value={"tombstones": []}) as run, \
+             contextlib.redirect_stdout(io.StringIO()):
+            iterate.main(["--problem", "p", "--json", *argv])
+        return run.call_args.args[1]
+
+    def test_max_rounds_from_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ROUNDS"] = "5"
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["max_rounds"], 5)
+
+    def test_max_rounds_cli_wins_over_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ROUNDS"] = "2"
+            cfg = self._captured_cfg(["--max-rounds", "8"])
+        self.assertEqual(cfg["max_rounds"], 8)
+
+    def test_max_rounds_defaults_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["max_rounds"], 3)
+
+    def test_invalid_max_rounds_env_exits_2_and_names_var(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ROUNDS"] = "abc"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                iterate.main(["--problem", "p"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("INVESTIGATOR_MAX_ROUNDS", stderr.getvalue())
+
+    def test_max_assumes_from_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ASSUMES"] = "9"
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["max_assumes"], 9)
+
+    def test_max_assumes_cli_wins_over_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ASSUMES"] = "2"
+            cfg = self._captured_cfg(["--max-assumes", "8"])
+        self.assertEqual(cfg["max_assumes"], 8)
+
+    def test_max_assumes_defaults_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["max_assumes"], 6)
+
+    def test_invalid_max_assumes_env_exits_2_and_names_var(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_MAX_ROUNDS", None)
+            os.environ.pop("INVESTIGATOR_MAX_ASSUMES", None)
+            os.environ["INVESTIGATOR_MAX_ASSUMES"] = "abc"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                iterate.main(["--problem", "p"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("INVESTIGATOR_MAX_ASSUMES", stderr.getvalue())
+
+    def test_key_gap_threshold_from_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_KEY_GAP_THRESHOLD", None)
+            os.environ["INVESTIGATOR_KEY_GAP_THRESHOLD"] = "0.65"
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["key_gap_threshold"], .65)
+
+    def test_key_gap_threshold_cli_wins_over_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ["INVESTIGATOR_KEY_GAP_THRESHOLD"] = "0.65"
+            cfg = self._captured_cfg(["--key-gap-threshold", "0.55"])
+        self.assertEqual(cfg["key_gap_threshold"], .55)
+
+    def test_key_gap_threshold_defaults_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_KEY_GAP_THRESHOLD", None)
+            cfg = self._captured_cfg([])
+        self.assertEqual(cfg["key_gap_threshold"], .40)
+
+    def test_invalid_key_gap_threshold_env_exits_2_and_names_var(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ["INVESTIGATOR_KEY_GAP_THRESHOLD"] = "abc"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                iterate.main(["--problem", "p"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("INVESTIGATOR_KEY_GAP_THRESHOLD", stderr.getvalue())
+
+    def test_stakes_aware_respond_defaults_off(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INVESTIGATOR_STAKES_AWARE_RESPOND", None)
+            cfg = self._captured_cfg([])
+        self.assertIs(cfg["stakes_aware_respond"], False)
+
+    def test_stakes_aware_respond_from_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ["INVESTIGATOR_STAKES_AWARE_RESPOND"] = "on"
+            cfg = self._captured_cfg([])
+        self.assertIs(cfg["stakes_aware_respond"], True)
+
+    def test_stakes_aware_respond_cli_wins_over_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ["INVESTIGATOR_STAKES_AWARE_RESPOND"] = "on"
+            cfg = self._captured_cfg(["--stakes-aware-respond", "off"])
+        self.assertIs(cfg["stakes_aware_respond"], False)
 
 
 @unittest.skipUnless(getattr(answerer, "_HAVE_ASK", False), "model_utils (ask skill) not importable")

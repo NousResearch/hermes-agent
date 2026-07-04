@@ -2650,7 +2650,7 @@ if [ "$SRC" != "$DST" ]; then
     rm -rf "$DST.hermes-update-old" 2>/dev/null || true
   fi
 fi
-/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
+/usr/bin/xattr -cr "$DST" 2>/dev/null || true
 /usr/bin/open "$DST"
 `
   const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)

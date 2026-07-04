@@ -529,6 +529,24 @@ async def _redirect_handler(authorization_url: str) -> None:
     Opens the browser automatically when possible; always prints the URL
     as a fallback for headless/SSH/gateway environments.
     """
+    # Fail fast at the authorization boundary in non-interactive contexts
+    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+    # token (expired/revoked, refresh rejected) makes the SDK fall through to
+    # the authorization-code flow even though build_oauth_auth's token-file
+    # guard passed. Without this check we would print a URL and launch a
+    # browser flow no operator can complete, then block in _wait_for_callback
+    # for the full timeout. Raise before launching so gateway adapters start
+    # promptly and the caller can skip this server with an actionable warning.
+    # This intentionally re-checks interactivity here rather than trusting the
+    # token-file existence guard alone. See #57836.
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            "MCP OAuth requires browser authorization but no interactive "
+            "session is available (non-interactive/background context). "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
+        )
+
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
         f"  Open this URL in your browser:\n\n"
@@ -598,6 +616,25 @@ async def _wait_for_callback() -> tuple[str, str | None]:
         raise RuntimeError(
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
+        )
+
+    # Reject before binding the callback listener in non-interactive contexts.
+    # Reaching here means the SDK entered the authorization-code flow (a valid
+    # or refreshable token would never call the callback handler), so a cached
+    # token file is present but unusable. Binding the listener here would block
+    # for the full 300s timeout and — on the next connection retry — collide
+    # with the still-bound/TIME_WAIT port, surfacing as
+    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
+    # gateway startup independent of an unusable optional MCP server. This
+    # guard holds "regardless of whether a token file exists" — the point the
+    # build_oauth_auth token-file guard cannot cover. See #57836.
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            "OAuth callback requires an interactive session but none is "
+            "available (non-interactive/background context); skipping browser "
+            "authorization without binding a callback listener. "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
         )
 
     # The callback server is already running (started in build_oauth_auth).

@@ -38,17 +38,21 @@ manage_router = APIRouter()
 # monkeypatch-transparent).
 _cron_default_profile = late("_cron_default_profile")
 _cron_profile_home = late("_cron_profile_home")
+_dashboard_requester_scope = late("_dashboard_requester_scope")
+_enforce_session_ownership = late("_enforce_session_ownership")
 _import_sessions_for_profile = late("_import_sessions_for_profile")
 _maybe_auto_archive_for_profile = late("_maybe_auto_archive_for_profile")
 _open_session_db_for_profile = late("_open_session_db_for_profile")
 _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
+_require_dashboard_admin = late("_require_dashboard_admin")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
 
 
 @list_router.get("/api/sessions")
 def get_sessions(
+    request: Request,
     # ``le=100`` caps the page size (idea from #39200): an unbounded limit
     # lets one request drag every session row (plus correlated-subquery
     # preview work) out of SQLite in a single hit.
@@ -78,6 +82,11 @@ def get_sessions(
 
     Rows omit ``system_prompt``/``model_config`` (the payload-dominating
     fields no list UI reads) unless ``full=1`` is passed.
+
+    A Telegram Mini App bearer-token caller without ``dashboard:admin`` scope
+    is scoped to their own Telegram DM sessions only (spec §4) — see
+    ``_dashboard_requester_scope``. A cookie-authenticated (desktop) caller,
+    or a token-authed admin, is unaffected.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -89,6 +98,9 @@ def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
+    scope, requester_user_id = _dashboard_requester_scope(request)
+    if scope == "own" and not requester_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     profile_name: Optional[str] = None
     if profile:
         profile_name, _ = _cron_profile_home(profile)
@@ -125,6 +137,8 @@ def get_sessions(
                 # with the API-level _strip_session_list_rows below).
                 compact_rows=not full,
                 include_pinned=True,
+                requester_user_id=requester_user_id,
+                scope=scope,
             )
             total = db.session_count(
                 source=source or None,
@@ -135,6 +149,8 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
+                requester_user_id=requester_user_id,
+                scope=scope,
             )
             now = time.time()
             # Same ownership contract as get_session_detail: rows are stamped
@@ -165,6 +181,7 @@ def get_sessions(
 
 @search_router.get("/api/sessions/search")
 async def search_sessions(
+    request: Request,
     q: str = "",
     limit: int = 20,
     profile: Optional[str] = None,
@@ -181,7 +198,16 @@ async def search_sessions(
     logical chat can own many ``sessions`` rows that all match the same query.
     Branches also use ``parent_session_id``, but they are real alternate
     conversations; don't collapse branch-specific hits back into the parent.
+
+    Mini App token route (required=False), admin-tier only: unlike
+    GET /api/sessions, this is a raw global FTS search across every
+    session's message content with no DM-ownership scoping at all -- a
+    non-admin paired caller must never reach it, or they'd search (and see
+    snippets of) every other user's conversations. The Mini App's Sessions
+    screen only ever shows the search box to admins for exactly this
+    reason; this is the server-side backstop for that.
     """
+    _require_dashboard_admin(request)
     if not q or not q.strip():
         return {"results": []}
     try:
@@ -550,13 +576,14 @@ async def get_session_stats(profile: Optional[str] = None):
 
 
 @manage_router.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str, profile: Optional[str] = None):
+async def get_session_detail(request: Request, session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _enforce_session_ownership(request, session)
         # Always stamp the owning profile — the serving profile is known even
         # when the request carries no ``?profile=`` (it's this process's own
         # profile). Stamping only on explicit ``?profile=`` left rows for the
@@ -597,6 +624,7 @@ async def get_session_latest_descendant(
 
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
+    request: Request,
     session_id: str,
     profile: Optional[str] = None,
     limit: Optional[int] = Query(None, ge=0),
@@ -608,7 +636,15 @@ async def get_session_messages(
             sid = db.resolve_session_id(session_id)
             if not sid:
                 return None
+            # Ownership is checked on the RESOLVED id (the compression-tip
+            # descendant whose rows are actually returned below), not the
+            # originally-requested id — resolve_resume_session_id can redirect
+            # to a different row and that's the one whose ownership matters.
             sid = db.resolve_resume_session_id(sid)
+            session = db.get_session(sid)
+            if not session:
+                return None
+            _enforce_session_ownership(request, session)
             # Clamp limit to prevent abuse (max 500 per page)
             _limit = min(limit, 500) if limit is not None else None
             return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
@@ -631,7 +667,14 @@ async def get_session_messages(
 
 
 @manage_router.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
+async def delete_session_endpoint(request: Request, session_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False), admin-tier only: a non-admin
+    # paired caller must never delete ANY session, including their own --
+    # the Mini App spec's paired/"member" tier is read-only, full stop.
+    # Admin gets unrestricted access here (same as the desktop operator),
+    # matching admin's "full access" definition elsewhere in this feature --
+    # no additional per-row ownership check needed on top of the flat gate.
+    _require_dashboard_admin(request)
     # ``profile`` deletes a session belonging to another (local) profile by
     # opening its state.db directly. Remote profiles never reach here — the
     # desktop routes their DELETE to the remote backend. Omit for current/default.
@@ -659,14 +702,19 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
 
 
 @manage_router.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+async def rename_session_endpoint(request: Request, session_id: str, body: SessionRename):
     """Update a session: rename, archive, and/or pin it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session; ``pinned`` sets the durable keep flag (exempts the
     session from the auto-archive sweep). Any field may be omitted. ``profile``
     targets another profile's session.
+
+    Mini App token route (required=False), admin-tier only: the spec's
+    paired/"member" tier never archives or renames, even its own sessions --
+    matches the desktop's Archive button being admin-only in the Mini App UI.
     """
+    _require_dashboard_admin(request)
     db = _open_session_db_for_profile(body.profile, read_only=False)
     try:
         sid = db.resolve_session_id(session_id)

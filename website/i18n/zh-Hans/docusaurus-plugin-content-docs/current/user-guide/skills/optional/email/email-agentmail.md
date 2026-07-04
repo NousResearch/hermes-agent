@@ -128,6 +128,7 @@ hermes
 - MCP 服务器需要 Node.js（18+）（`npx -y agentmail-mcp`）
 - 必须安装 `mcp` Python 包：`pip install mcp`
 - 实时入站邮件（webhook）需要公网服务器 — 个人使用时建议改用 `list_threads` 轮询配合 cronjob
+- **xAI Grok 丢弃可选的多行字符串参数：** 在 `provider: xai` / `xai-oauth` 与 `grok-4.3` 下，值包含换行符的可选字符串参数（例如 `send_message` 的 `subject` / `text`，`reply_to_message` 的 `text`）会被静默剥离，导致 `send_message` 发出空白邮件且无错误。参见 [xAI Grok OAuth 指南](https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth) 故障排查部分了解变通方案（将字段标记为 `required`，或修补 MCP 服务器的 zod schema 去除这些字段的 `.optional()`）。
 
 ## 验证
 配置完成后，使用以下命令测试：

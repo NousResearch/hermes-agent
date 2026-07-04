@@ -216,6 +216,22 @@ hermes config set model.provider xai
 
 或在 [x.ai/grok](https://x.ai/grok) 升级订阅（如果必须使用 OAuth 路径）。
 
+### 工具调用丢弃可选的多行字符串参数（空白邮件 / 空正文）
+
+xAI Grok（`grok-4.3` 及相邻变体）会静默丢弃**可选**的、值包含换行符的字符串函数调用参数。工具调用成功（无 HTTP 400），但被丢弃的参数不会出现在调用中——对于 schema 中仅将少量字段标记为 `required` 的 MCP 工具，这意味着内容丢失且无任何错误。
+
+最常见于 AgentMail MCP 服务器（`agentmail-mcp`）：`send_message` 仅将 `inboxId` / `to` 标记为 required，因此 `subject` 和 `text` 是可选的，多行正文被剥离，邮件发出为空白。单行值不受影响；仅多行值被丢弃。发生此情况时，模型还倾向于发出 2–3 次重复调用。
+
+这是 provider 端行为，而非 Hermes bug——它可在无 Hermes 的情况下直接针对 `api.x.ai/v1/responses` 复现。Hermes 中已对同类 xAI schema 怪癖进行了规避（针对 HTTP 400 的 `pattern`/`format` 剥离），但此处无法捕获，因为请求本身成功。
+
+**变通方案**（按优先级）：
+
+1. **在工具 schema 中将受影响字段标记为 `required`。** 对于 AgentMail MCP 服务器，通过解包 zod `.optional()` 修补 `send_message.subject` / `.text` 和 `reply_to_message.text`——grok 每次都能正确发出 required 字段。参见 [agentmail-mcp#18](https://github.com/agentmail-to/agentmail-mcp/issues/18)。
+2. **避免在可选参数中使用多行字符串值。** 合并为单行（例如将 `\n` 替换为 `\\n` 或空格）并让工具处理程序还原，或在 schema 允许时拆分为多个较短的参数。
+3. **切换模型。** `grok-build-0.1`（OAuth 默认值）不受影响；仅 `grok-4.3` 表现出此丢弃行为。使用 `hermes model` 选择不受影响的变体。
+
+AgentMail skill 文档在其 Pitfalls 部分对此进行了说明。在 grok-4.3 下任何带有可选多行字符串参数的 MCP 工具都可能遇到同样的静默内容丢失——诊断方法相同。
+
 ### 运行时出现"No xAI credentials found"错误
 
 auth 存储中没有 `xai-oauth` 条目，也未设置 `XAI_API_KEY`。你尚未登录，或凭据文件已被删除。

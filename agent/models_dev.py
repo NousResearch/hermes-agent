@@ -462,50 +462,59 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - family     (str)   → model_family
     """
     models = _get_provider_models(provider)
-    if models is None:
-        return None
+    if models is not None:
+        entry = _find_model_entry(models, model)
+        if entry is not None:
+            # Extract capability flags (default to False if missing)
+            supports_tools = bool(entry.get("tool_call", False))
+            # Vision: prefer explicit `modalities.input` when models.dev provides it.
+            # The older `attachment` flag can be stale or too broad for image routing;
+            # fall back to it only when the input modalities are absent/invalid.
+            input_mods = entry.get("modalities", {})
+            if isinstance(input_mods, dict):
+                input_mods = input_mods.get("input")
+            else:
+                input_mods = None
+            if isinstance(input_mods, list):
+                supports_vision = "image" in input_mods
+            else:
+                supports_vision = bool(entry.get("attachment", False))
+            supports_reasoning = bool(entry.get("reasoning", False))
 
-    entry = _find_model_entry(models, model)
-    if entry is None:
-        return None
+            # Extract limits
+            limit = entry.get("limit", {})
+            if not isinstance(limit, dict):
+                limit = {}
 
-    # Extract capability flags (default to False if missing)
-    supports_tools = bool(entry.get("tool_call", False))
-    # Vision: prefer explicit `modalities.input` when models.dev provides it.
-    # The older `attachment` flag can be stale or too broad for image routing;
-    # fall back to it only when the input modalities are absent/invalid.
-    input_mods = entry.get("modalities", {})
-    if isinstance(input_mods, dict):
-        input_mods = input_mods.get("input")
-    else:
-        input_mods = None
-    if isinstance(input_mods, list):
-        supports_vision = "image" in input_mods
-    else:
-        supports_vision = bool(entry.get("attachment", False))
-    supports_reasoning = bool(entry.get("reasoning", False))
+            ctx = limit.get("context")
+            context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
 
-    # Extract limits
-    limit = entry.get("limit", {})
-    if not isinstance(limit, dict):
-        limit = {}
+            out = limit.get("output")
+            max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
 
-    ctx = limit.get("context")
-    context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
+            model_family = entry.get("family", "") or ""
 
-    out = limit.get("output")
-    max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
+            return ModelCapabilities(
+                supports_tools=supports_tools,
+                supports_vision=supports_vision,
+                supports_reasoning=supports_reasoning,
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
+                model_family=model_family,
+            )
 
-    model_family = entry.get("family", "") or ""
+    try:
+        from providers import get_provider_profile
 
-    return ModelCapabilities(
-        supports_tools=supports_tools,
-        supports_vision=supports_vision,
-        supports_reasoning=supports_reasoning,
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        model_family=model_family,
-    )
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            live_caps = profile.get_model_capabilities(model=model, provider_id=provider)
+            if isinstance(live_caps, ModelCapabilities):
+                return live_caps
+    except Exception:
+        pass
+
+    return None
 
 
 def list_provider_models(provider: str) -> List[str]:

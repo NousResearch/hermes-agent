@@ -43,6 +43,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from hermes_cli.cloudflare import cloudflare_base_url_from_account_id
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
@@ -284,6 +285,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.gmi-serving.com/v1",
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
+    ),
+    "cloudflare": ProviderConfig(
+        id="cloudflare",
+        name="Cloudflare Workers AI",
+        auth_type="api_key",
+        inference_base_url="https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1",
+        api_key_env_vars=("CLOUDFLARE_API_KEY",),
+        base_url_env_var="CLOUDFLARE_BASE_URL",
     ),
     "minimax": ProviderConfig(
         id="minimax",
@@ -1609,6 +1618,7 @@ def resolve_provider(
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
+        "cloudflare-workers-ai": "cloudflare", "workers-ai": "cloudflare", "workersai": "cloudflare",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
@@ -6246,6 +6256,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
                     base_url = resolved
         except Exception as exc:
             logger.debug("Copilot base URL resolution fell back to default: %s", exc)
+    elif provider_id == "cloudflare":
+        if env_url:
+            base_url = env_url.rstrip("/")
+        else:
+            base_url = cloudflare_base_url_from_account_id(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""))
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
@@ -6258,7 +6273,10 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
     # otherwise wedges chat inference — #50252).
     if not (isinstance(base_url, str) and base_url.strip()):
-        base_url = pconfig.inference_base_url
+        if provider_id == "cloudflare":
+            base_url = ""
+        else:
+            base_url = pconfig.inference_base_url
 
     return {
         "provider": provider_id,

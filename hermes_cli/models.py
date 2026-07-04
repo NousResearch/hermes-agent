@@ -17,6 +17,10 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
+from agent.cloudflare_workers_ai import (
+    cloudflare_ai_models_search_url,
+    cloudflare_model_names,
+)
 from hermes_cli import __version__ as _HERMES_VERSION
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
@@ -1221,6 +1225,9 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "cloudflare-workers-ai": "cloudflare",
+    "workers-ai": "cloudflare",
+    "workersai": "cloudflare",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -2456,8 +2463,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 api_key, base_url = "", _p.base_url
             if not base_url:
                 base_url = _p.base_url
-            if api_key:
-                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
+            if api_key or normalized.startswith("custom:"):
+                live = _p.fetch_models(api_key=api_key or None, base_url=base_url or None)
                 if live:
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
@@ -3510,6 +3517,16 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+def _cloudflare_ai_models_search_url(base_url: str) -> Optional[str]:
+    """Back-compat wrapper for shared Cloudflare catalog URL logic."""
+    return cloudflare_ai_models_search_url(base_url)
+
+
+def _parse_cloudflare_model_search_response(payload: Any) -> list[str]:
+    """Back-compat wrapper for shared Cloudflare catalog parsing."""
+    return cloudflare_model_names(payload)
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3568,6 +3585,25 @@ def probe_api_models(
         from hermes_cli.config import normalize_extra_headers
 
         headers.update(normalize_extra_headers(request_headers))
+
+    cloudflare_search_url = _cloudflare_ai_models_search_url(normalized)
+    if cloudflare_search_url:
+        tried.append(cloudflare_search_url)
+        req = urllib.request.Request(cloudflare_search_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                models = _parse_cloudflare_model_search_response(data)
+                if models:
+                    return {
+                        "models": models,
+                        "probed_url": cloudflare_search_url,
+                        "resolved_base_url": normalized,
+                        "suggested_base_url": None,
+                        "used_fallback": False,
+                    }
+        except Exception:
+            pass
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"

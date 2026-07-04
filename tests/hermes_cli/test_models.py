@@ -4,9 +4,16 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
-    OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
-    is_nous_free_tier, partition_nous_models_by_tier,
-    check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    OPENROUTER_MODELS,
+    _FREE_TIER_CACHE_TTL,
+    check_nous_free_tier,
+    detect_provider_for_model,
+    fetch_api_models,
+    fetch_openrouter_models,
+    is_nous_free_tier,
+    model_ids,
+    partition_nous_models_by_tier,
+    probe_api_models,
     union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
 )
@@ -210,6 +217,76 @@ class TestOpenRouterToolSupportHelper:
         assert _openrouter_model_supports_tools(
             {"id": "x", "supported_parameters": []}
         ) is False
+
+
+class TestCloudflareModelDiscovery:
+    def test_probe_api_models_uses_cloudflare_native_search_endpoint(self):
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"success":true,"result":['
+                    b'{"id":"uuid-1","name":"@cf/zai-org/glm-5.2","task":{"name":"Text Generation"}},'
+                    b'{"id":"uuid-2","name":"@cf/meta/llama-3.2-3b-instruct","task":{"name":"Text Generation"}},'
+                    b'{"id":"uuid-3","name":"@cf/baai/bge-m3","task":{"name":"Text Embeddings"}},'
+                    b'{"id":"uuid-4","name":"@cf/zai-org/glm-5.2","task":{"name":"Text Generation"}}'
+                    b']}'
+                )
+
+        requests = []
+
+        def fake_urlopen(req, timeout=5.0):
+            requests.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=fake_urlopen):
+            result = probe_api_models(
+                "cf-token",
+                "https://api.cloudflare.com/client/v4/accounts/test-account/ai/v1",
+            )
+
+        assert requests == [
+            "https://api.cloudflare.com/client/v4/accounts/test-account/ai/models/search"
+        ]
+        assert result["probed_url"] == requests[0]
+        assert result["resolved_base_url"] == "https://api.cloudflare.com/client/v4/accounts/test-account/ai/v1"
+        assert result["models"] == [
+            "@cf/zai-org/glm-5.2",
+            "@cf/meta/llama-3.2-3b-instruct",
+        ]
+
+    def test_fetch_api_models_returns_cloudflare_model_names(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"success":true,"result":['
+                    b'{"id":"uuid-1","name":"@cf/openai/gpt-oss-120b","task":{"name":"Text Generation"}},'
+                    b'{"id":"uuid-2","name":"@cf/qwen/qwen3-embedding-0.6b","task":{"name":"Text Embeddings"}}'
+                    b']}'
+                )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_api_models(
+                "cf-token",
+                "https://api.cloudflare.com/client/v4/accounts/test-account/ai/v1",
+            )
+
+        assert models == [
+            "@cf/openai/gpt-oss-120b",
+        ]
 
 
 class TestFindOpenrouterSlug:

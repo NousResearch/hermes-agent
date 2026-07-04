@@ -215,3 +215,21 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+
+    def get_model_capabilities(
+        self,
+        *,
+        model: str,
+        provider_id: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+        **context: Any,
+    ) -> Any | None:
+        """Return provider-specific live capability metadata for *model*.
+
+        Profiles may override this when they can answer capability questions
+        from a live provider catalog that Hermes' models.dev mirror does not
+        cover (e.g. user-scoped custom catalogs).
+        """
+        return None

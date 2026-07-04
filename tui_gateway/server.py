@@ -5075,22 +5075,46 @@ def _(rid, params: dict) -> dict:
             for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True)
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
-        return _ok(
-            rid,
-            {
-                "sessions": [
-                    {
-                        "id": s["id"],
-                        "title": s.get("title") or "",
-                        "preview": s.get("preview") or "",
-                        "started_at": s.get("started_at") or 0,
-                        "message_count": s.get("message_count") or 0,
-                        "source": s.get("source") or "",
-                    }
-                    for s in rows
-                ]
-            },
-        )
+        sessions = []
+
+        def _session_list_row(s: dict, **extra: object) -> dict:
+            row = {
+                "id": s["id"],
+                "title": s.get("title") or "",
+                "preview": s.get("preview") or "",
+                "started_at": s.get("started_at") or 0,
+                "message_count": s.get("message_count") or 0,
+                "source": s.get("source") or "",
+            }
+            row.update(extra)
+            return row
+
+        for s in rows:
+            sessions.append(_session_list_row(s))
+            root_id = s.get("_lineage_root_id")
+            if not root_id or root_id == s.get("id"):
+                continue
+            try:
+                lineage = db.get_session_lineage_rich(s["id"])
+            except Exception:
+                logger.debug("session.list lineage expansion failed for %s", s.get("id"), exc_info=True)
+                continue
+            # Show hidden pre-compression segments directly under the live tip.
+            # Selecting one still resumes the tip: session.resume already
+            # displays ancestors, while reopening the ended parent would break
+            # the compression chain's list/resume projection.
+            for index, segment in enumerate(lineage[:-1], start=1):
+                sessions.append(
+                    _session_list_row(
+                        segment,
+                        lineage_kind="compression_segment",
+                        lineage_index=index,
+                        lineage_tip_id=s["id"],
+                        resume_id=s["id"],
+                    )
+                )
+
+        return _ok(rid, {"sessions": sessions})
     except Exception as e:
         return _err(rid, 5006, str(e))
 

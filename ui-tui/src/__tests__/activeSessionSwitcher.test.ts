@@ -10,6 +10,9 @@ import {
   draftModelDisplayLabel,
   draftTitleFromPrompt,
   fixedSessionColumnStyle,
+  historySessionAgeLabel,
+  historySessionMessageLabel,
+  historySessionTitle,
   isNewSessionRow,
   newSessionMarkerColor,
   newSessionRowIndex,
@@ -184,13 +187,40 @@ describe('unified Sessions overlay helpers', () => {
     const history = [
       { id: 'a', message_count: 1, preview: '', started_at: 0, title: 'A' },
       { id: 'b', message_count: 2, preview: '', started_at: 0, title: 'B' },
-      { id: 'c', message_count: 3, preview: '', started_at: 0, title: 'C' }
+      { id: 'c', message_count: 3, preview: '', started_at: 0, title: 'C' },
+      {
+        id: 'b-parent',
+        lineage_kind: 'compression_segment',
+        message_count: 9,
+        preview: '',
+        resume_id: 'b',
+        started_at: 0,
+        title: 'B before compression'
+      }
     ] satisfies SessionListItem[]
 
     const live = [{ id: 'b', status: 'idle' }] satisfies SessionActiveItem[]
 
     expect(resumableHistory(history, live).map(h => h.id)).toEqual(['a', 'c'])
-    expect(resumableHistory(history, []).map(h => h.id)).toEqual(['a', 'b', 'c'])
+    expect(resumableHistory(history, []).map(h => h.id)).toEqual(['a', 'b', 'c', 'b-parent'])
+  })
+
+  it('labels compression lineage segments without changing the resume target', () => {
+    const segment = {
+      id: 'parent-session',
+      lineage_index: 2,
+      lineage_kind: 'compression_segment',
+      message_count: 42,
+      preview: '',
+      resume_id: 'tip-session',
+      started_at: 0,
+      title: 'Debugging run'
+    } satisfies SessionListItem
+
+    expect(historySessionAgeLabel(segment)).toBe('seg 2')
+    expect(historySessionMessageLabel(segment)).toBe('42 msgs · pre-cmp')
+    expect(historySessionTitle(segment)).toBe('Debugging run · before compression')
+    expect(segment.resume_id).toBe('tip-session')
   })
 
   it('labels live + resumable counts compactly', () => {

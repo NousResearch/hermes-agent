@@ -3082,6 +3082,24 @@ class SessionDB:
             s["preview"] = ""
         return s
 
+    def get_session_lineage_rich(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return the stored ancestor chain for a session, enriched for UIs.
+
+        Compression splits one logical conversation across several session rows:
+        the pre-compression parent keeps its full transcript, while the live tip
+        holds the continuation. ``list_sessions_rich`` normally projects the
+        root forward to the tip so resume lists stay uncluttered. This helper
+        gives history UIs a structured way to expose those hidden segments
+        without changing the default resume target.
+        """
+        lineage = self._session_lineage_root_to_tip(session_id)
+        rows: List[Dict[str, Any]] = []
+        for sid in lineage:
+            row = self._get_session_rich_row(sid)
+            if row:
+                rows.append(row)
+        return rows
+
     # =========================================================================
     # Message storage
     # =========================================================================

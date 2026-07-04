@@ -86,7 +86,35 @@ export const relativeSessionAge = (ts?: number) => {
 export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
   const liveIds = new Set(live.map(s => s.id))
 
-  return history.filter(h => !liveIds.has(h.id))
+  return history.filter(h => !liveIds.has(h.id) && !liveIds.has(h.resume_id ?? ''))
+}
+
+export const historySessionAgeLabel = (session: SessionListItem) => {
+  if (session.lineage_kind === 'compression_segment') {
+    return `seg ${session.lineage_index ?? 1}`
+  }
+
+  return relativeSessionAge(session.started_at)
+}
+
+export const historySessionMessageLabel = (session: SessionListItem) => {
+  const count = session.message_count ?? 0
+
+  if (session.lineage_kind === 'compression_segment') {
+    return `${count} msgs · pre-cmp`
+  }
+
+  return `${count} msgs`
+}
+
+export const historySessionTitle = (session: SessionListItem) => {
+  const title = session.title || session.preview || '(untitled)'
+
+  if (session.lineage_kind === 'compression_segment') {
+    return `${title} · before compression`
+  }
+
+  return title
 }
 
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
@@ -553,7 +581,8 @@ export function ActiveSessionSwitcher({
 
       if (kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+        const target = history[index - 1 - items.length]!
+        onResume(target.resume_id ?? target.id)
 
         return
       }
@@ -653,7 +682,9 @@ export function ActiveSessionSwitcher({
       }
 
       if (selectedKind === 'history' && history[sel - 1 - items.length]) {
-        return onResume(history[sel - 1 - items.length]!.id)
+        const target = history[sel - 1 - items.length]!
+
+        return onResume(target.resume_id ?? target.id)
       }
     }
   })
@@ -753,7 +784,7 @@ export function ActiveSessionSwitcher({
             ? 'press d again to delete'
             : deleting && selected
               ? 'deleting…'
-              : h.title || h.preview || '(untitled)'
+              : historySessionTitle(h)
 
           return (
             <Box
@@ -781,13 +812,13 @@ export function ActiveSessionSwitcher({
 
               <Box {...fixedSessionColumnStyle()} width={11}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {relativeSessionAge(h.started_at)}
+                  {historySessionAgeLabel(h)}
                 </Text>
               </Box>
 
               <Box {...fixedSessionColumnStyle()} width={18}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {h.message_count} msgs
+                  {historySessionMessageLabel(h)}
                 </Text>
               </Box>
 

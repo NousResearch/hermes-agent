@@ -21,11 +21,15 @@ from tui_gateway import server
 class _StubDB:
     def __init__(self, rows):
         self.rows = rows
+        self.lineages = {}
         self.calls: list[dict] = []
 
     def list_sessions_rich(self, **kwargs):
         self.calls.append(kwargs)
         return list(self.rows)
+
+    def get_session_lineage_rich(self, session_id):
+        return list(self.lineages.get(session_id, []))
 
 
 def _call(limit: int | None = None):
@@ -102,3 +106,35 @@ def test_session_list_preserves_ordering_after_filter(monkeypatch):
     ids = [s["id"] for s in resp["result"]["sessions"]]
 
     assert ids == ["newest", "middle", "also-visible", "oldest"]
+
+
+def test_session_list_expands_compression_lineage_segments(monkeypatch):
+    tip = {
+        "id": "tip-session",
+        "_lineage_root_id": "root-session",
+        "source": "tui",
+        "started_at": 30,
+        "message_count": 4,
+        "title": "Current work",
+    }
+    root = {
+        "id": "root-session",
+        "source": "tui",
+        "started_at": 10,
+        "message_count": 120,
+        "title": "Before compression",
+        "preview": "first prompt",
+    }
+    db = _StubDB([tip])
+    db.lineages["tip-session"] = [root, tip]
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=10)
+    sessions = resp["result"]["sessions"]
+
+    assert [s["id"] for s in sessions] == ["tip-session", "root-session"]
+    segment = sessions[1]
+    assert segment["lineage_kind"] == "compression_segment"
+    assert segment["lineage_index"] == 1
+    assert segment["lineage_tip_id"] == "tip-session"
+    assert segment["resume_id"] == "tip-session"

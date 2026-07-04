@@ -278,8 +278,12 @@ export interface SessionActivateResponse {
 
 export interface SessionListItem {
   id: string
+  lineage_index?: number
+  lineage_kind?: 'compression_segment'
+  lineage_tip_id?: string
   message_count: number
   preview: string
+  resume_id?: string
   source?: string
   started_at: number
   title: string

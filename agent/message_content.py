@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
+
+logger = logging.getLogger(__name__)
 
 _NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio"}
 _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
@@ -46,5 +49,11 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
         return text
     try:
         return str(content)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "Failed to stringify message content of type %s; returning empty text: %s",
+            type(content).__name__,
+            exc,
+            exc_info=True,
+        )
         return ""

@@ -19151,7 +19151,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 if not _pid_exists(existing_pid):
                     old_gateway_exited = True
                     break  # Process is gone
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
             else:
                 # Still alive after 10s — force kill
                 logger.warning(
@@ -19175,7 +19175,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                         if not _pid_exists(existing_pid):
                             old_gateway_exited = True
                             break
-                        time.sleep(0.25)
+                        await asyncio.sleep(0.25)
                 if not old_gateway_exited:
                     logger.error(
                         "Old gateway (PID %d) still appears alive after SIGKILL; "

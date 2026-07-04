@@ -95,6 +95,19 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+def _escape_like(text: str) -> str:
+    """Escape LIKE wildcard metacharacters so *text* matches literally.
+
+    SQLite LIKE treats ``%`` and ``_`` as wildcards, and ``\\`` is the
+    ESCAPE character used by callers. Entity names extracted from fact
+    content routinely contain these (e.g. ``C_API``, ``a_b``, ``100% off``),
+    so passing a raw name as a LIKE pattern turns it into a wildcard query
+    that silently matches unrelated entities. Escaping these characters
+    keeps the name a literal token.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -442,20 +455,26 @@ class MemoryStore:
 
         Returns the entity_id.
         """
-        # Exact name match
+        # Exact name match (case-insensitive, wildcard-safe). Using ``=``
+        # with ``COLLATE NOCASE`` keeps the intended case-insensitivity
+        # while treating ``%``/``_`` in the name as literal characters
+        # rather than LIKE wildcards.
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])
 
-        # Search aliases — aliases stored as comma-separated; use LIKE with % boundaries
+        # Search aliases — stored as a comma-separated string, matched with
+        # LIKE against ``%`` boundary anchors. The name itself must be
+        # escaped so its own ``%``/``_`` are literal and do not leak into
+        # the pattern and over-match arbitrary aliases.
         alias_row = self._conn.execute(
-            """
+            r"""
             SELECT entity_id FROM entities
-            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'
+            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%' ESCAPE '\'
             """,
-            (name,),
+            (_escape_like(name),),
         ).fetchone()
         if alias_row is not None:
             return int(alias_row["entity_id"])

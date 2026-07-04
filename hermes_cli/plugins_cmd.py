@@ -135,6 +135,20 @@ def _sanitize_plugin_name(
     return target
 
 
+_GITHUB_BROWSER_SEGMENTS = {
+    "actions",
+    "blob",
+    "commit",
+    "commits",
+    "issues",
+    "pull",
+    "pulls",
+    "releases",
+    "tree",
+    "wiki",
+}
+
+
 def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     """Turn an identifier into a cloneable Git URL and optional subdirectory.
 
@@ -146,6 +160,8 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     - Full URL: https://github.com/owner/repo.git
     - Full URL: git@github.com:owner/repo.git
     - Full URL: ssh://git@github.com/owner/repo.git
+    - Browser URL: https://github.com/owner/repo/tree/main/path
+      →  (https://github.com/owner/repo.git, "path")
     - Shorthand: owner/repo  →  https://github.com/owner/repo.git
     - Shorthand w/ subdir: owner/repo/path/to/plugin
       →  (https://github.com/owner/repo.git, "path/to/plugin")
@@ -161,6 +177,17 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     """
     # Already a URL.
     if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
+        if identifier.startswith("https://github.com/"):
+            path = identifier[len("https://github.com/") :]
+            path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+            parts = path.split("/")
+            if len(parts) >= 3 and all(parts[:2]) and parts[2] in _GITHUB_BROWSER_SEGMENTS:
+                repo = parts[1].removesuffix(".git")
+                subdir = None
+                if parts[2] == "tree" and len(parts) >= 5:
+                    subdir = "/".join(p for p in parts[4:] if p).strip("/") or None
+                return f"https://github.com/{parts[0]}/{repo}.git", subdir
+
         # Explicit ``#subdir`` fragment — unambiguous for any scheme.
         if "#" in identifier:
             git_url, _, frag = identifier.partition("#")
@@ -742,37 +769,135 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     return None
 
 
-def cmd_enable(name: str) -> None:
-    """Add a plugin to the enabled allow-list (and remove it from disabled)."""
+def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
+    """Resolve *name* to ``(canonical_key, source)`` or ``None`` if no match.
+
+    Mirrors :func:`_resolve_plugin_key`'s normalization but also returns the
+    plugin's source (``"bundled"``, ``"user"``, ``"project"``, ...) so the
+    enable path can tell whether a built-in-override consent prompt is needed.
+    """
+    entries = _discover_all_plugins()
+    for entry in entries:
+        # entry = (name, version, description, source, dir_path, key)
+        if name == entry[5] or name == entry[0]:
+            return (entry[5], entry[3])
+    leaf_matches = [
+        (entry[5], entry[3]) for entry in entries
+        if name == entry[5].split("/")[-1]
+    ]
+    if len(leaf_matches) == 1:
+        return leaf_matches[0]
+    return None
+
+
+def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
+    """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    plugins_cfg = config.setdefault("plugins", {})
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+        config["plugins"] = plugins_cfg
+    entries = plugins_cfg.setdefault("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        plugins_cfg["entries"] = entries
+    entry = entries.setdefault(plugin_id, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        entries[plugin_id] = entry
+    entry[key] = bool(value)
+    save_config(config)
+
+
+def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+    """Add a plugin to the enabled allow-list (and remove it from disabled).
+
+    For non-bundled plugins, prompt the operator about granting the
+    privileged ``allow_tool_override`` capability (replacing built-in tools
+    like ``shell_exec`` / ``write_file``). ``allow_tool_override`` is a
+    tri-state: ``True`` grants without prompting, ``False`` declines without
+    prompting, ``None`` (default) asks interactively. Bundled plugins are
+    trusted and never prompted.
+    """
     from rich.console import Console
 
     console = Console()
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
-    key = _resolve_plugin_key(name)
-    if key is None:
+    resolved = _resolve_plugin_key_and_source(name)
+    if resolved is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
+    key, source = resolved
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if key in enabled and key not in disabled:
+    already_enabled = key in enabled and key not in disabled
+
+    if not already_enabled:
+        enabled.add(key)
+        disabled.discard(key)
+        # Drop any legacy bare-name entry so the two don't drift out of sync.
+        bare = key.split("/")[-1]
+        if bare != key:
+            disabled.discard(bare)
+        _save_enabled_set(enabled)
+        _save_disabled_set(disabled)
+        console.print(
+            f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. "
+            "Takes effect on next session."
+        )
+    else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+
+    # Built-in tool override is a privileged grant. Bundled plugins ship with
+    # Hermes core and are trusted; every other source needs operator opt-in.
+    if source == "bundled":
         return
 
-    enabled.add(key)
-    disabled.discard(key)
-    # Drop any legacy bare-name entry so the two don't drift out of sync.
-    bare = key.split("/")[-1]
-    if bare != key:
-        disabled.discard(bare)
-    _save_enabled_set(enabled)
-    _save_disabled_set(disabled)
-    console.print(
-        f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. "
-        "Takes effect on next session."
-    )
+    _resolve_tool_override_grant(console, key, allow_tool_override)
+
+
+def _resolve_tool_override_grant(
+    console, key: str, allow_tool_override: Optional[bool]
+) -> None:
+    """Resolve and persist the ``allow_tool_override`` grant for a plugin.
+
+    ``allow_tool_override`` tri-state: True grants, False declines, None
+    prompts interactively (defaulting to deny on a non-interactive stdin).
+    """
+    if allow_tool_override is None:
+        # Interactive consent. Default to NO so a blind Enter doesn't grant
+        # a privileged capability, and a non-interactive stdin denies safely.
+        prompt = (
+            "[yellow]Allow this plugin to replace built-in tools "
+            "(e.g. shell_exec, write_file)?[/yellow]\n"
+            "  This is a privileged capability: an override can intercept "
+            "everything the agent routes through that tool.\n"
+            "  Grant it? [y/N] "
+        )
+        try:
+            answer = console.input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        allow_tool_override = answer in {"y", "yes"}
+
+    plugin_id = key
+    _set_plugin_entry_flag(plugin_id, "allow_tool_override", allow_tool_override)
+    if allow_tool_override:
+        console.print(
+            f"[green]✓[/green] Granted [bold]{key}[/bold] permission to "
+            "override built-in tools "
+            f"([dim]plugins.entries.{plugin_id}.allow_tool_override: true[/dim])."
+        )
+    else:
+        console.print(
+            f"[dim]{key} may not override built-in tools. Re-run "
+            f"`hermes plugins enable {key} --allow-tool-override` to grant "
+            "this later.[/dim]"
+        )
 
 
 def cmd_disable(name: str) -> None:
@@ -1794,7 +1919,14 @@ def plugins_command(args) -> None:
     elif action in {"remove", "rm", "uninstall"}:
         cmd_remove(args.name)
     elif action == "enable":
-        cmd_enable(args.name)
+        # Tri-state: --allow-tool-override=True, --no-allow-tool-override=False,
+        # neither=None (interactive prompt for non-bundled plugins).
+        allow_override = None
+        if getattr(args, "allow_tool_override", False):
+            allow_override = True
+        elif getattr(args, "no_allow_tool_override", False):
+            allow_override = False
+        cmd_enable(args.name, allow_tool_override=allow_override)
     elif action == "disable":
         cmd_disable(args.name)
     elif action in {"list", "ls"}:

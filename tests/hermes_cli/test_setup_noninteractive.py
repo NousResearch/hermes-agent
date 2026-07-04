@@ -1,6 +1,8 @@
 """Tests for non-interactive setup and first-run headless behavior."""
 
+import sys
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +26,7 @@ def _make_chat_args(**overrides):
         toolsets=overrides.get("toolsets", None),
         verbose=overrides.get("verbose", False),
         query=overrides.get("query", None),
+        query_stdin=overrides.get("query_stdin", False),
         worktree=overrides.get("worktree", False),
         yolo=overrides.get("yolo", False),
         pass_session_id=overrides.get("pass_session_id", False),
@@ -143,6 +146,57 @@ class TestNonInteractiveSetup:
         mock_setup.assert_not_called()
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
+
+    def test_chat_query_stdin_passes_piped_query_to_cli(self, monkeypatch):
+        """--query-stdin should read the prompt from stdin, not argv."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query_stdin=True, cli=True)
+        captured = {}
+
+        def fake_cli_main(**kwargs):
+            captured.update(kwargs)
+
+        fake_stdin = SimpleNamespace(
+            isatty=lambda: False,
+            read=lambda: "sensitive telegram prompt",
+        )
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+        monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+        monkeypatch.setattr("hermes_cli.main._sync_bundled_skills_for_startup", lambda: None)
+        monkeypatch.setitem(sys.modules, "cli", SimpleNamespace(main=fake_cli_main))
+
+        cmd_chat(args)
+
+        assert captured["query"] == "sensitive telegram prompt"
+
+    def test_chat_query_stdin_rejects_query_arg_combo(self, monkeypatch, capsys):
+        """Prompt may come from stdin or argv, never both."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="argv prompt", query_stdin=True, cli=True)
+        fake_stdin = SimpleNamespace(isatty=lambda: False, read=lambda: "stdin prompt")
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_chat(args)
+
+        assert exc.value.code == 1
+        assert "cannot be combined" in capsys.readouterr().err
+
+    def test_chat_query_stdin_rejects_empty_stdin(self, monkeypatch, capsys):
+        """--query-stdin is a non-interactive one-shot and empty stdin is invalid."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query_stdin=True, cli=True)
+        fake_stdin = SimpleNamespace(isatty=lambda: False, read=lambda: "")
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_chat(args)
+
+        assert exc.value.code == 1
+        assert "empty stdin" in capsys.readouterr().err
 
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""

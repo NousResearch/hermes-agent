@@ -443,6 +443,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Context Governor — inject task-state ledger and recent tool call summaries
+    if getattr(agent, "_context_governor_verification_required", True):
+        try:
+            from agent.context_governor import get_context_governor, ContextGovernor
+            _governor = get_context_governor()
+            _cg_context = _governor.get_context_for_model()
+            if _cg_context:
+                volatile_parts.append(_cg_context)
+        except Exception as _cg_err:
+            logger.debug("Context Governor injection failed: %s", _cg_err)
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

@@ -900,6 +900,23 @@ def _emit_post_tool_call_hook(
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
+    # Context Governor: record tool call for context management
+    try:
+        from agent.context_governor import get_context_governor
+        _governor = get_context_governor()
+        if _governor and hasattr(_governor, 'record_tool_call'):
+            # Try to get turn index from turn_id or use a counter
+            turn_index = 0
+            if turn_id and turn_id.startswith("turn:"):
+                try:
+                    turn_index = int(turn_id.split(":")[1])
+                except (ValueError, IndexError):
+                    pass
+            _governor.record_tool_call(function_name, function_args, str(result), turn_index)
+    except Exception:
+        # Never let context governor failure break tool execution
+        pass
+
 
 def handle_function_call(
     function_name: str,

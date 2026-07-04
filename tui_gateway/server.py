@@ -8325,8 +8325,19 @@ def _notification_poller_loop(
         # session's poller happened to wake first (Ben's "reported in a
         # different session" bug). Leave foreign events for their owner.
         if _notification_event_belongs_elsewhere(session, evt):
+            # See issue #57903. The previous implementation did
+            # ``process_registry.completion_queue.put(evt); time.sleep(0.1)``
+            # here, which under multi-session load (2+ active sessions)
+            # created a busy-loop: the poller re-dequeued the same event
+            # immediately because the owning session's poller had not yet
+            # woken up, then put it back, etc. The 100ms sleep held the
+            # GIL while adding no fairness (the next poller to wake up
+            # also raced for the same event), and over many cycles it
+            # starved other threads including the main asyncio event
+            # loop. Drop the sleep — the lock is already released between
+            # put/get, and the next poller to wake on the empty queue will
+            # still get a fair turn because the put wakes one waiter.
             process_registry.completion_queue.put(evt)
-            time.sleep(0.1)
             continue
 
         _evt_sid = evt.get("session_id", "")

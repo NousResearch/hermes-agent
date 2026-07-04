@@ -912,7 +912,7 @@ class SessionDB:
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
                     check_same_thread=False,
-                    timeout=1.0,
+                    timeout=30.0,
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
@@ -924,10 +924,10 @@ class SessionDB:
                 self._conn = sqlite3.connect(
                     str(self.db_path),
                     check_same_thread=False,
-                    # Short timeout — application-level retry with random
-                    # jitter handles contention instead of sitting in
-                    # SQLite's internal busy handler for up to 30s.
-                    timeout=1.0,
+                    # Enough headroom for another process (e.g. the dashboard)
+                    # to release its lock under GIL pressure.  Application-level
+                    # retry with random jitter handles shorter contention.
+                    timeout=30.0,
                     # auto-starts transactions on DML, which conflicts with
                     # our explicit BEGIN IMMEDIATE.  None = we manage
                     # transactions ourselves.

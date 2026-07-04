@@ -44,9 +44,8 @@ _nb_is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
-# Where to symlink node/npm/npx so they land on PATH.
-# Mirrors get_command_link_dir() from install.sh: root FHS → /usr/local/bin,
-# Termux → $PREFIX/bin, otherwise ~/.local/bin.
+# Command link dir. Root FHS installs may expose managed node/npm/npx here;
+# user-scoped installs keep those tools private to $HERMES_HOME/node/bin.
 _nb_get_link_dir() {
     if _nb_is_termux && [ -n "${PREFIX:-}" ]; then
         echo "$PREFIX/bin"
@@ -57,17 +56,53 @@ _nb_get_link_dir() {
     fi
 }
 
-# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
-# (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
-# PATH and wiped on every Node upgrade. Scoped to the managed Node via its
-# prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
-# untouched. Idempotent no-op when there's no managed npm.
-_nb_configure_npm_prefix() {
-    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+_nb_should_link_managed_node_tools() {
+    _nb_is_termux && return 1
+    [ "$(id -u)" = 0 ] && [ "$(uname -s)" = "Linux" ]
+}
+
+_nb_remove_private_managed_node_links() {
+    _nb_should_link_managed_node_tools && return 0
+    [ -d "$HERMES_HOME/node" ] || return 0
+
+    local _link_dir _tool _link _target
+    _link_dir="$(_nb_get_link_dir)"
+    for _tool in node npm npx; do
+        _link="$_link_dir/$_tool"
+        [ -L "$_link" ] || continue
+        _target="$(readlink "$_link" 2>/dev/null || true)"
+        case "$_target" in
+            "$HERMES_HOME/node"/*)
+                rm -f "$_link"
+                ;;
+        esac
+    done
+}
+
+_nb_link_managed_node_tools_if_needed() {
+    _nb_should_link_managed_node_tools || return 0
+
     local _link_dir
     _link_dir="$(_nb_get_link_dir)"
+    mkdir -p "$_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+}
+
+# Keep the managed npm's prefix scoped to the managed Node. User-scoped
+# installs keep global bins private; root FHS installs keep them in the command
+# link dir so root-managed global bins stay reachable.
+_nb_configure_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local _prefix
+    if _nb_should_link_managed_node_tools; then
+        _prefix="$(dirname "$(_nb_get_link_dir)")"
+    else
+        _prefix="$HERMES_HOME/node"
+    fi
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    printf 'prefix=%s\n' "$_prefix" > "$HERMES_HOME/node/etc/npmrc"
 }
 
 _nb_node_major() {
@@ -213,12 +248,8 @@ _nb_install_bundled_node() {
     mv "$extracted" "$HERMES_HOME/node"
     rm -rf "$tmp"
 
-    local _link_dir
-    _link_dir="$(_nb_get_link_dir)"
-    mkdir -p "$_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+    _nb_remove_private_managed_node_links
+    _nb_link_managed_node_tools_if_needed
 
     _nb_configure_npm_prefix
 
@@ -282,6 +313,7 @@ ensure_node() {
     # Repair pre-existing managed installs where `npm install -g` lands off
     # PATH. No-op when there's no managed Node, so it's safe to run first.
     _nb_configure_npm_prefix
+    _nb_remove_private_managed_node_links
 
     if _nb_have_modern_node; then
         _nb_ok "Node $(node --version) found"

@@ -4,6 +4,7 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.action_stall import build_action_stall_continuation
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -163,6 +164,136 @@ class TestCodexBuildKwargs:
         eb = kw.get("extra_body", {})
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
+
+    def test_xai_grok_action_stall_continuation_forces_required_tool_choice(self, transport):
+        messages = [
+            {"role": "user", "content": "Inspect the repo."},
+            {"role": "assistant", "content": "I'll inspect the repo now."},
+            {"role": "user", "content": build_action_stall_continuation()},
+        ]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=True,
+        )
+
+        assert kw["tool_choice"] == "required"
+
+    def test_non_grok_action_stall_continuation_stays_auto(self, transport):
+        messages = [
+            {"role": "user", "content": "Inspect the repo."},
+            {"role": "assistant", "content": "I'll inspect the repo now."},
+            {"role": "user", "content": build_action_stall_continuation()},
+        ]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=False,
+        )
+
+        assert kw["tool_choice"] == "auto"
+
+    def test_grok_named_responses_model_forces_required_even_without_xai_flag(self, transport):
+        messages = [
+            {"role": "user", "content": "Inspect the repo."},
+            {"role": "assistant", "content": "I'll inspect the repo now."},
+            {"role": "user", "content": build_action_stall_continuation()},
+        ]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.3",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=False,
+        )
+
+        assert kw["tool_choice"] == "required"
+
+    def test_xai_action_stall_does_not_force_after_tool_evidence(self, transport):
+        messages = [
+            {"role": "user", "content": "Run date."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+            {"role": "user", "content": build_action_stall_continuation()},
+        ]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=True,
+        )
+
+        assert kw["tool_choice"] == "auto"
+
+    def test_request_override_still_wins_over_action_stall_tool_choice(self, transport):
+        messages = [
+            {"role": "user", "content": "Inspect the repo."},
+            {"role": "assistant", "content": "I'll inspect the repo now."},
+            {"role": "user", "content": build_action_stall_continuation()},
+        ]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=True,
+            request_overrides={"tool_choice": "auto"},
+        )
+
+        assert kw["tool_choice"] == "auto"
 
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

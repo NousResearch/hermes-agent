@@ -249,6 +249,23 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
 
+            # Grok/xAI sometimes narrates an action ("I'll check...") but emits
+            # no structured tool call. The conversation loop already detects
+            # that action-stall shape and appends a private corrective
+            # continuation. For that *single retry turn*, make xAI/Grok use a
+            # tool mechanically. Do not force globally: after a tool result the
+            # model must be free to stop with a final text answer, and caller
+            # request_overrides still win below.
+            model_lower = str(model or "").lower()
+            if is_xai_responses or "grok" in model_lower:
+                try:
+                    from agent.action_stall import latest_user_message_is_stall_continuation
+
+                    if latest_user_message_is_stall_continuation(payload_messages):
+                        kwargs["tool_choice"] = "required"
+                except Exception:
+                    pass
+
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix
         # (instructions + tools), NOT session_id — recurring cron jobs carry a

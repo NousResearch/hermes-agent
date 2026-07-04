@@ -123,6 +123,7 @@ const {
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
+  ipcPathError,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs
@@ -6572,12 +6573,27 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
 })
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: DATA_URL_READ_MAX_BYTES,
     purpose: 'File preview'
   })
-  const data = await fs.promises.readFile(resolvedPath)
-  return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
+  const handle = await fs.promises.open(resolvedPath, 'r')
+
+  try {
+    const liveStat = await handle.stat()
+    if (liveStat.size > DATA_URL_READ_MAX_BYTES) {
+      throw ipcPathError('EFBIG', `File preview failed: file is too large (${liveStat.size} bytes; limit ${DATA_URL_READ_MAX_BYTES} bytes).`)
+    }
+
+    const bytesToRead = Math.min(stat.size, DATA_URL_READ_MAX_BYTES)
+    const buffer = Buffer.alloc(bytesToRead)
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const data = buffer.subarray(0, bytesRead)
+
+    return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
+  } finally {
+    await handle.close()
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {

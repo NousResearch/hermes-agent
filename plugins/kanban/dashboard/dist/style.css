@@ -684,6 +684,26 @@
   font-size: 0.68rem;
   color: var(--color-foreground);
 }
+.hermes-kanban-dep-chip-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-primary, #3b82f6);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  max-width: 16rem;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.hermes-kanban-dep-chip-link:hover {
+  color: color-mix(in srgb, var(--color-primary, #3b82f6) 80%, var(--color-foreground));
+}
 .hermes-kanban-dep-chip-x {
   appearance: none;
   background: transparent;

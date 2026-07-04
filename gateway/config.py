@@ -1239,6 +1239,7 @@ def load_gateway_config() -> GatewayConfig:
     import hermes_constants as _hermes_constants_local
     primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
     active_home = _hermes_constants_local.get_hermes_home().resolve()
+    is_secondary_override = active_home != primary_home
     from agent.secret_scope import is_multiplex_active
     if is_secondary_override and is_multiplex_active():
         _PORT_BINDING_PLATFORMS = {
@@ -1348,7 +1349,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
             active_home = _hermes_constants_local.get_hermes_home().resolve()
             primary_home = _hermes_constants_local.get_default_hermes_root().resolve()
-            is_secondary = active_home != primary_home
+            from agent.secret_scope import is_multiplex_active
+            is_secondary = (active_home != primary_home) and is_multiplex_active()
 
             from agent.secret_scope import _is_global_env
             if is_secondary and not _is_global_env(name):
@@ -1374,7 +1376,8 @@ def _apply_env_overrides_impl(config: GatewayConfig) -> None:
     active_home = _hermes_constants_local.get_hermes_home().resolve()
 
     # A profile is secondary if its active home is different from the primary home
-    is_secondary = active_home != primary_home
+    from agent.secret_scope import is_multiplex_active
+    is_secondary = (active_home != primary_home) and is_multiplex_active()
 
     def _enable_from_env(platform: Platform) -> PlatformConfig:
         if platform not in config.platforms:

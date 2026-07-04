@@ -7384,10 +7384,16 @@ def get_env_value(key: str) -> Optional[str]:
     # Check active profile secret scope first (multiplex-aware)
     try:
         from agent.secret_scope import get_secret as _get_secret
-        val = _get_secret(key)
-        if val is not None:
-            return val
-    except Exception:
+        from agent.secret_scope import UnscopedSecretError
+        try:
+            val = _get_secret(key)
+            if val is not None:
+                return val
+        except UnscopedSecretError:
+            raise
+        except Exception:
+            pass
+    except ImportError:
         pass
 
     # Check environment first
@@ -7419,9 +7425,14 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
         return val
     try:
         from agent.secret_scope import get_secret as _get_secret
-
-        return _get_secret(key)
-    except Exception:
+        from agent.secret_scope import UnscopedSecretError
+        try:
+            return _get_secret(key)
+        except UnscopedSecretError:
+            raise
+        except Exception:
+            return os.environ.get(key)
+    except ImportError:
         return os.environ.get(key)
 
 

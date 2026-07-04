@@ -88,6 +88,11 @@ _HYBRID_SERVER = "hermes"
 # model.claude_agent_sdk.builtin_tools ([] restores the strip-everything legacy).
 _SDK_ORCHESTRATION_TOOLS = ("Workflow", "Agent", "Task", "TodoWrite", "Skill")
 
+# After a native interrupt the CLI normally answers with a final ResultMessage,
+# ending the message loop. If it hangs instead, the transport is force-closed
+# after this many seconds so a turn cannot outlive a /stop.
+_INTERRUPT_GRACE_S = 15.0
+
 # Prefix on the display label of a tool run by a nested SDK subagent (spawned
 # via the `Agent`/`Task` tool). Keeps subagent activity visible on UI/CLI
 # consumers that only render the tool name; richer consumers also get a
@@ -925,12 +930,15 @@ async def _collect_query(
     bridge: Optional[_StreamBridge] = None,
     interrupt_check=None,
 ) -> Dict[str, Any]:
-    """Run ``query(prompt, options)`` and collect text, usage and session id.
+    """Run the turn through ``ClaudeSDKClient`` and collect text, usage and
+    session id.
 
-    ``interrupt_check`` polls Hermes' /stop flag between SDK messages: one-shot
-    ``query()`` has no native interrupt (that needs ``ClaudeSDKClient`` +
-    streaming input), but raising out of the async-for closes the generator,
-    which tears down the CLI transport — so a stop lands within one message.
+    ``interrupt_check`` polls Hermes' /stop flag. A background watcher forwards
+    it as the client's native ``interrupt()``, so a stop lands mid-tool. With
+    the previous one-shot ``query()`` a stop could only land between SDK
+    messages, and a long tool call emits none — /stop had to wait the whole
+    tool call out (and raising out of the async-for tore down the transport
+    uncleanly).
     """
     AssistantMessage = sdk.AssistantMessage
     ResultMessage = sdk.ResultMessage
@@ -960,76 +968,127 @@ async def _collect_query(
     stop_reason: Optional[str] = None
     errors: List[str] = []
 
-    async for message in sdk.query(prompt=prompt, options=options):
-        if interrupt_check is not None and interrupt_check():
-            raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
-        if StreamEvent is not None and isinstance(message, StreamEvent):
-            # Live progress only — never part of the collected result. Subagent
-            # streams (parent_tool_use_id set) are still surfaced, but the bridge
-            # shows only their TOOL activity (marked as subagent work); their
-            # text/thinking is suppressed so it doesn't interleave with the
-            # top-level response.
-            if bridge is not None:
+    client = sdk.ClaudeSDKClient(options=options)
+    await client.connect()
+    interrupted = False
+
+    async def _watch_interrupt():
+        # Forward Hermes' /stop flag as the client's native interrupt. The
+        # message loop below can see no traffic for the whole duration of a
+        # long tool call, so checking between messages is not enough.
+        nonlocal interrupted
+        while True:
+            await asyncio.sleep(0.25)
+            if interrupt_check():
+                interrupted = True
                 try:
-                    bridge.handle(
-                        getattr(message, "event", None) or {},
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
+                    await client.interrupt()
                 except Exception:
-                    logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
-            continue
-        if _task_types and isinstance(message, _task_types):
-            # Background task / workflow-agent progress — surface as its own chip
-            # lifecycle, never part of the collected top-level result.
-            if bridge is not None:
+                    logger.debug("claude_agent_sdk: interrupt request failed", exc_info=True)
+                await asyncio.sleep(_INTERRUPT_GRACE_S)
                 try:
-                    bridge.handle_task(message)
+                    await client.disconnect()
                 except Exception:
-                    logger.debug("claude_agent_sdk: task bridge error", exc_info=True)
-            continue
-        if UserMessage is not None and isinstance(message, UserMessage):
-            # Tool results echoing back into the SDK loop — resolve the
-            # matching tool chip (never part of the collected result).
-            if bridge is not None:
-                content = getattr(message, "content", None)
-                for block in content if isinstance(content, list) else []:
-                    if ToolResultBlock is not None and isinstance(block, ToolResultBlock):
-                        try:
-                            bridge.handle_tool_result(
-                                getattr(block, "tool_use_id", "") or "",
-                                getattr(block, "content", None),
-                                getattr(block, "is_error", None),
-                            )
-                        except Exception:
-                            logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
-            continue
-        if isinstance(message, AssistantMessage):
-            # A subagent's own assistant turns (parent_tool_use_id set) are its
-            # internal reasoning — not the top-level response. Its tool activity
-            # is surfaced live via the stream bridge; keep its text/thinking out
-            # of the collected result so it can't leak into the final message.
-            if getattr(message, "parent_tool_use_id", None):
+                    pass
+                return
+
+    watcher = (
+        asyncio.create_task(_watch_interrupt()) if interrupt_check is not None else None
+    )
+    try:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if interrupt_check is not None and interrupt_check():
+                # Fast path between messages; the watcher covers mid-tool.
+                if not interrupted:
+                    interrupted = True
+                    try:
+                        await client.interrupt()
+                    except Exception:
+                        pass
+                break
+            if StreamEvent is not None and isinstance(message, StreamEvent):
+                # Live progress only — never part of the collected result. Subagent
+                # streams (parent_tool_use_id set) are still surfaced, but the bridge
+                # shows only their TOOL activity (marked as subagent work); their
+                # text/thinking is suppressed so it doesn't interleave with the
+                # top-level response.
+                if bridge is not None:
+                    try:
+                        bridge.handle(
+                            getattr(message, "event", None) or {},
+                            parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
+                        )
+                    except Exception:
+                        logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
                 continue
-            for block in getattr(message, "content", []) or []:
-                if TextBlock is not None and isinstance(block, TextBlock):
-                    assistant_text.append(block.text or "")
-                elif ThinkingBlock is not None and isinstance(block, ThinkingBlock):
-                    thinking_text.append(getattr(block, "thinking", "") or "")
-                elif getattr(block, "type", None) == "text":
-                    assistant_text.append(getattr(block, "text", "") or "")
-                elif getattr(block, "type", None) == "thinking":
-                    thinking_text.append(getattr(block, "thinking", "") or "")
-        elif isinstance(message, ResultMessage):
-            result_text = getattr(message, "result", None)
-            usage = getattr(message, "usage", None)
-            total_cost = getattr(message, "total_cost_usd", None)
-            session_id = getattr(message, "session_id", None)
-            is_error = bool(getattr(message, "is_error", False))
-            subtype = getattr(message, "subtype", None)
-            stop_reason = getattr(message, "stop_reason", None)
-            errs = getattr(message, "errors", None)
-            if isinstance(errs, list):
-                errors = [str(e) for e in errs]
+            if _task_types and isinstance(message, _task_types):
+                # Background task / workflow-agent progress — surface as its own chip
+                # lifecycle, never part of the collected top-level result.
+                if bridge is not None:
+                    try:
+                        bridge.handle_task(message)
+                    except Exception:
+                        logger.debug("claude_agent_sdk: task bridge error", exc_info=True)
+                continue
+            if UserMessage is not None and isinstance(message, UserMessage):
+                # Tool results echoing back into the SDK loop — resolve the
+                # matching tool chip (never part of the collected result).
+                if bridge is not None:
+                    content = getattr(message, "content", None)
+                    for block in content if isinstance(content, list) else []:
+                        if ToolResultBlock is not None and isinstance(block, ToolResultBlock):
+                            try:
+                                bridge.handle_tool_result(
+                                    getattr(block, "tool_use_id", "") or "",
+                                    getattr(block, "content", None),
+                                    getattr(block, "is_error", None),
+                                )
+                            except Exception:
+                                logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
+                continue
+            if isinstance(message, AssistantMessage):
+                # A subagent's own assistant turns (parent_tool_use_id set) are its
+                # internal reasoning — not the top-level response. Its tool activity
+                # is surfaced live via the stream bridge; keep its text/thinking out
+                # of the collected result so it can't leak into the final message.
+                if getattr(message, "parent_tool_use_id", None):
+                    continue
+                for block in getattr(message, "content", []) or []:
+                    if TextBlock is not None and isinstance(block, TextBlock):
+                        assistant_text.append(block.text or "")
+                    elif ThinkingBlock is not None and isinstance(block, ThinkingBlock):
+                        thinking_text.append(getattr(block, "thinking", "") or "")
+                    elif getattr(block, "type", None) == "text":
+                        assistant_text.append(getattr(block, "text", "") or "")
+                    elif getattr(block, "type", None) == "thinking":
+                        thinking_text.append(getattr(block, "thinking", "") or "")
+            elif isinstance(message, ResultMessage):
+                result_text = getattr(message, "result", None)
+                usage = getattr(message, "usage", None)
+                total_cost = getattr(message, "total_cost_usd", None)
+                session_id = getattr(message, "session_id", None)
+                is_error = bool(getattr(message, "is_error", False))
+                subtype = getattr(message, "subtype", None)
+                stop_reason = getattr(message, "stop_reason", None)
+                errs = getattr(message, "errors", None)
+                if isinstance(errs, list):
+                    errors = [str(e) for e in errs]
+    except Exception:
+        # The forced teardown after an interrupt can surface as a transport
+        # error; never mask errors on the normal path.
+        if not interrupted:
+            raise
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    if interrupted:
+        raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
 
     # ResultMessage.result is only populated on the `success` subtype; on error
     # subtypes fall back to the collected assistant text so the user still sees
@@ -1228,9 +1287,9 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
                     prompt,
                     options,
                     bridge=bridge if bridge.active else None,
-                    # One-shot query() has no native interrupt; polling Hermes'
-                    # /stop flag between SDK messages and raising closes the
-                    # generator, which tears down the CLI transport.
+                    # Hermes' /stop flag, forwarded as the client's native
+                    # interrupt by a watcher inside _collect_query, so a stop
+                    # lands mid-tool instead of after the running tool call.
                     interrupt_check=lambda: bool(getattr(agent, "_interrupt_requested", False)),
                 )
             )

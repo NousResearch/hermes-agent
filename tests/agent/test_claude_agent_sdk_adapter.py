@@ -151,6 +151,35 @@ def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_even
         tool=lambda name, desc, schema: (lambda fn: {"name": name, "schema": schema, "fn": fn}),
         create_sdk_mcp_server=lambda *, name, version, tools: {"name": name, "tools": tools},
     )
+
+    class _FakeSDKClient:
+        """Client-shaped wrapper over ``fake.query`` (read dynamically, so
+        tests that monkeypatch ``fake.query`` keep working)."""
+
+        def __init__(self, options=None):
+            self._options = options
+            self._prompt = None
+            self.interrupted = False
+
+        async def connect(self):
+            pass
+
+        async def query(self, prompt):
+            self._prompt = prompt
+
+        async def receive_response(self):
+            async for message in fake.query(prompt=self._prompt, options=self._options):
+                if self.interrupted:
+                    return
+                yield message
+
+        async def interrupt(self):
+            self.interrupted = True
+
+        async def disconnect(self):
+            pass
+
+    fake.ClaudeSDKClient = _FakeSDKClient
     return fake
 
 

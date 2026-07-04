@@ -170,10 +170,17 @@ Every `ClaudeAgentOptions` field was reviewed against the Agent SDK docs
 **Config passthroughs** (`model.claude_agent_sdk.*`, forwarded verbatim) —
 `cli_path`, `betas`, `fallback_model`, `sandbox`, `add_dirs`, `extra_args`.
 
-**Interrupts** — one-shot `query()` has no native interrupt (that needs
-`ClaudeSDKClient` + streaming input); the adapter polls Hermes' `/stop` flag
-between SDK messages and raises `InterruptedError`, which closes the generator
-and tears down the CLI transport.
+**Interrupts** — turns run through `ClaudeSDKClient`, which has a native
+`interrupt()`. A background watcher polls Hermes' `/stop` flag every 0.25s and
+forwards it as a native interrupt, so a stop lands mid-tool (a long tool call
+emits no messages, so checking between messages is not enough). If the stream
+does not wind down within a 15s grace period, the transport is
+force-disconnected. The adapter then raises `InterruptedError` as before.
+
+**Session persistence** — the SDK session id is stored on the agent object and
+in `HERMES_HOME/claude_agent_sdk_sessions.json` (keyed by Hermes session id +
+cwd), so cross-turn context survives a gateway restart or agent-cache
+eviction. A stale stored id is forgotten and the turn retried once fresh.
 
 **Deliberately not used** (Hermes owns the equivalent, or N/A):
 `agents`/`skills`/`plugins` (Hermes has its own subagents/skills),

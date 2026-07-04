@@ -1,6 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useEffect, useRef } from 'react'
 
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -718,7 +718,7 @@ export function ChatBar({
     sessionId
   })
 
-  const runPendingPlan = useCallback(() => {
+  const runPendingPlan = () => {
     if (!pendingPlan) {
       return
     }
@@ -741,9 +741,9 @@ export function ChatBar({
         }
       })
       .catch(() => setPendingPlan(key, { ...plan, state: 'ready' }))
-  }, [onSubmit, pendingPlan, planSessionKey])
+  }
 
-  const cancelPendingPlan = useCallback(() => {
+  const cancelPendingPlan = () => {
     clearPendingPlan(planSessionKey)
 
     if (statusSessionId) {
@@ -751,17 +751,14 @@ export function ChatBar({
     }
 
     triggerHaptic('cancel')
-  }, [planSessionKey, statusSessionId])
+  }
 
-  const sendGoalCommand = useCallback(
-    (command: 'clear' | 'pause' | 'resume') => {
-      triggerHaptic('selection')
-      void Promise.resolve(onSubmit(`/goal ${command}`))
-    },
-    [onSubmit]
-  )
+  const sendGoalCommand = (command: 'clear' | 'pause' | 'resume') => {
+    triggerHaptic('selection')
+    void Promise.resolve(onSubmit(`/goal ${command}`))
+  }
 
-  const startGoalFromComposer = useCallback(() => {
+  const startGoalFromComposer = () => {
     const text = draftRef.current.trim()
 
     triggerHaptic('selection')
@@ -775,7 +772,7 @@ export function ChatBar({
     clearDraft()
     clearComposerAttachments()
     void Promise.resolve(onSubmit(`/goal ${text}`))
-  }, [clearDraft, draftRef, onSubmit])
+  }
 
   const contextMenu = (
     <ContextMenu

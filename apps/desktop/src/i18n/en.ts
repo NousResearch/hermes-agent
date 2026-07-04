@@ -2217,6 +2217,7 @@ export const en: Translations = {
     thread: {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
+      messageRenderFailed: 'This message failed to render.',
       loadingResponse: 'Hermes is loading a response',
       resumeWhenBackgroundDone: count =>
         count === 1

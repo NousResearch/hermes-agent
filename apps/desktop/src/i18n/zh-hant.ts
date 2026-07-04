@@ -2131,6 +2131,7 @@ export const zhHant = defineLocale({
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
+      messageRenderFailed: '此訊息渲染失敗。',
       loadingResponse: 'Hermes 正在載入回覆',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,

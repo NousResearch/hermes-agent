@@ -2196,6 +2196,7 @@ export const ja = defineLocale({
     thread: {
       loadingSession: 'セッションを読み込み中',
       showEarlier: '以前のメッセージを表示',
+      messageRenderFailed: 'このメッセージを表示できませんでした。',
       loadingResponse: 'Hermes が応答を読み込み中',
       resumeWhenBackgroundDone: count =>
         count === 1

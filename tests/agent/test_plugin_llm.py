@@ -71,6 +71,48 @@ def _trusted_policy(plugin_id: str = "trusted-plugin", **overrides: Any) -> _Tru
 
 
 # ---------------------------------------------------------------------------
+# Response text extraction (reasoning-model handling)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractText:
+    @staticmethod
+    def _resp(content, **extra):
+        msg = SimpleNamespace(content=content, **extra)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    def test_plain_text_passthrough(self):
+        from agent.plugin_llm import _extract_text
+
+        assert _extract_text(self._resp("hello world")) == "hello world"
+
+    def test_strips_inline_think_block(self):
+        """Reasoning models (MiniMax M2 / NIM / Gemma) emit <think> inline in
+        content. It must not leak into a plugin's text or break the
+        complete_structured() JSON parse (a <think> prefix makes the body
+        non-JSON)."""
+        from agent.plugin_llm import _extract_text
+
+        r = self._resp("<think>let me work it out</think>The answer is 42.")
+        assert _extract_text(r) == "The answer is 42."
+
+    def test_falls_back_to_reasoning_field_when_content_none(self):
+        """DeepSeek-R1 / Qwen-QwQ shape: content=None, answer in `reasoning`.
+        Mirrors extract_content_or_reasoning — must not return empty."""
+        from agent.plugin_llm import _extract_text
+
+        r = self._resp(None, reasoning="The answer is 42.")
+        assert _extract_text(r) == "The answer is 42."
+
+    def test_list_content_still_joined(self):
+        """Multimodal list content parts are still concatenated (no regression)."""
+        from agent.plugin_llm import _extract_text
+
+        r = self._resp([{"type": "text", "text": "foo"}, {"type": "text", "text": "bar"}])
+        assert _extract_text(r) == "foobar"
+
+
+# ---------------------------------------------------------------------------
 # Trust gate
 # ---------------------------------------------------------------------------
 

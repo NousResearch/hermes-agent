@@ -518,13 +518,25 @@ def _extract_usage(response: Any) -> PluginLlmUsage:
 
 
 def _extract_text(response: Any) -> str:
-    """Pull the assistant text out of an OpenAI-shaped response object."""
+    """Pull the assistant text out of an OpenAI-shaped response object.
+
+    Mirrors ``agent.auxiliary_client.extract_content_or_reasoning``'s handling
+    of reasoning models so the plugin LLM host behaves like the main loop:
+
+    * inline ``<think>``/reasoning blocks are stripped, so they don't leak into
+      a plugin's ``complete()`` text or break ``complete_structured()`` JSON
+      parsing (an unstripped ``<think>`` prefix makes the body non-JSON); and
+    * a response whose ``content`` is ``None`` because the visible answer landed
+      in a structured ``reasoning`` field (DeepSeek-R1 / Qwen-QwQ, etc.) falls
+      back to that field instead of returning an empty string.
+    """
     try:
         msg = response.choices[0].message
         content = getattr(msg, "content", None)
+        text = ""
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
+            text = content
+        elif isinstance(content, list):
             parts: List[str] = []
             for part in content:
                 if isinstance(part, dict):
@@ -534,7 +546,19 @@ def _extract_text(response: Any) -> str:
                     txt = getattr(part, "text", None)
                     if isinstance(txt, str):
                         parts.append(txt)
-            return "".join(parts)
+            text = "".join(parts)
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        text = strip_think_blocks(None, text)
+        if text.strip():
+            return text
+
+        # Reasoning-only response: the visible answer is in a structured
+        # reasoning field, not ``content``.
+        for field in ("reasoning", "reasoning_content"):
+            val = getattr(msg, field, None)
+            if isinstance(val, str) and val.strip():
+                return val
     except (AttributeError, IndexError, TypeError):
         pass
     return ""

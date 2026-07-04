@@ -388,6 +388,36 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _terminal_backend_and_disk_for_doctor() -> tuple[str, int]:
+    """Return the effective terminal backend and disk cap for doctor checks."""
+    backend = os.getenv("TERMINAL_ENV")
+    disk_raw = os.getenv("TERMINAL_CONTAINER_DISK")
+
+    try:
+        from hermes_cli.config import load_config
+
+        terminal_cfg = load_config().get("terminal") or {}
+        if isinstance(terminal_cfg, dict):
+            if not backend:
+                backend = (
+                    terminal_cfg.get("backend")
+                    or terminal_cfg.get("env_type")
+                    or "local"
+                )
+            if disk_raw is None:
+                disk_raw = terminal_cfg.get("container_disk")
+    except Exception:
+        pass
+
+    if not backend:
+        backend = "local"
+    try:
+        disk = int(disk_raw) if disk_raw is not None else 0
+    except (TypeError, ValueError):
+        disk = 0
+    return str(backend), disk
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -1437,7 +1467,7 @@ def run_doctor(args):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    terminal_env, terminal_disk = _terminal_backend_and_disk_for_doctor()
     try:
         from hermes_constants import is_container as _is_container
         running_in_container = _is_container()
@@ -1467,6 +1497,23 @@ def run_doctor(args):
                 result = None
             if result is not None and result.returncode == 0:
                 check_ok("docker", "(daemon running)")
+                if terminal_disk > 0 and sys.platform != "darwin":
+                    try:
+                        from tools.environments.docker import DockerEnvironment
+
+                        storage_opt_supported = DockerEnvironment._storage_opt_supported()
+                    except Exception:
+                        storage_opt_supported = False
+                    if not storage_opt_supported:
+                        check_warn(
+                            "Docker container_disk is not enforceable",
+                            "(requires overlay2 on XFS with pquota)",
+                        )
+                        manual_issues.append(
+                            "terminal.container_disk is configured but Docker cannot enforce "
+                            "per-container disk quotas on this storage backend. Use XFS with "
+                            "pquota or set terminal.container_disk: 0 after adding a host-side cap."
+                        )
             else:
                 _fail_and_issue("docker daemon not running", "", "Start Docker daemon", issues)
         else:

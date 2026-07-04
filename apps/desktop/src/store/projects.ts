@@ -28,6 +28,7 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+let projectTreeRefreshId = 0
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -46,6 +47,8 @@ function markProjectsRpcFailure(err: unknown): void {
 function projectsStaleBackendError(): Error {
   return new Error(translateNow('sidebar.projects.staleBackend'))
 }
+
+type ProjectsGateway = NonNullable<ReturnType<typeof activeGateway>>
 
 // Client-side cache eviction (Apollo-style optimistic layer): ids the user just
 // deleted/archived. The backend tree is a snapshot that still lists them until
@@ -227,6 +230,28 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+async function activeProjectsGateway(): Promise<ProjectsGateway> {
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway) {
+    throw new Error('Hermes gateway is not connected')
+  }
+
+  return gateway
+}
+
+async function gatewayRequestOn<T>(
+  gateway: ProjectsGateway,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  return gateway.request<T>(method, params)
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
@@ -254,10 +279,30 @@ interface ProjectTreePayload {
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
+  let gateway: ProjectsGateway
+
+  try {
+    gateway = await activeProjectsGateway()
+  } catch (err) {
+    markProjectsRpcFailure(err)
+
+    return
+  }
+
+  await refreshProjectTreeOn(gateway)
+}
+
+async function refreshProjectTreeOn(gateway: ProjectsGateway): Promise<void> {
+  const refreshId = ++projectTreeRefreshId
   $projectTreeLoading.set(true)
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
+    const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', { preview_limit: 3 })
+
+    if (activeGateway() !== gateway) {
+      return
+    }
+
     // The flat Sessions list shows everything; scoped ids are only used here to
     // reconcile the optimistic eviction layer against what the server still lists.
     const scoped = new Set(res.scoped_session_ids ?? [])
@@ -280,10 +325,14 @@ export async function refreshProjectTree(): Promise<void> {
 
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (activeGateway() === gateway) {
+      markProjectsRpcFailure(err)
+    }
     // Backend may not be ready; keep the last known tree.
   } finally {
-    $projectTreeLoading.set(false)
+    if (refreshId === projectTreeRefreshId) {
+      $projectTreeLoading.set(false)
+    }
   }
 }
 
@@ -318,10 +367,15 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   $reposScanning.set(true)
 
   try {
+    const gateway = await activeProjectsGateway()
     const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
+
+    await gatewayRequestOn(gateway, 'projects.record_repos', { repos })
     // The disk scan may surface new zero-session repos; refold them into the tree.
-    await refreshProjectTree()
+
+    if (activeGateway() === gateway) {
+      await refreshProjectTreeOn(gateway)
+    }
   } catch {
     didScanRepos = false // let a later open retry a failed scan
   } finally {

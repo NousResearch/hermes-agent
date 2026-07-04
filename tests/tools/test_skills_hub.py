@@ -29,6 +29,7 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    install_from_quarantine,
 )
 
 
@@ -1168,6 +1169,84 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_upstream_provenance_block_does_not_change_update_hash(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "# Demo\n"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "# Demo\n\n"
+            "<!-- hermes-upstream\n"
+            "managed_by: hermes skills\n"
+            "source: github\n"
+            "identifier: owner/repo/demo-skill\n"
+            "installed_version: sha256:abc123\n"
+            "installed_at: 2026-01-01T00:00:00+00:00\n"
+            "-->\n"
+        )
+
+        assert content_hash(skill_dir) == bundle_content_hash(bundle)
+
+    def test_install_writes_upstream_provenance_without_forcing_updates(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult, content_hash
+
+        skills_dir = tmp_path / "skills"
+        quarantine_dir = tmp_path / "hub" / "quarantine"
+        quarantine_path = quarantine_dir / "demo-skill"
+        quarantine_path.mkdir(parents=True)
+        (quarantine_path / "SKILL.md").write_text("# Demo\n")
+
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(hub, "QUARANTINE_DIR", quarantine_dir)
+        monkeypatch.setattr(hub, "LOCK_FILE", tmp_path / "hub" / "lock.json")
+        monkeypatch.setattr(hub, "AUDIT_LOG", tmp_path / "hub" / "audit.log")
+        lock_records = []
+        monkeypatch.setattr(
+            hub,
+            "HubLockFile",
+            lambda: type(
+                "Lock",
+                (),
+                {"record_install": lambda self, **kwargs: lock_records.append(kwargs)},
+            )(),
+        )
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "# Demo\n"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+            metadata={"repo_url": "https://github.com/owner/repo"},
+        )
+        scan_result = ScanResult(
+            skill_name="demo-skill",
+            source="github",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        install_dir = install_from_quarantine(
+            quarantine_path,
+            "demo-skill",
+            "",
+            bundle,
+            scan_result,
+        )
+
+        skill_md = (install_dir / "SKILL.md").read_text()
+        assert "<!-- hermes-upstream" in skill_md
+        assert "source_url: https://github.com/owner/repo" in skill_md
+        assert content_hash(install_dir) == bundle_content_hash(bundle)
+
     def test_bundle_content_hash_accepts_binary_files(self):
         bundle = SkillBundle(
             name="demo-binary-skill",
@@ -1230,6 +1309,64 @@ class TestCheckForSkillUpdates:
         (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_git_skill_repo_update_fast_forwards(self, tmp_path):
+        import subprocess
+        from tools.skills_hub import check_git_skill_repo_updates
+
+        def git(cwd, *args):
+            return subprocess.run(
+                ["git", "-C", str(cwd), *args],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=True,
+            ).stdout.strip()
+
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, stdout=subprocess.PIPE)
+        seed = tmp_path / "seed"
+        git(tmp_path, "clone", str(remote), str(seed))
+        git(seed, "config", "user.email", "test@example.com")
+        git(seed, "config", "user.name", "Test")
+        (seed / "SKILL.md").write_text("# v1\n")
+        git(seed, "add", "SKILL.md")
+        git(seed, "commit", "-m", "v1")
+        git(seed, "push", "-u", "origin", "master")
+
+        skills_dir = tmp_path / "skills"
+        repo = skills_dir / "demo-skill"
+        repo.parent.mkdir()
+        git(tmp_path, "clone", str(remote), str(repo))
+
+        (seed / "SKILL.md").write_text("# v2\n")
+        git(seed, "commit", "-am", "v2")
+        git(seed, "push")
+
+        check = check_git_skill_repo_updates(apply=False, skills_dir=skills_dir)
+        assert check[0]["status"] == "update_available"
+
+        updated = check_git_skill_repo_updates(apply=True, skills_dir=skills_dir)
+        assert updated[0]["status"] == "updated"
+        assert (repo / "SKILL.md").read_text() == "# v2\n"
+
+    def test_git_skill_repo_update_blocks_dirty_worktrees(self, tmp_path):
+        import subprocess
+        from tools.skills_hub import check_git_skill_repo_updates
+
+        repo = tmp_path / "skills" / "dirty-skill"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", str(repo)], check=True, stdout=subprocess.PIPE)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+        (repo / "SKILL.md").write_text("# Demo\n")
+        subprocess.run(["git", "-C", str(repo), "add", "SKILL.md"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, stdout=subprocess.PIPE)
+        (repo / "SKILL.md").write_text("# Dirty\n")
+
+        results = check_git_skill_repo_updates(apply=True, skills_dir=tmp_path / "skills")
+
+        assert results[0]["status"] == "blocked_dirty"
 
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()

@@ -763,15 +763,27 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines)
 
 
+_HERMES_UPSTREAM_BLOCK_RE = re.compile(
+    rb"\n?<!-- hermes-upstream\n.*?\n-->\n?",
+    re.DOTALL,
+)
+
+
+def strip_hermes_upstream_block(content: bytes) -> bytes:
+    """Remove Hermes-managed upstream provenance metadata from hash input."""
+    return _HERMES_UPSTREAM_BLOCK_RE.sub(b"", content)
+
+
 def content_hash(skill_path: Path) -> str:
     """Compute a SHA-256 hash of all files in a skill directory for integrity tracking.
 
     File paths (relative to ``skill_path``) are mixed into the hash alongside
     file contents so that swapping the contents of two files in a skill
-    changes the hash. This must stay symmetric with
-    ``tools.skills_hub.bundle_content_hash`` — both functions need to
-    produce the same digest for the same skill (one operates on disk,
-    one on an in-memory bundle), so any change to the hash shape MUST
+    changes the hash. Hermes-managed upstream provenance comments are ignored
+    so local install metadata does not look like an upstream edit. This must
+    stay symmetric with ``tools.skills_hub.bundle_content_hash`` — both
+    functions need to produce the same digest for the same skill (one operates
+    on disk, one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
     """
     h = hashlib.sha256()
@@ -782,11 +794,17 @@ def content_hash(skill_path: Path) -> str:
                     rel = f.relative_to(skill_path).as_posix()
                     h.update(rel.encode("utf-8"))
                     h.update(b"\x00")
-                    h.update(f.read_bytes())
+                    data = f.read_bytes()
+                    if rel == "SKILL.md":
+                        data = strip_hermes_upstream_block(data)
+                    h.update(data)
                 except OSError:
                     continue
     elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
+        data = skill_path.read_bytes()
+        if skill_path.name == "SKILL.md":
+            data = strip_hermes_upstream_block(data)
+        h.update(data)
     return f"sha256:{h.hexdigest()[:16]}"
 
 

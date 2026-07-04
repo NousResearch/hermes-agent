@@ -105,3 +105,47 @@ def test_detect_gate_prefers_repo_python(tmp_path):
 
     assert cmd == [str(py), "-m", "pytest", "-q"]
     assert label == "pytest -q"
+
+
+def _capture_env_for(monkey_cmd):
+    """เรียก run_once แล้วดักค่า env ที่ถูกส่งเข้า subprocess.run"""
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+        stdout = "OK"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    orig_run = relay_call.subprocess.run
+    relay_call.subprocess.run = fake_run
+    try:
+        relay_call.run_once({"cmd": monkey_cmd}, "hi", Path("/tmp"), "")
+    finally:
+        relay_call.subprocess.run = orig_run
+    return captured["env"]
+
+
+def test_run_once_strips_claude_token_only_for_claude():
+    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "bad-org-token"
+    try:
+        claude_env = _capture_env_for(["claude", "--model", "claude-opus-4-8", "-p", "hi"])
+        grok_env = _capture_env_for(["grok", "-p", "hi"])
+    finally:
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+
+    # claude ต้องไม่เห็น token เสีย · grok ต้องยังได้ครบ
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in claude_env
+    assert grok_env.get("CLAUDE_CODE_OAUTH_TOKEN") == "bad-org-token"
+
+
+def test_run_once_strips_claude_token_by_full_path():
+    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "bad-org-token"
+    try:
+        env = _capture_env_for(["/opt/homebrew/bin/claude", "--model", "x", "-p", "hi"])
+    finally:
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env

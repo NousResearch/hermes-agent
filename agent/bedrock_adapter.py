@@ -1296,11 +1296,23 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    # Anthropic Claude models on Bedrock.
+    # NOTE: Opus 4.6/4.7/4.8, Sonnet 4.6/5, and Fable 5 support a 1M context
+    # window on Bedrock, but only when the request carries the
+    # ``context-1m-2025-08-07`` beta header (see build_anthropic_bedrock_client
+    # in anthropic_adapter.py, which attaches it unconditionally on the
+    # Bedrock path). This table only affects the *displayed* context length
+    # in /model — it must match what the client actually requests, so these
+    # entries reflect the 1M beta-gated value, not the un-opted-in 200K cap.
+    "anthropic.claude-fable-5":      1_000_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-5":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
+    "anthropic.claude-opus-4-1":     200_000,
     "anthropic.claude-opus-4":       200_000,
     "anthropic.claude-sonnet-4":     200_000,
     "anthropic.claude-3-5-sonnet":   200_000,

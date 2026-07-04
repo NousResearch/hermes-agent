@@ -394,6 +394,63 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
 
+    # 6. Reset provider registry and clear sys.modules so bundled plugins
+    #    are re-imported fresh with the clean HERMES_HOME.
+    try:
+        import providers as _providers_mod
+        _providers_mod._discovered = False
+        _providers_mod._REGISTRY.clear()
+        _providers_mod._ALIASES.clear()
+        # Also evict cached plugin modules from sys.modules so the
+        # next discovery re-imports them (and calls register_provider
+        # again) instead of being no-ops.
+        for _key in list(sys.modules):
+            if _key.startswith("plugins.model_providers."):
+                del sys.modules[_key]
+    except Exception:
+        pass
+
+    # 7. Re-sync PROVIDER_REGISTRY from the now-clean providers module.
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
+        from providers import list_providers as _list_providers_for_registry
+        for _pp in _list_providers_for_registry():
+            if _pp.name in PROVIDER_REGISTRY:
+                _existing = PROVIDER_REGISTRY[_pp.name]
+                if _existing.auth_type == "api_key":
+                    if _pp.base_url:
+                        _existing.inference_base_url = _pp.base_url
+                    _api_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
+                    _url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+                    if _api_vars:
+                        _existing.api_key_env_vars = _api_vars
+                    if _url_var:
+                        _existing.base_url_env_var = _url_var
+                continue
+            # Skip providers that need custom token resolution or are special-cased
+            # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
+            # openrouter/custom are aggregator/user-supplied and handled outside
+            # the registry — adding them here breaks runtime_provider resolution
+            # that relies on `openrouter not in PROVIDER_REGISTRY`).
+            if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+                continue
+            if _pp.auth_type != "api_key" or not _pp.env_vars:
+                continue
+            _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
+            _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="api_key",
+                inference_base_url=_pp.base_url,
+                api_key_env_vars=_api_key_vars or _pp.env_vars,
+                base_url_env_var=_base_url_var or "",
+            )
+    except Exception:
+        pass
+
+
+
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.
 @pytest.fixture(autouse=True)

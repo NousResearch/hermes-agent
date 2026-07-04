@@ -312,6 +312,26 @@ def test_delete_blocks_protected_env_file(forced_files_client):
     assert env_file.read_text() == "SECRET=1"
 
 
+def test_recursive_delete_blocks_directory_containing_protected_env_file(forced_files_client):
+    client, root = forced_files_client
+    project = root / "project"
+    env_file = project / ".env"
+    safe_file = project / "notes.txt"
+    project.mkdir(parents=True)
+    env_file.write_text("SECRET=1")
+    safe_file.write_text("safe")
+
+    blocked = client.request(
+        "DELETE",
+        "/api/files",
+        json={"path": str(project), "recursive": True},
+    )
+
+    assert blocked.status_code == 403
+    assert env_file.read_text() == "SECRET=1"
+    assert safe_file.read_text() == "safe"
+
+
 def _seed_file(client, root, name="out/hello.txt"):
     file_path = root / name
     created = client.post(

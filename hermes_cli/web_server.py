@@ -1596,6 +1596,21 @@ def _reject_managed_protected_write(target: Path) -> None:
         raise HTTPException(status_code=403, detail="Access to protected files is not allowed")
 
 
+def _reject_managed_protected_tree(target: Path) -> None:
+    """Block recursive mutations when any descendant is protected."""
+    _reject_managed_protected_write(target)
+    if not target.is_dir():
+        return
+
+    try:
+        for child in target.rglob("*"):
+            _reject_managed_protected_write(child)
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not inspect path: {exc}")
+
+
 def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
     try:
         resolved = target.resolve()
@@ -1878,6 +1893,7 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
     try:
         if target.is_dir():
             if payload.recursive:
+                _reject_managed_protected_tree(target)
                 shutil.rmtree(target)
             else:
                 target.rmdir()

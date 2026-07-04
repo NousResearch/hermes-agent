@@ -99,6 +99,7 @@ _fake_telegram_ext.Application = object
 _fake_telegram_ext.CommandHandler = object
 _fake_telegram_ext.CallbackQueryHandler = object
 _fake_telegram_ext.MessageHandler = object
+_fake_telegram_ext.MessageReactionHandler = object
 _fake_telegram_ext.TypeHandler = object
 _fake_telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
 _fake_telegram_ext.filters = object
@@ -108,7 +109,15 @@ _fake_telegram_request.HTTPXRequest = object
 
 @pytest.fixture(autouse=True)
 def _inject_fake_telegram(monkeypatch):
-    """Inject fake telegram modules so the adapter can import from them."""
+    """Inject fake telegram modules so the adapter can import from them.
+
+    Other Telegram adapter tests import the real module during collection/run;
+    reload it here so these fake-module tests do not depend on pytest order.
+    """
+    monkeypatch.delitem(sys.modules, "plugins.platforms.telegram.adapter", raising=False)
+    package = sys.modules.get("plugins.platforms.telegram")
+    if package is not None and hasattr(package, "adapter"):
+        monkeypatch.delattr(package, "adapter", raising=False)
     monkeypatch.setitem(sys.modules, "telegram", _fake_telegram)
     monkeypatch.setitem(sys.modules, "telegram.error", _fake_telegram_error)
     monkeypatch.setitem(sys.modules, "telegram.constants", _fake_telegram_constants)

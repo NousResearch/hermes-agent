@@ -5,11 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as adapter_mod
-from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
-def _adapter(interval: float) -> TelegramAdapter:
+def _adapter(interval: float):
+    # Import lazily so this test module does not pin telegram SDK globals during
+    # collection; several adapter tests inject fake telegram modules at runtime.
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
     config = PlatformConfig(
         enabled=True,
         token="test-token",
@@ -20,8 +22,15 @@ def _adapter(interval: float) -> TelegramAdapter:
     return adapter
 
 
+def _adapter_module():
+    from plugins.platforms.telegram import adapter as adapter_mod
+
+    return adapter_mod
+
+
 @pytest.mark.asyncio
 async def test_outbound_bot_api_calls_are_paced_per_chat(monkeypatch):
+    adapter_mod = _adapter_module()
     adapter = _adapter(0.5)
     msg1 = MagicMock(message_id=101)
     msg2 = MagicMock(message_id=102)
@@ -49,6 +58,7 @@ async def test_outbound_bot_api_calls_are_paced_per_chat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_outbound_bot_api_limiter_is_per_chat(monkeypatch):
+    adapter_mod = _adapter_module()
     adapter = _adapter(0.5)
     adapter._bot.send_message = AsyncMock(
         side_effect=[MagicMock(message_id=101), MagicMock(message_id=102)]

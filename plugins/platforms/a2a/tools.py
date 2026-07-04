@@ -2,9 +2,10 @@
 A2A client tools — let the Hermes agent talk to *other* agents as a peer.
 
 Tools (registered in the ``a2a`` toolset):
-  - a2a_discover(url)        -> fetch + summarize a peer's Agent Card
-  - a2a_call(agent, message) -> send a task to a peer, return its reply
-  - a2a_list()               -> list configured peers + persisted conversations
+  - a2a_discover(url)         -> fetch + summarize a peer's Agent Card
+  - a2a_call(agent, message)  -> send a task to a peer, return its reply
+  - a2a_list()                -> list configured peers + persisted conversations
+  - a2a_orchestrate(...)      -> fan-out task to multiple peers by capability
 
 Peers are resolved from config.yaml under ``a2a_agents``::
 
@@ -13,6 +14,7 @@ Peers are resolved from config.yaml under ``a2a_agents``::
         url: "http://localhost:9999"
         auth: { type: bearer, token: "sk-..." }
         timeout: 120
+        capabilities: [web_search, research]
 
 Transport is stdlib urllib (no a2a-sdk dependency). The wire format is the A2A
 JSON-RPC ``message/send`` method, so any A2A-compliant peer works.
@@ -25,6 +27,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional, TypedDict
 
 from . import protocol, security
@@ -32,6 +35,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120
+_ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 
 # --------------------------------------------------------------------------
@@ -47,9 +51,9 @@ def _load_config() -> dict:
 
 
 def _resolve_peer(agent: str) -> Optional[dict]:
-    """Resolve a peer name to {url, auth, timeout}, or treat ``agent`` as a URL."""
+    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL."""
     if agent.startswith("http://") or agent.startswith("https://"):
-        return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT}
+        return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     cfg = _load_config()
     peers = cfg.get("a2a_agents") or {}
     entry = peers.get(agent)
@@ -59,6 +63,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
         "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
+        "capabilities": entry.get("capabilities", []) or [],
     }
 
 
@@ -122,7 +127,7 @@ def a2a_discover(args: dict, **_: Any) -> str:
         f"Agent: {name}",
         f"Description: {desc}",
         f"URL: {card.get('url', url)}",
-        f"Streaming: {bool(caps.get('streaming'))}  Auth required: {auth}",
+        f"Streaming: {bool(caps.get('streaming'))}  Push: {bool(caps.get('pushNotifications'))}  Auth required: {auth}",
         f"Skills ({len(skills)}):",
     ]
     for s in skills[:20]:
@@ -176,12 +181,15 @@ def a2a_call(args: dict, **_: Any) -> str:
 
     security.audit("outbound", agent, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
+    protocol.metrics.outbound_total += 1
 
     try:
         resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer '{agent}' rejected auth (HTTP {e.code}). Check the configured token."
+        if e.code == 429:
+            return f"Error: peer '{agent}' rate limited us (HTTP 429). Retry later."
         return f"Error: call to '{agent}' failed — HTTP {e.code}."
     except Exception as e:
         return f"Error: call to '{agent}' failed — {e}."
@@ -194,6 +202,7 @@ def a2a_call(args: dict, **_: Any) -> str:
     reply = _reply_text_from_result(result)
     reply_ctx = result.get("contextId", ctx) if isinstance(result, dict) else ctx
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
+    protocol.metrics.inbound_total += 1
 
     state = ""
     if isinstance(result, dict):
@@ -230,7 +239,9 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
         lines.append(f"Configured peers ({len(peers)}):")
         for name, entry in peers.items():
             auth = (entry.get("auth") or {}).get("type", "none")
-            lines.append(f"  - {name}: {entry.get('url', '?')} (auth: {auth})")
+            caps = entry.get("capabilities", [])
+            cap_str = f" caps: {', '.join(caps)}" if caps else ""
+            lines.append(f"  - {name}: {entry.get('url', '?')} (auth: {auth}){cap_str}")
     else:
         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
 
@@ -240,14 +251,163 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
         lines.append(f"Persisted conversations ({len(convos)}):")
         for c in convos[:25]:
             lines.append(f"  - {c}")
+
+    # Show metrics snapshot
+    m = protocol.metrics.snapshot()
+    lines.append("")
+    lines.append(f"Metrics: {m['inbound_total']} in / {m['outbound_total']} out, "
+                 f"{m['tasks_completed']} completed, {m['tasks_failed']} failed, "
+                 f"{m['streams_started']} streams, {m['push_sent']} push sent, "
+                 f"{m['anti_loop_triggers']} anti-loop, {m['rate_limit_triggers']} rate-limited, "
+                 f"avg {m['avg_latency_ms']}ms")
+
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# a2a_orchestrate: capability-based routing with fan-out
+# --------------------------------------------------------------------------
+
+def _match_peers_by_capability(capability: str) -> list[tuple[str, dict]]:
+    """Find configured peers that advertise the given capability."""
+    cfg = _load_config()
+    peers = cfg.get("a2a_agents") or {}
+    matches = []
+    for name, entry in peers.items():
+        caps = entry.get("capabilities", []) or []
+        if capability in caps or capability == "*":
+            matches.append((name, entry))
+    return matches
+
+
+def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str]:
+    """Call a single peer synchronously. Returns (agent_name, reply_text)."""
+    try:
+        base_url = peer_entry.get("url", "")
+        headers = _auth_header(peer_entry.get("auth", {}))
+        timeout = int(peer_entry.get("timeout", _DEFAULT_TIMEOUT))
+
+        card = None
+        try:
+            card = _http_get_json(_card_url(base_url), headers, min(timeout, 30))
+        except Exception:
+            pass
+
+        ctx = context_id or protocol.new_context_id()
+        safe_message = security.redact_outbound(message)
+        rpc_body = {
+            "jsonrpc": "2.0",
+            "id": protocol.new_task_id(),
+            "method": "message/send",
+            "params": {"message": protocol.text_message("user", safe_message)},
+        }
+        if context_id:
+            rpc_body["params"]["contextId"] = context_id
+            rpc_body["params"]["message"]["contextId"] = context_id
+
+        security.audit("outbound", agent_name, rpc_body["id"], safe_message)
+        protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
+        protocol.metrics.outbound_total += 1
+
+        resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+        if "error" in resp:
+            err = resp["error"]
+            return (agent_name, f"Error: {err.get('message', err)}")
+
+        result = resp.get("result", {})
+        reply = _reply_text_from_result(result)
+        reply_ctx = result.get("contextId", ctx) if isinstance(result, dict) else ctx
+        protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
+        protocol.metrics.inbound_total += 1
+        return (agent_name, reply or "(no reply)")
+    except Exception as e:
+        return (agent_name, f"Error: {e}")
+
+
+def a2a_orchestrate(args: dict, **_: Any) -> str:
+    """Fan-out a task to multiple peer agents by capability.
+
+    Modes:
+      - ``all``: send to all peers matching the capability, return all replies.
+      - ``first``: send to all matching peers, return the first successful reply.
+      - ``best``: send to all, return the longest/most detailed reply.
+
+    Configured peers advertise capabilities in config.yaml::
+
+      a2a_agents:
+        researcher:
+          url: "http://localhost:9991"
+          capabilities: [web_search, research]
+        coder:
+          url: "http://localhost:9992"
+          capabilities: [code, debug]
+    """
+    capability = str(args.get("capability") or "").strip()
+    message = str(args.get("message") or args.get("task") or "").strip()
+    mode = str(args.get("mode") or "all").strip().lower()
+    context_id = str(args.get("context_id") or "").strip()
+
+    if not message:
+        return "Error: 'message' is required."
+    if not capability:
+        return "Error: 'capability' is required (or use '*' for all peers)."
+
+    matches = _match_peers_by_capability(capability)
+    if not matches:
+        return f"Error: no configured peers advertise capability '{capability}'."
+
+    if mode not in ("all", "first", "best"):
+        mode = "all"
+
+    # Fan-out
+    results: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=min(len(matches), _ORCHESTRATE_MAX_WORKERS)) as pool:
+        futures = {
+            pool.submit(_call_peer_sync, name, entry, message, context_id): name
+            for name, entry in matches
+        }
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                results.append(fut.result())
+                if mode == "first" and not results[-1][1].startswith("Error:"):
+                    # Got a good reply, cancel remaining
+                    for f in futures:
+                        f.cancel()
+                    break
+            except Exception as e:
+                results.append((name, f"Error: {e}"))
+
+    # Sort results by peer name for deterministic output
+    results.sort(key=lambda r: r[0])
+
+    if mode == "best":
+        # Pick the longest non-error reply
+        best = max(results, key=lambda r: len(r[1]) if not r[1].startswith("Error:") else 0)
+        return f"[best: {best[0]}]\n{best[1]}"
+    elif mode == "first":
+        # Return the first non-error reply
+        for name, reply in results:
+            if not reply.startswith("Error:"):
+                return f"[first: {name}]\n{reply}"
+        # All failed
+        lines = ["All peers failed:"]
+        for name, reply in results:
+            lines.append(f"  {name}: {reply}")
+        return "\n".join(lines)
+    else:  # mode == "all"
+        lines = [f"Orchestrated '{capability}' to {len(matches)} peer(s):"]
+        for name, reply in results:
+            lines.append(f"\n--- {name} ---")
+            lines.append(reply)
+        return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
 # Tool schemas + registration
 # --------------------------------------------------------------------------
 
-_FunctionSchema = TypedDict("_FunctionSchema", {"name": str, "description": str}, total=False)
+_FunctionSchema = TypedDict("_FunctionSchema", {"name": str, "description": str, "parameters": dict[str, Any]}, total=False)
 _ToolSchema = TypedDict("_ToolSchema", {"type": str, "function": _FunctionSchema}, total=False)
 _SCHEMAS: dict[str, _ToolSchema] = {
     "a2a_discover": {
@@ -293,8 +453,29 @@ _SCHEMAS: dict[str, _ToolSchema] = {
         "type": "function",
         "function": {
             "name": "a2a_list",
-            "description": "List configured A2A peer agents and persisted A2A conversations.",
+            "description": "List configured A2A peer agents, persisted A2A conversations, and metrics.",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    "a2a_orchestrate": {
+        "type": "function",
+        "function": {
+            "name": "a2a_orchestrate",
+            "description": (
+                "Fan-out a task to multiple peer agents by capability. Peers are "
+                "matched from config.yaml a2a_agents.*.capabilities. Modes: 'all' "
+                "(return all replies), 'first' (first successful), 'best' (longest reply)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capability": {"type": "string", "description": "Capability to match (e.g. 'research', 'code') or '*' for all peers."},
+                    "message": {"type": "string", "description": "The task to send to all matching peers."},
+                    "mode": {"type": "string", "enum": ["all", "first", "best"], "description": "How to aggregate results. Default: 'all'."},
+                    "context_id": {"type": "string", "description": "Optional: shared context id for all peers."},
+                },
+                "required": ["capability", "message"],
+            },
         },
     },
 }
@@ -303,11 +484,12 @@ _HANDLERS = {
     "a2a_discover": a2a_discover,
     "a2a_call": a2a_call,
     "a2a_list": a2a_list,
+    "a2a_orchestrate": a2a_orchestrate,
 }
 
 
 def register_tools(ctx) -> None:
-    """Register the three client tools in the ``a2a`` toolset."""
+    """Register the client tools in the ``a2a`` toolset."""
     for name, schema in _SCHEMAS.items():
         ctx.register_tool(
             name=name,

@@ -537,6 +537,15 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _safe_str(val, default=""):
+    """Coerce a value to str safely (#58317)."""
+    if isinstance(val, str):
+        return val
+    if val is None:
+        return default
+    return str(val)
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -573,8 +582,11 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[read_file] read {path} from line {offset} ({content_len:,} chars)"
 
     if tool_name == "write_file":
-        path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        path = _safe_str(args.get("path"), "?")
+        _content = args.get("content", "")
+        if isinstance(_content, (dict, list)):
+            _content = str(_content)
+        written_lines = _content.count(chr(10)) + 1 if _content else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -615,7 +627,10 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
-        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
+        _code = args.get("code", "")
+        if isinstance(_code, (dict, list)):
+            _code = str(_code)
+        code_preview = (_code or "")[:60].replace(chr(10), " ")
         if len(args.get("code", "")) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
@@ -625,7 +640,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
-        question = args.get("question", "")[:50]
+        question = _safe_str(args.get("question"), "?")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
     if tool_name == "memory":

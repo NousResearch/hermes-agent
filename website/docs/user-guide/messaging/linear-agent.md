@@ -48,6 +48,12 @@ sequenceDiagram
 - Issue-delegation webhooks have no Agent Session, so replies to them post as **comments** on the issue (requires `mutation_policy.create_comments`).
 - Cron jobs can deliver to Linear: set `LINEAR_AGENT_HOME_TARGET` to an issue ID/identifier and `deliver=linear_agent` results post there as comments — including when cron runs out-of-process from the gateway.
 
+### Where replies appear
+
+- Mention the agent in a **new comment** and the agent session anchors to that comment: the answer renders in the session panel and Linear mirrors it into that comment's thread.
+- Mention it **inside an existing comment thread** and Linear re-anchors the conversation: it copies your mention to a new root comment, attaches the session there, and the reply lands under that copy — not under the thread you typed in. This is Linear's session model, not agent behavior.
+- The agent replies through session responses only; it never posts comments into a session-hosted thread itself (Linear does not render agent comments inside those threads, and the mirrored response would be duplicated).
+
 ## Step 1: Create the Linear OAuth App
 
 1. In Linear: **Settings → API → Applications → New application**.

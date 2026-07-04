@@ -151,7 +151,7 @@ For local development, expose the configured port with a tunnel and use the tunn
 
 ## Notes
 
-- Normal Hermes final responses are sent as Linear `response` activities.
+- Normal Hermes final responses are sent as Linear `response` activities. For comment-mention sessions Linear mirrors the response into the session's thread; mentioning the agent inside an existing thread makes Linear re-anchor the conversation at a new root comment, so the reply appears there rather than in the original thread.
 - New sessions optionally receive a quick `thought` acknowledgement.
 - Dispatch failures are reported as Linear `error` activities.
 - All write tools (issues, comments, projects, status updates, milestones, initiatives, documents, customer needs, releases) are gated by `mutation_policy` and fail closed by default. Agent-session activities (responses/thoughts/errors) are the core protocol and are not gated.

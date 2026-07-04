@@ -112,3 +112,30 @@ def test_custom_providers_valid_context_length():
         )
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)
+
+
+def test_custom_providers_slug_keyed_invalid_context_length_warns():
+    """A slug-keyed invalid value still warns for a prefixed runtime id.
+
+    Runtime model is 'lmstudio/phi-4' but the config key is the bare slug
+    'phi-4'.  The warning lookup must mirror the helper's slug fallback,
+    otherwise an invalid value on a slug-keyed model is silently skipped.
+    """
+    custom_providers = [
+        {
+            "name": "lmstudio",
+            "base_url": "http://localhost:1234/v1",
+            "models": {"phi-4": {"context_length": "256K"}},
+        }
+    ]
+    with patch("run_agent.logger") as mock_logger:
+        _build_agent(
+            {"default": "lmstudio/phi-4", "provider": "custom",
+             "base_url": "http://localhost:1234/v1"},
+            custom_providers=custom_providers,
+            model="lmstudio/phi-4",
+        )
+    warning_calls = [c for c in mock_logger.warning.call_args_list
+                     if "Invalid" in str(c) and "256K" in str(c)]
+    assert len(warning_calls) == 1
+    assert "custom_providers" in str(warning_calls[0])

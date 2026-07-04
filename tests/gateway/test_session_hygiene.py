@@ -1050,3 +1050,106 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     assert FakeCompressAgent.last_instance is None, (
         "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )
+
+
+@pytest.mark.asyncio
+async def test_hygiene_threshold_uses_custom_provider_slug_context_length(monkeypatch, tmp_path):
+    """Hygiene resolves a slug-keyed custom_providers context_length.
+
+    LM Studio runs the model under the prefixed id ``lmstudio/phi-4`` while
+    the user keys ``custom_providers`` by the bare slug ``phi-4``.  The
+    configured 1M context must be threaded into ``get_model_context_length``
+    as ``config_context_length`` — not silently dropped to the 64K/256K
+    fallback (the 0.14.0 regression, #30178).
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    gateway_run = importlib.import_module("gateway.run")
+
+    config = {
+        "model": {
+            "default": "lmstudio/phi-4",
+            "provider": "custom",
+            "base_url": "http://localhost:1234/v1",
+        },
+        "compression": {"enabled": True},
+        "custom_providers": [
+            {
+                "name": "lmstudio",
+                "base_url": "http://localhost:1234/v1",
+                "models": {"phi-4": {"context_length": 1_048_576}},
+            }
+        ],
+    }
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+
+    captured = {}
+
+    def fake_gmcl(model, **kwargs):
+        captured["model"] = model
+        captured["config_context_length"] = kwargs.get("config_context_length")
+        return 10_000_000  # huge → hygiene never fires; we only want the kwarg
+
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", fake_gmcl)
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: HygieneCaptureAdapter()}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._resolve_session_agent_runtime = lambda **_kw: (
+        "lmstudio/phi-4",
+        {"provider": "custom", "base_url": "http://localhost:1234/v1", "api_key": "x"},
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    await runner._handle_message(event)
+
+    assert captured["model"] == "lmstudio/phi-4"
+    assert captured["config_context_length"] == 1_048_576

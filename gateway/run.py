@@ -10233,6 +10233,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
+                _msg_custom_providers = None
                 try:
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
@@ -10240,6 +10241,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
+                    if _msg_cfg:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
                 except Exception:
                     pass
                 _msg_ctx_len = await get_model_context_length_async(
@@ -10247,6 +10251,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    custom_providers=_msg_custom_providers,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -10650,32 +10655,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
-                # Check custom_providers per-model context_length
-                # (same fallback as run_agent.py lines 1171-1189).
-                # Must run after runtime resolution so _hyg_base_url is set.
+                # Resolve per-model custom_providers context_length via the
+                # shared slug-tolerant helper (handles LM Studio publisher/slug
+                # ids). Must run after runtime resolution so _hyg_base_url is set.
                 if _hyg_config_context_length is None and _hyg_base_url:
                     try:
-                        try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
-                            _hyg_custom_providers = _gw_gcp(_hyg_data)
-                        except Exception:
-                            _hyg_custom_providers = _hyg_data.get("custom_providers")
-                            if not isinstance(_hyg_custom_providers, list):
-                                _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
-                    except (TypeError, ValueError):
+                        from hermes_cli.config import get_custom_provider_context_length as _gw_gcpcl
+                        if resolved := _gw_gcpcl(model=_hyg_model, base_url=_hyg_base_url, config=_hyg_data):
+                            _hyg_config_context_length = resolved
+                    except Exception:
                         pass
             except Exception:
                 pass
@@ -11782,39 +11770,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        # Also check custom_providers for context_length when top-level model.context_length is not set
+        # Legacy entry-level override: top-level cp.model + cp.context_length
+        # (a distinct, documented schema from the per-model models: dict below).
         if config_context_length is None and data:
             try:
-                custom_providers = data.get("custom_providers", [])
-                if custom_providers:
-                    for cp in custom_providers:
-                        if not isinstance(cp, dict):
-                            continue
-                        cp_model = cp.get("model") or ""
-                        cp_models = cp.get("models") or {}
-                        # Match provider model to current model
-                        if cp_model and cp_model == model:
-                            raw_cp_ctx = cp.get("context_length")
-                            if raw_cp_ctx is not None:
-                                try:
-                                    config_context_length = int(raw_cp_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-                        # Also check per-model context_length
-                        if isinstance(cp_models, dict):
-                            model_entry = cp_models.get(model)
-                            if isinstance(model_entry, dict):
-                                model_ctx = model_entry.get("context_length")
-                            else:
-                                model_ctx = model_entry
-                            if model_ctx is not None and isinstance(model_ctx, (int, float)):
-                                try:
-                                    config_context_length = int(model_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-            except Exception:
+                for cp in data.get("custom_providers", []) or []:
+                    if isinstance(cp, dict) and cp.get("model") == model and cp.get("context_length") is not None:
+                        config_context_length = int(cp["context_length"])
+                        break
+            except (TypeError, ValueError):
                 pass
 
         # Resolve runtime credentials for probing
@@ -11825,6 +11789,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        # Per-model custom_providers override via the shared slug-tolerant helper.
+        # Runs after runtime resolution so base_url is populated, and gates on it
+        # (the old inline loop matched by model name alone, ignoring base_url).
+        if config_context_length is None and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                if resolved := get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_provs):
+                    config_context_length = resolved
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,

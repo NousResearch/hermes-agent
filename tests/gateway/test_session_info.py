@@ -107,3 +107,33 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+    def test_custom_provider_slug_context_length_labeled_config(self, runner, tmp_path):
+        """A slug-keyed custom_providers override must surface as '(config)'.
+
+        Runtime model is the prefixed 'lmstudio/phi-4'; the override is keyed
+        by the bare slug 'phi-4'.  The displayed number was already correct via
+        get_model_context_length's step-0b, but the source label wrongly read
+        '(detected)' until the inline /info lookup routed through the shared
+        slug-tolerant helper.
+        """
+        config_yaml = (
+            "model:\n"
+            "  default: lmstudio/phi-4\n"
+            "  provider: custom\n"
+            "  base_url: http://localhost:1234/v1\n"
+            "custom_providers:\n"
+            "  - name: lmstudio\n"
+            "    base_url: http://localhost:1234/v1\n"
+            "    models:\n"
+            "      phi-4:\n"
+            "        context_length: 1048576\n"
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path, config_yaml, "lmstudio/phi-4",
+            {"provider": "custom", "base_url": "http://localhost:1234/v1", "api_key": "k"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.0M" in info
+        assert "(config)" in info

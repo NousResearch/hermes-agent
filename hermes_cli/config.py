@@ -4918,6 +4918,12 @@ def get_custom_provider_context_length(
         if not isinstance(models, dict):
             continue
         model_cfg = models.get(model)
+        match = "exact"
+        if not isinstance(model_cfg, dict) and "/" in model:
+            # Slug fallback: LM Studio reports "publisher/slug" runtime ids but
+            # users key custom_providers by the bare slug. Exact match wins first.
+            model_cfg = models.get(model.rsplit("/", 1)[1])
+            match = "slug"
         if not isinstance(model_cfg, dict):
             continue
         raw_ctx = model_cfg.get("context_length")
@@ -4928,7 +4934,15 @@ def get_custom_provider_context_length(
         except (TypeError, ValueError):
             continue
         if ctx > 0:
+            logger.debug(
+                "custom_providers context_length resolved: model=%r base_url=%r ctx=%d (%s match)",
+                model, base_url, ctx, match,
+            )
             return ctx
+    logger.debug(
+        "custom_providers context_length miss: model=%r base_url=%r — falling back to probe/default",
+        model, base_url,
+    )
     return None
 
 

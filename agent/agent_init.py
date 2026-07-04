@@ -1568,7 +1568,10 @@ def init_agent(
                 if _target and _cp_url == _target:
                     _cp_models = _cp_entry.get("models", {})
                     if isinstance(_cp_models, dict):
-                        _cp_model_cfg = _cp_models.get(agent.model, {})
+                        _cp_model_cfg = _cp_models.get(agent.model)
+                        if not isinstance(_cp_model_cfg, dict) and "/" in agent.model:
+                            # Mirror the helper's slug fallback (publisher/slug ids).
+                            _cp_model_cfg = _cp_models.get(agent.model.rsplit("/", 1)[1])
                         if isinstance(_cp_model_cfg, dict):
                             _cp_ctx = _cp_model_cfg.get("context_length")
                             if _cp_ctx is not None:

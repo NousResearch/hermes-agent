@@ -630,6 +630,8 @@ hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived
         [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]
         [--json]
 hermes kanban show <id> [--json]
+# show includes a dependency-impact preview: direct children that would become
+# ready if this task completed, plus children still blocked by other parents.
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place

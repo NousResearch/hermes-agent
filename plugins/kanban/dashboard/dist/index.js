@@ -3225,6 +3225,7 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const dependencyImpact = props.data.dependency_impact || null;
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3294,6 +3295,7 @@
         onRemoveParent: props.onRemoveParent,
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
+        dependencyImpact: dependencyImpact,
       }),
       t.result ? h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
@@ -3642,6 +3644,43 @@
     );
   }
 
+  function DependencyImpactPreview(props) {
+    const { t } = useI18n();
+    const impact = props.impact;
+    if (!impact || !impact.total_children) return null;
+    const rows = impact.children || [];
+    const labelFor = function (child) {
+      if (child.would_unblock) return tx(t, "willPromoteReady", "will promote to Ready");
+      if (child.blocking_parent_ids && child.blocking_parent_ids.length > 0) {
+        return `${tx(t, "stillBlockedBy", "still blocked by")} ${child.blocking_parent_ids.join(", ")}`;
+      }
+      return String(child.reason || "unchanged").replace(/_/g, " ");
+    };
+    return h("div", { className: "hermes-kanban-impact" },
+      h("div", { className: "hermes-kanban-impact-summary" },
+        h("span", null, `${impact.will_unblock_count} ${tx(t, "willUnblock", "will unblock")}`),
+        h("span", null, `${impact.still_blocked_count} ${tx(t, "stillBlocked", "still blocked")}`),
+        h("span", null, `${impact.unchanged_count} ${tx(t, "unchanged", "unchanged")}`),
+      ),
+      rows.map(function (child) {
+        return h("div", {
+          key: child.id,
+          className: cn(
+            "hermes-kanban-impact-row",
+            child.would_unblock ? "hermes-kanban-impact-row--yes" : "",
+            child.blocking_parent_ids && child.blocking_parent_ids.length
+              ? "hermes-kanban-impact-row--blocked"
+              : "",
+          ),
+        },
+          h("code", { className: "hermes-kanban-impact-id" }, child.id),
+          h("span", { className: "hermes-kanban-impact-state" }, labelFor(child)),
+          h("span", { className: "hermes-kanban-impact-title" }, child.title || ""),
+        );
+      }),
+    );
+  }
+
   function DependencyEditor(props) {
     const { t } = useI18n();
     const { task, links, allTasks } = props;
@@ -3734,6 +3773,7 @@
           size: "sm",
         }, "+ child"),
       ),
+      h(DependencyImpactPreview, { impact: props.dependencyImpact }),
     );
   }
 

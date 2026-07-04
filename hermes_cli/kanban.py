@@ -83,6 +83,16 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     }
 
 
+def _dependency_impact_child_line(child: kb.DependencyImpactChild) -> str:
+    if child.would_unblock:
+        suffix = "will promote to ready"
+    elif child.blocking_parent_ids:
+        suffix = "still blocked by " + ", ".join(child.blocking_parent_ids)
+    else:
+        suffix = child.reason.replace("_", " ")
+    return f"    {child.id}  {child.status:8s}  {suffix}  {child.title}"
+
+
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -1461,6 +1471,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
+        dependency_impact = kb.dependency_impact_preview(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
@@ -1473,6 +1484,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
+            "dependency_impact": dependency_impact.as_dict(),
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
                 for c in comments
@@ -1570,6 +1582,15 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  parents:   {', '.join(parents)}")
     if children:
         print(f"  children:  {', '.join(children)}")
+    if dependency_impact.total_children:
+        print(
+            "  impact:    "
+            f"{dependency_impact.will_unblock_count} will unblock, "
+            f"{dependency_impact.still_blocked_count} still blocked, "
+            f"{dependency_impact.unchanged_count} unchanged"
+        )
+        for child in dependency_impact.children:
+            print(_dependency_impact_child_line(child))
     if task.body:
         print()
         print("Body:")

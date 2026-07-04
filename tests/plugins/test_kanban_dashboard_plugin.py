@@ -284,7 +284,13 @@ def test_task_detail_includes_links_and_events(client):
 
     # Detail for the parent shows the child.
     r = client.get(f"/api/plugins/kanban/tasks/{parent['id']}")
-    assert child["id"] in r.json()["links"]["children"]
+    parent_detail = r.json()
+    assert child["id"] in parent_detail["links"]["children"]
+    impact = parent_detail["dependency_impact"]
+    assert impact["total_children"] == 1
+    assert impact["will_unblock_count"] == 1
+    assert impact["children"][0]["id"] == child["id"]
+    assert impact["children"][0]["would_unblock"] is True
 
     # Events exist from creation.
     assert len(data["events"]) >= 1

@@ -1422,6 +1422,79 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_dependency_impact_preview_no_children(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="root", assignee="a")
+
+        impact = kb.dependency_impact_preview(conn, task_id)
+
+    assert impact.task_id == task_id
+    assert impact.total_children == 0
+    assert impact.will_unblock_count == 0
+    assert impact.still_blocked_count == 0
+    assert impact.unchanged_count == 0
+    assert impact.children == []
+
+
+def test_dependency_impact_preview_child_unblocked_by_this_parent(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="b", parents=[parent])
+
+        impact = kb.dependency_impact_preview(conn, parent)
+
+    assert impact.total_children == 1
+    assert impact.will_unblock_count == 1
+    assert impact.still_blocked_count == 0
+    assert impact.unchanged_count == 0
+    assert impact.children[0].id == child
+    assert impact.children[0].would_unblock is True
+    assert impact.children[0].blocking_parent_ids == []
+    assert impact.children[0].reason == "will_promote_to_ready"
+
+
+def test_dependency_impact_preview_child_still_blocked_by_other_parent(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        other = kb.create_task(conn, title="other parent", assignee="a")
+        child = kb.create_task(
+            conn,
+            title="child",
+            assignee="b",
+            parents=[parent, other],
+        )
+
+        impact = kb.dependency_impact_preview(conn, parent)
+
+    assert impact.total_children == 1
+    assert impact.will_unblock_count == 0
+    assert impact.still_blocked_count == 1
+    assert impact.unchanged_count == 0
+    assert impact.children[0].id == child
+    assert impact.children[0].would_unblock is False
+    assert impact.children[0].blocking_parent_ids == [other]
+    assert impact.children[0].reason == "blocked_by_other_parents"
+
+
+def test_dependency_impact_preview_sticky_block_does_not_overpromise(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="b", parents=[parent])
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        conn.commit()
+        assert kb.block_task(conn, child, reason="needs a human decision")
+
+        impact = kb.dependency_impact_preview(conn, parent)
+
+    assert impact.total_children == 1
+    assert impact.will_unblock_count == 0
+    assert impact.still_blocked_count == 0
+    assert impact.unchanged_count == 1
+    assert impact.children[0].id == child
+    assert impact.children[0].would_unblock is False
+    assert impact.children[0].reason == "sticky_block"
+
+
 def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
     """unblock_task must re-gate on parent completion (Fix 3).
 

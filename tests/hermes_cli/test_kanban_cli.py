@@ -130,6 +130,21 @@ def test_run_slash_create_with_parent_and_cascade(kanban_home):
     assert "child" in ready_list
 
 
+def test_run_slash_show_includes_dependency_impact_preview(kanban_home):
+    out1 = kc.run_slash("create 'parent' --assignee alice")
+    import re
+    parent = re.search(r"(t_[a-f0-9]+)", out1).group(1)
+    out2 = kc.run_slash(f"create 'child' --assignee bob --parent {parent}")
+    child = re.search(r"(t_[a-f0-9]+)", out2).group(1)
+
+    show = kc.run_slash(f"show {parent}")
+
+    assert "impact:" in show
+    assert "1 will unblock" in show
+    assert child in show
+    assert "will promote to ready" in show
+
+
 def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re

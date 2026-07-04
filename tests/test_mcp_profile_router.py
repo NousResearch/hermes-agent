@@ -104,6 +104,7 @@ from mcp_profile_router import (
     server_alias_list,
     server_status_check,
     server_command_run,
+    server_shell_run,
     workspace_web_fetch,
     viking_read,
     viking_search,
@@ -401,6 +402,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "server_docker_logs",
         "server_port_check",
         "server_command_run",
+        "server_shell_run",
     }
     profile_action_tools = {
         "profile_skill_create",
@@ -562,7 +564,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["mutates_state"] is False
         assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
-    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_kill", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_comment", "message_send", "telegram_send", "workspace_production_action_run", "server_command_run", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove"}:
+    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_kill", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_comment", "message_send", "telegram_send", "workspace_production_action_run", "server_command_run", "server_shell_run", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove"}:
         assert metadata[name]["mutates_state"] is True
     for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch", "github_pr_status", "github_issue_view", "workspace_production_action_list", "workspace_production_action_status", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "workspace_web_fetch", "profile_memory_list"}:
         assert metadata[name]["mutates_state"] is False
@@ -3366,6 +3368,7 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
                     "allowed_aliases": ["local_ops"],
                     "allow_status": True,
                     "allow_commands": True,
+                    "allow_shell": True,
                 },
                 "web": {
                     "enabled": True,
@@ -3416,6 +3419,16 @@ def test_production_server_and_web_wrappers_are_policy_gated_and_no_model(
     command = json.loads(server_command_run("local:main-bot", "local_ops", "deploy_echo"))
     assert command["ok"] is True
     assert command["server_command"]["result"]["audit"]["llm_calls"] == 0
+    shell = json.loads(server_shell_run("local:main-bot", "local_ops", "printf shell-ok", timeout_seconds=5, max_output_chars=1000))
+    assert shell["ok"] is True
+    assert shell["server_shell"]["result"]["status"] == "success"
+    assert shell["server_shell"]["result"]["stdout"]["text"] == "shell-ok"
+    assert shell["server_shell"]["result"]["audit"]["llm_calls"] == 0
+    assert shell["server_shell"]["result"]["audit"]["raw_command_exposed"] is False
+    assert "printf shell-ok" not in json.dumps(shell)
+    blocked_shell = json.loads(server_shell_run("local:main-bot", "local_ops", "cat .env"))
+    assert blocked_shell["ok"] is False
+    assert blocked_shell["error"]["code"] == "server_shell_secret_path_denied"
 
     class FakeResponse:
         status = 200
@@ -4760,7 +4773,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
+    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "server_shell_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     assert set(tools) == expected_public_tools | private_action_tools
     assert expected_public_tools == metadata_public_tools
     assert not (set(tools) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
@@ -5086,7 +5099,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
+    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "server_shell_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765

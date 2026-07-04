@@ -536,6 +536,7 @@ class ServerOperationsPolicy:
     allow_docker: bool = False
     allow_ports: bool = False
     allow_commands: bool = False
+    allow_shell: bool = False
 
 
 @dataclass(frozen=True)
@@ -1525,6 +1526,7 @@ def _parse_server_operations_policy(value: Any, field: str) -> ServerOperationsP
         allow_docker=_policy_bool(policy.get("allow_docker"), f"{field}.allow_docker"),
         allow_ports=_policy_bool(policy.get("allow_ports"), f"{field}.allow_ports"),
         allow_commands=_policy_bool(policy.get("allow_commands"), f"{field}.allow_commands"),
+        allow_shell=_policy_bool(policy.get("allow_shell"), f"{field}.allow_shell"),
     )
 
 
@@ -2830,6 +2832,15 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         mutates_state=True,
         requires_profile_ref=True,
     ),
+    "server_shell_run": RouterToolMetadata(
+        name="server_shell_run",
+        description="Run one owner-mode raw server shell command through an explicit alias; command and ssh target stay redacted.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
     "workspace_web_fetch": RouterToolMetadata(
         name="workspace_web_fetch",
         description="Fetch an HTTPS allowlisted public URL with SSRF/private-network guards and no model calls.",
@@ -4082,6 +4093,7 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "allow_docker": route_policy.server_policy.allow_docker,
             "allow_ports": route_policy.server_policy.allow_ports,
             "allow_commands": route_policy.server_policy.allow_commands,
+            "allow_shell": route_policy.server_policy.allow_shell,
             "ssh_targets_exposed": False,
         },
         "web_fetch_policy": {
@@ -4980,6 +4992,7 @@ def _require_profile_server_access(
         "docker": server_policy.allow_docker,
         "ports": server_policy.allow_ports,
         "commands": server_policy.allow_commands,
+        "shell": server_policy.allow_shell,
         "list": True,
     }.get(operation, False)
     if not allowed_for_operation:
@@ -5314,6 +5327,77 @@ def _server_command_argv(alias: ServerAliasPolicy, argv: tuple[str, ...]) -> tup
     return ("ssh", "-o", "BatchMode=yes", alias.ssh_target, *argv)
 
 
+SERVER_SHELL_BLOCKED_EXECUTABLES = frozenset(
+    {
+        "aider",
+        "claude",
+        "codex",
+        "fable",
+        "gemini",
+        "hermes",
+        "openai",
+        "opencode",
+    }
+)
+SERVER_SHELL_SECRET_MARKERS = (
+    ".env",
+    ".ssh",
+    "auth.json",
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "mcp_tokens",
+    "password",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "token",
+)
+
+
+def _validate_server_shell_command(command: str) -> tuple[str, str]:
+    """Validate one owner-mode raw server command without returning it publicly."""
+
+    text = str(command or "").strip()
+    if not text:
+        raise ProfileRouterError("server_shell_command_empty", "Server shell command is required")
+    if len(text) > MAX_TERMINAL_COMMAND_CHARS:
+        raise ProfileRouterError("server_shell_command_too_long", "Server shell command exceeds the owner-mode limit")
+    if "\x00" in text:
+        raise ProfileRouterError("server_shell_command_invalid", "Server shell command contains an invalid byte")
+    lowered = text.lower()
+    if any(marker in lowered for marker in SERVER_SHELL_SECRET_MARKERS):
+        raise ProfileRouterError(
+            "server_shell_secret_path_denied",
+            "Server shell command references secret-looking paths or fields",
+        )
+    try:
+        argv = shlex.split(text)
+    except ValueError as exc:
+        raise ProfileRouterError("server_shell_command_invalid", "Server shell command could not be parsed safely") from exc
+    if not argv:
+        raise ProfileRouterError("server_shell_command_empty", "Server shell command is required")
+    executable = Path(argv[0]).name.lower()
+    if executable in {"env", "printenv", "set"}:
+        raise ProfileRouterError("server_shell_env_dump_denied", "Server shell command may not dump environment variables")
+    if executable in SERVER_SHELL_BLOCKED_EXECUTABLES:
+        raise ProfileRouterError(
+            "server_shell_model_loop_denied",
+            "Server shell command may not invoke model-backed agents or CLIs through the no-LLM connector",
+        )
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return text, digest
+
+
+def _server_shell_command_argv(alias: ServerAliasPolicy, command: str) -> tuple[str, ...]:
+    if alias.transport == "local":
+        return ("sh", "-lc", command)
+    if not alias.ssh_target:
+        raise ProfileRouterError("server_alias_invalid", "SSH alias is missing its server-side target")
+    return ("ssh", "-o", "BatchMode=yes", alias.ssh_target, command)
+
+
 SERVER_COMMAND_TEMPLATE_RE = re.compile(
     r"\{(profile_ref|profile|root_id|root_label|root_index|project|workspace_id)\}"
 )
@@ -5500,6 +5584,78 @@ def run_server_command(profile_ref: str, alias: str, command_name: str) -> dict:
         "command": {"name": safe_command_name, "argv_redacted": True},
         "result": result,
         "audit": {"tool": "server_command_run", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
+    }
+
+
+def run_server_shell_command(
+    profile_ref: str,
+    alias: str,
+    command: str,
+    *,
+    timeout_seconds: int | None = MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+    max_output_chars: int | None = MAX_SERVER_ALIAS_OUTPUT_CHARS,
+) -> dict:
+    """Run one owner-mode raw shell command through a policy-gated server alias."""
+
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy, alias_policy = _require_profile_server_access(
+        profile_ref,
+        alias,
+        operation="shell",
+    )
+    assert alias_policy is not None
+    safe_command, command_hash = _validate_server_shell_command(command)
+    bounded_timeout = _bounded_int(
+        timeout_seconds,
+        "timeout_seconds",
+        default=MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+        minimum=1,
+        maximum=MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+    )
+    bounded_output = _bounded_int(
+        max_output_chars,
+        "max_output_chars",
+        default=MAX_SERVER_ALIAS_OUTPUT_CHARS,
+        minimum=1,
+        maximum=MAX_SERVER_ALIAS_OUTPUT_CHARS,
+    )
+    result = _run_policy_subprocess(
+        _server_shell_command_argv(alias_policy, safe_command),
+        cwd=None,
+        timeout_seconds=bounded_timeout,
+        tool_name="server_shell_run",
+        max_output_chars=bounded_output,
+        redactions=(alias_policy.ssh_target or "", safe_command),
+    )
+    audit = dict(result.get("audit") or {})
+    audit.update(
+        {
+            "tool": "server_shell_run",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "ssh_target_exposed": False,
+            "raw_command_exposed": False,
+            "command_hash": command_hash,
+            "command_length": len(safe_command),
+            "owner_mode_shell": True,
+            "uses_shell": True,
+            "subprocess_shell": False,
+            "timeout_seconds": bounded_timeout,
+            "max_output_chars": bounded_output,
+        }
+    )
+    result["audit"] = audit
+    return {
+        "profile_ref": ref.value,
+        "server": _server_alias_public_summary(alias_policy),
+        "command": {
+            "mode": "owner_shell",
+            "raw_command_exposed": False,
+            "command_hash": command_hash,
+            "command_length": len(safe_command),
+        },
+        "result": result,
+        "audit": {"tool": "server_shell_run", "llm_calls": 0, "root_exposed": False, "ssh_target_exposed": False},
     }
 
 
@@ -12744,6 +12900,31 @@ def server_command_run(profile_ref: str, alias: str, command_name: str) -> str:
         return _tool_envelope("server_command_run", {"ok": True, "server_command": run_server_command(profile_ref, alias, command_name)})
     except ProfileRouterError as exc:
         return _tool_error("server_command_run", exc)
+
+
+def server_shell_run(
+    profile_ref: str,
+    alias: str,
+    command: str,
+    timeout_seconds: int | None = MAX_SERVER_COMMAND_TIMEOUT_SECONDS,
+    max_output_chars: int | None = MAX_SERVER_ALIAS_OUTPUT_CHARS,
+) -> str:
+    try:
+        return _tool_envelope(
+            "server_shell_run",
+            {
+                "ok": True,
+                "server_shell": run_server_shell_command(
+                    profile_ref,
+                    alias,
+                    command,
+                    timeout_seconds=timeout_seconds,
+                    max_output_chars=max_output_chars,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("server_shell_run", exc)
 
 
 def workspace_web_fetch(workspace_id: str, url: str, context_token: str | None = None, method: str = "GET") -> str:

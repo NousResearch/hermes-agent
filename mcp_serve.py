@@ -971,6 +971,7 @@ def create_profile_router_mcp_server(
         server_docker_logs as _server_docker_logs,
         server_port_check as _server_port_check,
         server_command_run as _server_command_run,
+        server_shell_run as _server_shell_run,
         workspace_web_fetch as _workspace_web_fetch,
         workspace_python_run as _workspace_python_run,
         profile_skill_create as _profile_skill_create,
@@ -1755,6 +1756,11 @@ def create_profile_router_mcp_server(
     def server_command_run(profile_ref: str, alias: str, command_name: str) -> str:
         """Private direct named server command group through an explicit alias."""
         return _call_tool("server_command_run", PROFILE_ROUTER_TERMINAL_SCOPE, _server_command_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command_name=command_name)
+
+    @mcp.tool()
+    def server_shell_run(profile_ref: str, alias: str, command: str, timeout_seconds: int | None = 60, max_output_chars: int | None = 40000) -> str:
+        """Private direct owner-mode raw server shell command through an explicit alias."""
+        return _call_tool("server_shell_run", PROFILE_ROUTER_TERMINAL_SCOPE, _server_shell_run, audit_profile_ref=profile_ref, profile_ref=profile_ref, alias=alias, command=command, timeout_seconds=timeout_seconds, max_output_chars=max_output_chars)
 
     @mcp.tool()
     def workspace_web_fetch(workspace_id: str, url: str, context_token: str | None = None, method: str = "GET") -> str:

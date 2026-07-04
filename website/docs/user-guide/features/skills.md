@@ -107,6 +107,15 @@ hands it to the agent as a normal turn. The agent saves the result with the
 `skill_manage` tool, so the [write-approval gate](#gating-agent-skill-writes-skillswrite_approval)
 applies if you have it on.
 
+### Proactive learning opportunities
+
+If you enable [Proactive Opportunities](/user-guide/features/proactive-opportunities),
+Hermes can periodically scan recent chats for repeated task shapes and add a
+pending proposal such as "learn this workflow as a skill." Accepting that
+proposal runs the same `/learn` authoring path above; it does not write a skill
+until you explicitly accept the opportunity, and any `skills.write_approval`
+gate still applies.
+
 ## Progressive Disclosure
 
 Skills use a token-efficient loading pattern:

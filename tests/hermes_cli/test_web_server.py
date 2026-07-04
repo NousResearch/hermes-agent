@@ -267,6 +267,44 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_status_active_session_count_uses_read_only_db(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                captured["read_only"] = kwargs.get("read_only")
+
+            def list_sessions_rich(self, limit):
+                captured["limit"] = limit
+                return [
+                    {"ended_at": None, "last_active": 95},
+                    {"ended_at": 99, "last_active": 99},
+                    {"ended_at": None, "last_active": -300},
+                ]
+
+            def close(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 100)
+
+        assert web_server._count_status_active_sessions() == 1
+        assert captured == {"read_only": True, "limit": 50, "closed": True}
+
+    def test_get_status_degrades_when_active_session_count_fails(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        def _locked_count():
+            raise TimeoutError("database is locked")
+
+        monkeypatch.setattr(web_server, "_count_status_active_sessions", _locked_count)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["active_sessions"] == 0
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 

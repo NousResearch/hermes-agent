@@ -12,6 +12,8 @@ import hashlib
 import logging
 import os
 import json
+import tempfile
+import time
 import threading
 import uuid
 from pathlib import Path
@@ -2175,3 +2177,88 @@ def build_session_context(
         context.updated_at = session_entry.updated_at
     
     return context
+
+
+# ---------------------------------------------------------------------------
+# Crash-recovery checkpoint
+# ---------------------------------------------------------------------------
+
+
+class SessionCrashCheckpoint:
+    """Persist a record of in-flight agent runs so that a gateway restart
+    can detect sessions that were interrupted by a crash.
+
+    The checkpoint file (``agent_checkpoints.json``) maps session keys to
+    a dict with ``session_id`` and ``started_at`` (epoch).  Entries are
+    added when an agent starts and removed on clean completion.  If the
+    gateway crashes, the file retains the entries for runs that never
+    completed, allowing precise identification of interrupted sessions
+    on the next startup.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._lock = threading.Lock()
+
+    # ── Read / Write helpers ──────────────────────────────────────────
+
+    def _read(self) -> Dict[str, Any]:
+        """Load checkpoint data from disk.  Returns {} on any error."""
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write(self, data: Dict[str, Any]) -> None:
+        """Atomically write checkpoint data to disk with fsync for crash safety."""
+        dir_path = os.path.dirname(self.path) or "."
+        os.makedirs(dir_path, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix=".cp_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def mark_running(self, session_key: str, *, session_id: str) -> None:
+        """Record that an agent run has started for *session_key*."""
+        with self._lock:
+            data = self._read()
+            data[session_key] = {
+                "session_id": session_id,
+                "started_at": time.time(),
+            }
+            self._write(data)
+
+    def mark_completed(self, session_key: str) -> None:
+        """Remove the checkpoint entry for *session_key*."""
+        with self._lock:
+            data = self._read()
+            if session_key in data:
+                del data[session_key]
+                self._write(data)
+
+    def get_active_sessions(self) -> Dict[str, Dict[str, Any]]:
+        """Return all sessions that started but never completed.
+
+        On a clean shutdown this dict is empty.  After a crash it
+        contains exactly the sessions that were in-flight.
+        """
+        with self._lock:
+            return dict(self._read())
+
+    def clear(self) -> None:
+        """Remove all entries — called on clean shutdown."""
+        with self._lock:
+            self._write({})
+

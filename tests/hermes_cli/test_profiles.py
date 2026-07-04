@@ -254,6 +254,48 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_skips_dangling_skill_symlink_and_preserves_valid_symlink(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skills = default_home / "skills" / "custom"
+        real_skill = skills / "real-skill"
+        real_skill.mkdir(parents=True)
+        (real_skill / "SKILL.md").write_text("---\nname: real-skill\n---\n")
+
+        valid_link = skills / "linked-skill"
+        dangling_link = skills / "missing-skill"
+        try:
+            valid_link.symlink_to(real_skill, target_is_directory=True)
+            dangling_link.symlink_to(skills / "does-not-exist", target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned_valid = profile_dir / "skills" / "custom" / "linked-skill"
+        cloned_dangling = profile_dir / "skills" / "custom" / "missing-skill"
+        assert cloned_valid.is_symlink()
+        assert cloned_valid.resolve() == real_skill.resolve()
+        assert not cloned_dangling.exists()
+        assert not cloned_dangling.is_symlink()
+
+    def test_clone_config_copytree_failure_removes_partial_profile(self, profile_env, monkeypatch):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        def fail_copytree(*args, **kwargs):
+            raise shutil.Error("copy failed")
+
+        monkeypatch.setattr(profiles.shutil, "copytree", fail_copytree)
+
+        with pytest.raises(shutil.Error, match="copy failed"):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not get_profile_dir("coder").exists()
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

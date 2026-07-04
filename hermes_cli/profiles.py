@@ -196,6 +196,20 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
+def _ignore_dangling_symlinks(directory: str, names: List[str]) -> List[str]:
+    """Return symlink entries whose targets are missing from this copytree dir."""
+    ignored: list[str] = []
+    base = Path(directory)
+    for name in names:
+        candidate = base / name
+        try:
+            if candidate.is_symlink() and not candidate.exists():
+                ignored.append(name)
+        except OSError:
+            ignored.append(name)
+    return ignored
+
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -1039,11 +1053,17 @@ def create_profile(
 
     if clone_all and source_dir:
         # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
-        shutil.copytree(
-            source_dir,
-            profile_dir,
-            ignore=_clone_all_copytree_ignore(source_dir),
-        )
+        try:
+            shutil.copytree(
+                source_dir,
+                profile_dir,
+                ignore=_clone_all_copytree_ignore(source_dir),
+                ignore_dangling_symlinks=True,
+            )
+        except Exception:
+            if profile_dir.exists():
+                shutil.rmtree(profile_dir, ignore_errors=True)
+            raise
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
@@ -1076,7 +1096,18 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                try:
+                    shutil.copytree(
+                        source_skills,
+                        profile_dir / "skills",
+                        dirs_exist_ok=True,
+                        ignore=_ignore_dangling_symlinks,
+                        symlinks=True,
+                    )
+                except Exception:
+                    if profile_dir.exists():
+                        shutil.rmtree(profile_dir, ignore_errors=True)
+                    raise
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

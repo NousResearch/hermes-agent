@@ -516,6 +516,21 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    def test_404_openrouter_tool_use_not_supported(self):
+        # OpenRouter returns 404 with this message when none of the
+        # candidate endpoints for the selected model support tool/function
+        # calling.  Classify as model_not_found so the agent fast-fallbacks
+        # to a model/provider that does support tools.
+        e = MockAPIError(
+            "No endpoints found that support tool use. "
+            "Try disabling \"browser_back\".",
+            status_code=404,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+        assert result.retryable is False
+
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
         # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat

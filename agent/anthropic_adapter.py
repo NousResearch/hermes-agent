@@ -1488,8 +1488,9 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         # Anthropic migrated the OAuth token endpoint to platform.claude.com;
         # console.anthropic.com now 404s. Try the new host first, then fall
         # back to console for older deployments (mirrors the refresh path).
-        # Use the claude-code/ UA prefix: Anthropic blocks claude-cli/ on the
-        # OAuth token endpoint (returns 404 for all versions).
+        # UA is _OAUTH_TOKEN_USER_AGENT (a non-claude-code UA) — see the
+        # constant's definition for why the token endpoint must not send
+        # claude-code/ (429 UA-prefix block).
         result = None
         last_error = None
         for endpoint in _OAUTH_TOKEN_URLS:

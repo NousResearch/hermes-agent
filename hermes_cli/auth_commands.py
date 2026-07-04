@@ -345,19 +345,19 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
-        creds = auth_mod._xai_oauth_loopback_login(
+        creds = auth_mod._xai_oauth_device_code_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
-            manual_paste=bool(getattr(args, "manual_paste", False)),
         )
         auth_mod._save_xai_oauth_tokens(
             creds["tokens"],
             discovery=creds.get("discovery"),
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
+            auth_mode="oauth_device_code",
         )
         pool = load_pool(provider)
-        entry = next((e for e in pool.entries() if getattr(e, "source", "") == "loopback_pkce"), None)
+        entry = next((e for e in pool.entries() if getattr(e, "source", "") == "device_code"), None)
         shown_label = entry.label if entry is not None else label_from_token(
             creds["tokens"]["access_token"], _oauth_default_label(provider, 1)
         )

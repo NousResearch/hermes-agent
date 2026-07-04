@@ -1,9 +1,10 @@
-"""Tests for /v1/runs endpoints: start, status, events, and stop.
+"""Tests for /v1/runs endpoints: start, status, events, steer, and stop.
 
 Covers:
 - POST /v1/runs — start a run (202)
 - GET /v1/runs/{run_id} — poll run status
 - GET /v1/runs/{run_id}/events — SSE event stream
+- POST /v1/runs/{run_id}/steer — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop — interrupt a running agent
 - Auth, error handling, and cleanup
 """
@@ -22,6 +23,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from tools import approval as approval_mod
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +359,77 @@ class TestRunEvents:
         )
 
     @pytest.mark.asyncio
+    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
+        """Same client session_id must not let one run approve another run's queue."""
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
+                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
+                mock_create.side_effect = [victim_agent, attacker_agent]
+
+                victim_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "victim", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                attacker_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "attacker", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert victim_resp.status == 202
+                assert attacker_resp.status == 202
+                victim_run = (await victim_resp.json())["run_id"]
+                attacker_run = (await attacker_resp.json())["run_id"]
+
+                victim_ready.wait(timeout=3.0)
+                attacker_ready.wait(timeout=3.0)
+                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
+                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
+                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
+
+                victim_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c victim-danger",
+                    "description": "victim approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                attacker_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c attacker-danger",
+                    "description": "attacker approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[victim_run] = [victim_entry]
+                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{attacker_run}/approval",
+                    json={"choice": "always", "resolve_all": True},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                approval_data = await approval_resp.json()
+
+                assert approval_resp.status == 200
+                assert approval_data["resolved"] == 1
+                assert attacker_entry.result == "always"
+                assert attacker_entry.event.is_set()
+                assert victim_entry.result is None
+                assert not victim_entry.event.is_set()
+                with approval_mod._lock:
+                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
+                    assert victim_run in approval_mod._gateway_queues
+                    assert attacker_run not in approval_mod._gateway_queues
+
+                # Clean up the synthetic pending victim approval and unblock the
+                # slow test agents so their background run tasks can finish.
+                with approval_mod._lock:
+                    approval_mod._gateway_queues.pop(victim_run, None)
+                victim_interrupted.set()
+                attacker_interrupted.set()
+
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -372,73 +445,81 @@ class TestRunEvents:
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/runs/{run_id}/steer — inject guidance into a running agent
+# POST /v1/runs/{run_id}/steer — steer a running agent
 # ---------------------------------------------------------------------------
 
 
 class TestSteerRun:
     @pytest.mark.asyncio
     async def test_steer_running_agent(self, adapter):
-        """Steer should pass text to the active agent without stopping the run."""
         app = _create_runs_app(adapter)
+        agent = MagicMock()
+        agent.steer.return_value = True
+        queue = asyncio.Queue()
+        adapter._active_run_agents["run_123"] = agent
+        adapter._run_streams["run_123"] = queue
+        adapter._set_run_status("run_123", "running")
+
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, interrupted = _make_slow_agent()
-                mock_agent.steer = MagicMock(return_value=True)
-                mock_create.return_value = mock_agent
+            resp = await cli.post("/v1/runs/run_123/steer", json={"input": "tighten the ending"})
+            payload = await resp.json()
 
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                assert resp.status == 202
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                agent_ready.wait(timeout=3.0)
-                await asyncio.sleep(0.1)
-                assert run_id in adapter._active_run_agents
-
-                steer_resp = await cli.post(
-                    f"/v1/runs/{run_id}/steer",
-                    json={"input": "tighten this answer"},
-                )
-                assert steer_resp.status == 200
-                steer_data = await steer_resp.json()
-                assert steer_data == {
-                    "object": "hermes.run.steer_response",
-                    "run_id": run_id,
-                    "status": "steered",
-                    "accepted": True,
-                }
-                mock_agent.steer.assert_called_once_with("tighten this answer")
-
-                status_resp = await cli.get(f"/v1/runs/{run_id}")
-                status_data = await status_resp.json()
-                assert status_data["status"] == "running"
-                assert status_data["last_event"] == "run.steered"
-
-                interrupted.set()
-
-    @pytest.mark.asyncio
-    async def test_steer_empty_input_returns_400(self, adapter):
-        app = _create_runs_app(adapter)
-        run_id = "run_empty_steer"
-        adapter._active_run_agents[run_id] = MagicMock()
-        adapter._run_statuses[run_id] = {"object": "hermes.run", "run_id": run_id, "status": "running"}
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(f"/v1/runs/{run_id}/steer", json={"input": "   "})
-        assert resp.status == 400
+        assert resp.status == 200
+        assert payload == {
+            "object": "hermes.run.steer",
+            "run_id": "run_123",
+            "accepted": True,
+        }
+        agent.steer.assert_called_once_with("tighten the ending")
+        assert adapter._run_statuses["run_123"]["last_event"] == "run.steered"
+        event = queue.get_nowait()
+        assert event["event"] == "run.steered"
+        assert event["run_id"] == "run_123"
+        assert event["accepted"] is True
 
     @pytest.mark.asyncio
     async def test_steer_nonexistent_run_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs/run_nonexistent/steer", json={"input": "hello"})
+            resp = await cli.post("/v1/runs/run_missing/steer", json={"input": "hello"})
+            payload = await resp.json()
+
         assert resp.status == 404
+        assert payload["error"]["code"] == "run_not_found"
+
+    @pytest.mark.asyncio
+    async def test_steer_inactive_run_returns_409(self, adapter):
+        app = _create_runs_app(adapter)
+        adapter._set_run_status("run_done", "completed")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs/run_done/steer", json={"input": "hello"})
+            payload = await resp.json()
+
+        assert resp.status == 409
+        assert payload["error"]["code"] == "run_not_accepting_steer"
+
+    @pytest.mark.asyncio
+    async def test_steer_missing_input_returns_400(self, adapter):
+        app = _create_runs_app(adapter)
+        agent = MagicMock()
+        agent.steer.return_value = True
+        adapter._active_run_agents["run_123"] = agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs/run_123/steer", json={"input": ""})
+            payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_steer_input"
+        agent.steer.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_any/steer", json={"input": "hello"})
+
         assert resp.status == 401
 
 

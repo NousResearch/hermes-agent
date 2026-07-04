@@ -273,6 +273,21 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
+def _cron_referenced_skills() -> Set[str]:
+    """Skill names referenced by any cron job (incl. paused/disabled).
+
+    Best-effort: a cron-module import error or corrupt jobs store must never
+    break the curator, so any failure yields an empty set (no protection,
+    but no crash).
+    """
+    try:
+        from cron.jobs import referenced_skill_names as _refs
+        return _refs()
+    except Exception as e:
+        logger.debug("Curator could not read cron skill references: %s", e, exc_info=True)
+        return set()
+
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Walk every curator-managed skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
@@ -292,12 +307,23 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
+    cron_referenced = _cron_referenced_skills()
+
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+
+        # A skill referenced by any cron job (incl. paused/disabled) is in
+        # use by definition — resuming or the next fire must find it. The
+        # scheduler only bumps usage when a job actually fires, so jobs that
+        # fire less often than archive_after_days, paused jobs, and far-future
+        # one-shots would otherwise have their skills aged out from under
+        # them. Treat referenced skills like pinned: never auto-transition.
+        if name in cron_referenced:
             continue
 
         # First sight of a curation-eligible skill with no persisted record
@@ -315,6 +341,18 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             anchor = anchor.replace(tzinfo=timezone.utc)
 
         current = row.get("state", _u.STATE_ACTIVE)
+
+        # Never-used skills (use_count == 0) get a grace floor: don't archive
+        # one until it is at least stale_after_days old. A use=0 skill is
+        # absence of evidence, not evidence of staleness — a skill created
+        # recently may simply not have had its trigger come up yet.
+        never_used = int(row.get("use_count", 0) or 0) == 0
+        if never_used and anchor > stale_cutoff:
+            # Younger than the stale window — leave it alone entirely.
+            if current == _u.STATE_STALE:
+                _u.set_state(name, _u.STATE_ACTIVE)
+                counts["reactivated"] += 1
+            continue
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
             ok, _msg = _u.archive_skill(name)
@@ -390,10 +428,19 @@ CURATOR_REVIEW_PROMPT = (
     "back load-bearing UX (slash-command entry points referenced in docs and "
     "tips) and are filtered out of the candidate list below — never resurrect "
     "one as an archive or absorb target.\n"
+    "3c. DO NOT archive or prune any skill marked `cron=yes` in the candidate "
+    "list. A cron job depends on it and will fail to load it on its next "
+    "run. You MAY still consolidate it into an umbrella — but only because "
+    "the curator rewrites cron job skill references to follow consolidations; "
+    "never simply prune it.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
-    "absence of evidence either way.\n"
+    "absence of evidence either way. Corollary: 'use=0' is ALSO not a "
+    "reason to PRUNE a skill. Never archive a never-used skill (use=0) "
+    "unless it is at least 30 days old (check last_activity / created date) "
+    "AND its content is genuinely obsolete or fully absorbed elsewhere — a "
+    "recently-created skill simply may not have had its trigger come up yet.\n"
     "5. DO NOT reject consolidation on the grounds that 'each skill has "
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
@@ -1413,12 +1460,14 @@ def _render_candidate_list() -> str:
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
+    cron_referenced = _cron_referenced_skills()
     lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
             f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "

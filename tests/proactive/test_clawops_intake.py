@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from hermes_cli import kanban_db as kb
 from proactive.clawops_intake import (
+    auto_publish_preapproved,
     create_clawops_task,
+    infer_clawops_metadata,
     resolve_clawops_assignee,
     subscribe_clawops_task,
 )
@@ -60,6 +62,23 @@ def test_hubops_routing_selects_dev_worker_from_yaml():
     assert envelope["approval_checklist"] == "DevOps and Integration"
 
 
+def test_hubops_routing_selects_secondhand_agent_and_browser_worker():
+    envelope = route_clawops_objective(
+        "繼續追加 Facebook 社團群組發佈，再10個",
+        project="secondhand_commerce",
+        task_type="browser_publish",
+        risk_level="medium",
+        approved=True,
+    )
+
+    assert envelope["status"] == "routed"
+    assert envelope["agent_assignment"]["assigned_agent"] == "secondhand_commerce"
+    assert envelope["assignment"]["assigned_worker"] == "clawops.browser"
+    assert envelope["assignment"]["runtime_profile"] == "clawops-browser"
+    assert "browser_upload_files" in envelope["assignment"]["allowed_tools"]
+    assert envelope["approval_checklist"] == "External Browser Publish"
+
+
 def test_hubops_routing_blocks_unapproved_high_risk_work():
     envelope = route_clawops_objective(
         "部署 OpenClaw bridge 到 production",
@@ -92,9 +111,10 @@ def test_create_clawops_task_embeds_hubops_assignment_metadata(tmp_path, monkeyp
         row = kb.get_task(conn, task.task_id)
 
     assert row is not None
-    assert row.assignee == "clawops.dev"
+    assert row.assignee == "clawops-dev"
     assert "HubOps routing:" in row.body
     assert "assigned_worker: clawops.dev" in row.body
+    assert "runtime_profile: clawops-dev" in row.body
     assert "approval_checklist: DevOps and Integration" in row.body
 
 
@@ -116,7 +136,110 @@ def test_facebook_clawops_task_declares_browser_upload_capabilities(tmp_path, mo
     assert "BROWSER_CDP_URL" in row.body
     assert "kanban_block" in row.body
     assert "Post/Publish/Submit" in row.body
+    assert "stop before Post/Publish/Submit" in row.body
+    assert "Approved-copy auto-publish" not in row.body
     assert "Hermes must not perform this browser UI work directly" in row.body
+
+
+def test_facebook_preapproved_copy_task_allows_auto_publish(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    task = create_clawops_task(
+        "Facebook 社團刊登：之前發佈文案 Hermes 已經傳給我確認過了，後續自動發佈",
+        source={
+            "platform": "telegram",
+            "chat_id": "chat-1",
+            "auto_publish_preapproved": "true",
+        },
+    )
+
+    with kb.connect_closing(db_path) as conn:
+        row = kb.get_task(conn, task.task_id)
+
+    assert row is not None
+    assert "Approved-copy auto-publish" in row.body
+    assert "may click final Post/Publish/Submit without asking KJ again" in row.body
+    assert "visible Facebook content differs from the confirmed copy/assets" in row.body
+    assert "capture URL/screenshot/page state" in row.body
+    assert "stop before Post/Publish/Submit" not in row.body
+
+
+def test_facebook_preapproved_copy_task_uses_browser_capable_runtime_not_openclaw_dry_run(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    task = create_clawops_task(
+        "繼續追加 Facebook 社團群組發佈，再10個。之前發佈文案 Hermes 已經傳給我確認過；後續自動發佈",
+        source={
+            "platform": "telegram",
+            "chat_id": "chat-1",
+            "auto_publish_preapproved": "true",
+            "previous_copy_confirmed": "true",
+        },
+    )
+
+    with kb.connect_closing(db_path) as conn:
+        row = kb.get_task(conn, task.task_id)
+
+    assert row is not None
+    assert "browser-capable Hermes/ClawOps runtime" in row.body
+    assert "This task must be executed by ClawOps/OpenClaw" not in row.body
+    assert "ClawOps/OpenClaw may execute only delegated work" not in row.body
+    assert "Hermes must not perform this browser UI work directly" not in row.body
+    assert "Do not route this task through the OpenClaw dry-run bridge" in row.body
+
+
+def test_natural_language_secondhand_facebook_publish_routes_to_browser_worker(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    task = create_clawops_task(
+        "繼續追加 Facebook 社團群組發佈，再10個。之前發佈文案 Hermes 已經傳給 KJ 確認過；後續自動發佈",
+        source={"platform": "telegram", "chat_id": "chat-1"},
+    )
+
+    with kb.connect_closing(db_path) as conn:
+        row = kb.get_task(conn, task.task_id)
+
+    assert row is not None
+    assert row.assignee == "clawops-browser"
+    assert "project: secondhand_commerce" in row.body
+    assert "task_type: browser_publish" in row.body
+    assert "assigned_agent: secondhand_commerce" in row.body
+    assert "assigned_worker: clawops.browser" in row.body
+    assert "runtime_profile: clawops-browser" in row.body
+    assert "browser_upload_files" in row.body
+
+
+def test_infer_clawops_metadata_covers_known_project_agents():
+    cases = [
+        ("請規劃 Hahow 課程大綱", "hahow_course", "course_design"),
+        ("請規劃課程招生行銷活動", "course_marketing", "campaign"),
+        ("二手咖啡機 Facebook 社團發佈", "secondhand_commerce", "browser_publish"),
+        ("ingrids SEO 內容規劃", "ingrids_marketing", "product_marketing"),
+        ("修正 OpenClaw bridge health check", "hub_ops", "devops"),
+    ]
+
+    for objective, project, task_type in cases:
+        inferred = infer_clawops_metadata(objective, source={})
+        assert inferred["project"] == project
+        assert inferred["task_type"] == task_type
+
+
+def test_auto_publish_preapproved_requires_explicit_signal():
+    assert auto_publish_preapproved("Facebook 社團刊登，文案已確認，請自動發佈") is True
+    assert auto_publish_preapproved(
+        "Facebook 社團刊登",
+        source={"copy_approved": "approved"},
+    ) is True
+    assert auto_publish_preapproved("Facebook 社團刊登，請先檢查") is False
 
 
 def test_non_browser_clawops_task_does_not_add_browser_capability_contract(tmp_path, monkeypatch):

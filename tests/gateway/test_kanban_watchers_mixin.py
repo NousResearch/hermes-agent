@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import inspect
 
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.kanban_watchers import GatewayKanbanWatchersMixin, _format_blocked_notification
 
 KANBAN_METHODS = [
     "_kanban_notifier_watcher",
@@ -67,3 +67,22 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_blocked_notification_uses_platform_budget_instead_of_160_char_cutoff():
+    reason = (
+        "ClawOps capability unavailable: current OpenClaw bridge rejected "
+        "Facebook/external browser execution as dry-run only "
+        "(`external_capability_unavailable`); Hermes is contractually "
+        "prohibited from doing this UI work directly."
+    )
+
+    msg = _format_blocked_notification(
+        task_id="t_e91d380a",
+        tag="@default ",
+        reason=reason,
+        platform_limit=4096,
+    )
+
+    assert msg.endswith("directly.")
+    assert "`external_capability_unavailable`" in msg

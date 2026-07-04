@@ -32,6 +32,8 @@ def route_clawops_objective(
 
     worker_routes = rules.get("worker_routes")
     worker_profiles = registry.get("worker_profiles")
+    agent_routes = rules.get("routes")
+    agents = registry.get("agents")
     if not isinstance(worker_routes, list) or not isinstance(worker_profiles, Mapping):
         return _blocked(
             "HubOps worker routing is not configured.",
@@ -88,6 +90,13 @@ def route_clawops_objective(
             worker=worker,
             approval_required=True,
         )
+    agent_id = _match_agent_id(
+        agent_routes if isinstance(agent_routes, list) else [],
+        agents if isinstance(agents, Mapping) else {},
+        project=project,
+        task_type=task_type,
+        risk_level=risk,
+    )
 
     return {
         "status": "routed",
@@ -95,6 +104,7 @@ def route_clawops_objective(
         "project": project,
         "task_type": task_type,
         "risk_level": risk,
+        "agent_assignment": _agent_assignment(agent_id, (agents or {}).get(agent_id) if isinstance(agents, Mapping) else None),
         "assignment": _assignment(worker_id, worker, approval_required=approval_required),
         "approval_checklist": str((assign or {}).get("approval_checklist") or worker.get("approval_checklist") or ""),
         "output_schema": worker.get("output_schema") or {},
@@ -124,6 +134,26 @@ def _match_worker_route(
     return None
 
 
+def _match_agent_id(
+    routes: list[Any],
+    agents: Mapping[str, Any],
+    *,
+    project: str,
+    task_type: str,
+    risk_level: str,
+) -> str:
+    for route in routes:
+        if not isinstance(route, Mapping):
+            continue
+        match = route.get("match")
+        if isinstance(match, Mapping) and _matches(match, project=project, task_type=task_type, risk_level=risk_level):
+            assign = route.get("assign")
+            agent_id = str((assign or {}).get("agent") or "").strip() if isinstance(assign, Mapping) else ""
+            if agent_id in agents:
+                return agent_id
+    return ""
+
+
 def _matches(match: Mapping[str, Any], *, project: str, task_type: str, risk_level: str) -> bool:
     expected = {
         "project": project,
@@ -144,6 +174,7 @@ def _assignment(
 ) -> dict[str, Any]:
     return {
         "assigned_worker": worker_id,
+        "runtime_profile": str(worker.get("runtime_profile") or worker_id.replace(".", "-")),
         "display_name": str(worker.get("display_name") or worker_id),
         "allowed_tools": list(worker.get("allowed_tools") or []),
         "risk_level_limit": _normalize_risk(str(worker.get("risk_level_limit") or "low")),
@@ -151,6 +182,18 @@ def _assignment(
         "approval_required_actions": list(worker.get("approval_required_actions") or []),
         "timeout_seconds": int(worker.get("timeout_seconds") or 900),
         "retry_policy": worker.get("retry_policy") or {"max_attempts": 1, "backoff_seconds": 0},
+    }
+
+
+def _agent_assignment(agent_id: str, agent: Any) -> dict[str, Any]:
+    agent = agent if isinstance(agent, Mapping) else {}
+    return {
+        "assigned_agent": agent_id,
+        "display_name": str(agent.get("display_name") or agent_id),
+        "role": str(agent.get("role") or ""),
+        "primary_model": str(agent.get("primary_model") or ""),
+        "allowed_projects": list(agent.get("allowed_projects") or []),
+        "approval_required": bool(agent.get("approval_required", False)),
     }
 
 
@@ -172,6 +215,7 @@ def _blocked(
         "task_type": task_type,
         "risk_level": _normalize_risk(risk_level),
         "blocked_reason": reason,
+        "agent_assignment": _agent_assignment("", {}),
         "assignment": _assignment(worker_id, worker or {}, approval_required=approval_required),
         "approval_checklist": str((worker or {}).get("approval_checklist") or ""),
         "output_schema": (worker or {}).get("output_schema") or {},

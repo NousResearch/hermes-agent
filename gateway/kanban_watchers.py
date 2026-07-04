@@ -55,6 +55,29 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _format_blocked_notification(
+    *,
+    task_id: str,
+    tag: str = "",
+    reason: str = "",
+    platform_limit: int = 4000,
+) -> str:
+    prefix = f"⏸ {tag}Kanban {task_id} blocked"
+    clean_reason = str(reason or "").strip()
+    if not clean_reason:
+        return prefix
+    marker = "... [truncated]"
+    try:
+        limit = int(platform_limit or 4000)
+    except (TypeError, ValueError):
+        limit = 4000
+    max_reason = max(160, limit - len(prefix) - 2)
+    if len(clean_reason) > max_reason:
+        keep = max(0, max_reason - len(marker))
+        clean_reason = clean_reason[:keep].rstrip() + marker
+    return f"{prefix}: {clean_reason}"
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -366,8 +389,20 @@ class GatewayKanbanWatchersMixin:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                reason = str(ev.payload["reason"])
+                            try:
+                                platform_limit = int(
+                                    getattr(adapter, "MAX_MESSAGE_LENGTH", 4000)
+                                    or 4000
+                                )
+                            except (TypeError, ValueError):
+                                platform_limit = 4000
+                            msg = _format_blocked_notification(
+                                task_id=sub["task_id"],
+                                tag=tag,
+                                reason=reason,
+                                platform_limit=platform_limit,
+                            )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):

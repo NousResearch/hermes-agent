@@ -67,6 +67,27 @@ async def test_clawops_command_creates_task_and_subscription(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_clawops_command_routes_secondhand_facebook_work_to_browser_worker(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.delenv("HERMES_CLAWOPS_ASSIGNEE", raising=False)
+
+    result = await _make_runner()._handle_clawops_command(
+        _make_event("/clawops 繼續追加 Facebook 社團群組發佈，再10個。之前發佈文案 Hermes 已經傳給 KJ 確認過；後續自動發佈")
+    )
+
+    with kb.connect_closing(db_path) as conn:
+        row = conn.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchone()
+
+    assert row is not None
+    assert row["assignee"] == "clawops-browser"
+    assert "Assigned Agent: `clawops-browser`" in result
+    assert "assigned_agent: secondhand_commerce" in row["body"]
+    assert "assigned_worker: clawops.browser" in row["body"]
+    assert "runtime_profile: clawops-browser" in row["body"]
+
+
+@pytest.mark.asyncio
 async def test_clawops_command_requires_objective():
     result = await _make_runner()._handle_clawops_command(_make_event("/clawops"))
 

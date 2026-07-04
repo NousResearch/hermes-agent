@@ -179,6 +179,26 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "browser-cdp": {
+        "description": (
+            "CDP-backed browser tools for logged-in browser sessions, including "
+            "local file uploads into input[type=file]. Intended for audited "
+            "ClawOps browser tasks."
+        ),
+        "tools": [
+            "browser_cdp",
+            "browser_snapshot",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_press",
+            "browser_dialog",
+            "browser_upload_files",
+        ],
+        "includes": [],
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",

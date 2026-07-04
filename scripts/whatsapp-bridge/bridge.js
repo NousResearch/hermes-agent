@@ -40,11 +40,14 @@ function getArg(name, defaultVal) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : defaultVal;
 }
 
-const WHATSAPP_DEBUG =
-  typeof process !== 'undefined' &&
-  process.env &&
-  typeof process.env.WHATSAPP_DEBUG === 'string' &&
-  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+function parseEnvBool(name, defaultVal = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultVal;
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
+const WHATSAPP_DEBUG = parseEnvBool('WHATSAPP_DEBUG');
+const WHATSAPP_MARK_READ = parseEnvBool('WHATSAPP_MARK_READ');
 
 // Opt-in: when true (and WHATSAPP_MODE === 'bot'), fromMe inbound messages
 // that are NOT echoes of our own /send or /send-media calls are forwarded
@@ -304,10 +307,22 @@ async function startSocket() {
       normalizeWhatsAppId(sock.user?.lid),
     ].filter(Boolean)));
 
+    // Collect message keys for batch read-receipt
+    const messagesToRead = [];
+
     for (const msg of messages) {
       if (!msg.message) continue;
+      // Validate message key before any API calls
+      if (!msg.key) continue;
+      // Skip our own messages — no need to mark those as read
+      if (msg.key.fromMe) continue;
 
       const chatId = msg.key.remoteJid;
+      if (!chatId || !msg.key.id) continue;
+      // Queue for batch read-receipt (skip broadcast and groups)
+      if (!chatId.endsWith('@broadcast') && !chatId.endsWith('@g.us')) {
+        messagesToRead.push(msg.key);
+      }
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
@@ -541,6 +556,21 @@ async function startSocket() {
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
+      }
+    }
+
+    // Batch mark messages as read (blue ticks) — single API call instead of per-message
+    if (WHATSAPP_MARK_READ && sock && messagesToRead.length > 0) {
+      try {
+        await sock.sendPresenceUpdate('available');
+      } catch (err) {
+        console.error('[blue-tick] sendPresenceUpdate failed:', err?.message || err);
+      }
+      try {
+        await sock.readMessages(messagesToRead);
+        console.log(`[blue-tick] Marked ${messagesToRead.length} message(s) as read`);
+      } catch (err) {
+        console.error('[blue-tick] batch readMessages failed:', err?.message || err);
       }
     }
   });

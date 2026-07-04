@@ -90,6 +90,7 @@ Thread safety:
 """
 
 import asyncio
+import base64
 import contextvars
 import concurrent.futures
 import inspect
@@ -102,6 +103,7 @@ import shutil
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
@@ -336,6 +338,19 @@ _MAX_BACKOFF_SECONDS = 60
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 
+# MCP 2026-07-28 draft / "modern" stateless HTTP constants.  The installed
+# MCP Python SDK may lag this draft, so Hermes carries a tiny direct-HTTP
+# compatibility path for opt-in stateless servers while preserving the legacy
+# SDK path for existing stdio/SSE/StreamableHTTP servers.
+_MODERN_MCP_PROTOCOL_VERSION = "2026-07-28"
+_MCP_PROTOCOL_VERSION_HEADER = "MCP-Protocol-Version"
+_MCP_METHOD_HEADER = "Mcp-Method"
+_MCP_NAME_HEADER = "Mcp-Name"
+_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion"
+_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
+_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities"
+_RESULT_TYPE_INPUT_REQUIRED = "input_required"
+
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
 # so a client that wants a session to survive idle periods MUST refresh faster
@@ -452,6 +467,134 @@ def _sanitize_error(text: str) -> str:
     accidental credential exposure in tool error responses.
     """
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+
+
+def _stateless_mcp_client_info() -> dict:
+    """Return the client identity stamped into modern MCP `_meta`."""
+    try:
+        from hermes_cli import __version__ as version
+    except Exception:
+        version = "unknown"
+    return {"name": "Hermes Agent", "version": str(version)}
+
+
+def _stateless_mcp_client_capabilities() -> dict:
+    """Return conservative client capabilities for 2026-07-28 requests."""
+    return {
+        "tools": {},
+        "resources": {},
+        "prompts": {},
+    }
+
+
+def _is_plain_http_header_value(value: str) -> bool:
+    """Whether *value* can be sent as a plain ASCII HTTP header value."""
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return all(32 <= ord(ch) <= 126 and ch not in "\r\n" for ch in value)
+
+
+def _encode_mcp_http_header_value(value: Any) -> str:
+    """Encode MCP metadata/header mirror values per draft Streamable HTTP.
+
+    Plain printable ASCII is sent as-is. Non-ASCII or control-containing values
+    use the draft's ``=?base64?...?=`` envelope.
+    """
+    text = str(value)
+    if _is_plain_http_header_value(text):
+        return text
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return f"=?base64?{encoded}?="
+
+
+def _json_rpc_error_message(data: dict) -> str:
+    """Render a JSON-RPC error object into a short message."""
+    err = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(err, dict):
+        return "unknown JSON-RPC error"
+    message = err.get("message") or "JSON-RPC error"
+    code = err.get("code")
+    if code is not None:
+        message = f"{message} (code {code})"
+    if err.get("data") is not None:
+        message = f"{message}: {err.get('data')}"
+    return str(message)
+
+
+def _decode_sse_jsonrpc_response(text: str) -> dict:
+    """Extract the final JSON-RPC object from a request-scoped SSE response."""
+    events: list[str] = []
+    current: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line:
+            if current:
+                events.append("\n".join(current))
+                current = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            current.append(line[5:].lstrip())
+    if current:
+        events.append("\n".join(current))
+    for payload in reversed(events):
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and ("result" in data or "error" in data):
+            return data
+    raise ValueError("SSE response did not contain a JSON-RPC result")
+
+
+def _mcp_result_to_namespace(value: Any) -> Any:
+    """Recursively convert dict/list JSON results to attribute-friendly nodes."""
+    if isinstance(value, dict):
+        return SimpleNamespace(**{
+            key: _mcp_result_to_namespace(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, list):
+        return [_mcp_result_to_namespace(item) for item in value]
+    return value
+
+
+def _mcp_content_block_from_dict(block: Any) -> Any:
+    """Convert modern MCP content JSON into the shape legacy handlers expect."""
+    if not isinstance(block, dict):
+        return SimpleNamespace(text=str(block))
+    block_type = block.get("type")
+    if block_type == "text" or "text" in block:
+        return SimpleNamespace(text=block.get("text", ""))
+    if block_type == "image" or "data" in block:
+        return SimpleNamespace(
+            data=block.get("data"),
+            mimeType=block.get("mimeType") or block.get("mime_type"),
+        )
+    return SimpleNamespace(text=json.dumps(block, ensure_ascii=False))
+
+
+def _build_tool_header_params(tools: list) -> dict[str, dict[str, str]]:
+    """Map tool arguments annotated with ``x-mcp-header`` to HTTP headers."""
+    result: dict[str, dict[str, str]] = {}
+    for tool in tools:
+        schema = getattr(tool, "inputSchema", None)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(props, dict):
+            continue
+        header_params: dict[str, str] = {}
+        for arg_name, spec in props.items():
+            if not isinstance(spec, dict):
+                continue
+            header_name = spec.get("x-mcp-header")
+            if isinstance(header_name, str) and header_name.strip():
+                header_params[str(arg_name)] = header_name.strip()
+        if header_params:
+            result[str(tool.name)] = header_params
+    return result
 
 
 def _exc_str(exc: BaseException) -> str:
@@ -1502,6 +1645,186 @@ class ElicitationHandler:
 
 
 # ---------------------------------------------------------------------------
+# Stateless HTTP session (MCP 2026-07-28 modern protocol)
+# ---------------------------------------------------------------------------
+
+class StatelessMCPHTTPSession:
+    """Small direct-HTTP client for modern/stateless MCP servers.
+
+    The installed MCP Python SDK in this environment still speaks the legacy
+    session/initialize era.  This adapter implements the 2026-07-28 draft wire
+    shape for HTTP servers that explicitly opt into stateless mode, while the
+    rest of Hermes continues to talk to a session-like object exposing the same
+    methods (`list_tools`, `call_tool`, resources/prompts utilities).
+    """
+
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        url: str,
+        http_client: Any,
+        protocol_version: str = _MODERN_MCP_PROTOCOL_VERSION,
+    ):
+        self.server_name = server_name
+        self.url = url
+        self.http_client = http_client
+        self.protocol_version = protocol_version or _MODERN_MCP_PROTOCOL_VERSION
+        self.client_info = _stateless_mcp_client_info()
+        self.client_capabilities = _stateless_mcp_client_capabilities()
+        self._request_id = 0
+        self._discover_result: Optional[Any] = None
+        self._tool_header_params: dict[str, dict[str, str]] = {}
+
+    def _next_id(self) -> int:
+        self._request_id += 1
+        return self._request_id
+
+    def _meta(self) -> dict:
+        return {
+            _PROTOCOL_VERSION_META_KEY: self.protocol_version,
+            _CLIENT_INFO_META_KEY: self.client_info,
+            _CLIENT_CAPABILITIES_META_KEY: self.client_capabilities,
+        }
+
+    def _params_with_meta(self, params: Optional[dict] = None) -> dict:
+        merged = dict(params or {})
+        meta = dict(merged.get("_meta") or {})
+        meta.setdefault(_PROTOCOL_VERSION_META_KEY, self.protocol_version)
+        meta.setdefault(_CLIENT_INFO_META_KEY, self.client_info)
+        meta.setdefault(_CLIENT_CAPABILITIES_META_KEY, self.client_capabilities)
+        merged["_meta"] = meta
+        return merged
+
+    async def _read_response(self, response) -> dict:
+        if getattr(response, "status_code", 200) == 202:
+            return {"jsonrpc": "2.0", "id": None, "result": {}}
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            body = getattr(response, "text", "") or ""
+            raise RuntimeError(
+                _sanitize_error(
+                    f"HTTP {getattr(response, 'status_code', '?')} from stateless MCP "
+                    f"server '{self.server_name}': {body[:500] or exc}"
+                )
+            ) from exc
+
+        content_type = (response.headers.get("content-type", "") if hasattr(response, "headers") else "").lower()
+        if "text/event-stream" in content_type:
+            data = _decode_sse_jsonrpc_response(response.text)
+        else:
+            data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"MCP server '{self.server_name}' returned non-object JSON-RPC response")
+        if "error" in data:
+            raise RuntimeError(_sanitize_error(_json_rpc_error_message(data)))
+        return data
+
+    async def _request(
+        self,
+        method: str,
+        params: Optional[dict] = None,
+        *,
+        mcp_name: Optional[Any] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+    ) -> dict:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": method,
+            "params": self._params_with_meta(params),
+        }
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            _MCP_PROTOCOL_VERSION_HEADER: self.protocol_version,
+            _MCP_METHOD_HEADER: method,
+        }
+        if mcp_name is not None:
+            headers[_MCP_NAME_HEADER] = _encode_mcp_http_header_value(mcp_name)
+        if extra_headers:
+            headers.update(extra_headers)
+        response = await self.http_client.post(self.url, json=payload, headers=headers)
+        data = await self._read_response(response)
+        return data.get("result", {}) or {}
+
+    async def discover(self):
+        result = await self._request("server/discover", {})
+        self._discover_result = _mcp_result_to_namespace(result)
+        return self._discover_result
+
+    async def list_tools(self):
+        tools: list[Any] = []
+        cursor = None
+        while True:
+            params = {"cursor": cursor} if cursor else {}
+            result = await self._request("tools/list", params)
+            for raw_tool in result.get("tools", []) or []:
+                if not isinstance(raw_tool, dict):
+                    continue
+                tools.append(SimpleNamespace(
+                    name=raw_tool.get("name", ""),
+                    description=raw_tool.get("description", ""),
+                    inputSchema=raw_tool.get("inputSchema") or {"type": "object", "properties": {}},
+                ))
+            cursor = result.get("nextCursor") or result.get("next_cursor")
+            if not cursor:
+                break
+        self._tool_header_params = _build_tool_header_params(tools)
+        return SimpleNamespace(tools=tools)
+
+    def _headers_from_tool_arguments(self, tool_name: str, arguments: dict) -> dict[str, str]:
+        mirrored: dict[str, str] = {}
+        for arg_name, header_name in self._tool_header_params.get(tool_name, {}).items():
+            if arg_name not in arguments:
+                continue
+            mirrored[f"Mcp-Param-{header_name}"] = _encode_mcp_http_header_value(arguments[arg_name])
+        return mirrored
+
+    async def call_tool(self, tool_name: str, arguments: Optional[dict] = None):
+        args = dict(arguments or {})
+        result = await self._request(
+            "tools/call",
+            {"name": tool_name, "arguments": args},
+            mcp_name=tool_name,
+            extra_headers=self._headers_from_tool_arguments(tool_name, args),
+        )
+        result_type = result.get("resultType") or result.get("result_type")
+        if result_type == _RESULT_TYPE_INPUT_REQUIRED:
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="MCP tool requires additional input; MRTR input_required flow is not yet supported by Hermes.")],
+                isError=True,
+                structuredContent=result,
+            )
+        return SimpleNamespace(
+            content=[_mcp_content_block_from_dict(block) for block in (result.get("content") or [])],
+            isError=bool(result.get("isError") or result.get("is_error")),
+            structuredContent=result.get("structuredContent"),
+        )
+
+    async def list_resources(self):
+        result = await self._request("resources/list", {})
+        return _mcp_result_to_namespace(result)
+
+    async def read_resource(self, uri: str):
+        result = await self._request("resources/read", {"uri": uri}, mcp_name=uri)
+        return _mcp_result_to_namespace(result)
+
+    async def list_prompts(self):
+        result = await self._request("prompts/list", {})
+        return _mcp_result_to_namespace(result)
+
+    async def get_prompt(self, name: str, arguments: Optional[dict] = None):
+        result = await self._request(
+            "prompts/get",
+            {"name": name, "arguments": dict(arguments or {})},
+            mcp_name=name,
+        )
+        return _mcp_result_to_namespace(result)
+
+
+# ---------------------------------------------------------------------------
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
@@ -2331,8 +2654,84 @@ class MCPServerTask:
             "(e.g. https://host/mcp, not https://host/)."
         )
 
+    async def _run_stateless_http(self, config: dict):
+        """Run a modern/stateless MCP HTTP server (2026-07-28 draft)."""
+        try:
+            import httpx
+        except ImportError as exc:
+            raise ImportError(
+                f"MCP server '{self.name}' requires HTTP transport but httpx "
+                "is not available. Install hermes-agent with HTTP support."
+            ) from exc
+
+        url = config["url"]
+        protocol_version = str(config.get("protocol_version") or _MODERN_MCP_PROTOCOL_VERSION)
+        headers = dict(config.get("headers") or {})
+        if not any(key.lower() == "mcp-protocol-version" for key in headers):
+            headers[_MCP_PROTOCOL_VERSION_HEADER] = protocol_version
+        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        ssl_verify = config.get("ssl_verify", True)
+        client_cert = _resolve_client_cert(self.name, config)
+
+        _oauth_auth = None
+        if self._auth_type == "oauth":
+            try:
+                from tools.mcp_oauth_manager import get_manager
+                _oauth_auth = get_manager().get_or_build_provider(
+                    self.name, url, config.get("oauth"),
+                )
+            except Exception as exc:
+                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                raise
+
+        _original_url = httpx.URL(url)
+
+        async def _strip_auth_on_cross_origin_redirect(response):
+            if response.is_redirect and response.next_request:
+                target = response.next_request.url
+                if (target.scheme, target.host, target.port) != (
+                    _original_url.scheme, _original_url.host, _original_url.port,
+                ):
+                    response.next_request.headers.pop("authorization", None)
+                    response.next_request.headers.pop("Authorization", None)
+
+        client_kwargs: dict = {
+            "follow_redirects": True,
+            "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
+            "verify": ssl_verify,
+            "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+        }
+        if headers:
+            client_kwargs["headers"] = headers
+        if _oauth_auth is not None:
+            client_kwargs["auth"] = _oauth_auth
+        if client_cert is not None:
+            client_kwargs["cert"] = client_cert
+
+        async with httpx.AsyncClient(**client_kwargs) as http_client:
+            session = StatelessMCPHTTPSession(
+                server_name=self.name,
+                url=url,
+                http_client=http_client,
+                protocol_version=protocol_version,
+            )
+            self.session = session
+            self.initialize_result = await session.discover()
+            await self._discover_tools()
+            self._ready.set()
+            _reset_server_error(self.name)
+            reason = await self._wait_for_reconnect_or_shutdown()
+            if reason == "reconnect":
+                logger.info(
+                    "MCP server '%s': reconnect requested — rebuilding stateless HTTP client",
+                    self.name,
+                )
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
+        if _is_stateless_http_config(config):
+            await self._run_stateless_http(config)
+            return
         if not _MCP_HTTP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
@@ -4603,6 +5002,21 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _is_stateless_http_config(config: dict) -> bool:
+    """Whether this MCP server should use Hermes' modern stateless HTTP path."""
+    if "url" not in config:
+        return False
+    transport = str(config.get("transport", "")).strip().lower().replace("-", "_")
+    protocol = str(config.get("protocol", "")).strip().lower().replace("-", "_")
+    if transport in {"stateless", "stateless_http", "modern", "modern_http"}:
+        return True
+    if protocol in {"stateless", "stateless_http", "modern", "modern_http", "2026_07_28"}:
+        return True
+    if "stateless" in config:
+        return _parse_boolish(config.get("stateless"), default=False)
+    return str(config.get("protocol_version", "")).strip() >= _MODERN_MCP_PROTOCOL_VERSION
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Return an optional positive lifecycle timeout from top-level/nested config."""
     raw = config.get(key)
@@ -4869,6 +5283,11 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     return registered_names
 
 
+def _has_stateless_http_server(servers: Dict[str, dict]) -> bool:
+    """True if any server can be handled without the MCP SDK."""
+    return any(isinstance(cfg, dict) and _is_stateless_http_config(cfg) for cfg in servers.values())
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -4885,11 +5304,16 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
-        return []
-
     servers = _filter_suspicious_mcp_servers(servers)
+    if not _MCP_AVAILABLE:
+        servers = {
+            name: cfg
+            for name, cfg in servers.items()
+            if isinstance(cfg, dict) and _is_stateless_http_config(cfg)
+        }
+        if not servers:
+            logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+            return []
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []
@@ -5005,13 +5429,12 @@ def discover_mcp_tools() -> List[str]:
     Returns:
         List of all registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
-        return []
-
     servers = _load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
+        return []
+    if not _MCP_AVAILABLE and not _has_stateless_http_server(servers):
+        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
     with _lock:
@@ -5081,7 +5504,11 @@ def get_mcp_status() -> List[dict]:
         connect_errors = dict(_server_connect_errors)
 
     for name, cfg in configured.items():
-        transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
+        transport = (
+            "stateless-http"
+            if isinstance(cfg, dict) and _is_stateless_http_config(cfg)
+            else (cfg.get("transport", "http") if "url" in cfg else "stdio")
+        )
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
         server = active_servers.get(name)
         if server and server.session is not None:
@@ -5151,12 +5578,17 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         Dict mapping server name to list of (tool_name, description) tuples.
         Servers that fail to connect are omitted from the result.
     """
-    if not _MCP_AVAILABLE:
-        return {}
-
     servers_config = _load_mcp_config()
     if not servers_config:
         return {}
+    if not _MCP_AVAILABLE:
+        servers_config = {
+            name: cfg
+            for name, cfg in servers_config.items()
+            if isinstance(cfg, dict) and _is_stateless_http_config(cfg)
+        }
+        if not servers_config:
+            return {}
 
     enabled = {
         k: v for k, v in servers_config.items()

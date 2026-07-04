@@ -80,16 +80,6 @@ proxy:
   # is unavailable.
   enforce_on_docker: true
 
-  # When true, `hermes egress start` refuses to start if LLM-specific
-  # non-bearer provider env vars are set (Anthropic native, Azure OpenAI,
-  # Gemini) — those bypass the proxy's secrets transform and would leak
-  # real credentials into the sandbox.  Defaults to false because the
-  # false-positive cost (operator has the env set but doesn't actually
-  # use that provider) is higher than the security cost of a warning.
-  # See "Uncovered providers" below for the strict tier vs warn tier
-  # distinction.
-  fail_on_uncovered_providers: false
-
   # When `credential_source: bitwarden` but the BWS access token /
   # project_id is missing OR the bws fetch returns no values for mapped
   # providers, the daemon raises by default (matches the spirit of "I
@@ -155,50 +145,29 @@ We also pin `metrics.listen: 127.0.0.1:0` so the daemon's built-in metrics serve
 
 If a hostile `ip` shim earlier on PATH had been able to inject a non-private IPv4 as the bridge address (`0.0.0.0`, a public address, multicast, link-local, etc.) the loopback fallback still applies — we never bind anything we couldn't validate via `ipaddress.IPv4Address` + `is_*` checks.
 
+## Covered auth schemes
+
+The `secrets` transform swaps the proxy token wherever it appears in a matched location — and it matches more than `Authorization: Bearer`:
+
+| Provider | Env var | Swapped in |
+|---|---|---|
+| OpenRouter, OpenAI, Groq, Together, DeepSeek, Mistral, xAI, Nous | `*_API_KEY` | `Authorization` header |
+| Anthropic native | `ANTHROPIC_API_KEY` | `x-api-key` + `Authorization` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` | `api-key` + `Authorization` (`*.openai.azure.com`, `*.cognitiveservices.azure.com`, `*.services.ai.azure.com`) |
+| Google AI Studio (Gemini) | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `x-goog-api-key` header or `?key=` query param |
+
+`GEMINI_API_KEY` and `GOOGLE_API_KEY` are treated as one credential: a single proxy token is minted and injected into the sandbox under **both** names, and either name in your host env satisfies discovery.
+
 ## Uncovered providers
 
-iron-proxy's `secrets` transform only handles `Authorization: Bearer` headers. Providers using `x-api-key`, SigV4, AAD tokens, or custom signatures cannot be proxied — if their env vars are present, the sandbox holds **real credentials** for those providers and the egress isolation guarantee is incomplete for them.
-
-The wizard and `hermes egress status` always surface uncovered providers in your env. There are two tiers:
-
-### Strict tier — refuses start when `fail_on_uncovered_providers: true`
+Auth schemes that involve request signing or SDK-minted OAuth cannot be swapped by a static header replacement — if their env vars are present, the sandbox holds **real credentials** for those providers and the egress isolation guarantee is incomplete for them:
 
 | Env var | Provider | Reason |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic native | x-api-key header, not Bearer |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI | api-key header + optional AAD |
-| `GEMINI_API_KEY` | Google AI Studio (Gemini) | x-goog-api-key |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS Bedrock / SageMaker | SigV4-signed requests |
+| `GOOGLE_APPLICATION_CREDENTIALS` | GCP Vertex AI | OAuth minted from a service-account file |
 
-These are LLM-specific names. An operator who has them set is using those providers; a bypass is a real isolation failure.
-
-### Warn-only tier — surfaced but never blocks
-
-| Env var | Provider | Reason |
-|---|---|---|
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS Bedrock / SageMaker | SigV4-signed |
-| `GOOGLE_APPLICATION_CREDENTIALS` | GCP Vertex AI | gcloud OAuth |
-| `GOOGLE_API_KEY` | Google AI Studio | x-goog-api-key OR query param |
-
-These env vars are present on most developer laptops for unrelated tooling (terraform, gcloud, aws CLI, ECR push). They surface as warnings in the wizard + `status` output but don't refuse-start.
-
-### Operator playbook
-
-If `hermes egress start` refuses because of a strict-tier env var you don't actually use:
-
-```bash
-unset ANTHROPIC_API_KEY   # or whichever one is flagged
-hermes egress start
-```
-
-If you DO use that provider but accept the isolation gap:
-
-```yaml
-# config.yaml
-proxy:
-  fail_on_uncovered_providers: false  # default
-```
-
-Either way, the warning persists in `hermes egress status` until you remove the env var.
+These env vars are present on most developer laptops for unrelated tooling (terraform, gcloud, aws CLI, ECR push). They surface as warnings in the wizard and `hermes egress status` but never block the proxy from starting. If you don't use those providers from sandboxes, `unset` the vars to clear the warning.
 
 ## Bitwarden integration
 
@@ -258,8 +227,11 @@ hermes egress setup --rotate-tokens    # mint fresh tokens for every provider
 
 hermes egress start                    # spawn the managed proxy daemon
 hermes egress stop                     # SIGTERM (then SIGKILL after 5s grace)
-hermes egress restart                  # stop (if running) then start — the one-command
-                                       #   way to apply config / token changes
+hermes egress restart                  # stop (if running) then start — needed when
+                                       #   upstream SECRETS change (rotation, new provider)
+hermes egress reload                   # hot-reload the ruleset from proxy.yaml via the
+                                       #   management API — no restart, no dropped
+                                       #   connections (allowlist / mapping edits)
 
 hermes egress status                   # binary + config + pid + listening state + mappings
 hermes egress status --show-tokens     # print proxy tokens in full
@@ -447,7 +419,7 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - Sandbox processes that bypass `HTTPS_PROXY` by using a raw socket. The proxy can't intercept what doesn't route to it. Node.js is partially mitigated via `NODE_OPTIONS=--use-openssl-ca` (see caveat above).
 - Credential files explicitly mounted into Docker (`terminal.credential_files` or skill-registered mounts). Egress protects provider env vars; it does not inspect arbitrary mounted files. Do not mount real provider credentials into an enforced egress sandbox.
 - Allowlisted-host data exfiltration. If `api.openai.com` is allowed, an agent could embed exfil data in a request body to that host. The daemon log captures the request happened but doesn't prevent it.
-- Uncovered providers (Anthropic native, AWS Bedrock, Azure OpenAI, Gemini). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).
+- Uncovered providers (AWS Bedrock SigV4, GCP Vertex service-account OAuth). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).
 - iron-proxy in-memory secret zeroisation. The Go binary holds swapped-in real credentials in process memory; a core-dump or `/proc/<pid>/mem` read from a same-uid attacker would expose them. Out of scope for this layer.
 
 ## Failure modes
@@ -458,7 +430,6 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - **Port collision** — iron-proxy exits immediately; `hermes egress start` reports the last 20 log lines and fails with non-zero exit.
 - **Upstream-host denied** — sandbox gets HTTP 403 from the proxy with a body explaining which host wasn't allowed. The agent sees the error and reports it.
 - **Cloud metadata IP (169.254.169.254) requested** — refused by `upstream_deny_cidrs` regardless of allowlist.
-- **Strict-tier uncovered provider env var set** — `hermes egress start` refuses with a list of the offending env vars and the `proxy.fail_on_uncovered_providers: false` escape hatch.
 - **`docker_env` collides with a proxy-controlling var (enforce on)** — sandbox creation refuses with the names of the colliding keys.
 - **`docker_forward_env` tries to forward a protected provider key (enforce on)** — sandbox creation refuses; remove the key from `docker_forward_env` or opt out with `proxy.enforce_on_docker: false`.
 - **`docker_extra_args` overrides proxy env/network controls (enforce on)** — sandbox creation refuses; user-supplied `-e HTTPS_PROXY=...`, `--env-file`, or `--network` args run after Hermes' generated args and can bypass egress.
@@ -482,10 +453,6 @@ Or move it into `~/.hermes/.env`. Or switch back to env mode:
 ```bash
 hermes egress setup --no-bitwarden
 ```
-
-### "Refusing to start: provider env vars present that bypass the proxy"
-
-You have `fail_on_uncovered_providers: true` AND one of `ANTHROPIC_API_KEY` / `AZURE_OPENAI_API_KEY` / `GEMINI_API_KEY` is set in your env. Either unset the offending var, or flip the config flag back to `false` (default) if you accept the isolation gap.
 
 ### "iron-proxy exited immediately"
 
@@ -587,10 +554,10 @@ When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-reque
 ## Limitations (v1)
 
 - Docker backend only. Modal, Daytona, and SSH wiring will follow in separate PRs.
-- Only bearer-token providers (OpenRouter, OpenAI, Anthropic-via-OR, etc.) are wired through the `secrets` transform out of the box. Providers with custom auth (x-api-key, query params, signatures) bypass the proxy entirely — see [Uncovered providers](#uncovered-providers).
+- Providers with signature-based auth (AWS SigV4, GCP service-account OAuth) bypass the proxy entirely — see [Uncovered providers](#uncovered-providers). Header-token providers (bearer, `x-api-key`, `api-key`, `x-goog-api-key`) are all covered.
 - No native Windows binary upstream. Run on Linux / macOS / WSL.
 - The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `hermes egress rotate-ca`).
-- Re-running setup stops a running daemon after rewriting config or mappings; run `hermes egress start` again, and restart already-running sandboxes after token rotation.
+- Re-running setup stops a running daemon after rewriting config or mappings; restart (or `hermes egress reload` for ruleset-only changes) and restart already-running sandboxes after token rotation.
 - iron-proxy in-memory secret zeroisation is upstream-controlled. Same-uid attackers with `/proc/<pid>/mem` read access can read swapped-in secrets from the daemon's memory.
 - iron-proxy v0.39 only supports a **single bind per daemon** (we bind the docker bridge gateway on Linux, loopback on Docker Desktop) and combines daemon + per-request records into a single log stream. When upstream adds `proxy.http_listens` (plural) and `log.audit_path`, a version bump can wire in multi-bind and the dedicated audit stream.
 

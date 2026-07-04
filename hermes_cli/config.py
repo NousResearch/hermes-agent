@@ -3006,15 +3006,12 @@ DEFAULT_CONFIG = {
         # proxy is enabled but not running.  False = fall back to direct
         # outbound with real credentials in the sandbox (the legacy posture).
         "enforce_on_docker": True,
-        # When true, `hermes egress start` refuses to start if any provider
-        # env var is set that the proxy cannot strip (Anthropic native
-        # `x-api-key`, Azure OpenAI api-key, Gemini x-goog-api-key).
-        # These LLM-specific credentials would otherwise leak into the
-        # sandbox bypassing the proxy.  Generic cloud creds (AWS_*,
-        # GOOGLE_APPLICATION_CREDENTIALS) are warned about but never
-        # block.  Defaults to false because false positives (operator has
-        # the env set but doesn't actually use that provider) are common.
-        "fail_on_uncovered_providers": False,
+        # NOTE: ``fail_on_uncovered_providers`` was removed.  It gated a
+        # refuse-start when Anthropic / Azure OpenAI / Gemini env vars were
+        # present — those providers are now first-class swapped providers
+        # via per-provider match_headers rules (x-api-key, api-key,
+        # x-goog-api-key), so the fail-closed tier is empty.  A leftover
+        # key in existing user configs is ignored harmlessly.
         # When credential_source is bitwarden but the BWS access token /
         # project_id is missing OR the bws fetch returns no values for
         # mapped providers, the daemon raises by default.  Set this to

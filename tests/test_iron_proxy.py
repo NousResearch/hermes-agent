@@ -471,16 +471,16 @@ def test_merge_mappings_rotate_mints_fresh_tokens():
 
 
 # ---------------------------------------------------------------------------
-# Uncovered provider detection (regression: non-bearer providers bypass)
+# Uncovered provider detection (regression: signature-auth providers bypass)
 # ---------------------------------------------------------------------------
 
 
-def test_uncovered_providers_detects_anthropic_aws(hermes_home, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+def test_uncovered_providers_detects_aws_gcp_appdefault(hermes_home, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp.json")
     uncovered = ip.discover_uncovered_providers()
-    assert "ANTHROPIC_API_KEY" in uncovered
     assert "AWS_ACCESS_KEY_ID" in uncovered
+    assert "GOOGLE_APPLICATION_CREDENTIALS" in uncovered
 
 
 def test_uncovered_providers_explicit_names_empty():
@@ -494,6 +494,22 @@ def test_uncovered_providers_skips_bearer_providers(hermes_home, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     uncovered = ip.discover_uncovered_providers()
     assert "OPENROUTER_API_KEY" not in uncovered
+
+
+def test_uncovered_providers_skips_header_auth_providers(hermes_home, monkeypatch):
+    """Anthropic / Azure / Gemini moved from 'uncovered' to first-class
+    header-auth swapped providers — they must no longer be reported as
+    uncovered."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-test-alias")
+    uncovered = ip.discover_uncovered_providers()
+    assert "ANTHROPIC_API_KEY" not in uncovered
+    assert "AZURE_OPENAI_API_KEY" not in uncovered
+    assert "GEMINI_API_KEY" not in uncovered
+    assert "GOOGLE_API_KEY" not in uncovered
 
 
 # ---------------------------------------------------------------------------
@@ -1357,40 +1373,276 @@ def test_default_deny_includes_ipv4_mapped_v6(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# v3: split LLM-specific blocked tier (P1 #3 + P2 non_bearer tiers)
+# Header-auth providers (x-api-key family) — match_headers + aliases
 # ---------------------------------------------------------------------------
 
 
-def test_blocked_providers_subset_of_uncovered(hermes_home, monkeypatch):
-    """The strict tier that BLOCKS start must be a subset of the
-    uncovered-but-warn tier; the wizard surfaces ALL uncovered but only
-    blocks the LLM-specific ones."""
+def test_header_auth_providers_discovered(hermes_home, monkeypatch):
+    """Anthropic / Azure / Gemini mint mappings with their native auth
+    headers instead of landing in the uncovered list."""
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA-test")
-    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp.json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+
+    ms = {m.real_env_name: m for m in ip.discover_provider_mappings()}
+    assert "ANTHROPIC_API_KEY" in ms
+    assert "AZURE_OPENAI_API_KEY" in ms
+    assert "GEMINI_API_KEY" in ms
+
+    anth = ms["ANTHROPIC_API_KEY"]
+    assert "x-api-key" in anth.match_headers
+    assert "api.anthropic.com" in anth.upstream_hosts
+
+    azure = ms["AZURE_OPENAI_API_KEY"]
+    assert "api-key" in azure.match_headers
+
+    gem = ms["GEMINI_API_KEY"]
+    assert "x-goog-api-key" in gem.match_headers
+    assert "GOOGLE_API_KEY" in gem.alias_env_names
+
+
+def test_gemini_alias_collapses_to_single_mapping(hermes_home, monkeypatch):
+    """GEMINI_API_KEY + GOOGLE_API_KEY are the same upstream credential —
+    two require-rules on the same host would reject each other's requests,
+    so exactly ONE mapping must be minted regardless of which names are
+    set."""
+
     monkeypatch.setenv("GEMINI_API_KEY", "g-test")
     monkeypatch.setenv("GOOGLE_API_KEY", "g-test-alias")
+    ms = [m for m in ip.discover_provider_mappings()
+          if "generativelanguage" in " ".join(m.upstream_hosts)]
+    assert len(ms) == 1
+    assert ms[0].real_env_name == "GEMINI_API_KEY"
 
-    uncovered = set(ip.discover_uncovered_providers())
-    blocked = set(ip.discover_blocked_providers())
 
-    # Strict subset: every blocked is also uncovered, but the reverse
-    # doesn't hold.
-    assert blocked.issubset(uncovered)
-    # AWS / GCP appdefault present but NOT blocked (those are present on
-    # most dev laptops for unrelated cloud tooling).
-    assert "AWS_ACCESS_KEY_ID" in uncovered
-    assert "AWS_ACCESS_KEY_ID" not in blocked
-    assert "GOOGLE_APPLICATION_CREDENTIALS" in uncovered
-    assert "GOOGLE_APPLICATION_CREDENTIALS" not in blocked
-    # LLM-specific providers ARE blocked.
-    assert "ANTHROPIC_API_KEY" in blocked
-    assert "GEMINI_API_KEY" in blocked
-    # GOOGLE_API_KEY is an alias for GEMINI_API_KEY (same generativelanguage
-    # LLM endpoint) — it must be in the fail-closed tier, not warn-only,
-    # or fail_on_uncovered_providers gives false coverage.
-    assert "GOOGLE_API_KEY" in blocked
+def test_gemini_alias_only_still_mints_mapping(hermes_home, monkeypatch):
+    """An operator with ONLY GOOGLE_API_KEY set still gets Gemini coverage
+    (mapping keyed on the canonical name)."""
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-test-alias")
+    ms = {m.real_env_name: m for m in ip.discover_provider_mappings()}
+    assert "GEMINI_API_KEY" in ms
+    assert "GOOGLE_API_KEY" in ms["GEMINI_API_KEY"].alias_env_names
+
+
+def test_build_proxy_config_emits_per_provider_match_headers(tmp_path):
+    """Header-auth mappings carry their native headers into the secrets
+    rule; bearer mappings keep the Authorization default."""
+
+    bearer = _sample_mapping()
+    anth = ip.TokenMapping(
+        proxy_token=ip.mint_proxy_token("anthropic"),
+        real_env_name="ANTHROPIC_API_KEY",
+        upstream_hosts=("api.anthropic.com",),
+        match_headers=("x-api-key", "Authorization"),
+    )
+    cfg = ip.build_proxy_config(
+        mappings=[bearer, anth],
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+    rules = {r["source"]["var"]: r for r in cfg["transforms"][1]["config"]["secrets"]}
+    assert rules["OPENROUTER_API_KEY"]["replace"]["match_headers"] == ["Authorization"]
+    assert rules["ANTHROPIC_API_KEY"]["replace"]["match_headers"] == [
+        "x-api-key", "Authorization",
+    ]
+    # Fail-closed still applies to header-auth providers.
+    assert rules["ANTHROPIC_API_KEY"]["replace"]["require"] is True
+    # Header-auth hosts land on the allowlist too.
+    assert "api.anthropic.com" in cfg["transforms"][0]["config"]["domains"]
+
+
+def test_mappings_roundtrip_preserves_headers_and_aliases(hermes_home):
+    m = ip.TokenMapping(
+        proxy_token=ip.mint_proxy_token("gemini"),
+        real_env_name="GEMINI_API_KEY",
+        upstream_hosts=("generativelanguage.googleapis.com",),
+        match_headers=("x-goog-api-key",),
+        alias_env_names=("GOOGLE_API_KEY",),
+    )
+    ip.write_mappings([m])
+    loaded = ip.load_mappings()
+    assert loaded[0].match_headers == ("x-goog-api-key",)
+    assert loaded[0].alias_env_names == ("GOOGLE_API_KEY",)
+
+
+def test_load_mappings_legacy_entries_default_to_bearer(hermes_home):
+    """mappings.json written before the match_headers/alias fields must
+    load with the Authorization default (same behavior as at write time)."""
+
+    import json as _json
+    state = ip._proxy_state_dir()
+    (state / "mappings.json").write_text(_json.dumps({
+        "version": 1,
+        "tokens": [{
+            "proxy_token": "openrouter-legacy-token",
+            "env_name": "OPENROUTER_API_KEY",
+            "upstream_hosts": ["openrouter.ai"],
+        }],
+    }), encoding="utf-8")
+    loaded = ip.load_mappings()
+    assert loaded[0].match_headers == ("Authorization",)
+    assert loaded[0].alias_env_names == ()
+
+
+def test_subprocess_env_mirrors_alias_into_canonical(hermes_home, monkeypatch):
+    """When only the alias (GOOGLE_API_KEY) is exported, the proxy child
+    env must still carry the canonical name the secrets rule reads."""
+
+    m = ip.TokenMapping(
+        proxy_token=ip.mint_proxy_token("gemini"),
+        real_env_name="GEMINI_API_KEY",
+        upstream_hosts=("generativelanguage.googleapis.com",),
+        match_headers=("x-goog-api-key",),
+        alias_env_names=("GOOGLE_API_KEY",),
+    )
+    ip.write_mappings([m])
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-real-secret")
+    env = ip._build_proxy_subprocess_env()
+    assert env.get("GEMINI_API_KEY") == "g-real-secret"
+
+
+def test_subprocess_env_canonical_wins_over_alias(hermes_home, monkeypatch):
+    m = ip.TokenMapping(
+        proxy_token=ip.mint_proxy_token("gemini"),
+        real_env_name="GEMINI_API_KEY",
+        upstream_hosts=("generativelanguage.googleapis.com",),
+        match_headers=("x-goog-api-key",),
+        alias_env_names=("GOOGLE_API_KEY",),
+    )
+    ip.write_mappings([m])
+    monkeypatch.setenv("GEMINI_API_KEY", "g-canonical")
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-alias")
+    env = ip._build_proxy_subprocess_env()
+    assert env.get("GEMINI_API_KEY") == "g-canonical"
+
+
+# ---------------------------------------------------------------------------
+# Management API (hot reload)
+# ---------------------------------------------------------------------------
+
+
+def test_build_proxy_config_enables_management_listener(tmp_path):
+    cfg = ip.build_proxy_config(
+        mappings=[_sample_mapping()],
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+        tunnel_port=9090,
+    )
+    mgmt = cfg["management"]
+    # Loopback only — sandboxes must never reach the management surface.
+    assert mgmt["listen"].startswith("127.0.0.1:")
+    assert mgmt["listen"].endswith(":9092")  # tunnel_port + 2
+    assert mgmt["api_key_env"] == ip._MGMT_API_KEY_ENV
+
+
+def test_ensure_management_token_persists_and_is_stable(hermes_home):
+    t1 = ip.ensure_management_token()
+    t2 = ip.ensure_management_token()
+    assert t1 == t2
+    assert t1.startswith("hermes-mgmt-")
+    p = ip._proxy_state_dir() / "management.token"
+    assert p.exists()
+    assert (p.stat().st_mode & 0o777) == 0o600
+
+
+def test_ensure_management_token_force_rotates(hermes_home):
+    t1 = ip.ensure_management_token()
+    t2 = ip.ensure_management_token(force=True)
+    assert t1 != t2
+
+
+def test_reload_proxy_refuses_when_not_running(hermes_home, monkeypatch):
+    monkeypatch.setattr(ip, "_read_pid", lambda: None)
+    with pytest.raises(RuntimeError, match="not running"):
+        ip.reload_proxy()
+
+
+def test_reload_proxy_refuses_on_pre_management_config(hermes_home, monkeypatch):
+    """A config written before management support has no listener — the
+    error must tell the operator to re-setup + restart once."""
+
+    monkeypatch.setattr(ip, "_read_pid", lambda: 4242)
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    # No proxy.yaml at all -> _read_management_listen_from_config is None.
+    with pytest.raises(RuntimeError, match="restart"):
+        ip.reload_proxy()
+
+
+def test_reload_proxy_posts_bearer_to_management_endpoint(hermes_home, monkeypatch):
+    monkeypatch.setattr(ip, "_read_pid", lambda: 4242)
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        ip, "_read_management_listen_from_config",
+        lambda config_path=None: ("127.0.0.1", 9092),
+    )
+    ip.ensure_management_token()
+
+    captured = {}
+
+    class _FakeResp:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert ip.reload_proxy() is True
+    assert captured["url"] == "http://127.0.0.1:9092/v1/reload"
+    assert captured["method"] == "POST"
+    token = (ip._proxy_state_dir() / "management.token").read_text().strip()
+    assert captured["auth"] == f"Bearer {token}"
+
+
+def test_start_proxy_injects_management_key_env(hermes_home, monkeypatch):
+    """When the generated config has a management listener, start_proxy
+    must inject the bearer key env var — v0.39 refuses to start when
+    api_key_env is empty."""
+
+    cfg_path = ip._proxy_state_dir() / "proxy.yaml"
+    cfg = ip.build_proxy_config(
+        mappings=[_sample_mapping()],
+        ca_cert=hermes_home / "ca.crt",
+        ca_key=hermes_home / "ca.key",
+        http_listen=["127.0.0.1:9090"],
+    )
+    ip.write_proxy_config(cfg)
+    (hermes_home / "bin").mkdir(parents=True, exist_ok=True)
+    fake_bin = hermes_home / "bin" / "iron-proxy"
+    fake_bin.write_text("#!/bin/sh\nsleep 60\n")
+    fake_bin.chmod(0o755)
+
+    captured_env = {}
+
+    class _FakeProc:
+        pid = 99999
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured_env.update(kw.get("env") or {})
+        return _FakeProc()
+
+    monkeypatch.setattr(ip.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ip, "_write_pidfile_safely", lambda pf, pid: None)
+    monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
+    monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus(pid=99999, listening=True))
+
+    ip.start_proxy(binary=fake_bin, config_path=cfg_path, install_if_missing=False)
+    assert captured_env.get(ip._MGMT_API_KEY_ENV)
+    assert captured_env[ip._MGMT_API_KEY_ENV].startswith("hermes-mgmt-")
 
 
 # ---------------------------------------------------------------------------

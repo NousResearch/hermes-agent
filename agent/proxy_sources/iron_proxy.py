@@ -105,6 +105,24 @@ _DOWNLOAD_TIMEOUT = 120  # binary is ~16MB
 _RUN_TIMEOUT = 30
 _STARTUP_GRACE_SECONDS = 5
 
+# Management (operator) API.  iron-proxy v0.39 ships an authenticated
+# loopback HTTP endpoint (``management.listen`` + ``management.api_key_env``)
+# whose ``POST /v1/reload`` re-reads proxy.yaml and atomically swaps the
+# transform pipeline in-place — no restart, no dropped connections.  We
+# always enable it on generated configs: it binds loopback only and every
+# request needs the bearer key below.  ``hermes egress reload`` is the
+# client.
+#
+# The key is minted at setup time, stored at
+# ``<hermes_home>/proxy/management.token`` (0600), and injected into the
+# daemon's env under this name at start.  v0.39 validates at startup that
+# the named env var is non-empty when management.listen is set.
+_MGMT_API_KEY_ENV = "HERMES_IRON_PROXY_MGMT_KEY"
+# The management listener binds loopback at tunnel_port + 2 (tunnel_port
+# is CONNECT/MITM, +1 is the plain-HTTP forward listener).
+_MGMT_PORT_OFFSET = 2
+_MGMT_RELOAD_TIMEOUT = 15
+
 # Default listen ports.  HTTPS_PROXY semantics use a single CONNECT tunnel,
 # so we expose only the tunnel listener for v1 — no need to put the sandbox
 # DNS at the iron-proxy IP.  This greatly simplifies wiring.
@@ -126,10 +144,7 @@ _DEFAULT_ALLOWED_HOSTS: Tuple[str, ...] = (
 )
 
 # Provider env-var name -> upstream host (or list of hosts) on which the
-# Authorization Bearer token should be swapped.  Only includes providers
-# whose API uses a plain "Authorization: Bearer <key>" header — providers
-# with custom auth (x-api-key, query params, signatures) get added as we
-# write per-provider rules.
+# Authorization Bearer token should be swapped.
 _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
     "OPENROUTER_API_KEY": ("openrouter.ai", "*.openrouter.ai"),
     "OPENAI_API_KEY": ("api.openai.com",),
@@ -142,58 +157,69 @@ _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
 }
 
 
-# Providers whose env-var names we recognize but whose API uses a non-bearer
-# auth scheme (x-api-key, AAD/OAuth, SigV4, custom signatures).  When any of
-# these env vars are present at proxy-start time AND
-# ``proxy.fail_on_uncovered_providers`` is true (which is OFF by default),
-# ``start_proxy`` refuses to start.  Without this list the sandbox would
-# still hold real credentials for these providers and silently bypass the
-# proxy.
+# Providers whose API authenticates with a NON-Authorization header.
+# iron-proxy v0.39's ``secrets.replace.match_headers`` targets arbitrary
+# header names (case-insensitive; confirmed by the iron-proxy author on
+# PR #30179 and verified in the pinned v0.39.0 source — ``swapHeaders``
+# + ``parseHeaderMatchers``), so these are first-class swapped providers,
+# not "uncovered".
 #
-# The default is False because many of these env vars (AWS_*,
-# GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_API_KEY) are present on most
-# developer laptops for reasons unrelated to LLM API access — defaulting to
-# refuse-start would force everyone using terraform / gcloud / aws-cli
-# alongside Hermes to either unset their cloud auth or set the flag in
-# config.yaml.  The wizard surfaces uncovered providers at setup time and
-# `hermes egress status` keeps them visible; operators who want hard
-# enforcement opt in via ``proxy.fail_on_uncovered_providers: true``.
+# ``aliases`` are interchangeable env-var names for the SAME upstream
+# credential (Hermes' auth.py keys Google on both GEMINI_API_KEY and
+# GOOGLE_API_KEY).  Aliased names MUST collapse into a single mapping:
+# every rule carries ``require: true``, and two require-rules on the same
+# host reject each other's requests (each rule whose own token isn't
+# present returns ActionReject).  The sandbox receives the minted token
+# under the canonical name AND every alias so SDKs reading either work.
+_HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    # Anthropic native: x-api-key.  Authorization is also matched so an
+    # SDK sending the token as a Bearer (OAuth-style) still swaps.
+    "ANTHROPIC_API_KEY": {
+        "hosts": ("api.anthropic.com",),
+        "match_headers": ("x-api-key", "Authorization"),
+        "aliases": (),
+    },
+    # Azure OpenAI: api-key header (AAD bearer flows use Authorization).
+    "AZURE_OPENAI_API_KEY": {
+        "hosts": (
+            "*.openai.azure.com",
+            "*.cognitiveservices.azure.com",
+            "*.services.ai.azure.com",
+        ),
+        "match_headers": ("api-key", "Authorization"),
+        "aliases": (),
+    },
+    # Google AI Studio (Gemini): x-goog-api-key header; the SDKs that pass
+    # ``?key=<token>`` as a query param are covered by match_query, which
+    # scans every query parameter for the token value.
+    "GEMINI_API_KEY": {
+        "hosts": ("generativelanguage.googleapis.com",),
+        "match_headers": ("x-goog-api-key",),
+        "aliases": ("GOOGLE_API_KEY",),
+    },
+}
+
+
+# Providers whose env-var names we recognize but whose auth genuinely cannot
+# be swapped by a static header/query replacement (SigV4 request signing,
+# OAuth tokens minted by an SDK from a service-account file).  Presence is
+# surfaced as a warning at setup/status time — these are generic cloud creds
+# that are usually present for unrelated tooling (terraform, gcloud, aws-cli),
+# so they never block the proxy from starting.
 #
-# Bare strings here are env-var names; the proxy doesn't try to wire them up,
-# only flags their presence so the operator knows isolation is incomplete.
+# NOTE: this list used to include Anthropic / Azure OpenAI / Gemini, with an
+# LLM-specific fail-closed tier (``proxy.fail_on_uncovered_providers``).
+# Those providers moved to ``_HEADER_AUTH_PROVIDERS`` once we wired
+# ``match_headers`` (upstream confirmed support on the pinned v0.39.0), which
+# emptied the fail-closed tier — the flag and its refuse-start path were
+# deleted rather than kept as a dead toggle.
 _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
-    # Anthropic native uses x-api-key, not Authorization: Bearer.
-    "ANTHROPIC_API_KEY",
-    # Azure OpenAI: api-key header + optional AAD bearer.
-    "AZURE_OPENAI_API_KEY",
     # AWS Bedrock / SageMaker: SigV4-signed requests.
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
-    # GCP Vertex AI: OAuth bearer from gcloud SDK, not a static env key.
+    # GCP Vertex AI: OAuth bearer minted by the SDK from a service-account
+    # file, not a static env key.
     "GOOGLE_APPLICATION_CREDENTIALS",
-    # Google AI Studio (Gemini): x-goog-api-key OR query param.
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-)
-
-
-# Tier of `_NON_BEARER_PROVIDERS` that's LLM-specific enough that any
-# accidental sandbox bypass is a real isolation failure.  When
-# ``fail_on_uncovered_providers`` is true, only env vars in this tier
-# cause refuse-start; the rest are warn-only via `_NON_BEARER_PROVIDERS`.
-# Splitting this avoids tripping every operator with `AWS_PROFILE` set
-# for unrelated cloud work.
-_LLM_SPECIFIC_NON_BEARER_PROVIDERS: Tuple[str, ...] = (
-    "ANTHROPIC_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    # GOOGLE_API_KEY is an interchangeable alias for GEMINI_API_KEY in
-    # Hermes (auth.py keys Google on both; the native Gemini adapter
-    # accepts either) and authenticates the same generativelanguage
-    # LLM endpoint.  It belongs in the fail-closed tier too — otherwise
-    # an operator with only GOOGLE_API_KEY set who enables
-    # fail_on_uncovered_providers gets a false sense of coverage.
-    "GOOGLE_API_KEY",
 )
 
 
@@ -306,11 +332,23 @@ class TokenMapping:
     When Bitwarden is configured as the credential source for the proxy,
     iron-proxy's *own* environment is populated from bws on startup — the
     sandbox still sees only ``proxy_token``.
+
+    ``match_headers`` names the request headers iron-proxy scans for the
+    proxy token (default: ``Authorization`` for bearer providers; e.g.
+    ``("x-api-key", "Authorization")`` for Anthropic native).
+
+    ``alias_env_names`` are additional env-var names the SANDBOX receives
+    the same proxy token under (e.g. ``GOOGLE_API_KEY`` for
+    ``GEMINI_API_KEY``).  They do not appear in the iron-proxy config —
+    only one secrets rule is emitted per mapping, keyed on
+    ``real_env_name``.
     """
 
     proxy_token: str
     real_env_name: str
     upstream_hosts: Tuple[str, ...]
+    match_headers: Tuple[str, ...] = ("Authorization",)
+    alias_env_names: Tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +838,160 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
     return f"{prefix}-{hashlib.sha256(os.urandom(32)).hexdigest()[:32]}"
 
 
+def _management_token_path() -> Path:
+    return _proxy_state_dir() / "management.token"
+
+
+def ensure_management_token(*, force: bool = False) -> str:
+    """Return the management-API bearer key, minting it on first call.
+
+    Stored at ``<hermes_home>/proxy/management.token`` with 0600 perms.
+    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    (named in the generated config's ``management.api_key_env``);
+    ``hermes egress reload`` reads the same file to authenticate.
+    """
+
+    p = _management_token_path()
+    if not force and p.exists():
+        try:
+            existing = p.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
+    token = mint_proxy_token(prefix="hermes-mgmt")
+    fd = os.open(
+        str(p),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(fd, 0o600)
+    except (OSError, AttributeError):
+        pass
+    try:
+        os.write(fd, token.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return token
+
+
+def _read_management_token() -> Optional[str]:
+    p = _proxy_state_dir_ro() / "management.token"
+    try:
+        token = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def _read_management_listen_from_config(
+    config_path: Optional[Path] = None,
+) -> Optional[Tuple[str, int]]:
+    """Return ``(host, port)`` of the management listener, if configured."""
+
+    cfg = config_path or (_proxy_state_dir_ro() / "proxy.yaml")
+    if not cfg.exists():
+        return None
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    listen = ((data or {}).get("management") or {}).get("listen") or ""
+    if not isinstance(listen, str) or ":" not in listen:
+        return None
+    host, _, port_s = listen.rpartition(":")
+    try:
+        port = int(port_s)
+    except ValueError:
+        return None
+    return (host or "127.0.0.1", port)
+
+
+def reload_proxy() -> bool:
+    """Hot-reload the running daemon's ruleset via the management API.
+
+    POSTs to ``/v1/reload`` on the loopback management listener; the daemon
+    re-reads proxy.yaml and atomically swaps the transform pipeline —
+    validation failures leave the running config untouched (HTTP 422).
+
+    Returns True on a successful reload.  Raises ``RuntimeError`` with an
+    actionable message when the daemon isn't running, the config predates
+    management-API support (no ``management`` block → restart required),
+    or the reload is rejected.
+    """
+
+    pid = _read_pid()
+    if not pid or not _pid_alive(pid):
+        raise RuntimeError(
+            "iron-proxy is not running — nothing to reload.  "
+            "Run `hermes egress start`."
+        )
+    mgmt = _read_management_listen_from_config()
+    if mgmt is None:
+        raise RuntimeError(
+            "The generated proxy.yaml has no management listener (written "
+            "before reload support).  Re-run `hermes egress setup` and use "
+            "`hermes egress restart` this one time."
+        )
+    token = _read_management_token()
+    if not token:
+        raise RuntimeError(
+            "management.token is missing — re-run `hermes egress setup`, "
+            "then `hermes egress restart`."
+        )
+
+    import urllib.error
+    import urllib.request
+
+    host, port = mgmt
+    req = urllib.request.Request(
+        f"http://{host}:{port}/v1/reload",
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"},
+        data=b"",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_MGMT_RELOAD_TIMEOUT) as resp:
+            if resp.status == 200:
+                return True
+            raise RuntimeError(
+                f"management API returned unexpected status {resp.status}"
+            )
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except OSError:
+            pass
+        if exc.code == 422:
+            raise RuntimeError(
+                f"iron-proxy rejected the new config (validation failed; "
+                f"the running ruleset is unchanged): {body}"
+            ) from exc
+        if exc.code == 401:
+            raise RuntimeError(
+                "management API rejected our key (401).  The running "
+                "daemon was started with a different management.token — "
+                "run `hermes egress restart`."
+            ) from exc
+        raise RuntimeError(
+            f"management reload failed (HTTP {exc.code}): {body}"
+        ) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        # A daemon started from a pre-management config is alive but has
+        # no listener on the management port.
+        raise RuntimeError(
+            f"could not reach the management API at {host}:{port} ({exc}).  "
+            "If the daemon was started before reload support, run "
+            "`hermes egress restart` once."
+        ) from exc
+
+
 def _default_http_listen(tunnel_port: int) -> List[str]:
     """Build the single host:port bind the proxy should listen on.
 
@@ -962,13 +1154,22 @@ def build_proxy_config(
 
     secrets_rules = []
     for m in mappings:
+        match_headers = list(m.match_headers or ("Authorization",))
         secrets_rules.append({
             "source": {"type": "env", "var": m.real_env_name},
             "replace": {
                 "proxy_value": m.proxy_token,
-                "match_headers": ["Authorization"],
-                # The token is also accepted as a bearer query param in case
-                # the sandbox passes it that way.  Body matching is off — we
+                # Per-provider header set: bearer providers match only
+                # Authorization; header-auth providers (Anthropic native
+                # x-api-key, Azure api-key, Gemini x-goog-api-key) match
+                # their native header (+ Authorization where the provider
+                # also accepts bearer flows).  v0.39 matches header names
+                # case-insensitively — see parseHeaderMatchers upstream.
+                "match_headers": match_headers,
+                # The token is also accepted as a query param — v0.39 scans
+                # every query parameter for the token value, which covers
+                # SDKs that pass ``?key=<token>`` (Gemini) as well as
+                # bearer-in-query styles.  Body matching is off — we
                 # don't want body inspection forced for every request.
                 "match_query": True,
                 "match_body": False,
@@ -1085,6 +1286,18 @@ def build_proxy_config(
         "metrics": {
             "listen": "127.0.0.1:0",
         },
+        # Operator-facing management API — loopback only, bearer-key
+        # authenticated (key read from the env var named below; injected
+        # by ``start_proxy`` from ``management.token``).  ``POST /v1/reload``
+        # re-reads THIS config file and atomically swaps the transform
+        # pipeline — `hermes egress reload` applies allowlist/token/mapping
+        # changes without a restart.  Loopback deliberately: sandboxes must
+        # never reach the management surface, so it does NOT bind the
+        # docker bridge like the traffic listeners do.
+        "management": {
+            "listen": f"127.0.0.1:{tunnel_port + _MGMT_PORT_OFFSET}",
+            "api_key_env": _MGMT_API_KEY_ENV,
+        },
         "tls": {
             "ca_cert": str(ca_cert),
             "ca_key": str(ca_key),
@@ -1189,6 +1402,8 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
                 "proxy_token": m.proxy_token,
                 "env_name": m.real_env_name,
                 "upstream_hosts": list(m.upstream_hosts),
+                "match_headers": list(m.match_headers),
+                "alias_env_names": list(m.alias_env_names),
             }
             for m in mappings
         ],
@@ -1223,6 +1438,11 @@ def load_mappings() -> List[TokenMapping]:
                 proxy_token=item["proxy_token"],
                 real_env_name=item["env_name"],
                 upstream_hosts=tuple(item.get("upstream_hosts") or ()),
+                # Pre-header-auth mappings.json files (written before the
+                # match_headers/alias fields existed) load with the bearer
+                # defaults — identical to their behavior at write time.
+                match_headers=tuple(item.get("match_headers") or ("Authorization",)),
+                alias_env_names=tuple(item.get("alias_env_names") or ()),
             ))
         except (KeyError, TypeError):
             continue
@@ -1255,6 +1475,24 @@ def discover_provider_mappings(
             real_env_name=env_name,
             upstream_hosts=hosts,
         ))
+    for env_name, spec in _HEADER_AUTH_PROVIDERS.items():
+        aliases = tuple(spec.get("aliases") or ())
+        # A mapping is minted when the canonical name OR any alias is
+        # available.  Aliases collapse into ONE mapping (single secrets
+        # rule) because two require-rules on the same host would reject
+        # each other's requests.  The canonical env name is what
+        # iron-proxy reads — when only the alias is set in the host env,
+        # the subprocess-env builder mirrors it (see
+        # ``_build_proxy_subprocess_env``).
+        if env_name not in names and not any(a in names for a in aliases):
+            continue
+        mappings.append(TokenMapping(
+            proxy_token=mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")),
+            real_env_name=env_name,
+            upstream_hosts=tuple(spec["hosts"]),
+            match_headers=tuple(spec["match_headers"]),
+            alias_env_names=aliases,
+        ))
     return mappings
 
 
@@ -1264,15 +1502,14 @@ def discover_uncovered_providers(
 ) -> List[str]:
     """Return env-var names for providers we recognize but can't proxy.
 
-    Anthropic native (x-api-key), AWS Bedrock (SigV4), Azure OpenAI
-    (api-key), etc.  When any of these are configured, the sandbox is
-    holding real credentials that the proxy can't strip — the isolation
-    guarantee is incomplete for those providers.
+    AWS Bedrock (SigV4) and GCP Vertex (SDK-minted OAuth) can't be swapped
+    by a static header replacement.  When any of these are configured, the
+    sandbox is holding real credentials that the proxy can't strip — the
+    isolation guarantee is incomplete for those providers.
 
-    The wizard uses this to print a warning at setup time; ``start_proxy``
-    can be configured to refuse to start when ``fail_on_uncovered_providers``
-    is true (see :func:`discover_blocked_providers` for the strict tier
-    that actually blocks).
+    The wizard and ``hermes egress status`` use this to print a warning.
+    (Anthropic / Azure OpenAI / Gemini used to be here; they're now
+    first-class swapped providers via ``_HEADER_AUTH_PROVIDERS``.)
     """
 
     if available_env_names is not None:
@@ -1281,26 +1518,6 @@ def discover_uncovered_providers(
         names = {k for k, v in os.environ.items() if v}
 
     return [n for n in _NON_BEARER_PROVIDERS if n in names]
-
-
-def discover_blocked_providers(
-    *,
-    available_env_names: Optional[List[str]] = None,
-) -> List[str]:
-    """Return env-var names for non-bearer providers that BLOCK start.
-
-    Subset of :func:`discover_uncovered_providers` that's LLM-specific
-    enough to refuse-start when ``proxy.fail_on_uncovered_providers`` is
-    true.  Excludes generic cloud creds (AWS_*, GCP application-default)
-    that are usually present for unrelated tooling.
-    """
-
-    if available_env_names is not None:
-        names = set(available_env_names)
-    else:
-        names = {k for k, v in os.environ.items() if v}
-
-    return [n for n in _LLM_SPECIFIC_NON_BEARER_PROVIDERS if n in names]
 
 
 def merge_mappings(
@@ -1330,12 +1547,15 @@ def merge_mappings(
     for d in discovered:
         prior = by_name.get(d.real_env_name)
         if prior is not None and not rotate:
-            # Preserve the token, refresh the host list in case we added
-            # new upstreams since last setup.
+            # Preserve the token; refresh hosts/headers/aliases in case
+            # the provider spec changed since last setup (new upstreams,
+            # a provider moving from uncovered to header-auth, etc).
             out.append(TokenMapping(
                 proxy_token=prior.proxy_token,
                 real_env_name=prior.real_env_name,
                 upstream_hosts=d.upstream_hosts,
+                match_headers=d.match_headers,
+                alias_env_names=d.alias_env_names,
             ))
         else:
             out.append(d)
@@ -1587,6 +1807,13 @@ def start_proxy(
         refresh_from_bitwarden=refresh_secrets_from_bitwarden,
         bitwarden_config=bitwarden_config,
     )
+
+    # If the generated config enables the management API, the daemon
+    # validates at startup that the api_key_env is non-empty.  Inject the
+    # persisted key (minting it if this is a config written by a newer
+    # setup but the token file was removed).
+    if _read_management_listen_from_config(cfg) is not None:
+        env[_MGMT_API_KEY_ENV] = ensure_management_token()
 
     # Plant a per-start nonce in the child env so ``_pid_alive`` can
     # confirm a candidate PID still refers to *our* binary across PID
@@ -1903,11 +2130,24 @@ def _build_proxy_subprocess_env(
 
     # The proxy reads the real upstream secrets from its OWN env, indexed
     # by ``m.real_env_name`` in the YAML config's ``secrets.source.var``
-    # field.  Forward those — but only those.
-    needed = {m.real_env_name for m in load_mappings()}
+    # field.  Forward those — but only those.  For alias providers
+    # (GEMINI_API_KEY / GOOGLE_API_KEY), the rule is keyed on the canonical
+    # name; when only the alias is set in the host env, mirror its value
+    # into the canonical name so the swap still has a real secret.
+    alias_sources: Dict[str, Tuple[str, ...]] = {}
+    needed = set()
+    for m in load_mappings():
+        needed.add(m.real_env_name)
+        if m.alias_env_names:
+            alias_sources[m.real_env_name] = tuple(m.alias_env_names)
     for name in needed:
         if name in parent:
             env[name] = parent[name]
+        else:
+            for alias in alias_sources.get(name, ()):
+                if parent.get(alias):
+                    env[name] = parent[alias]
+                    break
 
     # Optional Bitwarden refresh path.  Pulled lazily so the proxy module
     # doesn't hard-depend on the bitwarden module being importable in
@@ -2235,10 +2475,10 @@ __all__ = [
     "TokenMapping",
     "build_proxy_config",
     "discover_provider_mappings",
-    "discover_blocked_providers",
     "discover_uncovered_providers",
     "ensure_audit_log",
     "ensure_ca_cert",
+    "ensure_management_token",
     "find_iron_proxy",
     "get_status",
     "install_iron_proxy",
@@ -2246,6 +2486,7 @@ __all__ = [
     "load_mappings",
     "merge_mappings",
     "mint_proxy_token",
+    "reload_proxy",
     "start_proxy",
     "stop_proxy",
     "write_mappings",

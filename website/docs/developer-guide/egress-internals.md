@@ -102,7 +102,6 @@ hermes egress setup [--from-bitwarden | --no-bitwarden] [--rotate-tokens]
 hermes egress start
   -> proxy_cli.cmd_start
        Pre-checks (refuse-start path):
-         - proxy.fail_on_uncovered_providers? -> discover_blocked_providers()
          - credential_source=bitwarden? -> pre-validate access_token_env + project_id
        -> iron_proxy.start_proxy(
             refresh_secrets_from_bitwarden=...,
@@ -249,19 +248,31 @@ _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
 
 Also update `_DEFAULT_ALLOWED_HOSTS` so the proxy allows the upstream by default.  Run `test_discover_provider_mappings_*` to confirm.
 
-### Adding a new non-bearer provider
+### Adding a new header-token provider (x-api-key family)
 
-If the provider uses `x-api-key` / SigV4 / OAuth-from-SDK / etc., iron-proxy's `secrets` transform cannot swap it.  Add the env var to `_NON_BEARER_PROVIDERS` so the wizard warns about it.  If the provider is LLM-specific enough that you want `fail_on_uncovered_providers: true` to actually block it, also add to `_LLM_SPECIFIC_NON_BEARER_PROVIDERS`.
+If the provider authenticates with a static NON-Authorization header (like Anthropic's `x-api-key`, Azure's `api-key`, or Gemini's `x-goog-api-key`), add it to `_HEADER_AUTH_PROVIDERS` — iron-proxy's `secrets.replace.match_headers` targets arbitrary header names, so these are first-class swapped providers:
+
+```python
+_HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    ...,
+    "MY_PROVIDER_API_KEY": {
+        "hosts": ("api.myprovider.com",),
+        "match_headers": ("x-my-auth-header", "Authorization"),
+        "aliases": (),
+    },
+}
+```
+
+Use `aliases` ONLY for interchangeable env-var names of the *same* credential (e.g. `GOOGLE_API_KEY` for `GEMINI_API_KEY`) — aliased names collapse into a single mapping, because two `require: true` rules on the same host reject each other's requests. Also update `_DEFAULT_ALLOWED_HOSTS`.
+
+### Adding a new signature-auth provider (uncovered)
+
+If the provider uses SigV4 / SDK-minted OAuth / request signatures, a static header swap cannot cover it.  Add the env var to `_NON_BEARER_PROVIDERS` so the wizard and `hermes egress status` warn about it:
 
 ```python
 _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
     ...,
-    "MY_X_API_KEY_PROVIDER",
-)
-
-_LLM_SPECIFIC_NON_BEARER_PROVIDERS: Tuple[str, ...] = (
-    ...,
-    "MY_X_API_KEY_PROVIDER",
+    "MY_SIGNED_PROVIDER_ACCESS_KEY",
 )
 ```
 

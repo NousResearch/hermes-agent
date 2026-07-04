@@ -108,6 +108,13 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     restart.set_defaults(func=cmd_restart)
 
+    reload_p = sub.add_parser(
+        "reload",
+        help="Hot-reload the running daemon's ruleset from proxy.yaml "
+             "(management API — no restart, no dropped connections)",
+    )
+    reload_p.set_defaults(func=cmd_reload)
+
     status = sub.add_parser("status", help="Show proxy state and mappings")
     status.add_argument(
         "--show-tokens", action="store_true",
@@ -323,7 +330,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 1
 
     # Warn the operator about providers we recognize but can't proxy
-    # (Anthropic native, AWS Bedrock, Azure OpenAI, etc).  These still
+    # (AWS Bedrock SigV4, GCP Vertex service-account OAuth).  These still
     # work — they just bypass the egress isolation.
     uncovered = ip.discover_uncovered_providers(
         available_env_names=available_env_names or None,
@@ -337,9 +344,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         for name in uncovered:
             console.print(f"    - {name}")
         console.print(
-            "  [dim]These providers use non-bearer auth (x-api-key, "
-            "SigV4, etc.) and will hold real credentials inside the "
-            "sandbox.  Egress isolation is INCOMPLETE for these.[/dim]"
+            "  [dim]These providers use request signing or SDK-minted "
+            "OAuth (SigV4, service-account files) and will hold real "
+            "credentials inside the sandbox.  Egress isolation is "
+            "INCOMPLETE for these.[/dim]"
         )
 
     table = Table(show_header=True, header_style="bold")
@@ -412,6 +420,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
     cfg_path = ip.write_proxy_config(iron_cfg)
     mappings_path = ip.write_mappings(mappings)
+    # Mint (or keep) the management-API bearer key.  The generated config
+    # enables a loopback management listener whose /v1/reload lets
+    # `hermes egress reload` apply future ruleset changes without a
+    # restart; the daemon requires the key env var to be non-empty at
+    # startup, so make sure the token exists before first start.
+    ip.ensure_management_token()
     console.print(f"  [green]✓[/green] config:   {cfg_path}")
     console.print(f"  [green]✓[/green] mappings: {mappings_path}")
     if audit_log_ok:
@@ -449,7 +463,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
     else:
         proxy_cfg["credential_source"] = "env"
-    proxy_cfg.setdefault("fail_on_uncovered_providers", False)
     save_config(cfg)
 
     live_status = ip.get_status()
@@ -522,6 +535,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     console.print(
         "  Start:   [cyan]hermes egress start[/cyan]\n"
         "  Restart: [cyan]hermes egress restart[/cyan]  (after any re-setup)\n"
+        "  Reload:  [cyan]hermes egress reload[/cyan]   (apply ruleset edits "
+        "in-place, no restart)\n"
         "  Status:  [cyan]hermes egress status[/cyan]\n"
         "  Stop:    [cyan]hermes egress stop[/cyan]\n"
         "  Disable: [cyan]hermes egress disable[/cyan]"
@@ -588,29 +603,10 @@ def cmd_start(args: argparse.Namespace) -> int:
             proxy_cfg.get("allow_env_fallback", False)
         )
 
-    # fail_on_uncovered_providers: when true, refuse to start if any
-    # LLM-specific non-bearer providers (Anthropic native, Azure OpenAI,
-    # Gemini) have env vars set in the host process — those would
-    # otherwise leak real credentials into the sandbox while bypassing
-    # the proxy.  Only the strict LLM-specific subset blocks; generic
-    # cloud creds (AWS_*, GOOGLE_APPLICATION_CREDENTIALS) still surface
-    # as warnings via `discover_uncovered_providers` but don't block, to
-    # avoid tripping every operator with terraform / gcloud set up.
-    if bool(proxy_cfg.get("fail_on_uncovered_providers", False)):
-        blocked = ip.discover_blocked_providers()
-        if blocked:
-            console.print(
-                "[red]✗ Refusing to start: provider env vars present "
-                "that bypass the proxy:[/red]"
-            )
-            for name in blocked:
-                console.print(f"    - {name}")
-            console.print(
-                "  Set `proxy.fail_on_uncovered_providers: false` in "
-                "config.yaml to start anyway (sandbox will hold real "
-                "credentials for those providers)."
-            )
-            return 1
+    # fail_on_uncovered_providers is intentionally gone: the LLM-specific
+    # providers it guarded (Anthropic native, Azure OpenAI, Gemini) are now
+    # swapped via per-provider match_headers rules, so the fail-closed tier
+    # is empty and the flag would be a dead toggle.
 
     # stephenschoettler #1: when `credential_source: bitwarden`, the
     # operator picked BWS specifically to get the rotation guarantee —
@@ -683,13 +679,42 @@ def cmd_restart(args: argparse.Namespace) -> int:
     The one-command way to apply config changes (new allowlist hosts, rotated
     tokens, a Bitwarden key rotation) without making the operator remember the
     stop/start dance.  Delegates to ``cmd_start`` so all the credential-source
-    and fail-on-uncovered-provider guards run exactly as they do for ``start``.
+    guards run exactly as they do for ``start``.
     """
     console = Console()
     was_running = ip.stop_proxy()
     if was_running:
         console.print("[dim]stopped the running iron-proxy[/dim]")
     return cmd_start(args)
+
+
+def cmd_reload(args: argparse.Namespace) -> int:
+    """Hot-reload the running daemon's ruleset via the management API.
+
+    Applies allowlist / token / mapping changes already written to
+    proxy.yaml WITHOUT restarting the daemon — no dropped connections, no
+    restart window.  When the change involves new upstream SECRETS (a
+    Bitwarden rotation, a newly added provider key), use
+    ``hermes egress restart`` instead: the daemon reads real credentials
+    from its own environment at spawn time, and a reload does not
+    re-populate that env.
+    """
+    console = Console()
+    try:
+        ip.reload_proxy()
+    except Exception as exc:  # noqa: BLE001 — top-level user-facing funnel
+        console.print(f"[red]✗ reload failed:[/red] {exc}")
+        return 1
+    console.print(
+        "[green]✓[/green] iron-proxy ruleset reloaded in-place "
+        "(no restart, connections preserved)"
+    )
+    console.print(
+        "[dim]Note: new upstream secrets (rotated keys, new providers) "
+        "still need `hermes egress restart` — the daemon reads real "
+        "credentials from its environment at spawn time.[/dim]"
+    )
+    return 0
 
 
 def format_status_text(*, show_tokens: bool = False) -> str:

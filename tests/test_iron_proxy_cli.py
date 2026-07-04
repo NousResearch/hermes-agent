@@ -198,7 +198,6 @@ def test_cmd_setup_rejects_invalid_tunnel_port_range(hermes_home, monkeypatch, b
 
 
 # ---------------------------------------------------------------------------
-# cmd_start — fail_on_uncovered_providers + Bitwarden rotation wire-up
 # ---------------------------------------------------------------------------
 
 
@@ -207,21 +206,6 @@ def test_cmd_start_refuses_when_proxy_disabled(hermes_home, monkeypatch):
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = False
     save_config(cfg)
-
-    rc = proxy_cli.cmd_start(_args())
-    assert rc == 1
-
-
-def test_cmd_start_refuses_on_uncovered_provider_when_strict(hermes_home, monkeypatch):
-    """fail_on_uncovered_providers=true + ANTHROPIC_API_KEY in env =
-    refuse to start (real credential would otherwise leak into sandbox)."""
-
-    from hermes_cli.config import load_config, save_config
-    cfg = load_config()
-    cfg.setdefault("proxy", {})["enabled"] = True
-    cfg["proxy"]["fail_on_uncovered_providers"] = True
-    save_config(cfg)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 1
@@ -244,7 +228,6 @@ def test_cmd_start_honors_auto_install_false(hermes_home, monkeypatch):
 
     monkeypatch.setattr(ip, "start_proxy", fake_start_proxy)
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    monkeypatch.setattr(ip, "discover_blocked_providers", lambda **kw: [])
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 0
@@ -262,7 +245,6 @@ def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwa
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
-    cfg["proxy"]["fail_on_uncovered_providers"] = False
     cfg.setdefault("secrets", {})["bitwarden"] = {
         "enabled": True,
         "project_id": "test-proj-id",
@@ -284,7 +266,6 @@ def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwa
         return s
     monkeypatch.setattr(ip, "start_proxy", fake_start_proxy)
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    monkeypatch.setattr(ip, "discover_blocked_providers", lambda **kw: [])
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 0
@@ -301,7 +282,6 @@ def test_cmd_start_refuses_when_bitwarden_token_missing(hermes_home, monkeypatch
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
-    cfg["proxy"]["fail_on_uncovered_providers"] = False
     cfg.setdefault("secrets", {})["bitwarden"] = {
         "enabled": True,
         "project_id": "test-proj-id",
@@ -315,7 +295,6 @@ def test_cmd_start_refuses_when_bitwarden_token_missing(hermes_home, monkeypatch
         pytest.fail("start_proxy should not be invoked when BWS token missing")
     monkeypatch.setattr(ip, "start_proxy", must_not_call)
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    monkeypatch.setattr(ip, "discover_blocked_providers", lambda **kw: [])
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 1
@@ -328,7 +307,6 @@ def test_cmd_start_does_not_pass_bitwarden_refresh_when_credential_source_is_env
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "env"
-    cfg["proxy"]["fail_on_uncovered_providers"] = False
     save_config(cfg)
 
     captured: dict = {}
@@ -553,7 +531,6 @@ def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(hermes_home, monkeyp
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
-    cfg["proxy"]["fail_on_uncovered_providers"] = False
     cfg.setdefault("secrets", {})["bitwarden"] = {"enabled": False}
     save_config(cfg)
 
@@ -561,7 +538,6 @@ def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(hermes_home, monkeyp
         pytest.fail("start_proxy must not run when bitwarden mode is broken")
     monkeypatch.setattr(ip, "start_proxy", must_not_call)
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    monkeypatch.setattr(ip, "discover_blocked_providers", lambda **kw: [])
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 1
@@ -578,7 +554,6 @@ def test_cmd_start_bitwarden_disabled_proceeds_with_env_fallback(
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
     cfg["proxy"]["allow_env_fallback"] = True
-    cfg["proxy"]["fail_on_uncovered_providers"] = False
     cfg.setdefault("secrets", {})["bitwarden"] = {"enabled": False}
     save_config(cfg)
 
@@ -593,7 +568,6 @@ def test_cmd_start_bitwarden_disabled_proceeds_with_env_fallback(
 
     monkeypatch.setattr(ip, "start_proxy", fake_start_proxy)
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    monkeypatch.setattr(ip, "discover_blocked_providers", lambda **kw: [])
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 0

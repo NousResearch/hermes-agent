@@ -13317,9 +13317,9 @@ def main():
 
     # Execute the command.  Propagate the handler's return code as the
     # process exit code so subcommands that signal failure (e.g.
-    # ``hermes egress start`` refusing because of fail_on_uncovered_
-    # providers) actually exit non-zero.  Handlers that return None
-    # are treated as success (exit 0).
+    # ``hermes egress start`` refusing when credential_source=bitwarden
+    # is misconfigured) actually exit non-zero.  Handlers that return
+    # None are treated as success (exit 0).
     if hasattr(args, "func"):
         rc = args.func(args)
         if isinstance(rc, int) and rc != 0:

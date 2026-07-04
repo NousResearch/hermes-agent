@@ -497,10 +497,15 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
 
     # Surface the per-provider proxy tokens under the standard provider env
     # names so existing SDKs and provider clients work unchanged inside the
-    # sandbox.  Keep the HERMES_PROXY_TOKEN_* aliases for diagnostics.
+    # sandbox.  Alias env names (e.g. GOOGLE_API_KEY for GEMINI_API_KEY)
+    # receive the same token so SDKs reading either name authenticate
+    # through the proxy.  Keep the HERMES_PROXY_TOKEN_* aliases for
+    # diagnostics.
     for m in mappings:
         env_overrides[m.real_env_name] = m.proxy_token
         env_overrides[f"HERMES_PROXY_TOKEN_{m.real_env_name}"] = m.proxy_token
+        for alias in getattr(m, "alias_env_names", ()) or ():
+            env_overrides[alias] = m.proxy_token
 
     # On Linux, host.docker.internal isn't populated by default — Docker Desktop
     # adds it on macOS/Windows; on Linux we need an explicit --add-host with

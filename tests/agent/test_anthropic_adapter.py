@@ -658,6 +658,20 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
+    @pytest.fixture(autouse=True)
+    def _no_keychain_credentials(self, monkeypatch):
+        """These tests mock subprocess.run for `claude setup-token`.
+
+        On macOS, Claude Code credential resolution also shells out to the
+        Keychain via subprocess.run. Keep that independent path out of this
+        setup-token test seam so the MagicMock meant for the Claude CLI does
+        not become fake Keychain JSON.
+        """
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_raises_when_claude_not_installed(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):

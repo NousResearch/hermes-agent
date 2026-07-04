@@ -1276,6 +1276,86 @@ def test_recompute_ready_recovers_below_limit(kanban_home):
         assert task.consecutive_failures == 1
 
 
+def test_record_task_failure_salvages_partial_summary(kanban_home):
+    """_record_task_failure(partial_summary=...) must write the model's
+    last output to the run row's ``summary`` field so the retry worker
+    sees it via build_worker_context.
+
+    Without this, a worker that discovers a root cause but hits the
+    iteration cap closes its run with summary=None — the retry starts
+    from scratch and the partial findings are lost.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        kb._record_task_failure(
+            conn, t,
+            error="Iteration budget exhausted (40/40)",
+            outcome="timed_out",
+            release_claim=True,
+            end_run=True,
+            partial_summary=(
+                "Root cause: the retry loop in handle_x() doesn't "
+                "check for None before calling .split()."
+            ),
+        )
+        runs = kb.list_runs(conn, t)
+        assert len(runs) == 1
+        run = runs[0]
+        assert run.outcome == "timed_out"
+        assert run.summary is not None
+        assert "Root cause" in run.summary
+        # build_worker_context must surface the partial summary.
+        ctx = kb.build_worker_context(conn, t)
+        assert "Root cause" in ctx
+        assert "timed_out" in ctx
+
+
+def test_record_task_failure_without_partial_summary_stays_null(kanban_home):
+    """When no partial_summary is provided, the run summary stays None
+    (backward-compatible default — existing callers unaffected)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        kb._record_task_failure(
+            conn, t, error="spawn failed",
+            outcome="spawn_failed", release_claim=True, end_run=True,
+        )
+        runs = kb.list_runs(conn, t)
+        assert len(runs) == 1
+        assert runs[0].summary is None
+
+
+def test_record_task_failure_partial_summary_on_gave_up(kanban_home):
+    """When the circuit breaker trips (gave_up), partial_summary must
+    still land in the run row's summary field."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        # First failure — below limit.
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+            partial_summary="attempt 1 partial",
+        )
+        # Second failure — trips the breaker (limit=2).
+        kb.claim_task(conn, t)
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 2",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+            partial_summary="attempt 2 partial — found the bug",
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        runs = kb.list_runs(conn, t)
+        # The second run (gave_up) must carry the partial summary.
+        gave_up_run = [r for r in runs if r.outcome == "gave_up"]
+        assert len(gave_up_run) == 1
+        assert gave_up_run[0].summary == "attempt 2 partial — found the bug"
+
+
 def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
     """The guard's effective limit must follow the same resolution order
     as the circuit breaker (#35072): per-task max_retries → dispatcher

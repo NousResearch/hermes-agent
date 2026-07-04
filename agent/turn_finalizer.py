@@ -69,19 +69,20 @@ def finalize_turn(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 
-        # If running as a kanban worker, signal the dispatcher that the
-        # worker could not complete (rather than treating it as a
-        # protocol violation).  The agent loop strips tools before calling
-        # _handle_max_iterations, so the model cannot call kanban_block
-        # itself — we must do it on its behalf.
-        #
-        # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the
+        # If running as a kanban worker, record the budget-exhausted
+        # failure so the dispatcher knows the worker could not complete
+        # (rather than leaving it as a protocol violation).  We use
+        # ``_record_task_failure(outcome="timed_out")`` rather than
+        # ``kanban_block`` so the failure counts toward the
         # ``consecutive_failures`` counter and the dispatcher's
-        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
-        # a task whose worker keeps exhausting its budget would block
-        # silently each run, get auto-promoted by the operator (or never
-        # surface), and re-block in an endless loop with no signal.
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without
+        # this, a task whose worker keeps exhausting its budget would
+        # cycle silently each run with no signal.
+        #
+        # Tools are stripped before ``_handle_max_iterations`` (to get a
+        # clean toolless summary), so the model cannot call
+        # ``kanban_block`` / ``kanban_complete`` itself — we must close
+        # the run on its behalf.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -104,10 +105,46 @@ def finalize_turn(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        partial_summary=(
+                            final_response
+                            if final_response and final_response.strip()
+                            else None
+                        ),
                     )
+                    # Salvage the model's last output as a task comment so
+                    # the retry worker sees it in build_worker_context's
+                    # comment thread.  This is genuine model output, not
+                    # fabricated text — the [partial_unverified] tag marks
+                    # it as emergency-salvaged from a budget-exhausted run
+                    # so reviewers know it may be incomplete or inaccurate.
+                    if final_response and final_response.strip():
+                        _author = (
+                            os.environ.get("HERMES_PROFILE")
+                            or "worker"
+                        )
+                        try:
+                            _kb.add_comment(
+                                _conn, _kanban_task,
+                                author=_author,
+                                body=(
+                                    "⚠️ [partial_unverified — iteration "
+                                    "budget exhausted; this is the worker's "
+                                    "last model output before timeout, not "
+                                    "a deliberate handoff]\n\n"
+                                    + final_response
+                                ),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to write partial-findings comment "
+                                "for task %s", _kanban_task, exc_info=True,
+                            )
                     logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        "recorded budget-exhausted failure for task %s "
+                        "(%d/%d) — partial summary %d chars %s",
                         _kanban_task, api_call_count, agent.max_iterations,
+                        len(final_response or ""),
+                        "salvaged" if final_response else "empty",
                     )
                 finally:
                     try:

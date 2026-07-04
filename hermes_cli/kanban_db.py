@@ -6550,6 +6550,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    partial_summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -6578,6 +6579,13 @@ def _record_task_failure(
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
+
+    ``partial_summary`` — when provided (e.g. the model's last
+    text response before budget exhaustion), it is written to the
+    run row's ``summary`` field so ``build_worker_context`` surfaces
+    it to the retry worker.  This prevents the failure mode where a
+    worker discovers a root cause, hits the iteration cap, and the
+    retry starts from scratch with no partial findings.
 
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
@@ -6638,6 +6646,7 @@ def _record_task_failure(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
                     error=error[:500],
+                    summary=partial_summary,
                     metadata={
                         "failures": failures,
                         "trigger_outcome": outcome,
@@ -6683,6 +6692,7 @@ def _record_task_failure(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
+                    summary=partial_summary,
                     metadata={"failures": failures},
                 )
                 _append_event(

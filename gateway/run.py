@@ -16588,6 +16588,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_tool[0] = tool_name
             
+            # Human mode: show intent, not implementation details.  This avoids
+            # leaking raw tool names, command strings, paths, JSON payloads, or
+            # other developer-oriented arguments into chat surfaces.
+            if progress_mode == "human":
+                from gateway.human_progress import human_tool_progress_message
+                progress_queue.put(human_tool_progress_message(tool_name, args))
+                return
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")

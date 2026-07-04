@@ -2144,6 +2144,15 @@ def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> D
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
     """
+    # Refuse to feed a credential / secret store (auth.json, .env, OAuth
+    # tokens, mcp-tokens/, ...) to an STT provider: an external provider would
+    # ship its plaintext contents to a third-party API. Mirrors the local-input
+    # read guard added to image-gen (587be5b5b) and xAI video-gen (104232979).
+    from agent.file_safety import get_read_block_error
+    blocked = get_read_block_error(file_path)
+    if blocked:
+        return {"success": False, "transcript": "", "error": blocked}
+
     # Apply common path validation before provider resolution so invalid files
     # cannot trigger provider setup or lazy installation. The remote-upload
     # size cap is enforced separately below, only for non-local providers.

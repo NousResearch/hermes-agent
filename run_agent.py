@@ -4359,6 +4359,14 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif (
+            base_url_host_matches(base_url, "api.cloudflare.com")
+            or base_url_host_matches(base_url, "gateway.ai.cloudflare.com")
+        ):
+            from hermes_cli import __version__ as _HERMES_VERSION
+            self._client_kwargs["default_headers"] = {
+                "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+            }
         elif base_url_host_matches(base_url, "chatgpt.com"):
             from agent.auxiliary_client import _codex_cloudflare_headers
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(

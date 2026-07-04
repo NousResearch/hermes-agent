@@ -177,6 +177,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "perplexity": "perplexity",
     "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    # Cloudflare Workers AI — no models.dev entry; capability fallback
+    # uses the live Cloudflare catalog via the provider profile override.
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)

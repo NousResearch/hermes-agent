@@ -1,0 +1,5 @@
+name: cloudflare
+kind: model-provider
+version: 1.0.0
+description: Cloudflare Workers AI — Llama, Gemma, Kimi, Hermes models on serverless GPUs
+author: Michael Sitarzewski (agentpip)

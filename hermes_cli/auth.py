@@ -437,6 +437,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AZURE_FOUNDRY_API_KEY",),
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "cloudflare": ProviderConfig(
+        id="cloudflare",
+        name="Cloudflare Workers AI",
+        auth_type="api_key",
+        inference_base_url="https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        api_key_env_vars=("CLOUDFLARE_API_TOKEN",),
+        base_url_env_var="CLOUDFLARE_BASE_URL",
+    ),
 }
 
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
@@ -529,6 +537,52 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
+
+
+# =============================================================================
+# Cloudflare Workers AI Base URL Resolution
+# =============================================================================
+
+CLOUDFLARE_WORKERS_AI_BASE_URL_TEMPLATE = (
+    "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+)
+_CLOUDFLARE_GATEWAY_BASE_TEMPLATE = (
+    "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/workers-ai/v1"
+)
+
+
+def _resolve_cloudflare_base_url(env_override: str = "") -> str:
+    """Construct the Workers AI base URL from env, or return "" if unresolvable.
+
+    Priority:
+      1. Explicit env override (CLOUDFLARE_BASE_URL or CLOUDFLARE_WORKERS_AI_BASE_URL)
+      2. CLOUDFLARE_ACCOUNT_ID + optional CLOUDFLARE_GATEWAY_ID
+      3. "" (unresolvable — caller should handle)
+    """
+    if env_override:
+        return env_override.rstrip("/")
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if not account_id:
+        return ""
+    gateway_id = os.getenv("CLOUDFLARE_GATEWAY_ID", "").strip()
+    if gateway_id:
+        return _CLOUDFLARE_GATEWAY_BASE_TEMPLATE.format(
+            account_id=account_id, gateway_id=gateway_id
+        )
+    return CLOUDFLARE_WORKERS_AI_BASE_URL_TEMPLATE.format(account_id=account_id)
+
+
+def _cloudflare_has_endpoint_config() -> bool:
+    """Return True when Workers AI has enough config to build a concrete base URL."""
+    if (os.getenv("CLOUDFLARE_BASE_URL", "") or os.getenv("CLOUDFLARE_WORKERS_AI_BASE_URL", "")).strip():
+        return True
+    return has_usable_secret(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""))
+
+
+def _cloudflare_base_url_is_resolved(base_url: str) -> bool:
+    """Return True when the Workers AI URL no longer contains the account placeholder."""
+    normalized = (base_url or "").strip()
+    return bool(normalized) and "ACCOUNT_ID" not in normalized.upper() and "{account_id}" not in normalized
 
 
 
@@ -1727,6 +1781,11 @@ def resolve_provider(
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
         if pid in {"copilot", "lmstudio"}:
+            continue
+        # CLOUDFLARE_API_TOKEN is commonly set for non-inference Cloudflare
+        # tools (Wrangler, Terraform). Only auto-select cloudflare when
+        # CLOUDFLARE_ACCOUNT_ID is also set (which is Workers AI-specific).
+        if pid == "cloudflare" and not _cloudflare_has_endpoint_config():
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -6037,18 +6096,28 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare":
+        base_url = _resolve_cloudflare_base_url(env_url)
     elif env_url:
         base_url = env_url
     else:
         base_url = pconfig.inference_base_url
 
+    # Cloudflare Workers AI requires both CLOUDFLARE_API_TOKEN and
+    # CLOUDFLARE_ACCOUNT_ID. Report "not configured" when either is missing
+    # or when the template is unresolved — otherwise auto-detect would pick
+    # this provider and requests would fail with an opaque URL error.
+    configured = bool(api_key)
+    if provider_id == "cloudflare":
+        configured = configured and _cloudflare_base_url_is_resolved(base_url)
+
     return {
-        "configured": bool(api_key),
+        "configured": configured,
         "provider": provider_id,
         "name": pconfig.name,
         "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": configured,  # compat with OAuth status shape
     }
 
 
@@ -6226,6 +6295,17 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare":
+        base_url = _resolve_cloudflare_base_url(env_url)
+        if not base_url:
+            raise AuthError(
+                "Cloudflare Workers AI requires CLOUDFLARE_ACCOUNT_ID "
+                "(or CLOUDFLARE_BASE_URL). Set it in ~/.hermes/.env. "
+                "Find your account ID at https://dash.cloudflare.com/ "
+                "(right sidebar).",
+                provider=provider_id,
+                code="missing_account_id",
+            )
     elif provider_id == "copilot":
         # Resolve the Copilot API base URL from the token-exchange response
         # (endpoints.api, with a proxy-ep fallback), which is authoritative

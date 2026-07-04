@@ -211,6 +211,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    "cloudflare": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("CLOUDFLARE_ACCOUNT_ID",),
+        base_url_env_var="CLOUDFLARE_BASE_URL",
+    ),
 }
 
 
@@ -352,6 +357,10 @@ ALIASES: Dict[str, str] = {
     "llamacpp": "local",
     "llama.cpp": "local",
     "llama-cpp": "local",
+
+    # cloudflare (workers-ai aliases auto-injected from plugin profile)
+    "cf": "cloudflare",
+    "cf-ai": "cloudflare",
 }
 
 
@@ -373,6 +382,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "cloudflare": "Cloudflare Workers AI",
 }
 
 

@@ -54,6 +54,8 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "arcee",
     "gmi",
     "tencent-tokenhub",
+    "cloudflare", "cloudflare-workers-ai", "workers-ai", "workersai",
+    "cf", "cf-ai",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -459,6 +461,22 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
+    "api.cloudflare.com": "cloudflare",
+    "gateway.ai.cloudflare.com": "cloudflare",
+}
+
+
+# Cloudflare Workers AI — per-model context lengths for models whose
+# context deviates from the substring fallbacks above.
+# Source: Cloudflare catalog /ai/models/search properties.
+_CLOUDFLARE_CONTEXT_LENGTHS = {
+    "@cf/meta/llama-4-scout-17b-16e-instruct": 128000,
+    "@cf/moonshotai/kimi-k2.5": 256000,
+    "@cf/moonshotai/kimi-k2.6": 256000,
+    "@cf/nvidia/nemotron-3-120b-a12b": 256000,
+    "@cf/openai/gpt-oss-120b": 128000,
+    "@cf/openai/gpt-oss-20b": 128000,
+    "@cf/zai-org/glm-4.7-flash": 131072,
 }
 
 # Auto-extend with hostnames derived from provider profiles.

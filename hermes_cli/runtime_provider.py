@@ -472,6 +472,18 @@ def _resolve_runtime_from_pool_entry(
         if api_mode == "anthropic_messages":
             base_url = re.sub(r"/v1/?$", "", base_url)
     else:
+        # Cloudflare Workers AI: resolve {account_id} in the pool base URL.
+        if provider == "cloudflare" and ("{account_id}" in base_url or "ACCOUNT_ID" in base_url.upper()):
+            from hermes_cli.auth import _resolve_cloudflare_base_url
+            resolved = _resolve_cloudflare_base_url()
+            if resolved:
+                base_url = resolved
+            else:
+                logger.debug(
+                    "Cloudflare Workers AI pool entry has unresolved account "
+                    "placeholder; falling through to runtime resolution"
+                )
+                # Fall through — let the generic path try env/config
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.

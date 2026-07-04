@@ -3503,6 +3503,28 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CLOUDFLARE_API_TOKEN": {
+        "description": "Cloudflare API token for Workers AI (scoped token with 'Workers AI' permission)",
+        "prompt": "Cloudflare API Token",
+        "url": "https://dash.cloudflare.com/profile/api-tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "CLOUDFLARE_ACCOUNT_ID": {
+        "description": "Cloudflare account ID (embedded in the Workers AI base URL)",
+        "prompt": "Cloudflare Account ID",
+        "url": "https://dash.cloudflare.com/",
+        "password": False,
+        "category": "provider",
+    },
+    "CLOUDFLARE_BASE_URL": {
+        "description": "Cloudflare Workers AI base URL override (normally derived from CLOUDFLARE_ACCOUNT_ID)",
+        "prompt": "Cloudflare base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

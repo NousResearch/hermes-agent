@@ -2204,6 +2204,19 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider == "cloudflare":
+            # Cloudflare's base URL contains {account_id} which must be
+            # resolved before seeding. Skip if it can't be resolved — a
+            # pool entry with an unresolved URL would fail at request time.
+            from hermes_cli.auth import _resolve_cloudflare_base_url
+            base_url = _resolve_cloudflare_base_url(env_url)
+            if not base_url:
+                logger.debug(
+                    "Skipping Cloudflare Workers AI env credential %s: "
+                    "missing CLOUDFLARE_ACCOUNT_ID or base URL override",
+                    env_var,
+                )
+                continue
         changed |= _upsert_entry(
             entries,
             provider,

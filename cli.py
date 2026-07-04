@@ -2334,6 +2334,7 @@ class _SkinAwareAnsi:
 
 
 _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
+_USER_ACCENT = _SkinAwareAnsi("user_border", "#5C8FA8", bold=True)
 # Use ANSI dim+italic attributes (\x1b[2;3m) instead of a hardcoded
 # hex color so dim/thinking text inherits the terminal's default
 # foreground color and stays readable in both light and dark
@@ -5532,13 +5533,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return paste_ref_re.sub(_expand_ref, text)
 
     def _print_user_message_preview(self, user_input: str) -> None:
-        """Render a user message using the normal chat scrollback style."""
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        """Render a user message as a full-width box matching the agent response style."""
+        from datetime import datetime as _dt
+        try:
+            from hermes_cli.skin_engine import get_active_skin as _get_skin
+            _skin = _get_skin()
+            label = _skin.get_branding("user_label", " ● You ")
+        except Exception:
+            label = " ● You "
+        if getattr(self, "show_timestamps", False):
+            fmt = getattr(self, "timestamp_format", "%H:%M")
+            label = f"{label}{_dt.now().strftime(fmt)} "
+        w = self._scrollback_box_width()
+        fill = w - 2 - HermesCLI._status_bar_display_width(label)
+        _cprint(f"\n{_USER_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
         text = str(user_input or "")
-        if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
-        else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        for line in text.split("\n"):
+            ChatConsole().print(f"    {_escape(line)}")
+        _cprint(f"{_USER_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -12059,7 +12071,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:

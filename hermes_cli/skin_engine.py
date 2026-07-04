@@ -30,6 +30,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)
+      user_border: "#5C8FA8"             # User message box border (ANSI)
       status_bar_bg: "#1a1a2e"           # Status bar background
       status_bar_text: "#C0C0C0"         # Status bar default text
       status_bar_strong: "#FFD700"       # Status bar highlighted text
@@ -69,6 +70,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Hermes "       # Response box header label
+      user_label: " ● You "              # User message box header label
       prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 

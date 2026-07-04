@@ -4518,6 +4518,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 _safe_parts.append(re.sub(r'[(){}]', _esc_bare, _seg))
         text = ''.join(_safe_parts)
 
+        # 13) Convert single newlines to MarkdownV2 hard breaks (  \n).
+        #     Telegram MarkdownV2 collapses single \n as whitespace, which
+        #     breaks slash-command output with structured line-by-line text
+        #     (e.g. /commands, /platform list).  Paragraph breaks (\n\n)
+        #     and inside-code newlines are left untouched.
+        _code_split2 = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
+        _hard_parts = []
+        for _i2, _seg2 in enumerate(_code_split2):
+            if _i2 % 2 == 1:
+                _hard_parts.append(_seg2)
+            else:
+                _hard_parts.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', _seg2))
+        text = ''.join(_hard_parts)
+
         return text
 
     # ── Group mention gating ──────────────────────────────────────────────

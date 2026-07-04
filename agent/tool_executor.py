@@ -337,12 +337,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
-        # Reset nudge counters
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
-
         try:
             function_args = json.loads(tool_call.function.arguments)
         except json.JSONDecodeError:
@@ -871,6 +865,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
+            # Reset nudge counters only when the tool actually ran
+            # successfully (not blocked, not errored).  Mirrors the
+            # sequential-path guard at line ~770.
+            if not blocked and not is_error:
+                if function_name == "memory":
+                    agent._turns_since_memory = 0
+                elif function_name == "skill_manage":
+                    agent._iters_since_skill = 0
 
             if not blocked and agent.tool_progress_callback:
                 try:

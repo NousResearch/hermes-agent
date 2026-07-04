@@ -3385,6 +3385,71 @@ class TestConcurrentToolExecution:
         # Second (allowed) write must checkpoint even though first was blocked.
         cp_mock.assert_called_once()
 
+    def test_concurrent_blocked_memory_does_not_reset_counter(self, agent, monkeypatch):
+        """Concurrent path: blocked memory tool should not reset nudge counter."""
+        agent._turns_since_memory = 5
+        tc1 = _mock_tool_call(name="memory",
+                              arguments='{"action":"add","target":"memory","content":"x"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="web_search",
+                              arguments='{"q":"test"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "memory" else None,
+        )
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert agent._turns_since_memory == 5
+
+    def test_concurrent_successful_memory_resets_counter(self, agent, monkeypatch):
+        """Concurrent path: successful memory tool should reset nudge counter."""
+        agent._turns_since_memory = 5
+        tc1 = _mock_tool_call(name="memory",
+                              arguments='{"action":"add","target":"memory","content":"x"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="web_search",
+                              arguments='{"q":"test"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        def fake_invoke(name, args, task_id, call_id, **kwargs):
+            return '{"success": true, "result": "stored"}'
+
+        with patch.object(agent, "_invoke_tool", side_effect=fake_invoke):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert agent._turns_since_memory == 0
+
+    def test_concurrent_successful_skill_manage_resets_counter(self, agent, monkeypatch):
+        """Concurrent path: successful skill_manage tool should reset nudge counter."""
+        agent._iters_since_skill = 8
+        tc1 = _mock_tool_call(name="skill_manage",
+                              arguments='{"action":"list"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="web_search",
+                              arguments='{"q":"test"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        def fake_invoke(name, args, task_id, call_id, **kwargs):
+            return '{"skills": []}'
+
+        with patch.object(agent, "_invoke_tool", side_effect=fake_invoke):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert agent._iters_since_skill == 0
+
 
 class TestAgentRuntimePostHookOwnershipSync:
     """Pin the inline-dispatch tool list against the post-hook ownership set.

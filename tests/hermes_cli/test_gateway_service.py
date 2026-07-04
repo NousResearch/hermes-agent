@@ -2516,6 +2516,20 @@ class TestProfileArg:
 
         assert plist_path == real_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
+    def test_launchd_plist_path_rejects_unresolved_tmp_home(self, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: Path("/tmp"))
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        with pytest.raises(RuntimeError, match="HERMES_REAL_HOME"):
+            gateway_cli.get_launchd_plist_path()
+
 
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""

@@ -2416,7 +2416,14 @@ def _launchd_user_home() -> Path:
     Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
     launchd user agents still live under the actual account home.
     """
-    return Path(get_real_home())
+    home = Path(get_real_home())
+    if str(home) in {"/tmp", "/private/tmp"}:
+        raise RuntimeError(
+            "Could not resolve the real macOS user home for launchd artifacts. "
+            "Set HERMES_REAL_HOME to your account home directory, e.g. "
+            "HERMES_REAL_HOME=/Users/you."
+        )
+    return home
 
 
 def get_launchd_plist_path() -> Path:

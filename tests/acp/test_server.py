@@ -68,6 +68,68 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
+async def test_new_session_creates_agent_off_event_loop():
+    loop = asyncio.get_running_loop()
+    event_loop_was_available = False
+
+    async def _mark_event_loop_available() -> None:
+        nonlocal event_loop_was_available
+        event_loop_was_available = True
+
+    class LoopWaitingSessionManager(SessionManager):
+        def create_session(self, cwd="."):
+            future = asyncio.run_coroutine_threadsafe(
+                _mark_event_loop_available(),
+                loop,
+            )
+            future.result(timeout=1.0)
+            return super().create_session(cwd)
+
+    manager = LoopWaitingSessionManager(
+        agent_factory=lambda: SimpleNamespace(model="gpt-test", provider="test")
+    )
+    acp_agent = HermesACPAgent(session_manager=manager)
+
+    resp = await asyncio.wait_for(acp_agent.new_session(cwd="/tmp"), timeout=2.0)
+
+    assert isinstance(resp, NewSessionResponse)
+    assert event_loop_was_available is True
+    assert manager.get_session(resp.session_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_resume_missing_session_creates_agent_off_event_loop():
+    loop = asyncio.get_running_loop()
+    event_loop_was_available = False
+
+    async def _mark_event_loop_available() -> None:
+        nonlocal event_loop_was_available
+        event_loop_was_available = True
+
+    class LoopWaitingSessionManager(SessionManager):
+        def create_session(self, cwd="."):
+            future = asyncio.run_coroutine_threadsafe(
+                _mark_event_loop_available(),
+                loop,
+            )
+            future.result(timeout=1.0)
+            return super().create_session(cwd)
+
+    manager = LoopWaitingSessionManager(
+        agent_factory=lambda: SimpleNamespace(model="gpt-test", provider="test")
+    )
+    acp_agent = HermesACPAgent(session_manager=manager)
+
+    resp = await asyncio.wait_for(
+        acp_agent.resume_session(cwd="/tmp", session_id="missing"),
+        timeout=2.0,
+    )
+
+    assert isinstance(resp, ResumeSessionResponse)
+    assert event_loop_was_available is True
+
+
+@pytest.mark.asyncio
 async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
@@ -1629,8 +1691,15 @@ class TestSlashCommands:
         mock_conn.request_permission = AsyncMock(return_value=None)
         agent._conn = mock_conn
 
-        # Mock run_in_executor to avoid actually running the agent
-        with patch("asyncio.get_running_loop") as mock_loop:
+        async def run_lifecycle_inline(func, /, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Lifecycle lookups/slash dispatch now use the contextual executor
+        # helper; keep those real while stubbing only the final agent turn.
+        with patch(
+            "acp_adapter.server._run_contextual",
+            side_effect=run_lifecycle_inline,
+        ), patch("asyncio.get_running_loop") as mock_loop:
             mock_loop.return_value.run_in_executor = AsyncMock(return_value={
                 "final_response": "I processed /foo",
                 "messages": [],

@@ -118,8 +118,107 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+_KNOWN_FALSE_POSITIVES_FILENAME = "known-false-positives.json"
+
+
+def _load_known_false_positives() -> dict:
+    """Load the known-false-positives whitelist from $HERMES_HOME/.
+
+    Returns a dict with two optional lists:
+        by_skill: [{"skill": "<name>", "findings_to_skip": ["<pattern_id>", ...]}, ...]
+        by_pattern: [{"pattern_id": "<id>"}, {"match_contains": "<text>"}, ...]
+
+    Returns an empty dict when the file is missing or unparseable so callers
+    never have to handle a missing file as a special case.
+    """
+    kfp = get_hermes_home() / _KNOWN_FALSE_POSITIVES_FILENAME
+    if not kfp.is_file():
+        return {}
+    try:
+        data = json.loads(kfp.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.debug("Failed to load %s: %s", kfp, exc)
+        return {}
+
+
+def _is_finding_whitelisted(
+    finding: "Finding",
+    skill_name: str,
+    whitelist: dict,
+) -> bool:
+    """Check if a Finding should be suppressed by the whitelist.
+
+    Supports two whitelist entry types:
+      - by_skill: matches on skill name + finding pattern_id.
+      - by_pattern: matches on finding pattern_id directly or on
+        the finding's match/description text (match_contains).
+    """
+    # by_skill: exact skill name match, pattern_id in skip list
+    for entry in whitelist.get("by_skill", []):
+        if (isinstance(entry, dict)
+                and entry.get("skill") == skill_name
+                and finding.pattern_id in entry.get("findings_to_skip", [])):
+            return True
+
+    # by_pattern: match on pattern_id or match text substring
+    for entry in whitelist.get("by_pattern", []):
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("pattern_id")
+        if pid and finding.pattern_id == pid:
+            return True
+        needle = entry.get("match_contains", "").lower()
+        if needle:
+            if needle in finding.match.lower() or needle in finding.description.lower():
+                return True
+
+    return False
+
+
+def _filter_whitelisted_findings(
+    result: "ScanResult",
+    whitelist: dict,
+) -> Optional["ScanResult"]:
+    """Return a new ScanResult with whitelisted findings removed.
+
+    Returns None (allow) when all findings were whitelisted.
+    Returns the original result unchanged when the whitelist is empty.
+    """
+    if not whitelist or not result.findings:
+        return result
+
+    filtered = [f for f in result.findings
+                if not _is_finding_whitelisted(f, result.skill_name, whitelist)]
+
+    if len(filtered) == len(result.findings):
+        # Nothing was whitelisted — keep the original result
+        return result
+
+    # Re-evaluate the verdict with remaining findings
+    from tools.skills_guard import ScanResult, _determine_verdict
+
+    if not filtered:
+        return None  # All findings whitelisted → allow
+
+    return ScanResult(
+        skill_name=result.skill_name,
+        source=result.source,
+        trust_level=result.trust_level,
+        verdict=_determine_verdict(filtered),
+        findings=filtered,
+        scanned_at=result.scanned_at,
+        summary=result.summary,
+    )
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
+
+    Consults known-false-positives.json before blocking so whitelisted
+    findings are silently allowed.
 
     No-op when skills.guard_agent_created is disabled (the default).
     """
@@ -129,6 +228,13 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
+        whitelist = _load_known_false_positives()
+        filtered = _filter_whitelisted_findings(result, whitelist)
+        if filtered is None:
+            # All findings were whitelisted → allow silently
+            return None
+        if filtered is not result:
+            result = filtered
         allowed, reason = should_allow_install(result)
         if allowed is False:
             report = format_scan_report(result)

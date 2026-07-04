@@ -6839,7 +6839,10 @@ def _build_call_kwargs(
             or _is_nvidia_nim
             or _is_moa
         ):
-            kwargs["max_tokens"] = max_tokens
+            # Use auxiliary_max_tokens_param() so models that require
+            # max_completion_tokens (GPT-5 family, Copilot) get the right
+            # parameter name instead of a hardcoded max_tokens that 400s.
+            kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

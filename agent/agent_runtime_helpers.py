@@ -304,8 +304,22 @@ def sanitize_tool_call_arguments(
                 continue
 
             try:
-                json.loads(arguments)
-            except json.JSONDecodeError:
+                parsed = json.loads(arguments)
+                if not isinstance(parsed, dict):
+                    # If it's a single-element list containing a dict, unwrap it
+                    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                        parsed = parsed[0]
+                    else:
+                        # Not a dict (or unsuitable list): treat as corrupt
+                        raise ValueError("Arguments must be a JSON object")
+                # If we get here, parsed is a dict; we can keep the original arguments string
+                # (it's already valid JSON object) but we may want to ensure it's the canonical representation?
+                # The existing code just keeps the original string if it's valid JSON.
+                # However, if we unwrapped, we need to re-serialize.
+                if isinstance(parsed, dict) and parsed is not json.loads(arguments):
+                    # We unwrapped, so re-serialize
+                    function["arguments"] = json.dumps(parsed)
+            except (json.JSONDecodeError, ValueError):
                 tool_call_id = tool_call.get("id")
                 function_name = function.get("name", "?")
                 preview = arguments[:80]

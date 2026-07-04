@@ -5,6 +5,7 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EGRESS_LABEL_KEY = "hermes-egress"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -362,6 +364,247 @@ _PRIVDROP_CAP_ARGS = [
     "--cap-add", "SETUID",
     "--cap-add", "SETGID",
 ]
+
+
+def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str]]:
+    """Build the docker mount/env/host args needed to route a sandbox through
+    the iron-proxy egress firewall.
+
+    Returns ``(volume_args, env_overrides, host_args)``:
+
+    * ``volume_args`` — read-only bind mount of the CA cert into the container
+      (extends docker's ``-v`` argv list)
+    * ``env_overrides`` — env vars to set on container creation: ``HTTPS_PROXY``,
+      ``HTTP_PROXY``, ``NO_PROXY`` (loopback only), Python/Node/curl CA-bundle
+      paths, and one ``HERMES_PROXY_TOKEN_<NAME>`` per minted mapping
+    * ``host_args`` — extra ``--add-host`` flags so the container can reach the
+      host-side proxy (Linux needs ``host.docker.internal:host-gateway``;
+      Docker Desktop populates this automatically on macOS/Windows)
+
+    Returns three empty containers when the proxy is disabled, not yet set up,
+    or not currently running.  If ``proxy.enforce_on_docker`` is true and the
+    proxy is enabled-but-not-running, raises ``RuntimeError`` so the docker
+    backend refuses to start the sandbox.
+    """
+
+    # Narrow except: ImportError is the only legitimate failure here.
+    # Bare ``except Exception`` would hide AttributeError, SyntaxError in
+    # the config module, etc. and silently start the sandbox without
+    # proxy enforcement.  We let unexpected exceptions propagate so the
+    # docker backend visibly fails rather than degrading silently.
+    try:
+        from hermes_cli.config import load_config
+        from agent.proxy_sources import iron_proxy as ip
+    except ImportError as exc:
+        logger.debug("Egress proxy plumbing unavailable: %s", exc)
+        return ([], {}, [])
+
+    cfg = load_config()
+    proxy_cfg = cfg.get("proxy") or {}
+    if not proxy_cfg.get("enabled"):
+        return ([], {}, [])
+
+    status = ip.get_status()
+    enforce = bool(proxy_cfg.get("enforce_on_docker", True))
+
+    if not status.configured:
+        msg = (
+            "proxy.enabled is true but iron-proxy is not configured. "
+            "Run `hermes egress setup` to mint tokens and write proxy.yaml."
+        )
+        if enforce:
+            raise RuntimeError(msg)
+        logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
+        return ([], {}, [])
+
+    if not (status.pid and status.listening):
+        msg = (
+            f"iron-proxy is enabled but not running on port {status.tunnel_port}. "
+            "Start it with `hermes egress start`."
+        )
+        if enforce:
+            raise RuntimeError(msg)
+        logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
+        return ([], {}, [])
+
+    if status.ca_cert_path is None or not status.ca_cert_path.exists():
+        # status.configured was True a moment ago but the CA file has
+        # disappeared.  Treat this with the same enforce semantics as the
+        # other failure branches — silently dropping the CA mount would
+        # leave the sandbox with proxy env vars pointing at iron-proxy
+        # but no trust anchor, so every TLS handshake would 5xx; or
+        # worse, with enforce_on_docker=false we'd drop both the proxy
+        # vars AND any other isolation, opening the sandbox.
+        msg = (
+            f"iron-proxy CA cert vanished from {status.ca_cert_path}. "
+            "Re-run `hermes egress setup` to regenerate it."
+        )
+        if enforce:
+            raise RuntimeError(msg)
+        logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
+        return ([], {}, [])
+
+    # Corrupt or empty mappings.json is a silent failure mode that's
+    # indistinguishable from an upstream outage from inside the sandbox
+    # (every request returns 403).  Refuse to mount with empty mappings
+    # rather than ship a broken sandbox.
+    mappings = ip.load_mappings()
+    if not mappings:
+        msg = (
+            "iron-proxy is configured but mappings.json is empty or "
+            "corrupt.  Re-run `hermes egress setup` to mint provider "
+            "tokens before starting a sandbox."
+        )
+        if enforce:
+            raise RuntimeError(msg)
+        logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
+        return ([], {}, [])
+
+    container_ca = "/etc/ssl/certs/hermes-egress-ca.crt"
+    volume_args = ["-v", f"{status.ca_cert_path}:{container_ca}:ro"]
+
+    # tunnel_port serves CONNECT (HTTPS); the plain-HTTP forward listener
+    # is on tunnel_port + 1 (see build_proxy_config's listener-role notes).
+    proxy_url = f"http://host.docker.internal:{status.tunnel_port}"
+    plain_http_url = f"http://host.docker.internal:{status.tunnel_port + 1}"
+    env_overrides: dict[str, str] = {
+        # HTTPS_PROXY / HTTP_PROXY are respected by curl, requests, urllib,
+        # httpx, node fetch, go default transport, etc.  Lowercase variants
+        # are also set because some tools only look at one casing.
+        "HTTPS_PROXY": proxy_url,
+        "https_proxy": proxy_url,
+        "HTTP_PROXY": plain_http_url,
+        "http_proxy": plain_http_url,
+        # Loopback-only NO_PROXY so localhost dev servers inside the sandbox
+        # (test fixtures, local LLMs) don't get sent through the proxy.
+        "NO_PROXY": "127.0.0.1,localhost,::1",
+        "no_proxy": "127.0.0.1,localhost,::1",
+        # CA bundle locations for the major language runtimes.  iron-proxy
+        # presents a leaf cert signed by our CA on every MITM'd connection.
+        #
+        # CRITICAL ASYMMETRY: Python (REQUESTS_CA_BUNDLE / SSL_CERT_FILE)
+        # and curl (CURL_CA_BUNDLE) REPLACE the system CA store.
+        # NODE_EXTRA_CA_CERTS ADDS to it.  A Node.js process that
+        # bypasses HTTPS_PROXY by using a raw socket would still see the
+        # system CA store and succeed where Python/curl fail validation.
+        # We additionally set NODE_OPTIONS=--use-openssl-ca to force Node
+        # through the OpenSSL store that SSL_CERT_FILE controls, narrowing
+        # the asymmetry.  Not a complete fix — see the docs caveat — but
+        # closes the easy case.
+        "REQUESTS_CA_BUNDLE": container_ca,   # Python `requests`
+        "SSL_CERT_FILE": container_ca,         # Python ssl module / OpenSSL
+        "CURL_CA_BUNDLE": container_ca,        # curl
+        "NODE_EXTRA_CA_CERTS": container_ca,   # Node.js: adds to system store
+        # NOTE: NODE_OPTIONS is intentionally NOT placed in env_overrides
+        # here as a flat assignment.  We need to APPEND --use-openssl-ca
+        # to whatever the user already has in NODE_OPTIONS (e.g.
+        # --max-old-space-size=4096), not clobber it.  The append-merge
+        # happens in DockerEnvironment._merge_node_options below.
+        # For the agent inside the sandbox to identify itself as proxy-aware.
+        "HERMES_EGRESS_PROXY": "1",
+        # Sentinel that DockerEnvironment uses to do the NODE_OPTIONS
+        # append-merge.  Stripped from the final env before docker run.
+        "_HERMES_EGRESS_NODE_OPTIONS_APPEND": "--use-openssl-ca",
+    }
+
+    # Surface the per-provider proxy tokens under the standard provider env
+    # names so existing SDKs and provider clients work unchanged inside the
+    # sandbox.  Alias env names (e.g. GOOGLE_API_KEY for GEMINI_API_KEY)
+    # receive the same token so SDKs reading either name authenticate
+    # through the proxy.  Keep the HERMES_PROXY_TOKEN_* aliases for
+    # diagnostics.
+    for m in mappings:
+        env_overrides[m.real_env_name] = m.proxy_token
+        env_overrides[f"HERMES_PROXY_TOKEN_{m.real_env_name}"] = m.proxy_token
+        for alias in getattr(m, "alias_env_names", ()) or ():
+            env_overrides[alias] = m.proxy_token
+
+    # On Linux, host.docker.internal isn't populated by default — Docker Desktop
+    # adds it on macOS/Windows; on Linux we need an explicit --add-host with
+    # host-gateway.  On Desktop this is a no-op (harmless duplicate).
+    host_args: list[str] = ["--add-host", "host.docker.internal:host-gateway"]
+
+    return (volume_args, env_overrides, host_args)
+
+
+def _egress_reuse_fingerprint(
+    volume_args: list[str],
+    env_overrides: dict[str, str],
+    host_args: list[str],
+) -> str:
+    """Stable Docker-label value for the egress posture of a container."""
+    if not (volume_args or env_overrides or host_args):
+        return "off"
+    payload = json.dumps(
+        {
+            "volume_args": volume_args,
+            "env_overrides": env_overrides,
+            "host_args": host_args,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _egress_enforce_on_docker(default: bool = True) -> bool:
+    """Read proxy.enforce_on_docker with fail-safe defaulting."""
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+
+        return bool((_load_cfg().get("proxy") or {}).get("enforce_on_docker", default))
+    except (ImportError, OSError):
+        return default
+    except Exception:
+        return default
+
+
+def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
+    """Env names that would weaken or bypass enforced egress if overridden."""
+    critical = {
+        "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+        "NO_PROXY", "no_proxy",
+        "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS",
+    }
+    critical.update(
+        key for key in env_overrides
+        if key.endswith("_API_KEY") or key.endswith("_TOKEN")
+    )
+    return critical
+
+
+def _extra_args_egress_collisions(
+    extra_args: list[str], critical_names: set[str],
+) -> list[str]:
+    """Return docker_extra_args entries that can override egress controls."""
+    collisions: list[str] = []
+    env_flags = {"-e", "--env", "--env-file"}
+    network_flags = {"--network", "--net"}
+    i = 0
+    while i < len(extra_args):
+        arg = extra_args[i]
+        nxt = extra_args[i + 1] if i + 1 < len(extra_args) else ""
+        if arg in env_flags:
+            if arg == "--env-file":
+                collisions.append(arg)
+            else:
+                name = nxt.split("=", 1)[0]
+                if name in critical_names:
+                    collisions.append(name)
+            i += 2
+            continue
+        if any(arg.startswith(f"{flag}=") for flag in env_flags):
+            if arg.startswith("--env-file="):
+                collisions.append("--env-file")
+            else:
+                name = arg.split("=", 1)[1].split("=", 1)[0]
+                if name in critical_names:
+                    collisions.append(name)
+        elif arg in network_flags or any(arg.startswith(f"{flag}=") for flag in network_flags):
+            collisions.append(arg)
+        i += 1
+    return sorted(set(collisions))
 
 
 def _build_security_args(run_as_host_user: bool, run_exec: bool = False) -> list[str]:
@@ -786,11 +1029,195 @@ class DockerEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 
+        # Egress credential-injection proxy (iron-proxy) — when configured,
+        # mount the CA cert into the sandbox and set HTTPS_PROXY + CA-bundle
+        # env vars so outbound traffic routes through the host-side proxy.
+        # The sandbox receives PROXY tokens instead of real API keys.
+        egress_volume_args, egress_env_overrides, egress_host_args = (
+            _egress_proxy_args_for_docker()
+        )
+        egress_label = _egress_reuse_fingerprint(
+            egress_volume_args, egress_env_overrides, egress_host_args,
+        )
+        _enforce_egress = _egress_enforce_on_docker()
+        _critical_egress_names = _critical_egress_env_names(egress_env_overrides)
+        if egress_env_overrides:
+            _forward_collisions = sorted(
+                key for key in self._forward_env if key in _critical_egress_names
+            )
+            if _forward_collisions:
+                _msg = (
+                    f"docker_forward_env would inject real egress-protected "
+                    f"variables {_forward_collisions}; enforce_on_docker is "
+                    f"{'enabled' if _enforce_egress else 'disabled'}."
+                )
+                if _enforce_egress:
+                    raise RuntimeError(
+                        f"{_msg}  Remove these names from docker_forward_env "
+                        "or disable enforce_on_docker to opt out of egress isolation."
+                    )
+                logger.warning(
+                    "%s  Explicit docker_forward_env values will override egress tokens.",
+                    _msg,
+                )
+        volume_args.extend(egress_volume_args)
+        # egress env overrides are merged in further below alongside the
+        # other env_args computation.
+
         # Explicit environment variables (docker_env config) — set at container
         # creation so they're available to all processes (including entrypoint).
+        # Egress proxy env vars (HTTPS_PROXY, CA-bundle paths, proxy tokens)
+        # are merged below.  Precedence policy:
+        #
+        # - When egress enforcement is on AND the user's docker_env tries
+        #   to override one of the proxy-control vars (HTTPS_PROXY,
+        #   SSL_CERT_FILE, etc.), fail-loud rather than silently inverting
+        #   the isolation.  The CA mount + tokens would still ship while
+        #   traffic leaves the sandbox direct with real credentials —
+        #   exactly what enforce_on_docker is meant to prevent.
+        # - When enforcement is off, the user's docker_env wins (current
+        #   behavior) but we log a warning naming both config sources.
+        # - When the user override is identical to the egress value, no-op.
+        if egress_env_overrides:
+            try:
+                from hermes_cli.config import load_config as _load_cfg_for_collision
+                _proxy_cfg = (_load_cfg_for_collision().get("proxy") or {})
+            except (ImportError, OSError):
+                _proxy_cfg = {}
+            except Exception as _e:  # noqa: BLE001 — narrowed below via yaml import
+                # yaml.YAMLError from a malformed config.yaml.  We import
+                # lazily because PyYAML is a soft dep in some test envs.
+                try:
+                    import yaml  # noqa: F401
+                except ImportError:
+                    raise
+                logger.warning(
+                    "Could not read proxy config for egress collision check: %s",
+                    _e,
+                )
+                _proxy_cfg = {}
+            _enforce_egress = bool(_proxy_cfg.get("enforce_on_docker", True))
+            # Egress-controlling env vars that affect the proxy posture.
+            _critical_proxy_control = {
+                "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+                "NO_PROXY", "no_proxy",
+                "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+                "NODE_EXTRA_CA_CERTS",
+            }
+            # stephenschoettler #2: also block docker_env from injecting
+            # real provider keys.  `docker_env: {OPENROUTER_API_KEY: sk-real}`
+            # in config.yaml puts the live secret into the sandbox while
+            # egress is nominally enforced — defeats the entire feature.
+            # Pull the mapped real_env_name from each token mapping at
+            # call time so this stays in sync with whatever the operator
+            # has configured.
+            _critical_provider_keys: set[str] = set()
+            try:
+                from agent.proxy_sources import iron_proxy as _ip_for_mappings
+                _critical_provider_keys = {
+                    m.real_env_name for m in _ip_for_mappings.load_mappings()
+                }
+            except Exception:  # noqa: BLE001 — best-effort collision check
+                pass
+            _critical = _critical_proxy_control | _critical_provider_keys
+            _collisions = sorted(
+                k for k in _critical
+                if k in self._env
+                and (
+                    k not in egress_env_overrides
+                    or self._env[k] != egress_env_overrides[k]
+                )
+                # For provider keys, ANY override is a collision (the egress
+                # path mints proxy tokens; a real key in docker_env bypasses
+                # the swap regardless of whether the egress dict happens to
+                # carry it).
+                and (
+                    k in _critical_provider_keys
+                    or (k in egress_env_overrides
+                        and self._env[k] != egress_env_overrides[k])
+                )
+            )
+            if _collisions:
+                _msg = (
+                    f"docker_env in config.yaml overrides egress-proxy "
+                    f"variables {_collisions}; enforce_on_docker is "
+                    f"{'enabled' if _enforce_egress else 'disabled'}."
+                )
+                if _enforce_egress:
+                    raise RuntimeError(
+                        f"{_msg}  Remove these keys from docker_env or "
+                        "disable enforce_on_docker to opt out of egress "
+                        "isolation."
+                    )
+                logger.warning(
+                    "%s  Falling back to docker_env values; sandbox traffic "
+                    "will NOT route through the proxy.", _msg,
+                )
+
+        # When enforce_on_docker is true, egress overrides win.  When
+        # false, docker_env wins (back-compat for users who deliberately
+        # opt out).  In both cases the collision check above has already
+        # surfaced any disagreement.
+        try:
+            from hermes_cli.config import load_config as _load_cfg_for_precedence
+            _enforce_egress_merge = bool(
+                (_load_cfg_for_precedence().get("proxy") or {})
+                .get("enforce_on_docker", True)
+            )
+        except (ImportError, OSError):
+            _enforce_egress_merge = True
+        except Exception:  # noqa: BLE001 — yaml.YAMLError or similar
+            # Malformed config.yaml; fail-safe to enforced.
+            _enforce_egress_merge = True
+
+        if _enforce_egress_merge and egress_env_overrides:
+            merged_env = dict(self._env)
+            merged_env.update(egress_env_overrides)
+        else:
+            merged_env = dict(egress_env_overrides)
+            merged_env.update(self._env)
+
+        # arshkumarsingh #1: NODE_OPTIONS append-merge.  The egress path
+        # wants ``--use-openssl-ca`` so Node routes through the OpenSSL
+        # CA store ``SSL_CERT_FILE`` controls.  But the operator's
+        # ``docker_env: {NODE_OPTIONS: "--max-old-space-size=8192"}``
+        # MUST be preserved — replacing it would silently drop their
+        # tuning.  We carry the egress flag in a sentinel key
+        # ``_HERMES_EGRESS_NODE_OPTIONS_APPEND`` and merge here.
+        _egress_node_append = merged_env.pop(
+            "_HERMES_EGRESS_NODE_OPTIONS_APPEND", None,
+        )
+        if _egress_node_append:
+            existing_node = merged_env.get("NODE_OPTIONS", "")
+            existing_tokens = existing_node.split()
+            # maxpetrusenko P1: dedupe is not enough — the operator may have set
+            # a CONFLICTING CA-mode flag (e.g. --use-bundled-ca) that would
+            # otherwise survive alongside our --use-openssl-ca, leaving Node's
+            # final trust behavior dependent on option order / Node parsing.
+            # Egress isolation requires our flag to win deterministically, so
+            # strip any known-conflicting CA-mode flags before appending.
+            _CA_MODE_FLAGS = {"--use-openssl-ca", "--use-bundled-ca"}
+            append_token = _egress_node_append.strip()
+            if append_token in _CA_MODE_FLAGS:
+                dropped = [t for t in existing_tokens if t in _CA_MODE_FLAGS and t != append_token]
+                if dropped:
+                    logger.warning(
+                        "Overriding conflicting NODE_OPTIONS CA-mode flag(s) %s "
+                        "with egress-required %s to keep Node routed through the "
+                        "egress CA store.", dropped, append_token,
+                    )
+                existing_tokens = [t for t in existing_tokens if t not in _CA_MODE_FLAGS or t == append_token]
+            # De-dup: only add if not already present (the operator may
+            # have set the same flag themselves).
+            if append_token not in existing_tokens:
+                existing_tokens.append(append_token)
+            merged_env["NODE_OPTIONS"] = " ".join(existing_tokens).strip()
+            if not merged_env["NODE_OPTIONS"]:
+                merged_env.pop("NODE_OPTIONS", None)
+
         env_args = []
-        for key in sorted(self._env):
-            env_args.extend(["-e", f"{key}={self._env[key]}"])
+        for key in sorted(merged_env):
+            env_args.extend(["-e", f"{key}={merged_env[key]}"])
 
         # Optional: run the container as the host user so files written into
         # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
@@ -842,12 +1269,31 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
                 continue
             validated_extra.append(arg)
+        if egress_env_overrides:
+            _extra_collisions = _extra_args_egress_collisions(
+                validated_extra, _critical_egress_names,
+            )
+            if _extra_collisions:
+                _msg = (
+                    f"docker_extra_args would override egress-proxy controls "
+                    f"{_extra_collisions}; enforce_on_docker is "
+                    f"{'enabled' if _enforce_egress else 'disabled'}."
+                )
+                if _enforce_egress:
+                    raise RuntimeError(
+                        f"{_msg}  Remove these args or disable enforce_on_docker "
+                        "to opt out of egress isolation."
+                    )
+                logger.warning(
+                    "%s  Extra Docker args may bypass egress isolation.", _msg,
+                )
 
         all_run_args = (
             security_args
             + user_args
             + writable_args
             + resource_args
+            + egress_host_args
             + volume_args
             + env_args
             + validated_extra
@@ -869,6 +1315,7 @@ class DockerEnvironment(BaseEnvironment):
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
+            "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -880,6 +1327,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
+            _EGRESS_LABEL_KEY: egress_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -889,14 +1337,15 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only — we deliberately do NOT compare image
-        # / mounts / resources.  Operators who need a fresh container after
-        # changing those settings should set ``docker_persist_across_processes:
-        # false`` (or run ``docker rm -f`` against the labeled container) to
-        # force a clean start.
+        # Reuse matches on labels only.  The egress posture gets its own label
+        # because env vars, CA mounts, and host mappings are immutable after
+        # container creation — reusing a pre-egress or pre-rotation container
+        # would silently bypass the credential firewall.
         reused = False
         if persist_across_processes:
-            existing = self._find_reusable_container(task_label, profile_name)
+            existing = self._find_reusable_container(
+                task_label, profile_name, egress_label,
+            )
             if existing is not None:
                 container_id, state = existing
                 self._container_id = container_id
@@ -1069,7 +1518,9 @@ class DockerEnvironment(BaseEnvironment):
         # 1. Try label-based reuse (another process may have recreated it).
         task_label = self._labels.get("hermes-task-id", "")
         profile_label = self._labels.get("hermes-profile", "")
-        existing = self._find_reusable_container(task_label, profile_label)
+        existing = self._find_reusable_container(
+            task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+        )
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -1194,7 +1645,12 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
-    def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
+    def _find_reusable_container(
+        self,
+        task_label: str,
+        profile_label: str,
+        egress_label: str,
+    ) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
         Returns ``(container_id, state)`` on hit, ``None`` on miss / on any
@@ -1208,13 +1664,28 @@ class DockerEnvironment(BaseEnvironment):
         started by some other tool.
         """
         try:
+            filters = [
+                "--filter", "label=hermes-agent=1",
+                "--filter", f"label=hermes-task-id={task_label}",
+                "--filter", f"label=hermes-profile={profile_label}",
+            ]
+            if egress_label != "off":
+                filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
+                fmt = "{{.ID}}\t{{.State}}"
+            else:
+                # When egress is off, we widen the probe to find any
+                # task+profile container (regardless of egress label), then
+                # post-filter in Python: reject containers whose
+                # hermes-egress label is present and not "off".  Without
+                # this, a container created with egress=on can be silently
+                # reused after the operator runs "hermes egress disable",
+                # preserving baked-in proxy env and CA mounts.
+                fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
             result = subprocess.run(
                 [
                     self._docker_exe, "ps", "-a",
-                    "--filter", "label=hermes-agent=1",
-                    "--filter", f"label=hermes-task-id={task_label}",
-                    "--filter", f"label=hermes-profile={profile_label}",
-                    "--format", "{{.ID}}\t{{.State}}",
+                    *filters,
+                    "--format", fmt,
                 ],
                 capture_output=True,
                 text=True,
@@ -1231,7 +1702,7 @@ class DockerEnvironment(BaseEnvironment):
                 result.returncode, result.stderr.strip(),
             )
             return None
-        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
         if not lines:
             return None
         # Multiple matches are unusual (one (task, profile) should produce one
@@ -1242,10 +1713,24 @@ class DockerEnvironment(BaseEnvironment):
         running = None
         first = None
         for ln in lines:
-            parts = ln.split("\t", 1)
-            if len(parts) != 2:
-                continue
-            cid, state = parts[0], parts[1].lower()
+            if egress_label == "off":
+                # Format: ID\tState\tEgressLabel — parse all three fields
+                # and reject containers with a non-off egress label.
+                parts = ln.split("\t", 2)
+                if len(parts) < 3:
+                    continue
+                cid, state, egress_val = parts[0], parts[1].lower(), parts[2]
+                if egress_val not in ("", "<no value>", "off"):
+                    logger.debug(
+                        "skipping container %s for egress=off reuse: "
+                        "label %s=%r", cid, _EGRESS_LABEL_KEY, egress_val,
+                    )
+                    continue
+            else:
+                parts = ln.split("\t", 1)
+                if len(parts) != 2:
+                    continue
+                cid, state = parts[0], parts[1].lower()
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

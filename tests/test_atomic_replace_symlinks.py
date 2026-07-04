@@ -34,6 +34,24 @@ from utils import (
 )
 
 
+import tempfile
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
+
+_SYMLINK_SKIP = not _can_symlink()
+
+
 # ─── Direct helper ────────────────────────────────────────────────────────────
 
 
@@ -42,6 +60,8 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     tmp.write_text(content, encoding="utf-8")
     return tmp
 
+
+    @pytest.mark.skipif(_SYMLINK_SKIP, reason="Symlinks need elevated privileges")
 
 def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
@@ -100,6 +120,8 @@ def test_atomic_replace_accepts_pathlike_and_str(tmp_path: Path) -> None:
 # ─── atomic_json_write / atomic_yaml_write wiring ──────────────────────────
 
 
+    @pytest.mark.skipif(_SYMLINK_SKIP, reason="Symlinks need elevated privileges")
+
 def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
@@ -112,6 +134,8 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     loaded = json.loads(real.read_text(encoding="utf-8"))
     assert loaded == {"hello": "world"}
 
+
+    @pytest.mark.skipif(_SYMLINK_SKIP, reason="Symlinks need elevated privileges")
 
 def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
@@ -220,6 +244,8 @@ def test_atomic_roundtrip_yaml_update_restores_owner(
 # ─── Broken-symlink edge case ─────────────────────────────────────────────
 
 
+    @pytest.mark.skipif(_SYMLINK_SKIP, reason="Symlinks need elevated privileges")
+
 def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     """A symlink pointing at a missing file: the write should create the
     real target (resolving via realpath) rather than leaving the dangling
@@ -259,6 +285,8 @@ def test_atomic_replace_copy_fallback(
     assert target.read_text(encoding="utf-8") == "new\n"
     assert not tmp.exists()
 
+
+    @pytest.mark.skipif(_SYMLINK_SKIP, reason="Symlinks need elevated privileges")
 
 def test_atomic_replace_copy_fallback_preserves_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

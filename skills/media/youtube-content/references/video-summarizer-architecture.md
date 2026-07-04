@@ -13,12 +13,11 @@ Use these notes when hardening the bundled `youtube-content` skill for single-vi
 
 1. Accept one YouTube video URL or 11-character video ID.
 2. Pause before playlists, channels, search URLs, or bulk URL lists unless the user approves a supported bulk workflow.
-3. Prefer available captions/transcripts:
-   - `youtube-transcript-api` when installed: first probe for transcript retrieval. When track metadata is available, prefer manual captions over generated captions and capture language/source details.
-   - Downloader-style tooling is not part of the bundled helper's default path. If a future upstream workflow documents it, constrain it to caption/subtitle handling by default and do not download media by default.
-4. Normalize to timestamped segments with source metadata when possible.
-5. Summarize from the transcript using the configured default model/provider.
-6. Preserve timestamps and label key claims as claims made in the video unless independently verified.
+3. Prefer available captions/transcripts. If transcript metadata is available, prefer manual captions over generated captions and capture language/source details.
+4. Keep downloader-style tooling outside the default path. If future upstream guidance documents it, constrain it to caption/subtitle handling by default and do not download media by default.
+5. Normalize to timestamped segments with source metadata when possible.
+6. Summarize from the transcript using the configured default model/provider.
+7. Preserve timestamps and label key claims as claims made in the video unless independently verified.
 
 ## Approval gates
 
@@ -35,20 +34,24 @@ Ask for separate approval before adding or using heavier or unsupported behavior
 Usually allowed without extra approval when the user provided one video URL for summarization:
 
 - single-video transcript/caption retrieval with already-installed supported tools;
-- metadata-only inspection that uses no cookies/proxies and no media download, when supported by upstream docs/tooling;
+- metadata-only inspection that requires no new access-handling setup and no media download, when supported by upstream docs/tooling;
 - summarization through the configured default model/provider under the configured privacy policy.
 
 ## Provider and privacy handling
 
 - Use the configured default model/provider for summarization.
 - Follow the configured privacy policy for data movement and retention.
-- When content sensitivity is unclear, avoid sending it to alternate/external providers without user approval.
+- When content sensitivity is unclear, avoid sending transcripts/audio/video to alternate or external providers without user approval.
 - Use external or alternate providers only when enabled by the user/configuration and approved for the specific content.
-- Never print, copy, or store API keys/cookies. Do not use browser cookies by default.
+- Never print, copy, or store API keys/cookies. Do not use browser cookies unless supported by upstream behavior and approved for the specific task.
+
+## Dependency handling
+
+If a transcript dependency is missing, report the missing dependency and stop unless package installation is in scope for the current task or separately approved by the user. Do not change dependency files as part of transcript summarization guidance.
 
 ## Metadata and artifacts
 
-Write artifacts only when the user asks for saved output or the workflow needs durable intermediate files. Keep artifact paths scoped to the requested workspace or Hermes artifact area, and avoid implying any local deployment or product-planning state.
+Write artifacts only when the user asks for saved output or the workflow needs durable intermediate files. Keep artifact paths scoped to the requested workspace or configured artifact location, and avoid implying unsupported workflow state.
 
 Suggested files when artifacts are useful:
 
@@ -58,7 +61,7 @@ Suggested files when artifacts are useful:
 - `transcript.timestamped.md` — readable transcript.
 - `summary.md` — user-facing structured summary.
 - `claims.json` — claims with supporting timestamps and caveats.
-- `run.json` — command classes run, approvals, provider/route choices, timings, errors.
+- `run.json` — command classes run, approvals, provider choices, timings, errors.
 
 ## Metadata schema
 
@@ -108,7 +111,6 @@ A structured video summary should include:
 - timestamped sections/chapters when available;
 - key claims with evidence timestamps and caveats;
 - action items/useful takeaways;
-- optional follow-up questions;
 - artifact paths only when files were written.
 
 ## Transcript quality caveats
@@ -121,7 +123,7 @@ A structured video summary should include:
 
 ## Compliance notes
 
-- YouTube Data API captions are not a general public-caption solution: listing/downloading captions requires OAuth, and downloads require permission to edit the video.
+- YouTube Data API captions are not a general caption-access solution: listing/downloading captions requires OAuth, and downloads require permission to edit the video.
 - YouTube Terms restrict downloading/reproducing content except as authorized and restrict automated access such as scrapers except in limited cases or with permission.
 - Preserve supported upstream behavior around access handling; do not add cookies, proxies, OAuth, API keys, or bypass behavior as a side effect of summarization guidance.
 - This is operational guidance, not legal advice.

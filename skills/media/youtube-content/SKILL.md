@@ -18,15 +18,11 @@ Keep the bundled skill focused on single-video, transcript-first work. Do not cr
 - Reject playlists, channels, search URLs, and bulk URL lists unless the user separately approves a supported bulk workflow.
 - Prefer available captions/transcripts before any heavier fallback.
 - Preserve supported upstream behavior around cookies, proxies, OAuth, API keys, access handling, and helper-script capabilities; do not introduce new bypass or circumvention behavior.
-- Do not download media, run ASR, install packages, change lockfiles, or send content to external/alternate providers unless the user approves that step and the behavior is supported by the current configuration/docs.
+- Do not download media, run ASR, install packages, change lockfiles, or send content to external or alternate providers unless the user approves that step and the behavior is supported by the current configuration/docs.
 
-## Setup
+## Dependency handling
 
-Use `uv` so the dependency is installed into the same Hermes-managed environment that runs the helper script:
-
-```bash
-uv pip install youtube-transcript-api
-```
+The helper requires `youtube-transcript-api` in the environment that runs the skill. If the dependency is missing, report the missing dependency and stop unless package installation is in scope for the current task or separately approved by the user.
 
 ## Helper script
 
@@ -89,9 +85,9 @@ Consult `references/video-summarizer-architecture.md` for transcript-first archi
 
 - Use the configured default model/provider for summarization.
 - Follow the configured privacy policy for data movement and retention.
-- When content sensitivity is unclear, avoid sending transcripts, audio, or video to alternate/external providers without user approval.
+- When content sensitivity is unclear, avoid sending transcripts, audio, or video to alternate or external providers without user approval.
 - Use external or alternate providers only when enabled by the user/configuration and approved for the specific content.
-- If writing artifacts, keep paths scoped to the user's requested workspace or Hermes artifact area; do not imply product-planning or deployment state.
+- If writing artifacts, keep paths scoped to the user's requested workspace or configured artifact location; do not imply unsupported workflow state.
 
 ## Approval gates
 
@@ -107,7 +103,7 @@ Do not silently escalate from transcript retrieval to heavier or unsupported beh
 
 ## ToS, API, and quality caveats
 
-- YouTube Data API captions are not a general public-caption solution: listing/downloading captions requires OAuth, and downloads require permission to edit the video.
+- YouTube Data API captions are not a general caption-access solution: listing/downloading captions requires OAuth, and downloads require permission to edit the video.
 - YouTube Terms restrict downloading/reproducing content except as authorized and restrict automated access such as scrapers except in limited cases or with permission.
 - Prefer manual captions over auto captions; use ASR only after approval.
 - Claims are from the video unless externally verified.
@@ -118,4 +114,4 @@ Do not silently escalate from transcript retrieval to heavier or unsupported beh
 - **Transcript disabled**: tell the user and suggest checking whether subtitles are available on the video page.
 - **Private/unavailable video**: relay the error and ask the user to verify access to the URL.
 - **No matching language**: retry without `--language`, then note the language actually retrieved.
-- **Dependency missing**: do not auto-install unless package installation is in scope or separately approved; report the missing dependency and install command (`uv pip install youtube-transcript-api`).
+- **Dependency missing**: report the missing dependency and stop unless package installation is in scope for the current task or separately approved by the user.

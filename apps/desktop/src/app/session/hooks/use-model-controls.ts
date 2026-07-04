@@ -4,7 +4,15 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  getCurrentModelSource,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider
+} from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -50,13 +58,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return
       }
 
-      if (!force && $currentModel.get()) {
+      if (!force && $currentModel.get() && getCurrentModelSource() === 'manual') {
         return
       }
 
       const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      if ($activeSessionId.get() || (!force && $currentModel.get() && getCurrentModelSource() === 'manual')) {
         return
       }
 
@@ -66,6 +74,10 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
 
       if (typeof result.provider === 'string') {
         setCurrentProvider(result.provider)
+      }
+
+      if (typeof result.model === 'string' || typeof result.provider === 'string') {
+        setCurrentModelSource('default')
       }
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
@@ -85,11 +97,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       // rather than leave the UI showing a model the backend never selected.
       const prevModel = $currentModel.get()
       const prevProvider = $currentProvider.get()
+      const prevSource = getCurrentModelSource()
 
       const liveSessionId = $activeSessionId.get()
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
+      setCurrentModelSource('manual')
       updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
@@ -111,6 +125,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       } catch (err) {
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
+        setCurrentModelSource(prevSource)
         updateModelOptionsCache(prevProvider, prevModel, !liveSessionId)
         notifyError(err, copy.modelSwitchFailed)
 

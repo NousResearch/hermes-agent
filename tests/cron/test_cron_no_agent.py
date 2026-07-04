@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -329,3 +331,171 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# _resolve_bash: Windows Git Bash preference (issue #46332, Layer 1)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_bash_prefers_git_bash_over_wsl_on_windows(monkeypatch):
+    """On Windows, Git for Windows bash must be chosen before WSL bash."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+
+    def _fake_isfile(p):
+        # Git Bash 64-bit exists; WSL bash also "exists" on PATH.
+        git_bash = os.path.join(r"C:\Program Files\Git\usr\bin", "bash.exe")
+        return p == git_bash
+
+    monkeypatch.setattr(sched.os.path, "isfile", _fake_isfile)
+    monkeypatch.setattr(sched.shutil, "which", lambda cmd: r"C:\Windows\System32\bash.exe")
+
+    result = sched._resolve_bash()
+    assert result == os.path.join(r"C:\Program Files\Git\usr\bin", "bash.exe")
+
+
+def test_resolve_bash_checks_32bit_git_bash_path(monkeypatch):
+    """Fallback to 32-bit Git for Windows install path (edge case #3)."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+
+    def _fake_isfile(p):
+        git_bash_32 = os.path.join(r"C:\Program Files (x86)\Git\usr\bin", "bash.exe")
+        return p == git_bash_32
+
+    monkeypatch.setattr(sched.os.path, "isfile", _fake_isfile)
+    monkeypatch.setattr(sched.shutil, "which", lambda cmd: r"C:\Windows\System32\bash.exe")
+
+    result = sched._resolve_bash()
+    assert result == os.path.join(r"C:\Program Files (x86)\Git\usr\bin", "bash.exe")
+
+
+def test_resolve_bash_falls_back_to_which_without_git_bash(monkeypatch):
+    """Without Git for Windows, fall back to shutil.which (edge case #4)."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+    monkeypatch.setattr(sched.os.path, "isfile", lambda p: False)
+    wsl_bash = r"C:\Windows\System32\bash.exe"
+    monkeypatch.setattr(sched.shutil, "which", lambda cmd: wsl_bash)
+
+    result = sched._resolve_bash()
+    assert result == wsl_bash
+
+
+def test_resolve_bash_uses_which_on_non_windows(monkeypatch):
+    """On Linux/macOS, shutil.which('bash') is the primary resolver."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "linux")
+    monkeypatch.setattr(sched.shutil, "which", lambda cmd: "/usr/bin/bash")
+
+    result = sched._resolve_bash()
+    assert result == "/usr/bin/bash"
+
+
+# ---------------------------------------------------------------------------
+# bash script path argument formatting (issue #46332, Layer 2)
+# ---------------------------------------------------------------------------
+
+
+def test_bash_script_path_arg_uses_forward_slashes_for_windows_paths(monkeypatch):
+    """Windows bash script paths must be converted from backslashes."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+    path = PureWindowsPath(r"C:\Users\graem\AppData\Local\hermes\scripts\watchdog.sh")
+
+    assert sched._bash_script_path_arg(path) == "C:/Users/graem/AppData/Local/hermes/scripts/watchdog.sh"
+
+
+def test_bash_script_path_arg_keeps_native_paths_on_unix(monkeypatch):
+    """Non-Windows platforms keep their native path formatting."""
+    from cron import scheduler as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "linux")
+    path = PurePosixPath("/home/graem/.hermes/scripts/watchdog.sh")
+
+    assert sched._bash_script_path_arg(path) == str(path)
+
+
+# ---------------------------------------------------------------------------
+# _run_job_script: POSIX path conversion (issue #46332, Layer 2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_script_sh_uses_posix_paths_on_windows(hermes_env, monkeypatch):
+    r"""On Windows, .sh script paths must use forward slashes (issue #46332).
+
+    ``str(path)`` on Windows yields ``C:\\Users\\...`` (backslashes). Git Bash
+    (MSYS2) interprets each ``\`` as an escape, mangling the path to
+    ``C:Users...`` and failing with exit 127. The fix uses ``as_posix()``.
+    """
+    from cron import scheduler as sched
+    from cron.scheduler import _run_job_script
+
+    # Simulate a nested script path so separators are meaningful.
+    nested = hermes_env / "scripts" / "nested" / "dir"
+    nested.mkdir(parents=True)
+    script_path = nested / "watchdog.sh"
+    script_path.write_text('echo "ok"\n')
+
+    # Force Windows platform so the POSIX-path code path activates.
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+    monkeypatch.setattr(sched, "_resolve_bash", lambda: r"C:\Program Files\Git\usr\bin\bash.exe")
+
+    captured_argv = []
+
+    def _fake_run(argv, **kwargs):
+        captured_argv[:] = argv
+        class _R:
+            stdout = "ok\n"
+            stderr = ""
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(sched.subprocess, "run", _fake_run)
+
+    ok, output = _run_job_script("nested/dir/watchdog.sh")
+    assert ok is True
+
+    # The script-path argument (argv[1]) must NOT contain backslashes.
+    script_arg = captured_argv[1]
+    assert "\\" not in script_arg, f"path must not contain backslashes: {script_arg!r}"
+    assert "/" in script_arg, f"path must contain forward slashes: {script_arg!r}"
+
+
+def test_run_job_script_sh_keeps_native_paths_on_unix(hermes_env, monkeypatch):
+    """On non-Windows, script paths are passed as-is (no POSIX conversion)."""
+    from cron import scheduler as sched
+    from cron.scheduler import _run_job_script
+
+    nested = hermes_env / "scripts" / "nested"
+    nested.mkdir(parents=True)
+    script_path = nested / "watchdog.sh"
+    script_path.write_text('echo "ok"\n')
+
+    # Confirm we're NOT on Windows.
+    assert sched.sys.platform != "win32"
+
+    captured_argv = []
+
+    def _fake_run(argv, **kwargs):
+        captured_argv[:] = argv
+        class _R:
+            stdout = "ok\n"
+            stderr = ""
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(sched.subprocess, "run", _fake_run)
+
+    ok, output = _run_job_script("nested/watchdog.sh")
+    assert ok is True
+
+    # On Unix, str(path) is already a valid POSIX path.
+    script_arg = captured_argv[1]
+    assert script_arg.endswith("nested/watchdog.sh")

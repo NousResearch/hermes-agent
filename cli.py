@@ -2285,6 +2285,72 @@ def _install_skin_light_mode_hook() -> None:
 
 _install_skin_light_mode_hook()
 
+_LIGHT_MODE_OBSERVER_STARTED: bool = False
+
+
+def _start_macos_appearance_observer(cli_instance) -> None:
+    """Start a daemon thread that listens for macOS system appearance changes.
+
+    When the user switches between light/dark mode (or macOS auto-switches
+    at sunset/sunrise), we invalidate the light-mode detection cache and
+    refresh the TUI style so text colors match the new terminal background.
+
+    Uses ``NSDistributedNotificationCenter`` to subscribe to
+    ``AppleInterfaceThemeChangedNotification``.  A CFRunLoop runs on a
+    daemon thread so it never blocks the interactive CLI loop.
+
+    No-op on non-macOS platforms, or if Foundation (PyObjC) is unavailable,
+    or if already started.
+    """
+    global _LIGHT_MODE_OBSERVER_STARTED
+    if _LIGHT_MODE_OBSERVER_STARTED:
+        return
+    if sys.platform != "darwin":
+        return
+    try:
+        import Foundation  # type: ignore[import]  # PyObjC
+        import objc  # type: ignore[import]
+    except ImportError:
+        return
+
+    _LIGHT_MODE_OBSERVER_STARTED = True
+
+    def _on_appearance_changed(notification):
+        """CFRunLoop callback — runs on the observer's daemon thread."""
+        global _LIGHT_MODE_CACHE
+        # Clear the cache so the next style resolution re-probes the
+        # terminal background (OSC 11) or falls through to other hints.
+        _LIGHT_MODE_CACHE = None
+        # Refresh the running TUI style on the main thread.
+        try:
+            app = getattr(cli_instance, "_app", None)
+            if app is not None and getattr(app, "loop", None) is not None:
+                def _refresh_tui():
+                    try:
+                        cli_instance._apply_tui_skin_style()
+                    except Exception:
+                        pass
+
+                app.loop.call_soon_threadsafe(_refresh_tui)
+        except Exception:
+            pass
+
+    # Subscribe to the macOS system-wide appearance-change notification.
+    center = Foundation.NSDistributedNotificationCenter.defaultCenter()
+    center.addObserver_selector_name_object_(
+        _on_appearance_changed,
+        objc.selector(_on_appearance_changed, signature=b"v@:@"),
+        "AppleInterfaceThemeChangedNotification",
+        None,
+    )
+
+    def _run_loop():
+        import CoreFoundation  # type: ignore[import]
+        CoreFoundation.CFRunLoopRun()
+
+    import threading
+    threading.Thread(target=_run_loop, daemon=True, name="hermes-appearance-observer").start()
+
 
 # Prime the light-mode detection cache early (at module load) when
 # we're running interactively so OSC 11 happens before pt grabs the
@@ -14883,6 +14949,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
+
+        # Startup sight: prime light-mode detection late so it picks up
+        # the actual terminal background after pt has claimed the tty.
+        try:
+            _detect_light_mode()
+        except Exception:
+            pass
+
+        # Start the macOS system-appearance observer so the CLI automatically
+        # refreshes its color theme when the user (or the OS) toggles
+        # light ↔ dark mode while Hermes is running.
+        _start_macos_appearance_observer(self)
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff

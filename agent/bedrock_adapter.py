@@ -398,7 +398,15 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
     try:
         discovered = discover_bedrock_models(resolve_bedrock_region())
         if discovered:
-            return [m["id"] for m in discovered]
+            ids = [m["id"] for m in discovered]
+            _PROFILE_PREFIXES = ("us.", "global.", "eu.", "ap.", "jp.")
+            profile_bases = {
+                mid.split(".", 1)[1] for mid in ids if mid.startswith(_PROFILE_PREFIXES)
+            }
+            return [
+                mid for mid in ids
+                if mid.startswith(_PROFILE_PREFIXES) or mid not in profile_bases
+            ]
     except Exception:
         pass
     return None

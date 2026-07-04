@@ -1155,6 +1155,50 @@ class PluginContext:
             display_name,
         )
 
+    # -- redaction pattern registration --------------------------------------
+
+    def register_redaction_patterns(self, patterns) -> int:
+        """Additively register secret-token regexes with the redaction engine.
+
+        Accepted patterns join the vendor-prefix alternation in
+        :mod:`agent.redact` and are masked everywhere built-in patterns
+        apply — logs, terminal output, transport errors, transcripts —
+        with the same head/tail masking and the same non-reusable
+        sentinel on ``file_read`` content. Historically every new vendor
+        token format required a core PR appending to
+        ``_PREFIX_PATTERNS``; provider plugins should own their own
+        format instead.
+
+        The registry is **additive-only**: plugins can extend what gets
+        masked but cannot remove or weaken built-in patterns, so a
+        plugin can only ever over-redact, never expose. The operator's
+        global opt-out (``security.redact_secrets: false``) applies to
+        plugin patterns exactly as it does to built-ins.
+
+        Each pattern must compile as a regex and start with at least 2
+        literal characters (e.g. ``r"nvapi-[A-Za-z0-9_-]{20,}"``).
+        Invalid entries are warned and skipped — never raised.
+
+        Returns the number of patterns accepted.
+        """
+        from agent.redact import register_redaction_patterns as _register
+
+        try:
+            count = _register(
+                patterns, source=f"plugin:{self.manifest.name}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Plugin '%s' redaction pattern registration failed: %s",
+                self.manifest.name, exc,
+            )
+            return 0
+        logger.debug(
+            "Plugin %s registered %d redaction pattern(s)",
+            self.manifest.name, count,
+        )
+        return count
+
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
 

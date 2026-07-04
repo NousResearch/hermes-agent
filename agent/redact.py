@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shlex
+import threading
 from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
@@ -840,6 +841,107 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+# ---------------------------------------------------------------------------
+# Plugin-registered redaction patterns
+# ---------------------------------------------------------------------------
+#
+# Every new vendor token format has historically required a core PR appending
+# to ``_PREFIX_PATTERNS`` above (fw_, retaindb_, hsk-, mem0_, brv_, ...).
+# This registry lets plugins add their provider's format instead. It is
+# ADDITIVE-ONLY by design: a plugin can extend what gets masked but has no
+# API to remove or weaken a built-in pattern, so a plugin can only ever
+# over-redact, never expose. The operator's global opt-out
+# (``security.redact_secrets: false`` / HERMES_REDACT_SECRETS) applies to
+# plugin patterns exactly as it does to built-ins.
+
+_PLUGIN_PREFIX_PATTERNS: list = []
+_registry_lock = threading.Lock()
+
+
+def _rebuild_prefix_matcher() -> None:
+    """Recompile the prefix alternation and pre-screen substrings.
+
+    ``redact_sensitive_text`` and ``_mask_token_nonreusable`` look these
+    globals up at call time, so swapping the module attributes (atomic
+    under the GIL) propagates immediately to every caller.
+    """
+    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    combined = _PREFIX_PATTERNS + _PLUGIN_PREFIX_PATTERNS
+    _PREFIX_RE = re.compile(
+        r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
+    )
+    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+
+
+def register_redaction_patterns(patterns, source: str = "plugin") -> int:
+    """Additively register credential-token regexes with the redaction engine.
+
+    Each accepted pattern joins the vendor-prefix alternation used by
+    ``redact_sensitive_text`` (same masking, same head/tail rules, same
+    non-reusable sentinel on ``file_read``) — everywhere built-in patterns
+    apply: logs, terminal output, transport errors, transcripts.
+
+    Per-pattern validation (invalid entries are warned and skipped, never
+    raised — a broken plugin must not break startup):
+
+    * must be a non-empty string that compiles as a regex;
+    * must start with at least 2 literal characters (the pre-screen
+      substring gate in ``_has_known_prefix_substring`` needs a literal
+      anchor; it also structurally rules out redact-everything patterns
+      like ``.*``);
+    * duplicates of built-in or already-registered patterns are skipped.
+
+    Args:
+        patterns: iterable of regex strings (e.g. ``[r"nvapi-[A-Za-z0-9_-]{20,}"]``).
+        source: attribution label for log lines (e.g. ``"plugin:my-plugin"``).
+
+    Returns:
+        The number of patterns actually accepted.
+    """
+    accepted = []
+    for pattern in patterns or []:
+        if not isinstance(pattern, str) or not pattern.strip():
+            logger.warning("%s: skipping empty/non-string redaction pattern", source)
+            continue
+        pattern = pattern.strip()
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            logger.warning(
+                "%s: skipping invalid redaction pattern %r (%s)",
+                source, pattern, exc,
+            )
+            continue
+        if len(_extract_literal_prefix(pattern)) < 2:
+            logger.warning(
+                "%s: skipping redaction pattern %r — must start with at "
+                "least 2 literal characters (needed for the pre-screen "
+                "substring gate)",
+                source, pattern,
+            )
+            continue
+        if pattern in _PREFIX_PATTERNS or pattern in _PLUGIN_PREFIX_PATTERNS or pattern in accepted:
+            logger.debug("%s: redaction pattern %r already registered", source, pattern)
+            continue
+        accepted.append(pattern)
+
+    if accepted:
+        with _registry_lock:
+            _PLUGIN_PREFIX_PATTERNS.extend(accepted)
+            _rebuild_prefix_matcher()
+        logger.info(
+            "%s: registered %d redaction pattern(s)", source, len(accepted)
+        )
+    return len(accepted)
+
+
+def _reset_plugin_redaction_patterns() -> None:
+    """Drop all plugin-registered patterns (tests/teardown only)."""
+    with _registry_lock:
+        _PLUGIN_PREFIX_PATTERNS.clear()
+        _rebuild_prefix_matcher()
 
 
 _HTTP_METHOD_SUBSTRINGS = (

@@ -201,6 +201,35 @@ def test_fs_write_text_rejects_hermes_credential_stores(
     assert not target.exists()
 
 
+@pytest.mark.parametrize("filename", [".env", ".env.local", ".env.production", ".envrc"])
+def test_fs_write_text_rejects_project_env_files(client, tmp_path, filename):
+    target = tmp_path / "project" / filename
+    target.parent.mkdir()
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "SECRET=attacker-controlled"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+def test_fs_write_text_allows_env_example(client, tmp_path):
+    target = tmp_path / "project" / ".env.example"
+    target.parent.mkdir()
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "KEY=example"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert target.read_text() == "KEY=example"
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

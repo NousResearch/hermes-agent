@@ -37,6 +37,20 @@ _HERMES_CREDENTIAL_STORE_REL_PATHS = (
 )
 
 
+# Common secret-bearing project-local environment file basenames.
+# These are blocked because .env files routinely contain API keys,
+# database passwords, and other credentials.
+_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".env.staging",
+    ".envrc",
+}
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -120,6 +134,9 @@ def is_write_denied(path: str) -> bool:
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
+    if Path(resolved).name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
+        return True
+
     if resolved in build_write_denied_paths(home):
         return True
     for prefix in build_write_denied_prefixes(home):
@@ -162,20 +179,6 @@ def is_write_denied(path: str) -> bool:
             return True
 
     return False
-
-
-# Common secret-bearing project-local environment file basenames.
-# These are blocked because .env files routinely contain API keys,
-# database passwords, and other credentials.
-_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
-    ".env",
-    ".env.local",
-    ".env.development",
-    ".env.production",
-    ".env.test",
-    ".env.staging",
-    ".envrc",
-}
 
 
 def get_read_block_error(path: str) -> Optional[str]:

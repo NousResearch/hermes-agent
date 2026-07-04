@@ -363,6 +363,9 @@ def _compute_tool_definitions(
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    # Track which toolsets were explicitly enabled for protection against
+    # disabled_toolsets stripping their tools (#58281).
+    effective_enabled_toolsets = None
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
@@ -395,7 +398,12 @@ def _compute_tool_definitions(
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #17309.
+    # stripped out — but only if they don't belong to an explicitly-enabled
+    # toolset (issue #58281).
+    #
+    # This protects against "footgun" configs where a user enables only
+    # `terminal` + `file` but disables `coding` (which is a superset of
+    # both). Without this protection the model receives zero tool definitions.
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
@@ -421,14 +429,37 @@ def _compute_tool_definitions(
                         )
                 else:
                     resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    # Protect tools that belong to explicitly-enabled toolsets
+                    # (#58281). When the user has only terminal + file enabled and
+                    # disables the superset 'coding', we keep the terminal/file
+                    # tools instead of stripping everything.
+                    protected = set()
+                    for ts_name in (effective_enabled_toolsets or []):
+                        protected.update(resolve_toolset(ts_name))
+                    actually_remove = set(resolved) - protected
+                    if actually_remove != set(resolved):
+                        protected_overlap = set(resolved) & protected
+                        logger.info(
+                            "Disabling toolset '%s' but tools %s also belong "
+                            "to explicitly-enabled toolset(s); those are kept "
+                            "to avoid stripping the model of all tools (#58281).",
+                            toolset_name,
+                            sorted(protected_overlap),
+                        )
+                    tools_to_include.difference_update(actually_remove)
+                    resolved = sorted(actually_remove)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(legacy_tools)
+                protected = set()
+                for ts_name in (effective_enabled_toolsets or []):
+                    protected.update(resolve_toolset(ts_name))
+                actually_remove = set(legacy_tools) - protected
+                tools_to_include.difference_update(actually_remove)
+                resolved = sorted(actually_remove)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

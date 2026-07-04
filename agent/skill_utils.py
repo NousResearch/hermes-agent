@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import (
+    get_config_path,
+    get_skills_dir,
+    get_subprocess_home,
+    is_termux,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -674,6 +679,21 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
+_HOME_VAR_RE = re.compile(r"\$(?:\{HOME\}|HOME)(?=$|[/\\])")
+
+
+def _expand_skill_config_path(value: str) -> str:
+    """Expand user-facing skill paths against the HOME used by tools."""
+    subprocess_home = get_subprocess_home()
+    if subprocess_home:
+        if value == "~":
+            return subprocess_home
+        if value.startswith(("~/", "~\\")):
+            return os.path.join(subprocess_home, value[2:])
+        value = _HOME_VAR_RE.sub(subprocess_home, value)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 def resolve_skill_config_values(
     config_vars: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -682,7 +702,7 @@ def resolve_skill_config_values(
     Skill config is stored under ``skills.config.<key>`` in config.yaml.
     Returns a dict mapping **logical** keys (as declared by skills) to their
     current values (or the declared default if the key isn't set).
-    Path values are expanded via ``os.path.expanduser``.
+    Path values are expanded against the HOME that Hermes injects into tools.
     """
     config = _load_raw_config()
 
@@ -695,9 +715,13 @@ def resolve_skill_config_values(
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
 
-        # Expand ~ in path-like values
-        if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+        # Expand path-like values with subprocess HOME semantics.  Skill
+        # defaults describe paths the agent will hand to tools, not paths the
+        # Python control process itself will open.
+        if isinstance(value, str) and (
+            "~" in value or "${" in value or "$HOME" in value
+        ):
+            value = _expand_skill_config_path(value)
 
         resolved[logical_key] = value
 

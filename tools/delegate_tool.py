@@ -1055,7 +1055,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
+    # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
     # Per-call role controlling whether the child can further delegate.
@@ -1212,11 +1212,9 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
-    # Defensive: validate override_acp_command exists on PATH before honoring
-    # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
-    # delegate_task tool calls despite the schema saying not to, which forces
-    # the subagent onto the copilot-acp transport below and crashes the
-    # gateway when the binary is missing (e.g. headless container deploys).
+    # Defensive: validate trusted delegation.command exists on PATH before
+    # honoring it. Stale config should not force a child onto the ACP transport
+    # and then fail at subprocess startup.
     if override_acp_command:
         import shutil as _shutil
 
@@ -1255,8 +1253,11 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
+        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # False (``reasoning_effort: false``) to "" and inherit the parent
+        # instead of disabling thinking for children.
+        delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
@@ -2343,8 +2344,6 @@ def delegate_task(
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
-    acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
@@ -2483,7 +2482,6 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2502,14 +2500,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3289,30 +3281,6 @@ def _build_role_param_description() -> str:
     )
 
 
-# Known ACP-compatible CLIs that delegate_task can shell out to. Kept
-# narrow on purpose: only the ones agent/copilot_acp_client.py and friends
-# actually understand. Add new entries here when a new ACP CLI ships.
-_KNOWN_ACP_BINARIES: tuple[str, ...] = ("copilot", "claude", "codex")
-
-
-def _acp_binary_available() -> bool:
-    """True iff at least one known ACP CLI is on PATH.
-
-    Used to gate inclusion of ``acp_command`` / ``acp_args`` in the
-    delegate_task schema. On headless hosts (Railway / Fly / Docker /
-    fresh VPS) without any of these binaries, exposing the fields invites
-    the model to hallucinate ``acp_command="copilot"`` from the schema's
-    description, which used to crash subagent runs and take the gateway
-    down. Pruning the fields from the schema removes the temptation.
-
-    Not cached: ``shutil.which`` is cheap and we want the schema to react
-    to mid-session installs without forcing a process restart.
-    """
-    import shutil as _shutil
-
-    return any(_shutil.which(name) for name in _KNOWN_ACP_BINARIES)
-
-
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -3329,24 +3297,6 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
-
-    # Prune ACP overrides from the schema when no known ACP CLI is on PATH.
-    # The runtime guard in _build_child_agent remains as defense-in-depth for
-    # internal callers / tests / future code paths that skip the schema layer.
-    if not _acp_binary_available():
-        overrides_params["properties"].pop("acp_command", None)
-        overrides_params["properties"].pop("acp_args", None)
-        tasks_schema = dict(overrides_params["properties"].get("tasks", {}))
-        if "items" in tasks_schema:
-            items = dict(tasks_schema["items"])
-            if "properties" in items:
-                items["properties"] = {
-                    k: v
-                    for k, v in items["properties"].items()
-                    if k not in ("acp_command", "acp_args")
-                }
-            tasks_schema["items"] = items
-            overrides_params["properties"]["tasks"] = tasks_schema
 
     return {
         "description": _build_top_level_description(),
@@ -3398,19 +3348,6 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": "Task-specific context",
                         },
-                        "acp_command": {
-                            "type": "string",
-                            "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
-                            ),
-                        },
-                        "acp_args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
-                        },
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
@@ -3441,28 +3378,6 @@ DELEGATE_TASK_SCHEMA = {
                     "compatibility."
                 ),
             },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
-                ),
-            },
         },
         "required": [],
     },
@@ -3489,6 +3404,28 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+
+
+def _strip_model_hidden_task_fields(tasks: Any) -> Any:
+    if not isinstance(tasks, list):
+        return tasks
+    stripped_tasks = []
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict):
+            stripped_tasks.append(task)
+            continue
+        stripped = {
+            key: value
+            for key, value in task.items()
+            if key not in _MODEL_HIDDEN_TASK_FIELDS
+        }
+        changed = changed or len(stripped) != len(task)
+        stripped_tasks.append(stripped)
+    return stripped_tasks if changed else tasks
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3496,10 +3433,8 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        tasks=args.get("tasks"),
+        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),

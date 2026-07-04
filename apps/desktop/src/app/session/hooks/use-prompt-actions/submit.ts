@@ -1,7 +1,7 @@
 import { type MutableRefObject, useCallback } from 'react'
 
-import type { Translations } from '@/i18n'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'

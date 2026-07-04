@@ -72,8 +72,11 @@ def test_normalize_moa_config_tolerates_non_numeric_values():
 
     preset = cfg["presets"]["broken"]
     assert preset["max_tokens"] == 4096
-    assert preset["reference_temperature"] == 0.6
-    assert preset["aggregator_temperature"] == 0.4
+    # Unparseable/blank temperatures degrade to None = "don't send the
+    # parameter; provider default applies" (matching single-model behavior),
+    # not to a hardcoded sampling value.
+    assert preset["reference_temperature"] is None
+    assert preset["aggregator_temperature"] is None
 
 
 def test_normalize_moa_config_tolerates_non_list_reference_models():

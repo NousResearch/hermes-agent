@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/skills/legal/contract_review_skill/input_schema.json",
+  "title": "ContractReviewInput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_text"],
+  "properties": {
+    "contract_text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "合同全文文本。可来自用户粘贴、OCR、Word/PDF 解析或上游系统。"
+    },
+    "contract_type": {
+      "type": "string",
+      "enum": ["采购合同", "销售合同", "服务合同", "租赁合同", "劳动合同", "保密协议", "其他"],
+      "default": "其他",
+      "description": "用户指定的合同类型；如不确定可填其他，由审核逻辑尝试推断。"
+    },
+    "review_perspective": {
+      "type": "string",
+      "enum": ["甲方", "乙方", "中立"],
+      "default": "中立",
+      "description": "审核视角。影响商务风险、付款风险、交付责任等建议表达。"
+    },
+    "review_depth": {
+      "type": "string",
+      "enum": ["standard", "deep"],
+      "default": "standard",
+      "description": "standard 输出常规初审；deep 增加更严格的表述、缺失和专项风险检查。"
+    },
+    "industry": {
+      "type": "string",
+      "description": "可选，行业信息，例如 SaaS、制造、零售、医疗、金融、物流。"
+    },
+    "company_policy": {
+      "type": "string",
+      "description": "可选，企业内部审核规则、审批红线或标准条款要求。"
+    },
+    "reference_template": {
+      "type": "string",
+      "description": "可选，企业标准合同模板文本，用于后续模板差异比对。"
+    },
+    "extra_requirements": {
+      "type": "string",
+      "description": "可选，用户额外审核要求，例如重点看回款、知识产权、数据安全。"
+    }
+  }
+}

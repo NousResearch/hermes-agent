@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bilibili Hermes Agent Weekly Top"
+  short_description: "Daily weekly-top Bilibili Hermes Agent video digest."
+  default_prompt: "Set up a daily 23:40 Feishu report for this week's top Bilibili videos about Hermes Agent."

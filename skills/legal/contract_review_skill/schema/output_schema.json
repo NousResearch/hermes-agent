@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/skills/legal/contract_review_skill/output_schema.json",
+  "title": "ContractReviewOutput",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "summary",
+    "extracted_fields",
+    "key_clauses",
+    "risks",
+    "missing_clauses",
+    "optimization_suggestions",
+    "suggested_action_items",
+    "final_report_markdown"
+  ],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_name",
+        "contract_type",
+        "parties",
+        "amount",
+        "currency",
+        "effective_date",
+        "end_date",
+        "overall_risk_level",
+        "review_conclusion"
+      ],
+      "properties": {
+        "contract_name": { "type": "string" },
+        "contract_type": { "type": "string" },
+        "parties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "amount": { "type": "string" },
+        "currency": { "type": "string" },
+        "effective_date": { "type": "string" },
+        "end_date": { "type": "string" },
+        "overall_risk_level": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "info"]
+        },
+        "review_conclusion": { "type": "string" }
+      }
+    },
+    "extracted_fields": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "contract_name",
+        "contract_number",
+        "contract_type",
+        "party_a",
+        "party_b",
+        "other_parties",
+        "signing_date",
+        "effective_date",
+        "end_date",
+        "amount",
+        "currency",
+        "payment_method",
+        "payment_nodes",
+        "performance_period",
+        "performance_location",
+        "subject_matter",
+        "contacts",
+        "attachments"
+      ],
+      "properties": {
+        "contract_name": { "type": "string" },
+        "contract_number": { "type": "string" },
+        "contract_type": { "type": "string" },
+        "party_a": { "type": "string" },
+        "party_b": { "type": "string" },
+        "other_parties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "parties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "party_a_credit_code": { "type": "string" },
+        "party_b_credit_code": { "type": "string" },
+        "signing_date": { "type": "string" },
+        "effective_date": { "type": "string" },
+        "end_date": { "type": "string" },
+        "amount": { "type": "string" },
+        "currency": { "type": "string" },
+        "payment_method": { "type": "string" },
+        "payment_nodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "performance_period": { "type": "string" },
+        "performance_location": { "type": "string" },
+        "subject_matter": { "type": "string" },
+        "contacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "value"],
+            "properties": {
+              "type": { "type": "string" },
+              "value": { "type": "string" }
+            }
+          }
+        },
+        "attachments": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "key_clauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clause_type", "title", "present", "original_text", "confidence", "normalized_summary"],
+        "properties": {
+          "clause_type": { "type": "string" },
+          "title": { "type": "string" },
+          "present": { "type": "boolean" },
+          "original_text": { "type": "string" },
+          "confidence": { "type": "string" },
+          "normalized_summary": { "type": "string" }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "risk_id",
+          "risk_title",
+          "risk_level",
+          "risk_type",
+          "related_clause",
+          "original_text",
+          "risk_description",
+          "business_impact",
+          "suggestion",
+          "suggested_revision"
+        ],
+        "properties": {
+          "risk_id": { "type": "string" },
+          "risk_title": { "type": "string" },
+          "risk_level": {
+            "type": "string",
+            "enum": ["high", "medium", "low", "info"]
+          },
+          "risk_type": { "type": "string" },
+          "related_clause": { "type": "string" },
+          "original_text": { "type": "string" },
+          "risk_description": { "type": "string" },
+          "business_impact": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "suggested_revision": { "type": "string" }
+        }
+      }
+    },
+    "missing_clauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clause_type", "importance", "reason", "suggested_clause"],
+        "properties": {
+          "clause_type": { "type": "string" },
+          "importance": {
+            "type": "string",
+            "enum": ["high", "medium", "low", "info"]
+          },
+          "reason": { "type": "string" },
+          "suggested_clause": { "type": "string" }
+        }
+      }
+    },
+    "optimization_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["title", "description"],
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "suggested_action_items": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "final_report_markdown": {
+      "type": "string",
+      "description": "可直接展示给业务、法务、销售、采购人员的中文合同审核报告。"
+    },
+    "review_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

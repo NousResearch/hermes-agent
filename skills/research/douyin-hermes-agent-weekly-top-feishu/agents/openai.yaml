@@ -1,0 +1,4 @@
+interface:
+  display_name: "Douyin Hermes Agent Weekly Top"
+  short_description: "Daily weekly-top Douyin Hermes Agent video digest."
+  default_prompt: "Set up a daily 23:10 Feishu report for this week's top Douyin videos about Hermes Agent."

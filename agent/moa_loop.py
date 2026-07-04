@@ -475,8 +475,19 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "system":
             continue
         if role == "user":
-            if text.strip():
-                last_user_content = text
+            # Skip empty user turns. A user message with no textual content
+            # (content="" or a non-string/multimodal payload flattened to ""
+            # at the `text = ...` line above) carries nothing advisory, and
+            # strict providers (Kimi/Moonshot, and others that enforce
+            # non-empty user content) reject it with
+            # 400 "message ... with role 'user' must not be empty" — the same
+            # way the assistant branch below drops turns with no parts. Lenient
+            # providers (DeepSeek) accept the empty turn, which is why a MoA
+            # fan-out would fail on one reference and pass on another for the
+            # identical rendered view.
+            if not text.strip():
+                continue
+            last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
             parts: list[str] = []

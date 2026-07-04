@@ -277,9 +277,46 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     assert "public note" in raw
     assert str(safe) in returned_paths
     assert out["_omitted"].startswith("4 result(s) omitted")
-    assert out["total_count"] == 5
+    assert out["total_count"] == 2
     assert out["truncated"] is True
     assert "[Hint: Results truncated." in search_response
+
+
+def test_search_tool_preserves_count_mode_total_after_filtering(fake_home, tmp_path, monkeypatch):
+    """Count-mode total_count remains sum(visible counts), not visible file count."""
+    import json
+
+    from tools.file_operations import SearchResult
+    import tools.file_tools as ft
+
+    auth = _create(fake_home, "auth.json")
+    safe = _create(fake_home, "notes.txt")
+
+    class FakeFileOps:
+        def search(self, **kwargs):
+            return SearchResult(
+                counts={str(auth): 7, str(safe): 2},
+                total_count=9,
+                truncated=False,
+            )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": FakeFileOps())
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+
+    search_response = ft.search_tool(
+        pattern="SEARCH",
+        path=str(fake_home),
+        output_mode="count",
+        task_id="search-filter-counts",
+    )
+    out = json.loads(search_response.split("\n\n[Hint:", 1)[0])
+
+    assert out["counts"] == {str(safe): 2}
+    assert out["total_count"] == 2
+    assert out["_omitted"].startswith("1 result(s) omitted")
 
 
 # ---------------------------------------------------------------------------

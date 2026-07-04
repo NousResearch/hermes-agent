@@ -14,8 +14,10 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
+from tools.file_operations import SearchMatch, SearchResult
 from tools.file_tools import (
     read_file_tool,
+    search_tool,
     write_file_tool,
     reset_file_dedup,
     _is_blocked_device,
@@ -219,6 +221,51 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
         mock_ops.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_tool_rejects_device_path_before_io(self, mock_ops):
+        result = json.loads(search_tool("stack", path="/proc/self/maps", task_id="proc_search_path"))
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_tool_filters_proc_sensitive_content_matches(self, mock_ops):
+        mock_ops.return_value.search.return_value = SearchResult(
+            matches=[
+                SearchMatch("/proc/self/smaps", 1, "7fff0000-7fff1000 rw-p [stack]"),
+                SearchMatch("/proc/self/task/1234/auxv", 1, "AT_RANDOM bytes"),
+                SearchMatch("/proc/self/status", 1, "Name:\tpython"),
+            ],
+            total_count=3,
+        )
+
+        result = json.loads(search_tool("stack", path="/proc/self", task_id="proc_search"))
+
+        paths = [m["path"] for m in result.get("matches", [])]
+        self.assertNotIn("/proc/self/smaps", paths)
+        self.assertNotIn("/proc/self/task/1234/auxv", paths)
+        self.assertIn("/proc/self/status", paths)
+        self.assertEqual(result["total_count"], 1)
+        self.assertIn("omitted", result.get("_omitted", ""))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_tool_filters_proc_sensitive_file_results(self, mock_ops):
+        mock_ops.return_value.search.return_value = SearchResult(
+            files=[
+                "/proc/self/maps",
+                "/proc/self/smaps_rollup",
+                "/proc/self/status",
+            ],
+            total_count=3,
+        )
+
+        result = json.loads(search_tool("*maps*", target="files", path="/proc/self", task_id="proc_find"))
+
+        self.assertEqual(result.get("files"), ["/proc/self/status"])
+        self.assertEqual(result["total_count"], 1)
+        self.assertIn("omitted", result.get("_omitted", ""))
 
 
 # ---------------------------------------------------------------------------

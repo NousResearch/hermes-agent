@@ -439,7 +439,11 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     try:
         resolved = _resolve_path_for_task(path, task_id)
     except (OSError, ValueError, RuntimeError):
+        if _is_blocked_device(path):
+            return "blocked device path"
         return get_read_block_error(path)
+    if _is_blocked_device(str(resolved)):
+        return "blocked device path"
     return get_read_block_error(str(resolved))
 
 
@@ -473,6 +477,17 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
                 continue
             allowed_counts[file_path] = count
         result.counts = allowed_counts
+
+    if omitted and hasattr(result, "total_count"):
+        if hasattr(result, "counts") and result.counts:
+            result.total_count = sum(result.counts.values())
+        else:
+            remaining = 0
+            if hasattr(result, "matches") and result.matches:
+                remaining += len(result.matches)
+            if hasattr(result, "files") and result.files:
+                remaining += len(result.files)
+            result.total_count = remaining
 
     return omitted
 
@@ -1802,6 +1817,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = _resolve_path_for_task(path, task_id)
         except (OSError, ValueError, RuntimeError):
             resolved_path = None
+        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        if _is_blocked_device(path, base_dir=device_base):
+            return json.dumps({
+                "error": (
+                    f"Cannot search '{path}': this is a device file that would "
+                    "block or produce infinite output."
+                ),
+            }, ensure_ascii=False)
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
             return json.dumps({"error": block_error}, ensure_ascii=False)
@@ -1821,7 +1844,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if omitted:
             result_dict["_omitted"] = (
                 f"{omitted} result(s) omitted because they target credential, "
-                "token, cache, or secret-bearing environment files."
+                "token, cache, secret-bearing environment, or blocked device/proc files."
             )
 
         if count >= 3:

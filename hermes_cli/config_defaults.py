@@ -1326,14 +1326,31 @@ DEFAULT_CONFIG = {
         # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
         # blocking; secrets-class findings shown red. No-op without it.
         "tier1_advisory": True,
-        # Approval gate for skill_manage mutations on BOTH foreground turns and the background
-        # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
-        # pending, /skills diff <id>, /skills approve|reject <id>.
-        "write_approval": False,
-        # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
-        # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
+        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
+        # remove_file), applied to BOTH foreground agent turns and the
+        # background self-improvement review fork.
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: stage the write for review
+        #                     instead of committing (a SKILL.md is too large to
+        #                     review inline, so skills always stage rather than
+        #                     prompt). List with /skills pending, inspect with
+        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     never crammed into a chat bubble), apply with
+        #                     /skills approve <id> or drop with /skills reject <id>.
+        # New in config: expanded from a bare bool to a dict with sub-keys
+        #   enabled: true/false    — gate toggle (same semantic as the old bool)
+        #   only: [skill names]    — if non-empty, gate ONLY these skill names
+        #   exclude: [skill names] — if non-empty, gate ALL skills EXCEPT these
+        #                            only and exclude are mutually exclusive
+        #                            in effect: only takes precedence.
+        "write_approval": {"enabled": False, "only": [], "exclude": []},
+        # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
+        # — curator, agent, or user — appends one JSONL entry to
+        # ~/.hermes/skills/.curator_ledger.jsonl with before/after file
+        # hashes; file contents are stored content-addressed (deduped) under
+        # ~/.hermes/.curator_backups/blobs/. Enables `hermes curator ledger`
+        # and single-mutation `hermes curator rollback <entry-id>`.
+        # Telemetry, never a gate: ledger failures cannot block a mutation.
         "ledger": True,
     },
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
@@ -2306,7 +2323,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 40,  # Config schema version - bump this when adding new required fields
+    "_config_version": 41,  # Config schema version - bump this when adding new required fields
 }
 
 

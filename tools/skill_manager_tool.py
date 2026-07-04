@@ -589,6 +589,9 @@ def _run_write_gate(build_staging):
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:
         return None
+    # Gate is on → check if THIS specific skill should be gated (only/exclude).
+    if not wa.should_gate_skill(name):
+        return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)

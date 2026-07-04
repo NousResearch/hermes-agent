@@ -855,6 +855,18 @@ class GatewaySlashCommandsMixin(
             return ("Skill write approval is off (skills.write_approval). "
                     "Enable it with /skills approval on, then review staged "
                     "writes here with /skills pending.")
+
+        def _set_approval(enabled: bool):
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            from hermes_cli.config import read_user_config_raw
+            user_config = read_user_config_raw(config_path)
+            user_config.setdefault("skills", {}).setdefault("write_approval", {})["enabled"] = bool(enabled)
+            atomic_config_write(config_path, user_config)
+            # New setting must take effect next message → drop cached agent.
+            self._evict_cached_agent(session_key)
+
+
         out = handle_pending_subcommand(
             wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:

@@ -808,6 +808,31 @@ class TestConfigVersionDetection:
             assert check_config_version() == (latest, latest)
 
 
+class TestStaleToolsetMigration:
+    def test_prunes_removed_toolsets_from_enabled_and_platform_toolsets(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 32,
+                    "agent": {"enabled_toolsets": ["terminal", "messaging"]},
+                    "platform_toolsets": {"cli": ["messaging", "terminal"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+            raw = read_raw_config()
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["agent"]["enabled_toolsets"] == ["terminal"]
+        assert raw["platform_toolsets"]["cli"] == ["terminal"]
+        assert any("pruned stale toolsets" in item for item in results["config_added"])
+        assert not results["warnings"]
+
+
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
 

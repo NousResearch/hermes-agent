@@ -3014,7 +3014,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 32,
+    "_config_version": 33,
 }
 
 # =============================================================================
@@ -5489,6 +5489,61 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "the old default was written into your config as a literal "
                     "true. Set it to true again to re-enable, or \"auto\" for the "
                     "legacy surface-aware behavior."
+                )
+
+    # ── Version 32 → 33: prune stale persisted toolset names ──
+    # Removed or renamed toolsets should not linger in user configs forever.
+    # If a stale name stays in agent.enabled_toolsets or platform_toolsets.*,
+    # startup prints an "Unknown toolsets" warning on every launch until the
+    # user manually edits config.yaml. Drop names that no longer resolve and
+    # are not configured MCP servers.
+    if current_ver < 33:
+        config = read_raw_config()
+        mcp_names = set((config.get("mcp_servers") or {}).keys())
+        removed: List[str] = []
+        from toolsets import validate_toolset
+
+        def _keep_toolset(name: Any) -> bool:
+            return isinstance(name, str) and bool(name) and (
+                validate_toolset(name) or name in mcp_names
+            )
+
+        raw_agent = config.get("agent")
+        if isinstance(raw_agent, dict):
+            enabled = raw_agent.get("enabled_toolsets")
+            if isinstance(enabled, list):
+                filtered_enabled = [name for name in enabled if _keep_toolset(name)]
+                if filtered_enabled != enabled:
+                    removed.extend(
+                        name for name in enabled
+                        if isinstance(name, str) and name and name not in filtered_enabled
+                    )
+                    raw_agent["enabled_toolsets"] = filtered_enabled
+                    config["agent"] = raw_agent
+
+        platform_toolsets = config.get("platform_toolsets")
+        if isinstance(platform_toolsets, dict):
+            for platform, raw_toolsets in list(platform_toolsets.items()):
+                toolset_names = raw_toolsets if isinstance(raw_toolsets, list) else [raw_toolsets]
+                filtered_toolsets = [name for name in toolset_names if _keep_toolset(name)]
+                if filtered_toolsets != toolset_names:
+                    removed.extend(
+                        name for name in toolset_names
+                        if isinstance(name, str) and name and name not in filtered_toolsets
+                    )
+                    platform_toolsets[platform] = filtered_toolsets
+                    config["platform_toolsets"] = platform_toolsets
+
+        if removed:
+            unique_removed = sorted(set(removed))
+            save_config(config, strip_defaults=False)
+            results["config_added"].append(
+                f"pruned stale toolsets ({', '.join(unique_removed)})"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Pruned stale toolset name(s) from agent.enabled_toolsets "
+                    f"and platform_toolsets: {', '.join(unique_removed)}"
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

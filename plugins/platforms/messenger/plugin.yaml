@@ -1,0 +1,65 @@
+name: messenger-platform
+label: Messenger (Meta)
+kind: platform
+version: 1.0.0
+description: >
+  Facebook Messenger (Meta Page DM) gateway adapter for Hermes Agent.
+  Runs an aiohttp webhook server (shared with the Instagram plugin —
+  both surfaces of one Meta app deliver to the same callback URL) with
+  X-Hub-Signature-256 HMAC validation, relays Page DMs to the agent,
+  and replies through the Graph API /me/messages endpoint. Inbound
+  image/audio/video/file attachments are downloaded from Meta's CDN and
+  cached for the vision/file tools; echo events and delivery/read
+  receipts are filtered.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: MESSENGER_ENABLED
+    description: "Enable the Facebook Messenger adapter (true/false). Required because the META_* credentials are shared with the Instagram plugin."
+    prompt: "Enable Messenger? (true/false)"
+    password: false
+  - name: META_PAGE_ACCESS_TOKEN
+    description: "Meta Page access token used for Graph API sends (shared with the Instagram plugin)"
+    prompt: "Page access token"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: META_APP_SECRET
+    description: "Meta app secret — validates the X-Hub-Signature-256 header on every webhook POST"
+    prompt: "App secret"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: META_VERIFY_TOKEN
+    description: "Webhook verification handshake token (any random string; must match the Meta developer portal)"
+    prompt: "Webhook verify token"
+    password: true
+optional_env:
+  - name: MESSENGER_ALLOWED_USERS
+    description: "Comma-separated page-scoped user IDs (PSIDs) allowed to talk to the bot"
+    prompt: "Allowed PSIDs (comma-separated)"
+    password: false
+  - name: MESSENGER_ALLOW_ALL_USERS
+    description: "Allow any Messenger user to talk to the bot (for public customer-facing bots)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MESSENGER_HOME_CHANNEL
+    description: "Default PSID for cron / notification delivery"
+    prompt: "Home channel PSID (or empty)"
+    password: false
+  - name: META_WEBHOOK_PORT
+    description: "Webhook listen port shared by both Meta surfaces (default: 8647)"
+    prompt: "Webhook port"
+    password: false
+  - name: META_WEBHOOK_HOST
+    description: "Webhook bind host (default: 127.0.0.1 — front with an HTTPS reverse proxy or tunnel)"
+    prompt: "Webhook host"
+    password: false
+  - name: META_WEBHOOK_PATH
+    description: "Webhook path (default: /meta/webhook — do not strip the prefix at the proxy)"
+    prompt: "Webhook path"
+    password: false
+  - name: META_GRAPH_API_BASE
+    description: "Graph API base URL override (default: https://graph.facebook.com/v23.0)"
+    prompt: "Graph API base URL"
+    password: false

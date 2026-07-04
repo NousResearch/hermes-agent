@@ -1,0 +1,65 @@
+name: instagram-platform
+label: Instagram DM (Meta)
+kind: platform
+version: 1.0.0
+description: >
+  Instagram Direct Messages gateway adapter for Hermes Agent.
+  Instagram is the second surface of a Meta app: it shares the
+  messenger plugin's credentials, webhook listener, and Graph API send
+  pipeline (see plugins/platforms/messenger/meta_common.py). Events
+  arrive on the same callback URL as Messenger and are routed here by
+  the payload's top-level "object" field, so sessions are recorded
+  under the instagram platform. Outbound messages are chunked at
+  Instagram's 1000-character limit.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: INSTAGRAM_ENABLED
+    description: "Enable the Instagram DM adapter (true/false). Required because the META_* credentials are shared with the Messenger plugin."
+    prompt: "Enable Instagram DM? (true/false)"
+    password: false
+  - name: META_PAGE_ACCESS_TOKEN
+    description: "Meta Page access token used for Graph API sends (shared with the Messenger plugin)"
+    prompt: "Page access token"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: META_APP_SECRET
+    description: "Meta app secret — validates the X-Hub-Signature-256 header on every webhook POST"
+    prompt: "App secret"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: META_VERIFY_TOKEN
+    description: "Webhook verification handshake token (any random string; must match the Meta developer portal)"
+    prompt: "Webhook verify token"
+    password: true
+optional_env:
+  - name: INSTAGRAM_ALLOWED_USERS
+    description: "Comma-separated Instagram-scoped user IDs (IGSIDs) allowed to talk to the bot"
+    prompt: "Allowed IGSIDs (comma-separated)"
+    password: false
+  - name: INSTAGRAM_ALLOW_ALL_USERS
+    description: "Allow any Instagram user to talk to the bot (for public customer-facing bots)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: INSTAGRAM_HOME_CHANNEL
+    description: "Default IGSID for cron / notification delivery"
+    prompt: "Home channel IGSID (or empty)"
+    password: false
+  - name: META_WEBHOOK_PORT
+    description: "Webhook listen port shared by both Meta surfaces (default: 8647)"
+    prompt: "Webhook port"
+    password: false
+  - name: META_WEBHOOK_HOST
+    description: "Webhook bind host (default: 127.0.0.1 — front with an HTTPS reverse proxy or tunnel)"
+    prompt: "Webhook host"
+    password: false
+  - name: META_WEBHOOK_PATH
+    description: "Webhook path (default: /meta/webhook — do not strip the prefix at the proxy)"
+    prompt: "Webhook path"
+    password: false
+  - name: META_GRAPH_API_BASE
+    description: "Graph API base URL override (default: https://graph.facebook.com/v23.0)"
+    prompt: "Graph API base URL"
+    password: false

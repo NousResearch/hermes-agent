@@ -233,16 +233,27 @@ himalaya message delete 42
 
 ### Manage Flags
 
+In himalaya v1.2.0+, the ``flag`` subcommand takes positional arguments:
+every integer is a message ID, every other token is the flag name. The
+old ``--flag <name>`` syntax was removed and prints
+``error: unexpected argument --flag found``.
+
 Add flag:
 
 ```bash
-himalaya flag add 42 --flag seen
+himalaya flag add 42 seen
 ```
 
 Remove flag:
 
 ```bash
-himalaya flag remove 42 --flag seen
+himalaya flag remove 42 seen
+```
+
+Batch — mark several messages at once (any number of IDs, then the flag):
+
+```bash
+himalaya flag add 42 43 44 seen
 ```
 
 ## Multiple Accounts

@@ -24,6 +24,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
+from hermes_cli.goals import CONTINUATION_MARKER
 
 
 class _DrainProbeAdapter(BasePlatformAdapter):
@@ -72,7 +73,7 @@ def _slack_thread_source() -> SessionSource:
     )
 
 
-CONTINUATION_TEXT = "[Continuing toward your standing goal]\nGoal: ship it"
+CONTINUATION_TEXT = f"{CONTINUATION_MARKER}\nGoal: ship it"
 
 
 @pytest.fixture()
@@ -193,6 +194,4 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
     )
-    assert adapter._pending_messages[adapter_key].text.startswith(
-        "[Continuing toward your standing goal]"
-    )
+    assert adapter._pending_messages[adapter_key].text.startswith(CONTINUATION_MARKER)

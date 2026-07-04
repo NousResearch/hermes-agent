@@ -8,7 +8,12 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
+from hermes_cli.goals import (
+    CONTINUATION_MARKER,
+    CONTINUATION_PROMPT_TEMPLATE,
+    CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+    CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+)
 
 
 class FakeAdapter:
@@ -80,3 +85,60 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
     ]
 
 
+def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
+    """Regression: /goal pause/clear must cancel queued self-continuations.
+
+    A user-issued /goal pause can arrive after the judge queued the next
+    continuation but before that queued turn runs.  The queued synthetic goal
+    continuation should be removed without dropping normal user /queue items.
+    """
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = FakeAdapter()
+    adapter._pending_messages = {}
+    runner._queued_events = {}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        thread_id="thread-123",
+    )
+    session_key = "discord:parent-channel:thread-123"
+    normal_event = MessageEvent(
+        text="normal queued user message",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    adapter._pending_messages[session_key] = _goal_continuation_event(source)
+    runner._queued_events[session_key] = [
+        normal_event,
+        _goal_continuation_event(source, goal="second continuation"),
+    ]
+
+    removed = runner._clear_goal_pending_continuations(session_key, adapter)
+
+    assert removed == 2
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_TEMPLATE.format(goal="x")
+    )
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal="x", contract_block="- one"
+        )
+    )
+    assert GatewayRunner._is_goal_continuation_event(
+        CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal="x", subgoals_block="- one"
+        )
+    )
+    assert CONTINUATION_MARKER in CONTINUATION_PROMPT_TEMPLATE
+    assert adapter._pending_messages.get(session_key) is None
+    assert runner._queued_events[session_key] == [normal_event]
+
+
+def test_queue_notice_formats_depth_consistently():
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    assert runner._queue_notice(0) == "Queued for the next turn."
+    assert runner._queue_notice(1) == "Queued for the next turn."
+    assert runner._queue_notice(2) == "Queued for the next turn. (2 queued)"

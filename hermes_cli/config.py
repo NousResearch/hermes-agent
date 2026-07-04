@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, Iterable
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -6035,6 +6035,48 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+_BUILTIN_MEMORY_PROVIDER_CONFIG_KEYS = {
+    "honcho",
+    "hindsight",
+    "holographic",
+    "mem0",
+    "openviking",
+    "retaindb",
+    "supermemory",
+    "byterover",
+}
+
+
+def prune_inactive_memory_provider_configs(
+    config: dict,
+    active_provider: str,
+    provider_names: Iterable[str] = (),
+) -> dict:
+    """Drop stale legacy ``memory.<provider>`` config blocks.
+
+    Runtime selection is controlled by ``memory.provider`` and modern provider
+    setup stores provider details under ``~/.hermes/<provider>/`` or ``.env``.
+    Legacy nested provider blocks can survive config merges and confuse paths
+    that inspect the merged ``memory`` map, so keep only the active provider's
+    block.
+    """
+    memory_config = config.get("memory")
+    if not isinstance(memory_config, dict):
+        return config
+
+    active = (active_provider or "").strip()
+    names = set(_BUILTIN_MEMORY_PROVIDER_CONFIG_KEYS)
+    names.update(str(name).strip() for name in provider_names if str(name).strip())
+
+    for name in names:
+        if name == active:
+            continue
+        if isinstance(memory_config.get(name), dict):
+            memory_config.pop(name, None)
+
+    return config
+
+
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     """Remove the given dotted leaf keys from a nested config dict.
 
@@ -6658,6 +6700,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if managed_config:
             managed_expanded = _expand_env_vars(managed_config)
             expanded = _deep_merge(expanded, managed_expanded)
+        memory_config = expanded.get("memory")
+        if isinstance(memory_config, dict):
+            prune_inactive_memory_provider_configs(
+                expanded,
+                str(memory_config.get("provider") or ""),
+            )
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``

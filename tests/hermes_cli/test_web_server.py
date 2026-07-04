@@ -429,6 +429,38 @@ class TestWebServerEndpoints:
             "recall_budget": "high",
         }
 
+    def test_set_memory_provider_prunes_inactive_provider_config(self, monkeypatch):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "memory": {
+                "provider": "hindsight",
+                "memory_enabled": True,
+                "hindsight": {"base_url": "http://localhost:36813"},
+                "mem0": {"history_db_path": "old.db"},
+            },
+            "gateway": {"enabled": True},
+        })
+
+        monkeypatch.setattr(
+            "plugins.memory.discover_memory_providers",
+            lambda: [
+                ("hindsight", "Hindsight", True),
+                ("openviking", "OpenViking", True),
+            ],
+        )
+
+        resp = self.client.put("/api/memory/provider", json={"provider": "openviking"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "active": "openviking"}
+        cfg = load_config()
+        assert cfg["memory"]["provider"] == "openviking"
+        assert cfg["memory"]["memory_enabled"] is True
+        assert "hindsight" not in cfg["memory"]
+        assert "mem0" not in cfg["memory"]
+        assert cfg["gateway"]["enabled"] is True
+
     def test_put_memory_provider_config_rejects_unsupported_select_value(self):
         resp = self.client.put(
             "/api/memory/providers/hindsight/config",

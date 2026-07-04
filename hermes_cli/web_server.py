@@ -65,6 +65,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     remove_env_value,
+    prune_inactive_memory_provider_configs,
     check_config_version,
     detect_install_method,
     format_docker_update_message,
@@ -4033,6 +4034,13 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
             memory_config = {}
             config["memory"] = memory_config
         memory_config["provider"] = provider.name
+        try:
+            from plugins.memory import discover_memory_providers
+
+            provider_names = [name for name, _d, _c in discover_memory_providers()]
+        except Exception:
+            provider_names = [provider.name]
+        prune_inactive_memory_provider_configs(config, provider.name, provider_names)
         save_config(config)
 
         path = _memory_provider_config_path(provider)
@@ -9757,10 +9765,14 @@ async def set_memory_provider(body: MemoryProviderSelect):
     if provider.lower() in {"built-in", "builtin", "none"}:
         provider = ""
 
-    if provider:
+    try:
         from plugins.memory import discover_memory_providers
 
-        valid = {name for name, _d, _c in discover_memory_providers()}
+        provider_names = [name for name, _d, _c in discover_memory_providers()]
+    except Exception:
+        provider_names = []
+    if provider:
+        valid = set(provider_names)
         if provider not in valid:
             raise HTTPException(
                 status_code=400,
@@ -9771,6 +9783,7 @@ async def set_memory_provider(body: MemoryProviderSelect):
     if not isinstance(cfg.get("memory"), dict):
         cfg["memory"] = {}
     cfg["memory"]["provider"] = provider
+    prune_inactive_memory_provider_configs(cfg, provider, provider_names)
     save_config(cfg)
     return {"ok": True, "active": provider}
 

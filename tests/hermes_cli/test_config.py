@@ -117,6 +117,27 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_load_config_prunes_inactive_memory_provider_blocks(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "memory": {
+                        "provider": "openviking",
+                        "memory_enabled": True,
+                        "hindsight": {"base_url": "http://localhost:36813"},
+                        "openviking": {"mode": "local"},
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            config = load_config()
+
+            assert config["memory"]["provider"] == "openviking"
+            assert config["memory"]["memory_enabled"] is True
+            assert "hindsight" not in config["memory"]
+            assert config["memory"]["openviking"] == {"mode": "local"}
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

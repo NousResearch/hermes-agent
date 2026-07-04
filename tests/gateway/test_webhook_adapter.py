@@ -103,6 +103,12 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
+    """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
+    signed_content = timestamp.encode() + b"." + body
+    return hmac.new(secret.encode(), signed_content, hashlib.sha256).hexdigest()
+
+
 def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> str:
     """Compute a Svix v1 signature header for *body* using *secret*."""
     key = (
@@ -184,6 +190,111 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_signature_valid(self):
+        """Valid X-Webhook-Signature-V2 (timestamp-bound) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_old_timestamp_rejects(self):
+        """A V2 signature outside the replay window is rejected even though
+        the HMAC itself would otherwise be valid for that (stale) timestamp
+        — this is the actual replay-protection guarantee: an attacker who
+        captured (body, signature, timestamp) once cannot resubmit it after
+        the window closes."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()) - 301)
+        sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_wrong_timestamp_rejects(self):
+        """The timestamp is cryptographically bound into the V2 signature —
+        this is the actual fix for the V1 replay hole. An attacker who only
+        has a captured (body, signature) pair for V1 (no timestamp binding)
+        cannot forge a valid V2 signature for a fresh timestamp without the
+        secret, unlike V1 where the signature covers the body alone and a
+        forged/fresh timestamp would otherwise sail through unverified."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        real_timestamp = str(int(time.time()))
+        sig = _generic_v2_signature(body, secret, real_timestamp)
+        forged_timestamp = str(int(time.time()) + 1)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": forged_timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_malformed_timestamp_rejects(self):
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "deadbeef",
+            "X-Webhook-Timestamp": "not-a-number",
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v1_still_works_without_timestamp(self):
+        """Legacy V1 (body-only) senders that never send X-Webhook-Timestamp
+        must keep working — this is the backward-compatibility guarantee for
+        existing integrations that predate the V2 scheme."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        req = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_preferred_when_both_sent(self):
+        """If a sender sends both V1 and V2 headers (mid-migration), V2 must
+        win — a stale/wrong V1 must not be able to override a valid V2."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            "X-Webhook-Timestamp": timestamp,
+            # Deliberately wrong V1 — must be ignored since V2 is checked first.
+            "X-Webhook-Signature": "0" * 64,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
+        """Regression/documentation test: a captured (body, signature) V1
+        pair replays successfully no matter how much time has passed,
+        because the V1 signature has no timestamp binding at all. This is
+        the exact vulnerability V2 fixes — it is not asserting desired
+        behavior, it is pinning the known, accepted-with-warning legacy
+        gap so a future change to V1's semantics doesn't silently alter it
+        without a deliberate decision."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        original_request = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(original_request, body, secret) is True
+        # "Time passes" — nothing about a V1 signature depends on time, so
+        # a captured pair replayed much later still validates.
+        replayed_request = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(replayed_request, body, secret) is True
 
     def test_validate_svix_signature_valid(self):
         """Valid Svix/AgentMail v1 signature headers are accepted."""

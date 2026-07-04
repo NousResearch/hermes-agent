@@ -10495,10 +10495,13 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
                     index_available = False
                 entry["available"] = index_available
                 # Empty-query search on the index returns featured/popular skills.
+                # Use 500 so the Desktop hub landing page shows a meaningful
+                # slice of the catalog (the CLI browse uses 5000+; the index
+                # is disk-cached so this is a cheap in-memory list slice).
                 if index_available:
                     try:
                         featured = [
-                            _skill_meta_to_payload(m) for m in src.search("", limit=12)
+                            _skill_meta_to_payload(m) for m in src.search("", limit=500)
                         ]
                     except Exception:
                         featured = []

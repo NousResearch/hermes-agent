@@ -571,6 +571,40 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _unknown_tool_payload(name: str) -> dict:
+        """Build a structured unknown-tool error payload with skill hints.
+
+        Some users (and model retries) accidentally call a skill name as a tool
+        (e.g. ``text2sql``). Surface a direct correction path so the model can
+        self-heal instead of drifting to unrelated skills/tools.
+        """
+        payload = {"error": f"Unknown tool: {name}"}
+        normalized = (name or "").strip().lower()
+        if not normalized:
+            return payload
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            command_map = get_skill_commands() or {}
+            command_names = {key.lstrip("/") for key in command_map.keys()}
+            hyphen_name = normalized.replace("_", "-")
+            underscore_name = normalized.replace("-", "_")
+            if (
+                normalized in command_names
+                or hyphen_name in command_names
+                or underscore_name in command_names
+            ):
+                payload["hint"] = (
+                    "Skills are not callable tools. Load the skill with "
+                    f"skill_view(\"{hyphen_name}\") or invoke it via /{hyphen_name}."
+                )
+                payload["suggested_tool"] = "skill_view"
+                payload["suggested_skill"] = hyphen_name
+        except Exception:
+            pass
+        return payload
+
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
@@ -580,7 +614,7 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps(self._unknown_tool_payload(name))
         try:
             if entry.is_async:
                 from model_tools import _run_async

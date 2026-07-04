@@ -119,6 +119,18 @@ class TestUnknownToolDispatch:
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
+    def test_unknown_tool_that_matches_skill_returns_skill_hint(self, monkeypatch):
+        reg = ToolRegistry()
+        monkeypatch.setattr(
+            "agent.skill_commands.get_skill_commands",
+            lambda: {"/text2sql": {"name": "text2sql"}},
+        )
+        result = json.loads(reg.dispatch("text2sql", {}))
+        assert "error" in result
+        assert result["suggested_tool"] == "skill_view"
+        assert result["suggested_skill"] == "text2sql"
+        assert "Skills are not callable tools" in result["hint"]
+
 
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):

@@ -3221,6 +3221,7 @@ def _apply_model_switch(
             is_global_flag,
             is_session,
             is_once=one_turn,
+            explicit_provider=explicit_provider,
         )
     )
     if not model_input:

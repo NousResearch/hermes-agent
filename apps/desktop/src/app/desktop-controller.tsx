@@ -66,6 +66,7 @@ import {
   setAwaitingResponse,
   setBusy,
   setCurrentModel,
+  setCurrentModelSource,
   setCurrentProvider,
   setMessages,
   setRememberedSessionId
@@ -1057,6 +1058,7 @@ export function DesktopController() {
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
+              setCurrentModelSource('default')
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })

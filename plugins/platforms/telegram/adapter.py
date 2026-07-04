@@ -32,7 +32,7 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
 
-async def _await_with_thread_deadline(awaitable, timeout: float):
+async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None):
     """Await with a wall-clock deadline that does not depend on loop timers.
 
     ``asyncio.wait_for`` schedules its timeout on the event loop and then waits
@@ -41,6 +41,14 @@ async def _await_with_thread_deadline(awaitable, timeout: float):
     hand control back to the retry ladder under some supervisors.  This helper
     lets a daemon ``threading.Timer`` wake the loop and, on timeout, abandons
     the shielded task instead of awaiting cancellation completion.
+
+    ``on_abandon`` (optional) is a zero-arg callable returning an awaitable that
+    is scheduled as a detached best-effort cleanup when the task is abandoned on
+    timeout.  The abandoned initialize() may leave a half-built httpx client /
+    connection pool open (it never completed and we do not await its
+    cancellation), so the caller uses this to shut that state down and avoid
+    leaking a pool per retry attempt.  Cleanup runs detached and its own errors
+    are swallowed, so it can never re-block the retry ladder.
     """
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
@@ -68,9 +76,68 @@ async def _await_with_thread_deadline(awaitable, timeout: float):
 
         task.cancel()
         task.add_done_callback(_consume_abandoned_task)
+        if on_abandon is not None:
+            # Detached best-effort cleanup: close the half-built app's httpx
+            # client/pool so an abandoned attempt can't leak sockets across the
+            # retry ladder. Detached + exception-observed so it never re-blocks
+            # or re-hangs the ladder we are trying to advance.
+            cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
+            cleanup.add_done_callback(_consume_abandoned_task)
         raise asyncio.TimeoutError()
     finally:
         timer.cancel()
+
+
+async def _run_abandon_cleanup(on_abandon) -> None:
+    """Run the abandonment cleanup coroutine, swallowing any failure.
+
+    Wrapped so a cleanup that itself hangs or raises cannot surface as an
+    unhandled task error or block anything — it is fully fire-and-forget.
+    """
+    try:
+        result = on_abandon()
+        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+            await result
+    except Exception:
+        logger.debug("Abandoned Telegram init cleanup failed", exc_info=True)
+
+
+async def _shutdown_abandoned_app(app) -> None:
+    """Release a half-built PTB app's httpx transports after init was abandoned.
+
+    ``Application.shutdown()`` / ``Bot.shutdown()`` are gated on the app's
+    ``_initialized`` / ``_requests_initialized`` flags, which a wedged
+    ``initialize()`` (the case this whole path exists for) may never have set —
+    so calling only ``app.shutdown()`` no-ops and leaks the connection pool it
+    was meant to close.  ``HTTPXRequest`` builds its ``httpx.AsyncClient``
+    eagerly in its constructor and its ``shutdown()`` gates only on
+    ``client.is_closed``, so closing the request transports directly releases
+    the pool regardless of PTB init state.  We try the clean path first, then
+    fall back to the transports.  All best-effort and swallowed.
+    """
+    if app is None:
+        return
+    try:
+        await app.shutdown()
+    except Exception:
+        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    # Directly close the underlying request transports (bypasses PTB's
+    # init-gated shutdown so the eagerly-built httpx pool is released even when
+    # the abandoned initialize() never flipped _initialized).
+    bot = getattr(app, "bot", None)
+    requests = getattr(bot, "_request", None) if bot is not None else None
+    if not requests:
+        return
+    for request in requests:
+        shutdown = getattr(request, "shutdown", None)
+        if shutdown is None:
+            continue
+        try:
+            result = shutdown()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -2980,6 +3047,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     await _await_with_thread_deadline(
                         self._app.initialize(),
                         timeout=_init_timeout,
+                        # On timeout the initialize() task is abandoned without
+                        # awaiting its cancellation (it may be wedged in a
+                        # shielded scope). Best-effort release the half-built
+                        # app's httpx client/connection pool so it isn't leaked
+                        # across the retry ladder (mirrors the client-close-on-
+                        # timeout pattern in agent/auxiliary_client.py).
+                        on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
                     )
                     break
                 except asyncio.TimeoutError:

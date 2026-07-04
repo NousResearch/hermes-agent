@@ -533,6 +533,51 @@ class TestSchemaConversion:
         assert schema["name"] == "mcp_my_server_get_sum"
         assert "-" not in schema["name"]
 
+    def test_short_name_remains_unchanged(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="list_dir")
+        schema = _convert_mcp_schema("my_server", mcp_tool)
+
+        assert schema["name"] == "mcp_my_server_list_dir"
+        assert len(schema["name"]) <= 64
+
+    def test_long_name_shortened_to_64_chars_or_less(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="cex_options_list_options_underlying_candlesticks")
+        schema = _convert_mcp_schema("gate_cex_pub", mcp_tool)
+
+        assert len(schema["name"]) <= 64
+        assert schema["name"].startswith("mcp_gate_cex_pub_")
+
+    def test_long_name_shortening_is_deterministic(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="tool_" + ("very_long_segment_" * 4) + "alpha")
+
+        schema1 = _convert_mcp_schema("server_name", mcp_tool)
+        schema2 = _convert_mcp_schema("server_name", mcp_tool)
+
+        assert schema1["name"] == schema2["name"]
+        assert len(schema1["name"]) <= 64
+
+    def test_different_long_names_do_not_collide(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        schema1 = _convert_mcp_schema(
+            "server_name",
+            _make_mcp_tool(name="tool_" + ("very_long_segment_" * 4) + "alpha"),
+        )
+        schema2 = _convert_mcp_schema(
+            "server_name",
+            _make_mcp_tool(name="tool_" + ("very_long_segment_" * 4) + "beta"),
+        )
+
+        assert schema1["name"] != schema2["name"]
+        assert len(schema1["name"]) <= 64
+        assert len(schema2["name"]) <= 64
+
 
 # ---------------------------------------------------------------------------
 # Check function
@@ -924,6 +969,42 @@ class TestDiscoverAndRegister:
         assert entry.toolset == "mcp-srv"
 
         _servers.pop("srv", None)
+
+    def test_shortened_registry_name_still_dispatches_original_tool_name(self):
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        original_tool_name = "tool_" + ("very_long_segment_" * 4) + "alpha"
+        mock_tools = [_make_mcp_tool(original_tool_name, "Do something")]
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(return_value=_make_call_result("ok"))
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        def fake_run(coro, timeout=30):
+            return asyncio.run(coro)
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("server_name", {"command": "test"})
+            )
+            tool_name = next(name for name in registered if name.startswith("mcp_server_name_tool_"))
+            assert len(tool_name) <= 64
+
+            entry = mock_registry._tools[tool_name]
+            result = json.loads(entry.handler({"value": 1}))
+
+        assert result["result"] == "ok"
+        mock_session.call_tool.assert_called_once_with(original_tool_name, arguments={"value": 1})
+
+        _servers.pop("server_name", None)
 
 
 # ---------------------------------------------------------------------------

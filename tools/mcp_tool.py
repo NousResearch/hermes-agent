@@ -84,6 +84,7 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import hashlib
 import inspect
 import json
 import logging
@@ -3925,6 +3926,22 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
+_MAX_MCP_TOOL_NAME_LENGTH = 64
+_MCP_TOOL_NAME_HASH_LENGTH = 12
+
+
+def shorten_mcp_tool_name(name: str, max_length: int = _MAX_MCP_TOOL_NAME_LENGTH) -> str:
+    """Return a stable MCP registry name that fits provider length limits."""
+    if len(name) <= max_length:
+        return name
+
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
+    prefix_length = max_length - len(digest) - 1
+    if prefix_length <= 0:
+        return digest[:max_length]
+    return f"{name[:prefix_length]}_{digest}"
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -3938,7 +3955,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
-    prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    prefixed_name = shorten_mcp_tool_name(f"mcp_{safe_server_name}_{safe_tool_name}")
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
@@ -3953,10 +3970,14 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     with keys: schema, handler_key.
     """
     safe_name = sanitize_mcp_name_component(server_name)
+
+    def _utility_name(suffix: str) -> str:
+        return shorten_mcp_tool_name(f"mcp_{safe_name}_{suffix}")
+
     return [
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_resources",
+                "name": _utility_name("list_resources"),
                 "description": f"List available resources from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -3967,7 +3988,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_read_resource",
+                "name": _utility_name("read_resource"),
                 "description": f"Read a resource by URI from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -3984,7 +4005,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_prompts",
+                "name": _utility_name("list_prompts"),
                 "description": f"List available prompts from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -3995,7 +4016,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_get_prompt",
+                "name": _utility_name("get_prompt"),
                 "description": f"Get a prompt by name from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",

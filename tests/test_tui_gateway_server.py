@@ -13,6 +13,7 @@ import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
+from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
@@ -1827,7 +1828,7 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id: calls["hooks"].append((event, session_id)),
+        lambda event, session_id, *_args: calls["hooks"].append((event, session_id)),
     )
 
     try:
@@ -1959,7 +1960,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id: hooks.append((event, session_id)),
+        lambda event, session_id, *_args: hooks.append((event, session_id)),
     )
 
     import tools.approval as _approval
@@ -5498,7 +5499,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     release_build = threading.Event()
     build_entered = threading.Event()
 
-    def _slow_make_agent(sid, key, session_id=None, session_db=None):
+    def _slow_make_agent(sid, key, session_id=None, session_db=None, **_kwargs):
         build_started.set()
         build_entered.set()
         release_build.wait(timeout=3.0)
@@ -5606,7 +5607,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(
         server,
@@ -5712,7 +5713,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
 
     emits = []
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -6810,8 +6811,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
@@ -6866,8 +6869,10 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],

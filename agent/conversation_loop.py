@@ -975,35 +975,46 @@ def run_conversation(
                 pass
             break
 
-        _ctx_len = int(getattr(agent.context_compressor, "context_length", 0) or 0)
-        _threshold_tokens = int(getattr(agent.context_compressor, "threshold_tokens", 0) or 0)
-        _reserve_base = agent.max_tokens if isinstance(agent.max_tokens, int) and agent.max_tokens > 0 else 8192
-        _reserve_cap = max(2048, _ctx_len // 4) if _ctx_len else _reserve_base
-        _output_reserve_tokens = min(max(_reserve_base, 8192), _reserve_cap)
-        _output_pressure_limit = (_ctx_len - _output_reserve_tokens) if _ctx_len else 0
-        _compression_pressure_limit = _threshold_tokens or _output_pressure_limit
-        if _output_pressure_limit > 0:
-            _compression_pressure_limit = (
-                min(_compression_pressure_limit, _output_pressure_limit)
-                if _compression_pressure_limit > 0 else _output_pressure_limit
-            )
-
+        # Pre-API pressure check. The turn-prologue preflight only saw the
+        # incoming user message; a single turn can then grow by many large
+        # tool results and leave no output budget before the NEXT call (the
+        # live 271k/272k Codex failure). The post-response should_compress
+        # gate at the tool-loop tail uses API-reported last_prompt_tokens,
+        # which LAGS a just-appended huge tool result — so it misses this
+        # case. Re-check here against the current request estimate.
+        #
+        # Mirror the turn-prologue preflight's guard chain exactly (see
+        # turn_context.py): (1) defer when the rough estimate is known-noisy
+        # relative to a recent real provider prompt that fit under threshold
+        # (schema overhead / post-compaction over-count, #36718); (2) skip
+        # while a same-session compression-failure cooldown is active; (3) then
+        # should_compress() — reusing the canonical threshold_tokens (output
+        # room already reserved by _compute_threshold_tokens) and its summary-
+        # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
+        # hard per-turn backstop shared with the overflow error handlers.
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        )
+        _compression_cooldown = getattr(
+            _compressor, "get_active_compression_failure_cooldown", lambda: None
+        )()
         if (
             agent.compression_enabled
-            and _compression_pressure_limit > 0
-            and request_pressure_tokens >= _compression_pressure_limit
             and len(messages) > 1
             and compression_attempts < 3
+            and not _defer_preflight(request_pressure_tokens)
+            and not _compression_cooldown
+            and _compressor.should_compress(request_pressure_tokens)
         ):
             compression_attempts += 1
             logger.info(
-                "Pre-API compression: ~%s request tokens >= %s pressure limit "
-                "(threshold=%s, context=%s, output_reserve=%s, attempt=%s/3)",
+                "Pre-API compression: ~%s request tokens >= %s threshold "
+                "(context=%s, attempt=%s/3)",
                 f"{request_pressure_tokens:,}",
-                f"{_compression_pressure_limit:,}",
-                f"{_threshold_tokens:,}" if _threshold_tokens else "unknown",
-                f"{_ctx_len:,}" if _ctx_len else "unknown",
-                f"{_output_reserve_tokens:,}" if _output_reserve_tokens else "unknown",
+                f"{int(getattr(_compressor, 'threshold_tokens', 0) or 0):,}",
+                f"{int(getattr(_compressor, 'context_length', 0) or 0):,}"
+                if getattr(_compressor, "context_length", 0) else "unknown",
                 compression_attempts,
             )
             agent._emit_status(

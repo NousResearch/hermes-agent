@@ -272,16 +272,35 @@ class TestSendWithRetryFallback:
         assert "plain text" in adapter._send_calls[1][1].lower()
 
     @pytest.mark.asyncio
-    async def test_fallback_failure_logged_but_not_raised(self):
+    async def test_forbidden_does_not_plain_text_fallback(self):
         adapter = _StubAdapter()
         adapter._send_results = [
             SendResult(success=False, error="Forbidden: bot blocked"),
-            SendResult(success=False, error="Forbidden: bot blocked"),
         ]
-        with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
         assert not result.success
-        assert len(adapter._send_calls) == 2  # original + fallback only
+        mock_sleep.assert_not_called()
+        assert len(adapter._send_calls) == 1  # original only; fallback cannot fix permissions
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retries_without_plain_text_fallback_or_notice(self):
+        adapter = _StubAdapter()
+        limited = SendResult(
+            success=False,
+            error="iLink sendmessage rate limited; cooldown active for 30.0s",
+            error_kind="rate_limited",
+            retry_after=30.0,
+        )
+        adapter._send_results = [limited, limited]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=1, base_delay=0)
+        assert not result.success
+        assert result.error_kind == "rate_limited"
+        assert len(adapter._send_calls) == 2  # original + delayed retry only
+        assert "plain text" not in adapter._send_calls[-1][1].lower()
+        first_sleep = mock_sleep.call_args_list[0][0][0]
+        assert first_sleep >= 30.0
 
 
 # ---------------------------------------------------------------------------

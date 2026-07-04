@@ -877,6 +877,56 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_adapter_marks_cron_text_delivery_notify(self):
+        """Cron result delivery is final user-visible output, not progress.
+
+        Telegram uses notify=True to avoid re-triggering sendChatAction after
+        the final send; without it, a cron delivery re-arms the typing bubble
+        even though no gateway typing refresh loop owns it anymore.
+        """
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "typing-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Cron output is ready.",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        metadata = adapter.send.call_args.kwargs["metadata"]
+        assert metadata["job_id"] == "typing-job"
+        assert metadata["notify"] is True
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

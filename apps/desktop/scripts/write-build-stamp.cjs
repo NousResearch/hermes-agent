@@ -77,23 +77,23 @@ function fromLocalGit() {
   }
 }
 
-// ── ApexNodes V0.1 runtime pin ─────────────────────────────────────────────
-// Path ②: the desktop ships our fork's Electron SHELL but installs the UPSTREAM
-// Hermes Agent runtime at first launch (we deliberately do NOT fork the
-// runtime). Our fork's build HEAD is not on NousResearch, so we cannot pin the
-// first-launch runtime clone to it: bootstrap-runner fetches install.sh from
-// raw.githubusercontent.com/NousResearch/hermes-agent/<commit> and install.sh
-// then `git clone --branch <branch>` from NousResearch + checks out <commit>.
-// We therefore pin to the upstream v0.17 release TAG — `git clone --depth 1
-// --branch v2026.6.19` lands exactly on that commit, so no by-SHA fetch is
-// needed (which the parent repo may reject). Bump both values when the bundle
-// adopts a newer upstream runtime; set APEXNODES_RUNTIME_PIN=0 to fall back to
-// the git HEAD (only correct when building from a ref pushed to NousResearch).
+// ── ApexNodes runtime pin ──────────────────────────────────────────────────
+// The desktop ships our fork's Electron SHELL and installs the runtime at
+// first launch from the COS source tarball that publish-runtime-tarball.sh
+// cut from exactly this FORK commit (<base>/hermes-agent-<commit>.tar.gz —
+// includes apex_overlay). `commit` therefore names a fork-main commit, and
+// `branch` names the upstream release tag that fork commit is based on: it is
+// only consumed by install.sh's git-clone fallback (`git clone --depth 1
+// --branch <branch>` from NousResearch) when the COS tarball is unreachable,
+// which yields a vanilla upstream runtime of the matching generation.
+// Bump both values together with a fresh tarball publish when the bundle
+// adopts a newer runtime; set APEXNODES_RUNTIME_PIN=0 to fall back to the git
+// HEAD (only correct when the tarball for that HEAD is already on COS).
 function fromApexNodesPin() {
   if (process.env.APEXNODES_RUNTIME_PIN === "0") return null
   return {
-    commit: process.env.APEXNODES_RUNTIME_COMMIT || "8550bed376258ab4b5ee27ee85f237401cac81f0",
-    branch: process.env.APEXNODES_RUNTIME_REF || "v2026.6.19",
+    commit: process.env.APEXNODES_RUNTIME_COMMIT || "64d0ea23ef7880b924110b7dfe07fee13c635b7f",
+    branch: process.env.APEXNODES_RUNTIME_REF || "v2026.7.1",
     dirty: false,
     source: "apexnodes-pin"
   }

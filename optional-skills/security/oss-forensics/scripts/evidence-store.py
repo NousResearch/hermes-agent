@@ -12,21 +12,24 @@ Commands:
   summary  - Print investigation statistics
 
 Usage example:
-  python3 evidence-store.py --store evidence.json add \
+  python3 evidence-store.py add \
     --source "git fsck output" --content "dangling commit abc123" \
     --type git --actor "malicious-user" --url "https://github.com/owner/repo/commit/abc123"
 
-  python3 evidence-store.py --store evidence.json list --type git
-  python3 evidence-store.py --store evidence.json verify
-  python3 evidence-store.py --store evidence.json export > evidence-table.md
+  python3 evidence-store.py list --type git
+  python3 evidence-store.py verify
+  python3 evidence-store.py export > evidence-table.md
 """
 
-import json
 import argparse
-import os
 import datetime
 import hashlib
+import json
+import os
 import sys
+from pathlib import Path
+
+DEFAULT_STORE = ".oss-forensics/evidence.json"
 
 EVIDENCE_TYPES = [
     "git",           # Local git repository data (commits, reflog, fsck)
@@ -81,6 +84,7 @@ class EvidenceStore:
 
     def _save(self):
         self.data["metadata"]["last_updated"] = _now_iso()
+        Path(self.filepath).parent.mkdir(parents=True, exist_ok=True)
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
@@ -212,7 +216,11 @@ def main():
         description="OSS Forensics Evidence Store Manager v2.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--store", default="evidence.json", help="Path to evidence JSON file (default: evidence.json)")
+    parser.add_argument(
+        "--store",
+        default=DEFAULT_STORE,
+        help=f"Path to evidence JSON file (default: {DEFAULT_STORE}; ignored local runtime output)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 

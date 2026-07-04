@@ -12,6 +12,10 @@ spec.loader.exec_module(evidence_store)
 EvidenceStore = evidence_store.EvidenceStore
 
 
+def test_default_store_path_is_ignored_runtime_output():
+    assert evidence_store.DEFAULT_STORE == ".oss-forensics/evidence.json"
+
+
 def test_evidence_store_init(tmp_path):
     store_file = tmp_path / "test_evidence.json"
     store = EvidenceStore(str(store_file))
@@ -54,6 +58,39 @@ def test_evidence_store_add_persists(tmp_path):
     store2 = EvidenceStore(str(store_file))
     assert len(store2.data["evidence"]) == 1
     assert store2.data["evidence"][0]["id"] == "EV-0001"
+
+
+def test_evidence_store_creates_parent_directory(tmp_path):
+    store_file = tmp_path / "nested" / "test_evidence.json"
+    store = EvidenceStore(str(store_file))
+
+    store.add(source="s1", content="c1", evidence_type="git")
+
+    assert store_file.exists()
+
+
+def test_cli_default_store_writes_to_runtime_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        evidence_store.sys,
+        "argv",
+        [
+            "evidence-store.py",
+            "add",
+            "--source",
+            "s1",
+            "--content",
+            "c1",
+            "--type",
+            "git",
+            "--quiet",
+        ],
+    )
+
+    evidence_store.main()
+
+    assert (tmp_path / evidence_store.DEFAULT_STORE).exists()
+    assert not (tmp_path / "evidence.json").exists()
 
 
 def test_evidence_store_sequential_ids(tmp_path):

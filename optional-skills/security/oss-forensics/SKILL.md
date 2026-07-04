@@ -61,6 +61,12 @@ Read these before every investigation step. Violating them invalidates the repor
 > installation directory (the folder containing this `SKILL.md`). When the skill is loaded,
 > resolve `SKILL_DIR` to the actual path — e.g. `~/.hermes/skills/security/oss-forensics/`
 > or the `optional-skills/` equivalent. All script and template references are relative to it.
+>
+> **Runtime output convention**: Investigation outputs are local runtime artifacts. The
+> evidence-store helper defaults to `.oss-forensics/evidence.json`, and the repository
+> ignores `.oss-forensics/` and `investigation_*/` so generated logs and evidence do not
+> dirty tracked skill fixtures or templates. Use `--store PATH` only when intentionally
+> writing to a separate evidence file.
 
 ## Phase 0: Initialization
 
@@ -71,7 +77,7 @@ Read these before every investigation step. Violating them invalidates the repor
    ```
 2. Initialize the evidence store:
    ```bash
-   python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list
+   python3 SKILL_DIR/scripts/evidence-store.py list
    ```
 3. Copy the forensic report template:
    ```bash
@@ -294,7 +300,7 @@ LIMIT 200
 
 After all investigators complete:
 
-1. Run `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
+1. Run `python3 SKILL_DIR/scripts/evidence-store.py list` to see all collected evidence.
 2. For each piece of evidence, verify the `content_sha256` hash matches the original source.
 3. Group evidence by:
    - **Timeline**: Sort all timestamped evidence chronologically
@@ -329,7 +335,7 @@ For each hypothesis, spawn a `delegate_task` sub-agent to attempt to find discon
 The validator sub-agent MUST mechanically check:
 
 1. For each hypothesis, extract all cited evidence IDs.
-2. Verify each ID exists in `evidence.json` (hard failure if any ID is missing → hypothesis rejected as potentially fabricated).
+2. Verify each ID exists in `.oss-forensics/evidence.json` (hard failure if any ID is missing → hypothesis rejected as potentially fabricated).
 3. Verify each `[VERIFIED]` piece of evidence was confirmed from 2+ sources.
 4. Check logical consistency: does the timeline depicted by the evidence support the hypothesis?
 5. Check for alternative explanations: could the same evidence pattern arise from a benign cause?
@@ -365,7 +371,7 @@ Populate `investigation-report.md` using the template in [forensic-report.md](./
 
 ## Phase 7: Completion
 
-1. Run final evidence count: `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
+1. Run final evidence count: `python3 SKILL_DIR/scripts/evidence-store.py list`
 2. Archive the full investigation directory.
 3. If compromise is confirmed:
    - List immediate mitigations (rotate credentials, pin dependency hashes, notify affected users)

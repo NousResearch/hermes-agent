@@ -4230,22 +4230,58 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )
+            final_model = _normalize_resolved_model(
+                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
+                provider,
+            )
+
+            # When api_mode is anthropic_messages, the endpoint speaks the
+            # Anthropic Messages protocol — build an Anthropic client directly
+            # using the *original* URL (e.g. /api/anthropic).  Rewriting it to
+            # an OpenAI-wire URL via _to_openai_base_url and then wrapping in
+            # AnthropicAuxiliaryClient causes a double-rewrite: the Anthropic
+            # SDK appends /v1/messages to the already-rewritten /paas/v4 path,
+            # producing /v4/v1/messages → 404.
+            if api_mode == "anthropic_messages":
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, explicit_base_url.strip())
+                    client = AnthropicAuxiliaryClient(
+                        real_client, final_model, custom_key,
+                        explicit_base_url.strip(), is_oauth=False,
+                    )
+                    logger.debug(
+                        "resolve_provider_client: custom anthropic_messages "
+                        "endpoint %s (model=%s)",
+                        explicit_base_url.strip()[:60], final_model,
+                    )
+                    return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                            else (client, final_model))
+                except ImportError:
+                    logger.warning(
+                        "Custom endpoint declares api_mode=anthropic_messages but "
+                        "the anthropic SDK is not installed — falling back to "
+                        "OpenAI-wire transport."
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to build Anthropic client for custom endpoint %s "
+                        "(%s) — falling back to OpenAI-wire.",
+                        explicit_base_url.strip()[:60], exc,
+                    )
+
+            custom_base = _to_openai_base_url(explicit_base_url).strip()
             if not custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "
                     "but base_url is empty"
                 )
                 return None, None
-            final_model = _normalize_resolved_model(
-                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
-                provider,
-            )
             extra = {}
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:

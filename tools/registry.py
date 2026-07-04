@@ -136,9 +136,15 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# Stable unavailable optional integrations (for example browser or desktop-only
+# tool probes in a headless gateway) should be visible but not flood every
+# long-lived gateway log. Emit the first warning, then downgrade repeats until
+# this interval elapses.
+_CHECK_FN_UNAVAILABLE_LOG_INTERVAL_SECONDS = 300.0
 _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_unavailable_last_logged: Dict[Callable, float] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
@@ -186,13 +192,23 @@ def _check_fn_cached(fn: Callable) -> bool:
             )
             return True
 
-        # No recent success (or grace expired) — honor the failure. Log it so
-        # silent tool loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # No recent success (or grace expired) — honor the failure. Log the
+        # first/periodic occurrence as a warning so silent tool loss in quiet
+        # mode (subagents) is diagnosable, but downgrade repeats to DEBUG to
+        # avoid burying real runtime warnings in long-lived gateways.
+        last_logged = _check_fn_unavailable_last_logged.get(fn)
+        should_warn = (
+            last_logged is None
+            or now - last_logged >= _CHECK_FN_UNAVAILABLE_LOG_INTERVAL_SECONDS
+        )
+        log = logger.warning if should_warn else logger.debug
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn",
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
+        if should_warn:
+            _check_fn_unavailable_last_logged[fn] = now
         _check_fn_cache[fn] = (now, False)
         return False
 
@@ -203,6 +219,7 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_unavailable_last_logged.clear()
 
 
 class ToolRegistry:

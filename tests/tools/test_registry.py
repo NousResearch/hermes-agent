@@ -1,10 +1,12 @@
 """Tests for the central tool registry."""
 
 import json
+import logging
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
+from tools import registry as registry_mod
 from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
 
 
@@ -265,6 +267,46 @@ class TestCheckFnExceptionHandling:
         defs = reg.get_definitions({"ok_tool", "bad_tool"})
         assert len(defs) == 1
         assert defs[0]["function"]["name"] == "ok_tool"
+
+    def test_stable_unavailable_check_fn_warning_is_throttled(self, caplog, monkeypatch):
+        """Unavailable optional tools should not flood long-lived gateway logs."""
+        reg = ToolRegistry()
+
+        def unavailable():
+            return False
+
+        reg.register(
+            name="optional_tool",
+            toolset="optional",
+            schema=_make_schema("optional_tool"),
+            handler=_dummy_handler,
+            check_fn=unavailable,
+        )
+
+        monkeypatch.setattr(registry_mod, "_CHECK_FN_TTL_SECONDS", 0.0)
+        monkeypatch.setattr(
+            registry_mod, "_CHECK_FN_UNAVAILABLE_LOG_INTERVAL_SECONDS", 300.0
+        )
+        registry_mod.invalidate_check_fn_cache()
+
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            reg.get_definitions({"optional_tool"})
+            reg.get_definitions({"optional_tool"})
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "dependent tools will be unavailable" in record.message
+        ]
+        debugs = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+            and "dependent tools will be unavailable" in record.message
+        ]
+        assert len(warnings) == 1
+        assert len(debugs) == 1
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()

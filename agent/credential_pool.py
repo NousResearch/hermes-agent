@@ -144,6 +144,14 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    # Model slug that triggered the current exhaustion, when the provider
+    # multiplexes several models over ONE credential (e.g. the ChatGPT-account
+    # Codex endpoint serving both gpt-5.5 and gpt-5.3-codex-spark, which have
+    # SEPARATE quota windows).  A 429 on one model must not hide the credential
+    # from a *different* model that still has quota.  ``None`` = provider-wide
+    # block (historical behavior; used when the caller does not scope by model,
+    # or when two distinct models are exhausted at once — see _mark_exhausted).
+    last_error_model: Optional[str] = None
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -188,6 +196,7 @@ class PooledCredential:
             "last_error_reason",
             "last_error_message",
             "last_error_reset_at",
+            "last_error_model",
         }
         result: Dict[str, Any] = {}
         for field_def in fields(self):
@@ -335,8 +344,32 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
-def _exhausted_until(entry: PooledCredential) -> Optional[float]:
+def _model_slug_matches(a: Optional[str], b: Optional[str]) -> bool:
+    """Case/space-insensitive equality for model slugs."""
+    return (a or "").strip().lower() == (b or "").strip().lower()
+
+
+def _exhausted_until(
+    entry: PooledCredential, requested_model: Optional[str] = None,
+) -> Optional[float]:
+    """Return the epoch until which *entry* is in exhaustion cooldown.
+
+    When *requested_model* is supplied and the entry's exhaustion was scoped
+    to a DIFFERENT model (``last_error_model``), the cooldown does not apply —
+    the credential still has quota for the requested model.  This is the
+    single-credential / multi-model case (ChatGPT-account Codex: gpt-5.5 and
+    gpt-5.3-codex-spark share one OAuth token but have independent quota
+    windows).  ``last_error_model = None`` keeps the historical provider-wide
+    block so unscoped callers are unaffected.
+    """
     if entry.last_status != STATUS_EXHAUSTED:
+        return None
+    blocked_model = getattr(entry, "last_error_model", None)
+    if (
+        requested_model
+        and blocked_model
+        and not _model_slug_matches(blocked_model, requested_model)
+    ):
         return None
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
@@ -572,6 +605,7 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        model_id: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -585,6 +619,26 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
+        # Per-model exhaustion scoping (issue #47986).  Record which model hit
+        # the limit so a sibling model on the SAME credential (separate quota
+        # window) stays selectable — see _exhausted_until / _available_entries.
+        #   - model_id given, entry not already scoped to a different model
+        #       → scope the block to model_id.
+        #   - entry already exhausted for a DIFFERENT model
+        #       → widen to provider-wide (None): two models are now out and we
+        #         can only track one, so fall back to the safe historical
+        #         behavior rather than silently unblock the first one.
+        #   - model_id None (unscoped caller)
+        #       → provider-wide block, exactly as before.
+        blocked_model: Optional[str] = None
+        scoped_model = (model_id or "").strip() or None
+        if scoped_model:
+            prior = getattr(entry, "last_error_model", None)
+            prior_active = entry.last_status == STATUS_EXHAUSTED and prior is not None
+            if prior_active and not _model_slug_matches(prior, scoped_model):
+                blocked_model = None  # widen: distinct models both exhausted
+            else:
+                blocked_model = scoped_model
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -593,6 +647,7 @@ class CredentialPool:
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_model=blocked_model,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -1362,16 +1417,27 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, requested_model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(requested_model=requested_model)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        requested_model: Optional[str] = None,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
-        When *clear_expired* is True, entries whose cooldown has elapsed are
-        reset to STATUS_OK and persisted.  When *refresh* is True, entries
-        that need a token refresh are refreshed (skipped on failure).
+        When *clear_expired* is True, entries whose cooldown has genuinely
+        elapsed are reset to STATUS_OK and persisted.  When *refresh* is True,
+        entries that need a token refresh are refreshed (skipped on failure).
+
+        When *requested_model* is supplied, an entry exhausted for a DIFFERENT
+        model (``last_error_model``) is treated as available for the requested
+        model WITHOUT clearing its exhausted state — the block still applies to
+        the model that actually hit the limit (issue #47986).
         """
         now = time.time()
         cleared_any = False
@@ -1452,10 +1518,20 @@ class CredentialPool:
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
-                if exhausted_until is not None and now < exhausted_until:
+                # Model-scoped view: is this entry blocked for the model we're
+                # actually trying to use right now?
+                scoped_until = _exhausted_until(entry, requested_model)
+                if scoped_until is not None and now < scoped_until:
                     continue
-                if clear_expired:
+                # Unscoped view: has the credential's cooldown GENUINELY
+                # elapsed (for every model)?  Only then may we reset it to OK.
+                # When scoped_until is None purely because the block belongs to
+                # a different model, the credential is still legitimately
+                # exhausted for that other model, so we surface it as available
+                # for the requested model but leave its exhausted state intact.
+                raw_until = _exhausted_until(entry)
+                cooldown_elapsed = raw_until is None or now >= raw_until
+                if clear_expired and cooldown_elapsed:
                     cleared = replace(
                         entry,
                         last_status=STATUS_OK,
@@ -1464,6 +1540,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        last_error_model=None,
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
@@ -1481,8 +1558,10 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, requested_model: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(
+            clear_expired=True, refresh=True, requested_model=requested_model,
+        )
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1527,6 +1606,7 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
+        model_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None
@@ -1540,11 +1620,11 @@ class CredentialPool:
                     None,
                 )
             if entry is None:
-                entry = self.current() or self._select_unlocked()
+                entry = self.current() or self._select_unlocked(requested_model=model_id)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            self._mark_exhausted(entry, status_code, error_context)
+            self._mark_exhausted(entry, status_code, error_context, model_id=model_id)
             # Re-read the updated entry to log the correct terminal state.
             updated_entry = next(
                 (e for e in self._entries if e.id == entry.id), entry,

@@ -642,7 +642,7 @@ class TestAnthropicOAuthFlag:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, requested_model=None):
                 return _Entry()
 
         with (
@@ -706,7 +706,7 @@ class TestBuildCodexClient:
             def peek(self):
                 return self.entry
 
-            def select(self):
+            def select(self, requested_model=None):
                 return self.entry
 
         pool = _Pool()
@@ -1142,7 +1142,7 @@ class TestGetTextAuxiliaryClient:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, requested_model=None):
                 return _Entry()
 
         with (
@@ -1309,7 +1309,7 @@ class TestAuxiliaryPoolAwareness:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, requested_model=None):
                 return _Entry()
 
         with (
@@ -1350,7 +1350,7 @@ class TestAuxiliaryPoolAwareness:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, requested_model=None):
                 return _Entry(stale_token)
 
             def try_refresh_current(self):
@@ -1390,7 +1390,7 @@ class TestAuxiliaryPoolAwareness:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, requested_model=None):
                 return _Entry()
 
             def try_refresh_current(self):

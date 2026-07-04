@@ -146,6 +146,7 @@ class TestPoolRotationCycle:
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
+        agent.model = "gpt-5.5"
 
         entries = []
         for i in range(pool_entries):
@@ -159,7 +160,7 @@ class TestPoolRotationCycle:
         # mark_exhausted_and_rotate returns next entry until exhausted
         self._rotation_index = 0
 
-        def rotate(status_code=None, error_context=None):
+        def rotate(status_code=None, error_context=None, model_id=None):
             self._rotation_index += 1
             if self._rotation_index < pool_entries:
                 return entries[self._rotation_index]
@@ -191,7 +192,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, model_id="gpt-5.5")
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
@@ -217,7 +218,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, model_id="gpt-5.5")
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""

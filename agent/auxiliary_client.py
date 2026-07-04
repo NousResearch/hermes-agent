@@ -732,8 +732,16 @@ def _to_openai_base_url(base_url: str) -> str:
     return url
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+def _select_pool_entry(
+    provider: str, requested_model: Optional[str] = None,
+) -> Tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry).
+
+    When *requested_model* is supplied, a credential exhausted for a
+    DIFFERENT model (``last_error_model``) is not treated as blocked — this
+    is what lets a shared OAuth credential still serve e.g. Spark after
+    ``gpt-5.5`` alone hit its usage limit (issue #47986).
+    """
     try:
         pool = load_pool(provider)
     except Exception as exc:
@@ -742,7 +750,7 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     if not pool or not pool.has_credentials():
         return False, None
     try:
-        return True, pool.select()
+        return True, pool.select(requested_model=requested_model)
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
         return True, None
@@ -2356,7 +2364,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _select_pool_entry("openai-codex", requested_model=model)
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
         if codex_token:

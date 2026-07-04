@@ -73,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import random
@@ -4001,6 +4002,72 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _persist_completion_artifacts(
+    task_id: str,
+    artifact_paths: Iterable[str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Copy existing completion artifacts into durable task attachments.
+
+    Scratch workspaces are deleted as part of :func:`complete_task`, but the
+    gateway notifier uploads artifacts after completion events are delivered.
+    Existing files therefore need a stable path outside the scratch workspace.
+    Missing paths are left unchanged so the notifier can warn the operator.
+    """
+    preserved: list[str] = []
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    dest_dir = task_attachments_dir(task_id)
+
+    for raw in artifact_paths:
+        path = str(raw).strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        src = Path(path).expanduser()
+        try:
+            if not src.is_file():
+                preserved.append(path)
+                continue
+            src_resolved = src.resolve(strict=True)
+            try:
+                dest_root = dest_dir.resolve(strict=False)
+                if src_resolved.is_relative_to(dest_root):
+                    preserved_path = str(src_resolved)
+                    preserved.append(preserved_path)
+                    records.append({
+                        "filename": src_resolved.name,
+                        "stored_path": preserved_path,
+                        "content_type": mimetypes.guess_type(src_resolved.name)[0],
+                        "size": src_resolved.stat().st_size,
+                    })
+                    continue
+            except OSError:
+                pass
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = src_resolved.name.replace("/", "_").replace("\\", "_")
+            if not safe_name or safe_name in {".", ".."}:
+                safe_name = f"artifact-{hashlib.sha256(str(src_resolved).encode()).hexdigest()[:8]}"
+            dest = dest_dir / safe_name
+            if dest.exists():
+                stem = dest.stem or "artifact"
+                suffix = dest.suffix
+                digest = hashlib.sha256(str(src_resolved).encode()).hexdigest()[:8]
+                dest = dest_dir / f"{stem}-{digest}{suffix}"
+            shutil.copy2(src_resolved, dest)
+            stored = str(dest.resolve(strict=False))
+            preserved.append(stored)
+            records.append({
+                "filename": safe_name,
+                "stored_path": stored,
+                "content_type": mimetypes.guess_type(safe_name)[0],
+                "size": dest.stat().st_size,
+            })
+        except Exception:
+            preserved.append(path)
+
+    return preserved, records
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4067,6 +4134,21 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    cleaned_artifacts: list[str] = []
+    preserved_artifacts: list[str] = []
+    artifact_records: list[dict[str, Any]] = []
+    if isinstance(metadata, dict):
+        md_artifacts = metadata.get("artifacts")
+        if isinstance(md_artifacts, (list, tuple)):
+            cleaned_artifacts = [
+                str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+            ]
+        if cleaned_artifacts:
+            preserved_artifacts, artifact_records = _persist_completion_artifacts(
+                task_id,
+                cleaned_artifacts,
+            )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -4135,20 +4217,38 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
-        # Carry artifact paths in the event payload so the gateway
-        # notifier can upload them as native attachments alongside the
-        # completion message. Workers pass these via
-        # ``kanban_complete(artifacts=[...])`` which stashes the list in
-        # ``metadata["artifacts"]`` — we promote it onto the event so
-        # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
-            if isinstance(md_artifacts, (list, tuple)):
-                cleaned_artifacts = [
-                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
-                ]
-                if cleaned_artifacts:
-                    completed_payload["artifacts"] = cleaned_artifacts
+        # Carry artifact paths in the event payload so the gateway notifier can
+        # upload them as native attachments. Existing files are copied to the
+        # durable task attachments directory before scratch cleanup; missing
+        # paths remain unchanged so the notifier can warn the operator.
+        if preserved_artifacts:
+            completed_payload["artifacts"] = preserved_artifacts
+            now_for_attachments = int(time.time())
+            for record in artifact_records:
+                conn.execute(
+                    "INSERT INTO task_attachments "
+                    "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task_id,
+                        record["filename"],
+                        record["stored_path"],
+                        record.get("content_type"),
+                        int(record.get("size") or 0),
+                        "kanban_complete",
+                        now_for_attachments,
+                    ),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "attached",
+                    {
+                        "filename": record["filename"],
+                        "size": int(record.get("size") or 0),
+                        "by": "kanban_complete",
+                    },
+                )
         _append_event(
             conn, task_id, "completed",
             completed_payload,

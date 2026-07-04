@@ -2081,6 +2081,46 @@ def test_completed_event_payload_carries_summary(kanban_home):
         conn.close()
 
 
+def test_completed_event_payload_preserves_scratch_artifacts(kanban_home):
+    """Artifacts created in ephemeral scratch workspaces must survive completion.
+
+    The gateway notifier consumes completed-event artifact paths after
+    complete_task returns. Scratch workspace cleanup also happens during
+    complete_task, so the event must point at durable attachment copies, not
+    the soon-to-be-deleted scratch paths.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="artifact task", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        artifact = ws / "report.md"
+        artifact.write_text("# done\n", encoding="utf-8")
+
+        kb.claim_task(conn, tid)
+        kb.complete_task(
+            conn,
+            tid,
+            summary="handoff",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        events = kb.list_events(conn, tid)
+        comp = [e for e in events if e.kind == "completed"]
+        assert len(comp) == 1
+        preserved = comp[0].payload["artifacts"]
+        assert len(preserved) == 1
+        assert preserved[0] != str(artifact)
+        preserved_path = Path(preserved[0])
+        assert preserved_path.exists()
+        assert preserved_path.read_text(encoding="utf-8") == "# done\n"
+        assert not ws.exists(), "scratch workspace should still be cleaned up"
+    finally:
+        conn.close()
+
+
 def test_completed_event_payload_summary_none_when_missing(kanban_home):
     """If the caller passes no summary AND no result, payload.summary is None."""
     conn = kb.connect()

@@ -365,6 +365,7 @@ class GatewayAuthorizationMixin:
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
         }
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",

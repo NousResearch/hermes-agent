@@ -1296,6 +1296,112 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     assert worker.calls == []
 
 
+def test_slash_exec_usage_uses_live_session_without_worker(server):
+    """/usage should read gateway live usage instead of the worker-local CLI agent.
+
+    The slash-worker can have ``self.agent is None`` after dashboard/desktop resume,
+    which used to print "No active agent -- send a message first" even when the
+    live gateway session had already made API calls.
+    """
+    sid = "usage-session"
+
+    class Agent:
+        model = "test-model"
+        provider = "openai-codex"
+        base_url = "https://example.invalid/v1"
+        api_key = "test-key"
+        session_input_tokens = 123
+        session_output_tokens = 45
+        session_reasoning_tokens = 0
+        session_prompt_tokens = 123
+        session_completion_tokens = 45
+        session_total_tokens = 168
+        session_api_calls = 2
+        context_compressor = None
+
+    class Worker:
+        def run(self, _cmd):  # pragma: no cover - the assertion below is clearer
+            raise AssertionError("/usage must not reach the slash worker")
+
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": Agent(),
+        "slash_worker": Worker(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    fake_account_usage = types.SimpleNamespace(
+        fetch_account_usage=MagicMock(return_value=object()),
+        render_account_usage_lines=MagicMock(return_value=[
+            "📈 Account limits",
+            "Provider: openai-codex (Prolite)",
+            "Session: 93% remaining (7% used)",
+        ]),
+        nous_credits_lines=MagicMock(return_value=[]),
+    )
+    with patch.dict(sys.modules, {"agent.account_usage": fake_account_usage}):
+        resp = server.handle_request({
+            "id": "r-usage",
+            "method": "slash.exec",
+            "params": {"command": "usage", "session_id": sid},
+        })
+        usage_resp = server.handle_request({
+            "id": "r-session-usage",
+            "method": "session.usage",
+            "params": {"session_id": sid},
+        })
+
+    fetch_usage = fake_account_usage.fetch_account_usage
+    assert fetch_usage.call_count == 2
+    assert fetch_usage.call_args.args[0] == "openai-codex"
+    assert fetch_usage.call_args.kwargs["base_url"] == "https://example.invalid/v1"
+    assert fetch_usage.call_args.kwargs["api_key"] == "test-key"
+
+    assert "error" not in resp
+    output = resp["result"]["output"]
+    assert "Usage" in output
+    assert "Model: test-model" in output
+    assert "Input tokens: 123" in output
+    assert "API calls: 2" in output
+    assert "📈 Account limits" in output
+    assert "Provider: openai-codex (Prolite)" in output
+    assert "Session: 93% remaining (7% used)" in output
+    assert "No active agent" not in output
+
+    assert "error" not in usage_resp
+    usage = usage_resp["result"]
+    assert usage["account_lines"] == [
+        "📈 Account limits",
+        "Provider: openai-codex (Prolite)",
+        "Session: 93% remaining (7% used)",
+    ]
+
+
+def test_slash_exec_usage_without_agent_reports_no_calls(server):
+    """A resumed session with no live agent should still render a useful /usage."""
+    sid = "usage-no-agent"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r-usage-empty",
+        "method": "slash.exec",
+        "params": {"command": "usage", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    output = resp["result"]["output"]
+    assert "no api calls yet" in output.lower()
+    assert "No active agent" not in output
+
+
 def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
     """Plugin discovery failures must not break ordinary slash-worker commands."""
     sid = "test-session"

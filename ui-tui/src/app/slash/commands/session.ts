@@ -579,11 +579,24 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        // Account limits are provider-specific (for example openai-codex
+        // Pro/Prolite session + weekly windows). Render them before credits and
+        // token usage when the gateway can fetch them.
+        const accountLines = r?.account_lines ?? []
+        const rateLimitLines = r?.rate_limit_lines ?? []
+        const creditsLines = r?.credits_lines ?? []
+
+        if (accountLines.length) {
+          ctx.transcript.sys(accountLines.join('\n'))
+        }
+
+        if (rateLimitLines.length) {
+          ctx.transcript.sys(rateLimitLines.join('\n'))
+        }
+
         // Nous credits block is agent-independent (a portal fetch), so it shows
         // even with zero API calls or on a resumed session. Render it whenever
         // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
-
         if (creditsLines.length) {
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }

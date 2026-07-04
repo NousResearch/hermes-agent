@@ -89,3 +89,76 @@ def test_env_loader_sanitizes_before_dotenv():
         assert parsed_token == token
     finally:
         env_path.unlink(missing_ok=True)
+
+
+def test_sanitize_preserves_latin1_bytes_on_rewrite():
+    """A latin-1 .env must not be lossily rewritten as UTF-8 (U+FFFD).
+
+    _load_dotenv_with_fallback explicitly supports latin-1 .env files, but
+    the sanitizer used to read them with errors="replace" and rewrite the
+    file in UTF-8 on any normalization diff, permanently destroying the
+    original bytes and defeating that fallback.
+    """
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+    # é as latin-1 (0xE9); missing trailing newline forces a rewrite.
+    raw = b"HERMES_DEVICE_NAME=Mac de B\xe9a\nTELEGRAM_BOT_TOKEN=0123456789:test"
+
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".env", delete=False) as f:
+        f.write(raw)
+        env_path = Path(f.name)
+
+    try:
+        _sanitize_env_file_if_needed(env_path)
+        data = env_path.read_bytes()
+        assert b"\xe9" in data, f"latin-1 byte destroyed: {data!r}"
+        assert b"\xef\xbf\xbd" not in data, f"U+FFFD written to disk: {data!r}"
+    finally:
+        env_path.unlink(missing_ok=True)
+
+
+def test_sanitize_latin1_value_survives_load():
+    """End to end: sanitize then load; the latin-1 value reaches os.environ."""
+    import os
+
+    from hermes_cli.env_loader import (
+        _load_dotenv_with_fallback,
+        _sanitize_env_file_if_needed,
+    )
+
+    raw = b"HERMES_DEVICE_NAME=Mac de B\xe9a\nTELEGRAM_BOT_TOKEN=0123456789:test"
+
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".env", delete=False) as f:
+        f.write(raw)
+        env_path = Path(f.name)
+
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_DEVICE_NAME", None)
+            _sanitize_env_file_if_needed(env_path)
+            _load_dotenv_with_fallback(env_path, override=True)
+            assert os.environ["HERMES_DEVICE_NAME"] == "Mac de Béa"
+    finally:
+        env_path.unlink(missing_ok=True)
+
+
+def test_sanitize_utf8_file_still_written_utf8():
+    """UTF-8 .env files keep the existing behavior: rewritten as UTF-8."""
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+    token = "0123456789:test"
+    corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"
+    raw = corrupted.encode("utf-8")
+
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".env", delete=False) as f:
+        f.write(raw)
+        env_path = Path(f.name)
+
+    try:
+        _sanitize_env_file_if_needed(env_path)
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+        assert lines[0] == f"TELEGRAM_BOT_TOKEN={token}"
+        assert lines[1].startswith("ANTHROPIC_API_KEY=")
+    finally:
+        env_path.unlink(missing_ok=True)

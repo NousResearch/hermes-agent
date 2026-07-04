@@ -179,10 +179,23 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     except ImportError:
         return  # early bootstrap — config module not available yet
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:
-        with open(path, **read_kw) as f:
-            original = f.readlines()
+        # Decode strictly, mirroring _load_dotenv_with_fallback's encoding
+        # chain (utf-8 first, then latin-1).  A lossy ``errors="replace"``
+        # read here would turn non-UTF-8 bytes into U+FFFD and — on any
+        # rewrite below — destroy the original bytes on disk, permanently
+        # defeating that latin-1 fallback.
+        raw = path.read_bytes()
+        write_encoding = "utf-8"
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+            write_encoding = "latin-1"
+        # Match the universal-newline translation of the previous
+        # text-mode read so rewrite triggers stay identical.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        original = text.splitlines(keepends=True)
         # Strip null bytes before _sanitize_env_lines so they never
         # reach python-dotenv (which passes them to os.environ and
         # crashes with ValueError).
@@ -194,7 +207,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding=write_encoding) as f:
                     f.writelines(sanitized)
                     f.flush()
                     os.fsync(f.fileno())

@@ -1732,9 +1732,24 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
+export interface SessionMessageTextPart {
+  type: "text" | "input_text" | "output_text";
+  text: string;
+}
+
+export interface SessionMessageImagePart {
+  type: "image_url" | "input_image";
+  image_url: string | { url: string; detail?: string };
+}
+
+export type SessionMessageContentPart =
+  | SessionMessageTextPart
+  | SessionMessageImagePart
+  | Record<string, unknown>;
+
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
-  content: string | null;
+  content: string | SessionMessageContentPart[] | null;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };

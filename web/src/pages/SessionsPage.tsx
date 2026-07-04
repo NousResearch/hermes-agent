@@ -34,6 +34,7 @@ import { shouldRefreshSessions } from "@/lib/session-refresh";
 import type {
   SessionInfo,
   SessionMessage,
+  SessionMessageContentPart,
   SessionSearchResult,
   SessionStoreStats,
   StatusResponse,
@@ -146,6 +147,53 @@ function ToolCallBlock({
       )}
     </div>
   );
+}
+
+function getMessageTextContent(content: SessionMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const part of content) {
+    if (
+      part &&
+      typeof part === "object" &&
+      "type" in part &&
+      "text" in part &&
+      (part.type === "text" ||
+        part.type === "input_text" ||
+        part.type === "output_text") &&
+      typeof part.text === "string"
+    ) {
+      parts.push(part.text);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+function getMessageImageUrls(content: SessionMessage["content"]): string[] {
+  if (!Array.isArray(content)) return [];
+
+  const urls: string[] = [];
+  for (const part of content) {
+    const url = getMessageImageUrl(part);
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+function getMessageImageUrl(part: SessionMessageContentPart): string | null {
+  if (!part || typeof part !== "object" || !("type" in part)) return null;
+  if (part.type !== "image_url" && part.type !== "input_image") return null;
+
+  const raw =
+    typeof part.image_url === "string"
+      ? part.image_url
+      : part.image_url?.url;
+  if (typeof raw !== "string") return null;
+
+  const normalized = raw.trim();
+  return /^(https?:\/\/|data:image\/)/i.test(normalized) ? normalized : null;
 }
 
 // Context-compaction handoff blocks are persisted as ``role="user"`` or
@@ -289,11 +337,13 @@ function MessageBubble({
     : msg.tool_name
       ? `${t.sessions.roles.tool}: ${msg.tool_name}`
       : style.label;
+  const textContent = getMessageTextContent(msg.content);
+  const imageUrls = getMessageImageUrls(msg.content);
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
+    if (!highlight || !textContent) return false;
+    const content = textContent.toLowerCase();
     const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
     return terms.some((term) => content.includes(term));
   })();
@@ -320,14 +370,34 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
-        (msg.role === "system" ? (
-          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
-          </div>
-        ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
-        ))}
+      {(textContent || imageUrls.length > 0) && (
+        <div className="space-y-3">
+          {textContent &&
+            (msg.role === "system" ? (
+              <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                {textContent}
+              </div>
+            ) : (
+              <Markdown content={textContent} highlightTerms={highlightTerms} />
+            ))}
+          {imageUrls.map((url, index) => (
+            <a
+              key={`${msg.role}-image-${index}`}
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="block"
+            >
+              <img
+                src={url}
+                alt={`${label} image ${index + 1}`}
+                className="max-h-80 w-auto max-w-full rounded-md border border-border bg-background/40 object-contain"
+                loading="lazy"
+              />
+            </a>
+          ))}
+        </div>
+      )}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">
           {msg.tool_calls.map((tc) => (

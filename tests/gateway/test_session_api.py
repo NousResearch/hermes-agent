@@ -170,6 +170,26 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_preserve_multimodal_content(adapter, session_db):
+    session_id = session_db.create_session("multimodal-history", "api_server")
+    content = [
+        {"type": "text", "text": "Please inspect this image."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    session_db.append_message(session_id, "user", content)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["data"][0]["role"] == "user"
+    assert messages["data"][0]["content"] == content
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")

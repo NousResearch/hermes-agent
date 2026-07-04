@@ -11,6 +11,9 @@ SDK error path for genuinely missing or broken installs.
 from __future__ import annotations
 
 import importlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 _JITER_PRELOADED = False
 _JITER_PRELOAD_ERROR: Exception | None = None
@@ -29,6 +32,11 @@ def preload_jiter_native_extension() -> bool:
         from jiter import from_json as _from_json  # noqa: F401
     except Exception as exc:
         _JITER_PRELOAD_ERROR = exc
+        logger.debug(
+            "Failed to preload optional jiter native extension: %s",
+            exc,
+            exc_info=True,
+        )
         return False
 
     _JITER_PRELOADED = True

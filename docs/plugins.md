@@ -422,7 +422,15 @@ Non-conforming providers are rejected with a warning (never an exception).
 | `register_tts_provider` | `agent.tts_provider.TTSProvider` | `tts.provider` |
 | `register_transcription_provider` | `agent.transcription_provider.TranscriptionProvider` | `stt.provider` |
 | `register_dashboard_auth_provider` | dashboard auth base | dashboard config |
-| `register_context_engine` | context engine base | single slot — first registration wins; later attempts are rejected with a warning |
+| `register_context_engine` | `agent.context_engine.ContextEngine` | single slot — first registration wins; later attempts are rejected with a warning |
+
+**A context engine owns the entire compression strategy.** The
+`ContextEngine` ABC includes `should_compress()`, `compress()`,
+`should_compress_preflight()`, `has_content_to_compress()`, session
+lifecycle callbacks, and even engine-specific tool schemas — so
+"custom compaction policy" features (when to compress, how to split,
+how to summarize) can ship today as a context-engine plugin rather
+than patches to the default engine.
 
 Name-collision precedence for TTS/STT: built-in provider names always win,
 and a `type: command` provider defined in config wins over a plugin
@@ -431,7 +439,12 @@ provider with the same name (config is more local than plugin install).
 **Model providers** don't use `PluginContext` at all: a `model-provider`
 plugin calls `register_provider()` from `providers/` with a
 `ProviderProfile` and is discovered lazily by `providers/__init__.py`. See
-`plugins/model-providers/README.md`. **Memory providers** are `exclusive`
+`plugins/model-providers/README.md`. Note that a `ProviderProfile`
+already owns its **model catalog**: `models_url` (explicit catalog
+endpoint), an overridable `fetch_models()` (custom response shapes, or
+`None` for providers with no REST catalog), and `fallback_models` (the
+curated `/model`-picker list when the live fetch fails) — catalog
+source and refresh behavior belong in the provider plugin, not core. **Memory providers** are `exclusive`
 plugins activated via `memory.provider` config — see `plugins/memory/`.
 
 ## Gateway platforms
@@ -609,7 +622,8 @@ convert the PR into a much smaller interface request (or close it):
 | output filtering/transformation | `transform_llm_output`, `transform_tool_result` |
 | a messaging platform | `register_platform` (kind: `platform`) |
 | a media/search/TTS/STT backend | the matching `register_*_provider` |
-| a model provider | `ProviderProfile` plugin under `model-providers` conventions |
+| a compression/compaction strategy | `register_context_engine` (the ABC owns `should_compress`/`compress`) |
+| a model provider or model-catalog fix | `ProviderProfile` plugin (`fetch_models` / `models_url` / `fallback_models`) |
 | a memory backend | `exclusive` memory-provider plugin |
 | an LLM side-task with its own model routing | `register_auxiliary_task` |
 

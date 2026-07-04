@@ -565,11 +565,11 @@ def test_sensitive_env_case_insensitive_blocked(forced_files_client):
 def test_sensitive_credential_directories_blocked(forced_files_client):
     client, root = forced_files_client
 
-    token_dir = root / "mcp-tokens"
+    token_dir = root / "MCP-Tokens"
     token_dir.mkdir(parents=True, exist_ok=True)
     token = token_dir / "server.json"
     token.write_text('{"access_token":"mcp-secret"}')
-    pairing_dir = root / "pairing"
+    pairing_dir = root / "Pairing"
     pairing_dir.mkdir(parents=True, exist_ok=True)
     pairing = pairing_dir / "device.json"
     pairing.write_text('{"pairing_secret":"pair-secret"}')
@@ -577,8 +577,8 @@ def test_sensitive_credential_directories_blocked(forced_files_client):
     listing = client.get("/api/files", params={"path": str(root)})
     assert listing.status_code == 200
     names = {entry["name"] for entry in listing.json()["entries"]}
-    assert "mcp-tokens" not in names
-    assert "pairing" not in names
+    assert "MCP-Tokens" not in names
+    assert "Pairing" not in names
 
     for p in (token, pairing):
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403

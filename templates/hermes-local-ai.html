@@ -436,7 +436,7 @@ Thesis: #hermiphicationisinevitable · machine C2 is inevitable</pre>
           <span>Monaco</span>
           <span class="sub">In-viewport editor surface · bridged to vscode://</span>
         </div>
-        <div id="monaco-host" style="border:1px solid var(--border);background:#030508;min-height:360px"></div>
+        <div id="monaco-host" style="border:1px solid var(--border);background:#030508;min-height:520px"></div>
       </section>
 
       <section class="panel" id="panel-apis" data-panel="apis" hidden>
@@ -513,7 +513,24 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
     const host = document.getElementById('monaco-host');
     if (!host || host.dataset.ready) return;
     host.dataset.ready = '1';
-    host.textContent = 'Monaco editor surface mounted.\nRoutes to: vscode:// for full editor functionality.';
+    const loader = document.createElement('script');
+    loader.src = 'https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js';
+    loader.async = true;
+    document.head.appendChild(loader);
+    const base = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/';
+    window.MonacoEnvironment = { getWorkerUrl: () => base + 'vs/base/worker/workerMain.js' };
+    loader.onload = () => {
+      const script = document.createElement('script');
+      script.src = base + 'vs/loader.js';
+      script.async = true;
+      document.head.appendChild(script);
+      script.onload = () => {
+        require.config({ paths: { 'vs': base + 'vs' } });
+        require(['vs/editor/editor.main'], () => {
+          monaco.editor.create(document.getElementById('monaco-host'), { value: 'Hermes 🤖 AE Hub\nconst hermes = require("hermes");\nhermes.runtime.start();', language: 'javascript', theme: 'vs-dark', automaticLayout: true, fontSize: 14, minimap: { enabled: false }, scrollBeyondLastLine: false, padding: { top: 12 } });
+        });
+      };
+    };
   }
   function clock() {
     const el = document.getElementById('chip-clock');
@@ -747,15 +764,38 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
     await simStatus();
   }
 
-  raw('Hermes 🤖 Agentic Entrepreneurship Viewport ready.');
+  raw('Hermes 🤖 Agentic Engineering Hub ready.');
   raw('DAO = logic · DAO LLC = identity');
   raw('#hermiphicationisinevitable · machine C2 is inevitable · FFmpeg + HTML are destined');
   raw('Type help · press Tab to switch panels.');
+  window.HermesSurface = window.HermesSurface || {
+    async dispatch(action, payload) {
+      try {
+        const res = await fetch('/conductor', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({cmd: 'monaco ' + action, args: [payload || {}]}),
+        });
+        return await res.json();
+      } catch (e) { return {ok:false, stderr: String(e)}; }
+    },
+    async hydrate(id) {
+      try {
+        const res = await fetch('/conductor', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({cmd: 'monaco hydrate ' + id, args: []}),
+        });
+        const data = await res.json();
+        return data && data.stdout ? data.stdout : null;
+      } catch (e) { return null; }
+    }
+  };
   setCmd('Ready');
   refresh();
   clock();
   setInterval(clock, 1000);
   setInterval(refresh, 12000);
 </script>
+<script type="module" src="/static/hermes-monaco.js"></script>
+
 </body>
 </html>

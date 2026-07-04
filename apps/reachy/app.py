@@ -47,6 +47,9 @@ app.include_router(sim_router)
 app.include_router(vscode_router)
 app.include_router(mcp_tools_router)
 app.include_router(ae_coding_router)
+from pathlib import Path
+STATIC_ROOT = Path(__file__).resolve().parents[2] / "apps" / "reachy"
+app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="reachy-static")
 
 
 @app.get("/", response_class=HTMLResponse)

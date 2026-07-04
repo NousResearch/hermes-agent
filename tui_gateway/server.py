@@ -276,10 +276,11 @@ class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str):
-        self._lock = threading.Lock()
+        self._write_lock = threading.Lock()   # serialises stdin writes
+        self._resp_lock = threading.Lock()    # protects _responses dict
         self._seq = 0
         self.stderr_tail: list[str] = []
-        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
+        self._responses: dict[int, queue.Queue] = {}
 
         argv = [
             sys.executable,
@@ -322,10 +323,19 @@ class _SlashWorker:
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
             try:
-                self.stdout_queue.put(json.loads(line))
+                msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
-        self.stdout_queue.put(None)
+            rid = msg.get("id")
+            if rid is not None:
+                with self._resp_lock:
+                    q = self._responses.get(rid)
+                if q is not None:
+                    q.put(msg)
+        # Pipe closed — wake every waiter so they see the EOF.
+        with self._resp_lock:
+            for q in self._responses.values():
+                q.put(None)
 
     def _drain_stderr(self):
         for line in self.proc.stderr or []:
@@ -336,21 +346,24 @@ class _SlashWorker:
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
 
-        with self._lock:
+        # Per-request queue: drain_stdout routes by id into this queue.
+        rq: queue.Queue = queue.Queue()
+        with self._write_lock:
             self._seq += 1
             rid = self._seq
+            with self._resp_lock:
+                self._responses[rid] = rq
             self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
             self.proc.stdin.flush()
 
+        try:
             while True:
                 try:
-                    msg = self.stdout_queue.get(timeout=_SLASH_WORKER_TIMEOUT_S)
+                    msg = rq.get(timeout=_SLASH_WORKER_TIMEOUT_S)
                 except queue.Empty:
                     raise RuntimeError("slash worker timed out")
                 if msg is None:
                     break
-                if msg.get("id") != rid:
-                    continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
                 return str(msg.get("output", "")).rstrip()
@@ -358,6 +371,9 @@ class _SlashWorker:
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}"
             )
+        finally:
+            with self._resp_lock:
+                self._responses.pop(rid, None)
 
     def close(self):
         if getattr(self, "_closed", False):

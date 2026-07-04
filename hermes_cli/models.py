@@ -3623,6 +3623,24 @@ def fetch_api_models(
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
+    # Cloudflare Workers AI uses a native catalog endpoint (/ai/models/search)
+    # instead of the OpenAI-compatible /models endpoint. Detect and route.
+    if base_url and api_key:
+        try:
+            from agent.cloudflare_workers_ai import (
+                is_cloudflare_workers_ai_base_url,
+                fetch_cloudflare_model_catalog,
+                cloudflare_model_names,
+            )
+        except ImportError:
+            pass
+        else:
+            if is_cloudflare_workers_ai_base_url(base_url):
+                entries = fetch_cloudflare_model_catalog(api_key, base_url, timeout=timeout)
+                if entries is not None:
+                    return cloudflare_model_names({"result": entries})
+                return None
+
     return probe_api_models(
         api_key,
         base_url,

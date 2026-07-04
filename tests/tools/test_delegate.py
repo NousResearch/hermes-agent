@@ -11,8 +11,10 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +36,31 @@ from tools.delegate_tool import (
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
 )
+
+
+def test_load_config_prefers_current_file_config_over_cli_snapshot(monkeypatch):
+    import tools.delegate_tool as delegate_tool
+    from hermes_cli import config as config_mod
+
+    stale_cli = types.SimpleNamespace(
+        CLI_CONFIG={
+            "delegation": {
+                "child_timeout_seconds": 600,
+                "max_spawn_depth": 4,
+            }
+        }
+    )
+    monkeypatch.setitem(sys.modules, "cli", stale_cli)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"delegation": {"child_timeout_seconds": 900}},
+    )
+
+    cfg = delegate_tool._load_config()
+
+    assert cfg["child_timeout_seconds"] == 900
+    assert cfg["max_spawn_depth"] == 4
 
 
 def _make_mock_parent(depth=0):

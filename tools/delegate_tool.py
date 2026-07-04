@@ -3098,28 +3098,34 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load current delegation config with CLI_CONFIG as a fallback.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Persistent config is authoritative so `hermes config set delegation.*`
+    takes effect on the next delegate_task call in long-running processes.
+    ``cli.CLI_CONFIG`` remains a fallback for entry points that have not wired
+    the persistent config loader yet.
     """
-    try:
-        from cli import CLI_CONFIG
-
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
+    delegation_config: dict = {}
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation") or {}
+        cfg = full.get("delegation") or {}
+        if isinstance(cfg, dict):
+            delegation_config.update(cfg)
     except Exception:
-        return {}
+        pass
+
+    try:
+        from cli import CLI_CONFIG
+
+        cfg = CLI_CONFIG.get("delegation") or {}
+        if isinstance(cfg, dict):
+            for key, value in cfg.items():
+                delegation_config.setdefault(key, value)
+    except Exception:
+        pass
+    return delegation_config
 
 
 # ---------------------------------------------------------------------------

@@ -283,15 +283,85 @@ def _assistant_copy_text(content: Any) -> str:
 
 
 # =============================================================================
-# Configuration Loading
+# Runtime Path Preflight
 # =============================================================================
+
+
+def _preflight_runtime_paths(hermes_home: Path) -> None:
+    """Check that critical runtime paths are writable before entering the CLI loop.
+
+    In containerized / shared-hosting deployments, files created by root or a
+    different UID/GID can become unwritable for the current ``hermes`` user,
+    causing ``PermissionError`` to crash the interactive event loop mid-session
+    (history, logs, paste collapse, kanban lock).  This function fails fast with
+    a clear diagnostic instead of letting the exception bubble out of
+    prompt_toolkit.
+
+    Args:
+        hermes_home: The active HERMES_HOME directory (profile-aware).
+
+    Paths verified:
+        - ``hermes_home / ".hermes_history"`` (FileHistory)
+        - ``hermes_home / "logs" / "errors.log"`` (error logging)
+        - ``hermes_home / "logs" / "agent.log"`` (agent logging)
+        - ``hermes_home / "pastes"`` (paste collapse directory)
+        - ``hermes_home / "kanban.db"`` parent (kanban init lock sidecar)
+
+    Raises:
+        SystemExit: If any path is not writable, with a helpful remediation hint.
+    """
+    import os
+
+    checks = [
+        (hermes_home / ".hermes_history", "history file"),
+        (hermes_home / "logs" / "errors.log", "error log"),
+        (hermes_home / "logs" / "agent.log", "agent log"),
+        (hermes_home / "pastes", "pastes directory"),
+        (hermes_home / "kanban.db", "kanban database (for init lock)"),
+    ]
+
+    problems: list[str] = []
+    for path, label in checks:
+        # For directories, check the directory itself; for files, check the parent.
+        target = path if path.suffix == "" or label.endswith("directory") else path.parent
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            # Test write access by opening in append mode (no content written).
+            test_file = target / ".hermes_write_test"
+            test_file.touch(exist_ok=True)
+            test_file.unlink(missing_ok=True)
+        except (OSError, PermissionError) as e:
+            problems.append(f"  • {label} ({target}): {e}")
+
+    if problems:
+        from hermes_constants import display_hermes_home
+
+        home_display = display_hermes_home()
+        msg = (
+            "\n\033[31mHermes CLI cannot start: critical runtime paths are not writable.\033[0m\n"
+            f"The active HERMES_HOME is: {home_display}\n\n"
+            "The following paths failed the write check:\n"
+            + "\n".join(problems)
+            + "\n\n"
+            "Common causes:\n"
+            "  • Bind mount created files as root (e.g. Docker -v /host/path:/opt/hermes)\n"
+            "  • Container user (UID/GID) differs from files' owner\n"
+            "  • Previous 'hermes update' or manual 'chown' changed ownership\n\n"
+            "Fix by running (as root or with sudo):\n"
+            f"  chown -R $(id -u):$(id -g) {home_display}\n\n"
+            "Or, if you cannot chown, set HERMES_HOME to a writable location:\n"
+            "  export HERMES_HOME=~/writable/hermes\n"
+        )
+        sys.stderr.write(msg + "\n")
+        sys.exit(1)
+
 
 def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     """Load ephemeral prefill messages from a JSON file.
-    
+
     The file should contain a JSON array of {role, content} dicts, e.g.:
         [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
-    
+
     Relative paths are resolved from ~/.hermes/.
     Returns an empty list if the path is empty or the file doesn't exist.
     """
@@ -4013,6 +4083,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
+
+        # Preflight: verify critical runtime paths are writable so PermissionError
+        # doesn't crash the interactive loop mid-session (issue #41683).
+        _preflight_runtime_paths(_hermes_home)
 
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
@@ -14995,7 +15069,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             try:
                                 from tools.process_registry import process_registry
                                 for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
+                                    _cprint(f"\n{_synth}\n")
                             except Exception:
                                 pass
                         continue
@@ -15157,7 +15231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
+                                _cprint(f"\n{_synth}\n")
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

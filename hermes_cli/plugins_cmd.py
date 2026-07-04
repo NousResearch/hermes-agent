@@ -1290,6 +1290,7 @@ def cmd_toggle() -> None:
     disabled_set = _get_disabled_set()
 
     plugin_names = []
+    plugin_keys = []
     plugin_labels = []
     plugin_selected = set()
 
@@ -1298,6 +1299,7 @@ def cmd_toggle() -> None:
         if source == "bundled":
             label = f"{label} [bundled]"
         plugin_names.append(name)
+        plugin_keys.append(key)
         plugin_labels.append(label)
         # Selected (enabled) when in enabled-set AND not in disabled-set
         if (name in enabled_set or key in enabled_set) and name not in disabled_set and key not in disabled_set:
@@ -1327,14 +1329,14 @@ def cmd_toggle() -> None:
     # Launch the composite curses UI
     try:
         import curses
-        _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+        _run_composite_ui(curses, plugin_names, plugin_keys, plugin_labels, plugin_selected,
                           disabled_set, categories, console)
     except ImportError:
-        _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+        _run_composite_fallback(plugin_names, plugin_keys, plugin_labels, plugin_selected,
                                 disabled_set, categories, console)
 
 
-def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+def _run_composite_ui(curses, plugin_names, plugin_keys, plugin_labels, plugin_selected,
                       disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import flush_stdin
@@ -1561,12 +1563,12 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     # plugin code does something clever like auto-enable in the future.
     new_enabled: set = set()
     new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, name in enumerate(plugin_names):
+    for i, key in enumerate(plugin_keys):
         if i in chosen:
-            new_enabled.add(name)
-            new_disabled.discard(name)
+            new_enabled.add(key)
+            new_disabled.discard(key)
         else:
-            new_disabled.add(name)
+            new_disabled.add(key)
 
     prev_enabled = _get_enabled_set()
     enabled_changed = new_enabled != prev_enabled
@@ -1595,7 +1597,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     console.print()
 
 
-def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+def _run_composite_fallback(plugin_names, plugin_keys, plugin_labels, plugin_selected,
                             disabled, categories, console):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
@@ -1626,12 +1628,12 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
 
         new_enabled: set = set()
         new_disabled: set = set(disabled)
-        for i, name in enumerate(plugin_names):
+        for i, key in enumerate(plugin_keys):
             if i in chosen:
-                new_enabled.add(name)
-                new_disabled.discard(name)
+                new_enabled.add(key)
+                new_disabled.discard(key)
             else:
-                new_disabled.add(name)
+                new_disabled.add(key)
         prev_enabled = _get_enabled_set()
         if new_enabled != prev_enabled or new_disabled != disabled:
             _save_enabled_set(new_enabled)
@@ -1794,31 +1796,32 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     For plugins that provide tools (toolsets), also toggles the toolset in
     ``platform_toolsets`` so the agent actually sees the tools in sessions.
     """
-    if not _plugin_exists(name):
+    key = _resolve_plugin_key(name)
+    if key is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
 
     en = _get_enabled_set()
     dis = _get_disabled_set()
 
     if enabled:
-        if name in en and name not in dis:
-            return {"ok": True, "name": name, "unchanged": True}
-        en.add(name)
-        dis.discard(name)
+        if key in en and key not in dis:
+            return {"ok": True, "name": key, "unchanged": True}
+        en.add(key)
+        dis.discard(key)
         _save_enabled_set(en)
         _save_disabled_set(dis)
-        _toggle_plugin_toolset(name, enable=True)
-        return {"ok": True, "name": name, "unchanged": False}
+        _toggle_plugin_toolset(key, enable=True)
+        return {"ok": True, "name": key, "unchanged": False}
 
-    if name not in en and name in dis:
-        return {"ok": True, "name": name, "unchanged": True}
+    if key not in en and key in dis:
+        return {"ok": True, "name": key, "unchanged": True}
 
-    en.discard(name)
-    dis.add(name)
+    en.discard(key)
+    dis.add(key)
     _save_enabled_set(en)
     _save_disabled_set(dis)
-    _toggle_plugin_toolset(name, enable=False)
-    return {"ok": True, "name": name, "unchanged": False}
+    _toggle_plugin_toolset(key, enable=False)
+    return {"ok": True, "name": key, "unchanged": False}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:

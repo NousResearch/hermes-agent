@@ -306,7 +306,13 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
+                # Use the canonical ``call_id || id`` precedence so both the
+                # scan for an existing tool result and any inserted stub key
+                # on the same id the rest of the pipeline uses. Keying on bare
+                # ``id`` here would fail to find a result built with ``call_id``
+                # (Codex Responses format) and insert a duplicate stub that
+                # itself becomes an orphan (#58168).
+                tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
@@ -464,6 +470,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
+    #
+    # Both ``id`` AND ``call_id`` are registered for every assistant
+    # tool_call. In the Codex Responses API format the two differ
+    # (``id`` = ``fc_...`` response-item id, ``call_id`` = ``call_...``
+    # the function-call id), and a tool result's ``tool_call_id`` may be
+    # matched against *either* depending on which code path built it
+    # (the OpenAI-compatible path stores ``tc.id``; codex paths store
+    # ``call_id``). Registering only ``id`` — as this pass did before —
+    # made a valid tool result look orphaned whenever the assistant
+    # tool_call carried a distinct ``call_id`` (or only ``call_id``); the
+    # pass then dropped it, leaving the assistant tool_call unanswered and
+    # producing an HTTP 400 on strict providers (DeepSeek, Kimi). Matching
+    # on the *superset* of both keys achieves the same tolerance as
+    # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
+    # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
     filtered: List[Dict] = []
     for msg in collapsed:
@@ -474,9 +495,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    known_tool_ids.add(tc_id)
+                if not isinstance(tc, dict):
+                    continue
+                for key in ("id", "call_id"):
+                    tc_id = tc.get(key)
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")

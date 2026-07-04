@@ -143,6 +143,103 @@ def test_repair_drops_stray_tool_with_unknown_tool_call_id():
     assert all(m.get("role") != "tool" for m in messages)
 
 
+def test_repair_keeps_tool_matching_codex_call_id():
+    """A valid tool result must survive when the assistant tool_call carries a
+    Codex-format ``call_id`` distinct from ``id`` and the result matches on
+    ``call_id`` (#58168).
+
+    Before the fix, Pass 1 registered only ``tc.get("id")`` (``fc_...``) in the
+    known-id set, so a result keyed on ``call_id`` (``call_...``) looked
+    orphaned and was dropped -- leaving the assistant tool_call unanswered and
+    triggering an HTTP 400 on strict providers (DeepSeek, Kimi):
+    "Messages with role 'tool' must be a response to a preceding message with
+    'tool_calls'".
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "fc_123", "call_id": "call_ABC",
+                         "type": "function",
+                         "function": {"name": "x", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_ABC", "content": "result"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "user"]
+    assert messages[2]["tool_call_id"] == "call_ABC"
+
+
+def test_repair_keeps_tool_matching_only_call_id():
+    """Same as above but the assistant tool_call carries ONLY ``call_id`` (no
+    ``id``). The result keyed on ``call_id`` must still be recognized (#58168).
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"call_id": "call_XYZ", "type": "function",
+                         "function": {"name": "x", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_XYZ", "content": "result"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert any(m.get("role") == "tool" for m in messages)
+
+
+def test_repair_keeps_tool_matching_id_when_call_id_also_present():
+    """When the assistant tool_call carries both ``id`` and ``call_id`` and the
+    result matches on ``id`` (OpenAI-compatible builder path), it must be kept
+    (#58168 -- both keys are registered, so either matches).
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "fc_9", "call_id": "call_9",
+                         "type": "function",
+                         "function": {"name": "x", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "fc_9", "content": "result"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert any(m.get("role") == "tool" for m in messages)
+
+
+def test_repair_still_drops_genuine_orphan_alongside_codex_pair():
+    """Negative control for #58168: registering both id and call_id must NOT
+    over-relax orphan detection. A genuinely orphaned tool result (matching
+    neither the id nor the call_id of any assistant tool_call) is still
+    dropped, while the valid codex-format pair in the same window survives.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "fc_1", "call_id": "call_1",
+                         "type": "function",
+                         "function": {"name": "x", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "valid"},
+        {"role": "tool", "tool_call_id": "call_ORPHAN", "content": "stray"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+    assert tool_ids == ["call_1"]
+
+
 def test_repair_leaves_valid_conversation_unchanged():
     agent = _bare_agent()
     messages = [

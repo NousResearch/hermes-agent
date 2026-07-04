@@ -73,8 +73,8 @@ process(action="kill", session_id="<id>")
 |------|--------|
 | `exec "prompt"` | One-shot execution, exits when done |
 | `--full-auto` | Sandboxed but auto-approves file changes in workspace |
-| `--yolo` | No sandbox, no approvals (fastest, most dangerous) |
-| `--sandbox danger-full-access` | No Codex sandbox; useful when the host service context breaks bubblewrap |
+| `--yolo` | No sandbox, no approvals. Avoid in Hermes-run work unless the operator explicitly accepted the blast radius. |
+| `--sandbox danger-full-access` | No Codex sandbox; last-resort only when the host service context breaks bubblewrap. The `codex-ops` plugin blocks it by default. |
 
 ## Hermes Gateway Caveat
 
@@ -84,13 +84,24 @@ when the same command works in the user's interactive shell. A typical symptom i
 bubblewrap/user-namespace errors such as `setting up uid map: Permission denied`
 or `loopback: Failed RTM_NEWADDR: Operation not permitted`.
 
-In that context, prefer:
+In that context, keep the normal bounded path first:
 
 ```
-codex exec --sandbox danger-full-access "<task>"
+codex exec --cd <repo> --sandbox workspace-write "<task>"
 ```
 
-Use process boundaries as the safety layer instead: explicit `workdir`, clean git
+If gateway sandboxing fails with the user-namespace errors above, stop and treat
+`danger-full-access` as an explicit operator exception, not the default. The
+operator must accept the blast radius and, when `codex-ops` is enabled, set:
+
+```yaml
+plugins:
+  entries:
+    codex-ops:
+      allow_danger_full_access: true
+```
+
+Then use process boundaries as the safety layer: explicit `workdir`, clean git
 status before launch, narrow task prompts, `git diff` review, targeted tests, and
 human/agent confirmation before committing broad changes.
 
@@ -109,9 +120,9 @@ terminal(command="REVIEW=$(mktemp -d) && git clone https://github.com/user/repo.
 terminal(command="git worktree add -b fix/issue-78 /tmp/issue-78 main", workdir="~/project")
 terminal(command="git worktree add -b fix/issue-99 /tmp/issue-99 main", workdir="~/project")
 
-# Launch Codex in each
-terminal(command="codex --yolo exec 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, pty=true)
-terminal(command="codex --yolo exec 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, pty=true)
+# Launch Codex in each with bounded workspace access
+terminal(command="codex exec --cd /tmp/issue-78 --sandbox workspace-write 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, pty=true)
+terminal(command="codex exec --cd /tmp/issue-99 --sandbox workspace-write 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, pty=true)
 
 # Monitor
 process(action="list")

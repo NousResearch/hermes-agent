@@ -55,6 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
+            "ssl_hostname_mismatch",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -1675,6 +1676,69 @@ class TestSSLTransientPatterns:
         should route to the transport bucket."""
         import ssl
         e = ssl.SSLError("arbitrary ssl error")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+
+# ── Test: SSL hostname mismatch (captive portal / DNS hijack) ────────────
+
+class TestSSLHostnameMismatch:
+    """SSL certificate hostname mismatch must be classified as non-retryable.
+
+    Captive portals, DNS hijacking, and corporate proxies present a
+    certificate whose hostname doesn't match the expected server.  Retrying
+    the same endpoint hits the same intercepting proxy — the error is
+    deterministic per network path, not transient.
+    """
+
+    def test_python_ssl_hostname_mismatch(self):
+        """Python ssl module: "hostname 'X' doesn't match 'Y'"."""
+        e = Exception(
+            "hostname 'bedrock-runtime.us-east-2.amazonaws.com' doesn't match "
+            "'vgw1-01.phl-philly-iap.lpv.attwifi.com'"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_hostname_mismatch
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_urllib3_hostname_mismatch(self):
+        """urllib3 / requests variant."""
+        e = Exception(
+            "Certificate for 'api.openai.com' does not match expected hostname "
+            "'api.openai.com'."
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_hostname_mismatch
+        assert result.retryable is False
+
+    def test_generic_hostname_mismatch(self):
+        """Generic 'hostname mismatch' string."""
+        e = Exception("SSL error: hostname mismatch detected")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_hostname_mismatch
+        assert result.retryable is False
+
+    def test_hostname_mismatch_not_retryable_on_large_session(self):
+        """Even on a large session, hostname mismatch is non-retryable."""
+        e = Exception(
+            "hostname 'api.anthropic.com' doesn't match 'captive.portal.local'"
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=180000,
+            context_length=200000,
+            num_messages=300,
+        )
+        assert result.reason == FailoverReason.ssl_hostname_mismatch
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_transient_ssl_alert_still_classifies_as_timeout(self):
+        """Regression guard: regular SSL alerts must NOT match hostname
+        mismatch — they remain retryable as timeout."""
+        e = Exception("[SSL: BAD_RECORD_MAC] sslv3 alert bad record mac (_ssl.c:2580)")
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True

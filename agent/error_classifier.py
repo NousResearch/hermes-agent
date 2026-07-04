@@ -41,6 +41,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    ssl_hostname_mismatch = "ssl_hostname_mismatch"  # SSL cert hostname doesn't match (captive portal, DNS hijack) — non-retryable
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -438,6 +439,18 @@ _SERVER_DISCONNECT_PATTERNS = [
     "incomplete chunked read",
 ]
 
+# SSL hostname mismatch patterns — captive portals, DNS hijacking, and
+# other network-layer interceptions present a certificate whose hostname
+# doesn't match the expected server.  Unlike transient SSL alerts, these
+# are NON-RETRYABLE: the same intercepting proxy will answer on every
+# retry, burning the entire retry budget across all model tiers.
+_SSL_HOSTNAME_MISMATCH_PATTERNS = [
+    "doesn't match",                   # Python ssl: "hostname 'X' doesn't match 'Y'"
+    "does not match expected hostname", # urllib3 / requests variant
+    "did not match expected hostname",  # alternative wording
+    "hostname mismatch",               # generic
+]
+
 # SSL/TLS transient failure patterns — intentionally distinct from
 # _SERVER_DISCONNECT_PATTERNS above.
 #
@@ -735,7 +748,15 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # ── 5. SSL hostname mismatch → non-retryable (captive portal / DNS hijack) ──
+    # Must come BEFORE the transient SSL check — a hostname mismatch means
+    # the network path is compromised (captive portal, DNS hijack, corporate
+    # proxy).  Retrying the same endpoint hits the same intercepting proxy
+    # and wastes the entire retry budget across all model tiers.
+    if any(p in error_msg for p in _SSL_HOSTNAME_MISMATCH_PATTERNS):
+        return _result(FailoverReason.ssl_hostname_mismatch, retryable=False)
+
+    # ── 6. SSL/TLS transient errors → retry as timeout (not compression) ──
     # SSL alerts mid-stream are transport hiccups, not server-side context
     # overflow signals.  Classify before the disconnect check so a large
     # session doesn't incorrectly trigger context compression when the real
@@ -746,7 +767,7 @@ def classify_api_error(
     if any(p in error_msg for p in _SSL_TRANSIENT_PATTERNS):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 6. Server disconnect + large session → context overflow ─────
+    # ── 7. Server disconnect + large session → context overflow ─────
     # Must come BEFORE generic transport error catch — a disconnect on
     # a large session is more likely context overflow than a transient
     # transport hiccup.  Without this ordering, RemoteProtocolError
@@ -788,12 +809,12 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Transport / timeout heuristics ───────────────────────────
+    # ── 8. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 8. Fallback: unknown ────────────────────────────────────────
+    # ── 9. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 

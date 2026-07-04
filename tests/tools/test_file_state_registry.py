@@ -191,6 +191,33 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         out = file_state.writes_since("parent", since, [p])
         self.assertEqual(out, {})
 
+    def test_writes_since_empty_paths_returns_all_writes(self):
+        """An empty ``paths`` means no path filter.
+
+        This is the exact call ``_run_single_child`` makes to build the
+        ``files_written`` field of the subagent completion event
+        (``writes_since("", wall_start, [])``).  With the old strict
+        whitelist an empty list matched nothing, so ``files_written``
+        was permanently empty in the TUI overlay.
+        """
+        p = self._mk()
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("sa-0-child", p)
+        out = file_state.writes_since("", since, [])
+        self.assertEqual(out, {"sa-0-child": [p]})
+
+    def test_writes_since_empty_paths_still_honors_exclude_and_ts(self):
+        p = self._mk()
+        q = self._mk()
+        file_state.note_write("old-writer", q)  # before ``since``
+        time.sleep(0.01)
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("parent", p)  # excluded writer
+        out = file_state.writes_since("parent", since, [])
+        self.assertEqual(out, {})
+
     def test_kill_switch_env_var(self):
         p = self._mk()
         os.environ["HERMES_DISABLE_FILE_STATE_GUARD"] = "1"

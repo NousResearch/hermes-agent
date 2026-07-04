@@ -128,12 +128,24 @@ Endpoints:
 
 ```text
 GET  /achievements
+GET  /achievements/summary
+GET  /export?format=json|markdown|svg&state=unlocked|discovered|secret
 GET  /scan-status
 GET  /recent-unlocks
 GET  /sessions/{session_id}/badges
 POST /rescan
 POST /reset-state
 ```
+
+`GET /achievements/summary` returns a compact profile (strengths, gaps,
+top tier, unlocked ids) for agent context injection. The same payload is
+written to `agent_summary.json` next to `state.json` after every finished
+scan, so agents and external tools can read it without the dashboard
+running.
+
+`GET /export` renders the current snapshot as machine-readable JSON, a
+Markdown badge table (README-pasteable, unlocked badges by default), or
+an SVG badge sheet.
 
 ## Development
 

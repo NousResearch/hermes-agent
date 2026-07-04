@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -165,6 +167,163 @@ def test_run_slash_json_output(kanban_home):
     assert payload["title"] == "jsontask"
     assert payload["assignee"] == "alice"
     assert payload["status"] == "ready"
+
+
+def test_run_slash_aux_creates_idempotent_card_with_evidence(kanban_home, tmp_path):
+    evidence_root = tmp_path / ".omo" / "evidence" / "kanban-aux"
+    command = (
+        "aux --micro-goal 'dedupe backlog' "
+        f"--project {tmp_path / 'project'} "
+        "--assignee default "
+        f"--evidence-root {evidence_root} "
+        "--no-steward-plan --json"
+    )
+
+    first = json.loads(kc.run_slash(command))
+
+    assert first["task_id"].startswith("t_")
+    assert first["status"] == "ready"
+    assert first["assignee"] == "default"
+    assert first["idempotency_key"].startswith("kanban-aux:root:")
+    assert first["reused"] is False
+    evidence_path = Path(first["evidence"]["path"])
+    assert evidence_path.is_file()
+    assert len(first["evidence"]["sha256"]) == 64
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, first["task_id"])
+        assert task is not None
+        assert "Do not call `hermes kanban aux`" in (task.body or "")
+        comments = kb.list_comments(conn, first["task_id"])
+        assert any("do not launch a recursive aux card" in c.body for c in comments)
+
+    second = json.loads(kc.run_slash(command))
+    assert second["task_id"] == first["task_id"]
+    assert second["reused"] is True
+    with kb.connect() as conn:
+        assert len(kb.list_tasks(conn)) == 1
+
+
+def test_run_slash_aux_references_detected_steward_plan(kanban_home, tmp_path):
+    plan = tmp_path / ".omo" / "plans" / "hermes-project-steward-runtime.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# local steward plan\n", encoding="utf-8")
+
+    out = kc.run_slash(
+        "aux --micro-goal 'preserve steward mvp' --assignee default "
+        f"--evidence-root {tmp_path / 'evidence'} --json"
+    )
+    payload = json.loads(out)
+
+    assert payload["steward_plan_path"] == str(plan)
+    with kb.connect() as conn:
+        task = kb.get_task(conn, payload["task_id"])
+        assert task is not None
+        assert "Project Steward/.omo integration" in (task.body or "")
+        assert "one selected project/fixture" in (task.body or "")
+
+
+def test_run_slash_aux_links_parent_and_comments_source(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="default")
+        parent = kb.create_task(conn, title="parent", assignee="default")
+
+    out = kc.run_slash(
+        "aux --micro-goal 'route validation' "
+        f"--source-task {source} --parent {parent} "
+        "--assignee default "
+        f"--evidence-root {tmp_path / 'evidence'} "
+        "--no-steward-plan --json"
+    )
+    payload = json.loads(out)
+
+    assert payload["parent_ids"] == [parent]
+    assert payload["status"] == "todo"
+    with kb.connect() as conn:
+        assert kb.parent_ids(conn, payload["task_id"]) == [parent]
+        source_comments = kb.list_comments(conn, source)
+        assert any(payload["task_id"] in c.body for c in source_comments)
+
+
+def test_run_slash_aux_parent_context_disambiguates_idempotency_key(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        parent_a = kb.create_task(conn, title="parent a", assignee="default")
+        parent_b = kb.create_task(conn, title="parent b", assignee="default")
+
+    base_command = (
+        "aux --micro-goal 'same goal' "
+        f"--project {tmp_path / 'project'} "
+        "--assignee default "
+        f"--evidence-root {tmp_path / 'evidence'} "
+        "--no-steward-plan --json"
+    )
+    first = json.loads(kc.run_slash(f"{base_command} --parent {parent_a}"))
+    second = json.loads(kc.run_slash(f"{base_command} --parent {parent_b}"))
+
+    assert first["idempotency_key"].startswith(f"kanban-aux:{parent_a}:")
+    assert second["idempotency_key"].startswith(f"kanban-aux:{parent_b}:")
+    assert second["idempotency_key"] != first["idempotency_key"]
+    assert first["task_id"] != second["task_id"]
+    assert first["reused"] is False
+    assert second["reused"] is False
+    assert first["parent_ids"] == [parent_a]
+    assert second["parent_ids"] == [parent_b]
+    with kb.connect() as conn:
+        assert kb.parent_ids(conn, first["task_id"]) == [parent_a]
+        assert kb.parent_ids(conn, second["task_id"]) == [parent_b]
+        assert len(kb.list_tasks(conn)) == 4
+
+
+def test_run_slash_aux_dry_run_and_missing_assignee(kanban_home, tmp_path):
+    dry = json.loads(
+        kc.run_slash(
+            "aux --micro-goal 'inspect board pressure' --assignee default "
+            f"--evidence-root {tmp_path / 'evidence'} "
+            "--no-steward-plan --dry-run --json"
+        )
+    )
+
+    assert dry["dry_run"] is True
+    assert dry["task_id"] is None
+    assert not Path(dry["evidence"]["path"]).exists()
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn) == []
+
+    missing = kc.run_slash("aux --assignee no-such-profile --no-steward-plan")
+    assert "no-such-profile" in missing
+    assert "does not exist" in missing
+
+
+def test_cli_process_propagates_aux_error_exit_code(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["HERMES_HOME"] = str(home)
+    for key in ("HERMES_PROFILE", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_DB"):
+        env.pop(key, None)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "kanban",
+            "aux",
+            "--assignee",
+            "no-such-profile",
+            "--no-steward-plan",
+        ],
+        cwd=Path(__file__).parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode != 0
+    assert "no-such-profile" in proc.stderr
+    assert "does not exist" in proc.stderr
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):

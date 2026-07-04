@@ -13913,9 +13913,13 @@ def main():
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command. Subcommand handlers conventionally return a
+    # shell-style integer status on validation/runtime errors; propagate that
+    # instead of silently exiting 0 after printing stderr.
     if hasattr(args, "func"):
-        args.func(args)
+        exit_code = args.func(args)
+        if type(exit_code) is int:
+            sys.exit(exit_code)
     else:
         parser.print_help()
 

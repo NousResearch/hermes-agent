@@ -247,6 +247,41 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+### Auxiliary coordinator launcher
+
+When a board needs a light coordination pass — dedupe, parent repair,
+evidence pointers, or routing follow-up cards to existing profiles — use
+`hermes kanban aux` instead of adding another dispatcher or hand-writing a
+swarm. The launcher creates (or reuses) exactly one idempotent coordinator
+card assigned to an existing profile lane (`kanban-aux`, `autopilot`, or
+`default` by default; override with `--assignee`).
+
+```bash
+hermes kanban aux \
+    --micro-goal "dedupe the release board and route missing validation" \
+    --project ~/code/my-project \
+    --assignee autopilot \
+    --max-created 3 \
+    --json
+```
+
+The generated card explicitly tells the auxiliary worker not to call
+`hermes kanban aux` recursively, not to create profiles/skills/cron/gateways,
+and to cap itself to one coordination pass. It uses a deterministic
+`kanban-aux:<parent_id|root>:<project>:<lane>:<micro_goal>:v1` idempotency key
+(single-parent launches use that parent id; multi-parent launches use a stable
+hash of the parent set), writes a redacted local evidence event
+(`~/.omo/evidence/kanban-aux/` when a `.omo` workspace exists, otherwise under
+Hermes home), and comments only the path + sha256 back onto Kanban.
+
+If a Project Steward plan is present at
+`~/.omo/plans/hermes-project-steward-runtime.md`, the launcher references it in
+the card body and preserves its MVP boundaries: local-only, one selected
+project/fixture, one card, one micro-goal, serial foreground runner, Kanban as
+summary-level state, and detailed evidence stored locally. Use
+`--no-steward-plan` to suppress that section or `--steward-plan <path>` to pin a
+different plan.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch
@@ -625,6 +660,10 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
+hermes kanban aux [--source-task <id>] [--parent <id>]... [--project <path|slug>]
+                   [--micro-goal "..."] [--assignee <profile>] [--max-created N]
+                   [--evidence-root <path>] [--steward-plan <path>|--no-steward-plan]
+                   [--dry-run] [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
         [--workflow-template-id <id>] [--current-step-key <key>]
         [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]

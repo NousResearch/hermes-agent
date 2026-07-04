@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli import kanban_aux as ka
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name
@@ -367,6 +368,48 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- aux ---
+    p_aux = sub.add_parser(
+        "aux",
+        aliases=["launch-aux"],
+        help="Launch one bounded auxiliary Kanban coordinator card",
+        description=(
+            "Create or reuse a single idempotent coordination card for an "
+            "existing Hermes profile lane. This is a thin launcher on top of "
+            "the normal Kanban dispatcher — it does not start a second "
+            "dispatcher or recursively create helper agents."
+        ),
+    )
+    p_aux.add_argument("--source-task", default=None,
+                       help="Task id that motivated this aux pass (context/comment only)")
+    p_aux.add_argument("--parent", action="append", default=[],
+                       help="Parent dependency for the aux card (repeatable)")
+    p_aux.add_argument("--project", default=None,
+                       help="Project/fixture path or slug for dedupe context")
+    p_aux.add_argument("--micro-goal", default=None,
+                       help="Bounded coordination goal (default: board triage)")
+    p_aux.add_argument("--assignee", default=None,
+                       help="Existing profile to run the pass. Defaults to kanban-aux, autopilot, then default if present.")
+    p_aux.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_aux.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_aux.add_argument("--max-runtime", default="30m",
+                       help="Runtime cap for the aux worker (default: 30m)")
+    p_aux.add_argument("--max-created", type=int, default=ka.DEFAULT_MAX_CREATED_CARDS,
+                       help="Instructional cap for cards the aux worker may create in one pass (default: 3)")
+    p_aux.add_argument("--evidence-root", default=None,
+                       help="Local evidence root. Defaults to ~/.omo/evidence/kanban-aux when ~/.omo exists, else Hermes home.")
+    p_aux.add_argument("--steward-plan", default=None,
+                       help="Path to a .omo Project Steward plan to reference in the aux card")
+    p_aux.add_argument("--no-steward-plan", action="store_true",
+                       help="Do not auto-detect/reference ~/.omo/plans/hermes-project-steward-runtime.md")
+    p_aux.add_argument("--idempotency-key", default=None,
+                       help="Override the deterministic kanban-aux:<...>:v1 key")
+    p_aux.add_argument("--created-by", default=ka.AUX_CREATED_BY,
+                       help="Author recorded on the task/comments")
+    p_aux.add_argument("--dry-run", action="store_true",
+                       help="Print the planned card/key/body without writing the board or evidence")
+    p_aux.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -938,6 +981,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "aux":      _cmd_aux,
+            "launch-aux": _cmd_aux,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1365,6 +1410,61 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_aux(args: argparse.Namespace) -> int:
+    try:
+        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        print(f"kanban aux: --max-runtime: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "max_created", 0) < 0:
+        print("kanban aux: --max-created must be >= 0", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        result = ka.launch_auxiliary_agent(
+            conn,
+            source_task_id=getattr(args, "source_task", None),
+            project=getattr(args, "project", None),
+            micro_goal=getattr(args, "micro_goal", None),
+            assignee=getattr(args, "assignee", None),
+            parents=tuple(getattr(args, "parent", None) or ()),
+            tenant=getattr(args, "tenant", None),
+            priority=getattr(args, "priority", 0),
+            max_runtime_seconds=max_runtime,
+            max_created_cards=getattr(args, "max_created", ka.DEFAULT_MAX_CREATED_CARDS),
+            evidence_root=getattr(args, "evidence_root", None),
+            steward_plan=getattr(args, "steward_plan", None),
+            include_steward_plan=not bool(getattr(args, "no_steward_plan", False)),
+            created_by=getattr(args, "created_by", None) or ka.AUX_CREATED_BY,
+            idempotency_key=getattr(args, "idempotency_key", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    if result.dry_run:
+        verb = "Would reuse" if result.reused else "Would create"
+    else:
+        verb = "Reused" if result.reused else "Created"
+    task_ref = result.task_id or "(dry-run)"
+    print(f"{verb} {task_ref}  ({result.status}, assignee={result.assignee})")
+    print(f"Idempotency: {result.idempotency_key}")
+    if result.parent_ids:
+        print("Parents: " + ", ".join(result.parent_ids))
+    evidence = result.evidence.as_dict()
+    print(
+        f"Evidence: {evidence.get('path')}, "
+        f"sha256={evidence.get('sha256') or '(not written)'}"
+    )
+    if result.steward_plan_path:
+        print(f"Steward plan: {result.steward_plan_path}")
+    if not result.dry_run and result.status == "ready" and result.assignee:
+        running, message = _check_dispatcher_presence()
+        if not running and message:
+            print(f"\n⚠  {message}", file=sys.stderr)
     return 0
 
 
@@ -2752,6 +2852,7 @@ Common subcommands:
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
+  `aux`                 Launch/reuse one bounded auxiliary coordinator card
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive

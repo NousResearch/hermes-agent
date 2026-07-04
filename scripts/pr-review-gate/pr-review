@@ -54,10 +54,19 @@ fi
 # GitLab (สำหรับ repo งานทีมบน GitLab): ตั้ง 2 ค่านี้ใน ~/.hermes/.env
 #   GITLAB__PERSONAL_ACCESS_TOKEN=<token สิทธิ์ api>
 #   GITLAB_URL=https://<gitlab-ของทีม>   (เฉพาะ GitLab แบบติดตั้งเอง)
-if [ -n "${GITLAB__PERSONAL_ACCESS_TOKEN:-}" ] && [[ "${PR_URL}" != *github.com* ]]; then
-  export CONFIG__GIT_PROVIDER="gitlab"
+# เข้าโหมด GitLab เฉพาะเมื่อโดเมนของลิงก์ตรงกับ GitLab ที่รู้จักจริง (จาก Codex review:
+# ห้ามเหมาว่า "ไม่ใช่ github.com = GitLab" เพราะลิงก์ผิด/เว็บอื่นจะหลุดเข้าโหมดผิด)
+if [ -n "${GITLAB__PERSONAL_ACCESS_TOKEN:-}" ]; then
+  pr_host="${PR_URL#*://}"; pr_host="${pr_host%%/*}"
+  gitlab_host=""
   if [ -n "${GITLAB_URL:-}" ]; then
+    gitlab_host="${GITLAB_URL#*://}"; gitlab_host="${gitlab_host%%/*}"
+  fi
+  if [ -n "${gitlab_host}" ] && [ "${pr_host}" = "${gitlab_host}" ]; then
+    export CONFIG__GIT_PROVIDER="gitlab"
     export GITLAB__URL="${GITLAB_URL}"
+  elif [ "${pr_host}" = "gitlab.com" ]; then
+    export CONFIG__GIT_PROVIDER="gitlab"
   fi
 fi
 # ส่งคีย์ Gemini ให้ pr-agent ทั้งสองชื่อที่มันรองรับ

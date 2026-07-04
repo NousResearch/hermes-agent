@@ -1,0 +1,6 @@
+name: chronoception
+version: "0.1.0"
+description: "A sense of elapsed time between turns: a compact per-turn clock plus a one-shot notice when the agent resumes after a long idle gap. A stateless model asserts '0 seconds elapsed' with full confidence when no clock is in context; this injects the real elapsed time so it can judge whether time-sensitive state has gone stale. Opt-in, no external dependencies."
+author: "Hermes contributors"
+hooks:
+  - pre_llm_call

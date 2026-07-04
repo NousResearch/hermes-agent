@@ -1,28 +1,44 @@
 <p align="center">
-  <img src="assets/banner.png" alt="AI Brain" width="100%">
+  <img src="assets/banner.png" alt="AIRIES Agent" width="100%">
 </p>
 
-# AI Brain 🧠
+# AIRIES Agent ✦
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Documentation</a> | <a href="https://hermes-agent.nousresearch.com/">Desktop App</a>
 </p>
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-Documentation-00E5FF?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-Documentation-B388FF?style=for-the-badge" alt="Documentation"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
-**AI Brain is an intelligent agent that codes, automates tasks, and executes work across your environment.** It ships with a built-in advanced RAG knowledge system (hybrid BM25 + vector retrieval with reranking) — no external memory API required. Write code, run terminals, schedule jobs, delegate subagents, and build skills that improve over time.
+**AIRIES Agent is an intelligent agent that codes, automates tasks, and executes work across your environment.** It ships with built-in advanced RAG (hybrid BM25 + vector retrieval), Stripe subscription tiers with usage limits, and non-automated web fetch for research — no browser automation required.
 
 Use any model you want — OpenRouter, OpenAI, Anthropic, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
 <table>
 <tr><td><b>Code & automate</b></td><td>Full terminal access, file editing, browser automation, cron scheduling, and parallel subagent delegation for complex workflows.</td></tr>
-<tr><td><b>Advanced RAG built-in</b></td><td>Local hybrid retrieval (BM25 + vector + RRF fusion + MMR reranking). Ingest documents, search knowledge, and recall facts across sessions — entirely on-device.</td></tr>
-<tr><td><b>Terminal-first interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Self-improving skills</b></td><td>Agent-curated memory, autonomous skill creation, FTS5 session search, and a background curator that archives stale skills.</td></tr>
-<tr><td><b>Runs anywhere</b></td><td>Six terminal backends — local, Docker, SSH, Singularity, Modal, and Daytona. Run on a laptop, $5 VPS, or GPU cluster.</td></tr>
-<tr><td><b>No chatbot dependency</b></td><td>Messaging gateway (Telegram, Discord, Slack, etc.) is disabled by default. AI Brain focuses on doing work, not chatting on platforms.</td></tr>
+<tr><td><b>Advanced RAG built-in</b></td><td>Local hybrid retrieval (BM25 + vector + RRF fusion + MMR reranking). Ingest documents, search knowledge, and recall facts across sessions.</td></tr>
+<tr><td><b>Stripe subscriptions</b></td><td>Free, Pro, and Team tiers with monthly turn and web-fetch limits. Manage with <code>hermes subscription</code>.</td></tr>
+<tr><td><b>Non-auto web research</b></td><td><code>airies_fetch</code> uses plain HTTP + HTML parsing — no headless browsers or Firecrawl agents.</td></tr>
+<tr><td><b>Terminal-first interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, and streaming tool output.</td></tr>
+<tr><td><b>No chatbot dependency</b></td><td>Messaging gateway is disabled by default. AIRIES focuses on doing work, not chatting on platforms.</td></tr>
 </table>
+
+## Subscription tiers
+
+| Tier | Monthly turns | Web fetches |
+|------|---------------|-------------|
+| Free | 50 | 25 |
+| Pro | 2,000 | 500 |
+| Team | 10,000 | 2,500 |
+
+```bash
+hermes subscription status          # view usage
+hermes subscription checkout --tier pro   # upgrade via Stripe
+hermes subscription portal        # manage billing
+```
+
+Set `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID_PRO`, and `STRIPE_PRICE_ID_TEAM` in `~/.hermes/.env`.
 
 ---
 

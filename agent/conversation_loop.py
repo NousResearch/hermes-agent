@@ -597,6 +597,24 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # AIRIES subscription usage gate
+    try:
+        from hermes_cli.airies_subscription import get_subscription_manager
+        _sub_mgr = get_subscription_manager()
+        _allowed, _limit_msg = _sub_mgr.check_turn_allowed()
+        if not _allowed:
+            return {
+                "final_response": _limit_msg,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "failed": True,
+                "error": "subscription_limit",
+            }
+        _sub_mgr.record_event("turn")
+    except Exception:
+        logger.debug("subscription gate skipped", exc_info=True)
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None

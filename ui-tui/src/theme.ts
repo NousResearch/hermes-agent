@@ -234,13 +234,13 @@ function normalizeAnsiForeground(color: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'AI Brain',
-  icon: '🧠',
+  name: 'AIRIES Agent',
+  icon: '✦',
   prompt: '▸',
-  welcome: 'Code, automate, and execute tasks — type /help for commands.',
-  goodbye: 'Brain offline. See you next session.',
+  welcome: 'Code, automate, and execute — type /help for commands.',
+  goodbye: 'AIRIES signing off. See you next session.',
   tool: '▏',
-  helpHeader: '(🧠) AI Brain Commands'
+  helpHeader: '(✦) AIRIES Commands'
 }
 
 const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
@@ -253,11 +253,11 @@ const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
 
 export const DARK_THEME: Theme = {
   color: {
-    primary: '#00E5FF',
-    accent: '#40C4FF',
-    border: '#1E88E5',
-    text: '#ECEFF1',
-    muted: '#546E7A',
+    primary: '#B388FF',
+    accent: '#7C4DFF',
+    border: '#651FFF',
+    text: '#E8EAF6',
+    muted: '#5C6BC0',
     // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
     // read as barely-visible on dark terminals for long body text.  The
     // new value sits ~60% luminance — readable without losing the "muted /

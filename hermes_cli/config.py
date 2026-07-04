@@ -916,9 +916,9 @@ DEFAULT_CONFIG = {
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
     "agent": {
-        # Product identity. "ai-brain" disables messaging/chatbot surfaces
-        # and enables the Brain RAG knowledge stack by default.
-        "product": "ai-brain",
+        # Product identity. "airies-agent" disables messaging/chatbot surfaces
+        # and enables the AIRIES knowledge stack by default.
+        "product": "airies-agent",
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
@@ -1186,9 +1186,9 @@ DEFAULT_CONFIG = {
     },
 
     "web": {
-        "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "backend": "airies_fetch",
+        "search_backend": "airies_fetch",
+        "extract_backend": "airies_fetch",
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 
@@ -1740,7 +1740,7 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
-        "skin": "ai-brain",
+        "skin": "airies",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
         # responses, log lines, tool outputs, or slash-command descriptions.
@@ -2088,6 +2088,18 @@ DEFAULT_CONFIG = {
         # "mem0", "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "brain_rag",
+    },
+
+    # AIRIES Agent subscription — Stripe billing + monthly usage limits.
+    "subscription": {
+        "enabled": True,
+        "stripe_price_id_pro": "",
+        "stripe_price_id_team": "",
+        "tiers": {
+            "free": {"monthly_turns": 50, "monthly_web_fetches": 25},
+            "pro": {"monthly_turns": 2000, "monthly_web_fetches": 500},
+            "team": {"monthly_turns": 10000, "monthly_web_fetches": 2500},
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -4292,6 +4304,34 @@ OPTIONAL_ENV_VARS = {
         "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
         "prompt": "Ephemeral system prompt",
         "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "STRIPE_SECRET_KEY": {
+        "description": "Stripe secret key for AIRIES Agent subscriptions",
+        "prompt": "Stripe secret key (sk_live_... or sk_test_...)",
+        "url": "https://dashboard.stripe.com/apikeys",
+        "password": True,
+        "category": "setting",
+    },
+    "STRIPE_WEBHOOK_SECRET": {
+        "description": "Stripe webhook signing secret for subscription events",
+        "prompt": "Stripe webhook secret (whsec_...)",
+        "url": "https://dashboard.stripe.com/webhooks",
+        "password": True,
+        "category": "setting",
+    },
+    "STRIPE_PRICE_ID_PRO": {
+        "description": "Stripe Price ID for AIRIES Pro tier",
+        "prompt": "Stripe price ID for Pro (price_...)",
+        "url": "https://dashboard.stripe.com/products",
+        "password": False,
+        "category": "setting",
+    },
+    "STRIPE_PRICE_ID_TEAM": {
+        "description": "Stripe Price ID for AIRIES Team tier",
+        "prompt": "Stripe price ID for Team (price_...)",
+        "url": "https://dashboard.stripe.com/products",
         "password": False,
         "category": "setting",
     },

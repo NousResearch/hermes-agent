@@ -84,12 +84,12 @@ def test_gateway_disabled_by_default():
     from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
     assert cfg_get(DEFAULT_CONFIG, "gateway", "enabled") is False
-    assert cfg_get(DEFAULT_CONFIG, "agent", "product") == "ai-brain"
+    assert cfg_get(DEFAULT_CONFIG, "agent", "product") == "airies-agent"
     assert cfg_get(DEFAULT_CONFIG, "memory", "provider") == "brain_rag"
 
 
-def test_ai_brain_skin_exists():
+def test_airies_skin_exists():
     from hermes_cli.skin_engine import load_skin
 
-    skin = load_skin("ai-brain")
-    assert skin.get_branding("agent_name") == "AI Brain"
+    skin = load_skin("airies")
+    assert skin.get_branding("agent_name") == "AIRIES Agent"

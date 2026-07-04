@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 BRAIN_RAG_SEARCH_SCHEMA = {
     "name": "brain_rag_search",
     "description": (
-        "Search the AI Brain knowledge base using hybrid RAG "
+        "Search the AIRIES Agent knowledge base using hybrid RAG "
         "(BM25 + vector + reranking). Use before answering questions "
         "about prior work, documents, or stored facts."
     ),
@@ -136,7 +136,7 @@ class BrainRAGProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         stats = self._store.stats() if self._store else {}
         return (
-            "You have an AI Brain knowledge base with hybrid RAG retrieval "
+            "You have an AIRIES Agent knowledge base with hybrid RAG retrieval "
             "(BM25 + vector search + reranking). Before answering questions "
             "about prior work, code, documents, or user preferences, call "
             "`brain_rag_search`. Store durable facts with `brain_rag_remember` "

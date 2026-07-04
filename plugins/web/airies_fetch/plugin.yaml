@@ -1,0 +1,4 @@
+name: airies_fetch
+description: Non-automated HTTP fetch and HTML parsing for web search/extract.
+kind: backend
+version: 1.0.0

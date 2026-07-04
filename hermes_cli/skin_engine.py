@@ -99,7 +99,7 @@ BUILT-IN SKINS
 ==============
 
 - ``default`` — Classic Hermes gold/kawaii (the current look)
-- ``ai-brain`` — Neural cyan AI Brain theme (default product identity)
+- ``airies`` — AIRIES Agent electric violet theme (default product identity)
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
@@ -197,62 +197,62 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "tool_prefix": "┊",
     },
-    "ai-brain": {
-        "name": "ai-brain",
-        "description": "AI Brain — neural cyan intelligence theme",
+    "airies": {
+        "name": "airies",
+        "description": "AIRIES Agent — electric intelligence theme",
         "colors": {
-            "banner_border": "#1E88E5",
-            "banner_title": "#00E5FF",
-            "banner_accent": "#40C4FF",
-            "banner_dim": "#546E7A",
-            "banner_text": "#ECEFF1",
-            "ui_accent": "#40C4FF",
-            "ui_label": "#80D8FF",
+            "banner_border": "#7C4DFF",
+            "banner_title": "#B388FF",
+            "banner_accent": "#651FFF",
+            "banner_dim": "#5C6BC0",
+            "banner_text": "#E8EAF6",
+            "ui_accent": "#7C4DFF",
+            "ui_label": "#B388FF",
             "ui_ok": "#69F0AE",
             "ui_error": "#FF5252",
             "ui_warn": "#FFD740",
-            "prompt": "#ECEFF1",
-            "input_rule": "#1E88E5",
-            "response_border": "#00E5FF",
+            "prompt": "#E8EAF6",
+            "input_rule": "#651FFF",
+            "response_border": "#B388FF",
             "status_bar_bg": "#0D1117",
-            "status_bar_text": "#B0BEC5",
-            "status_bar_strong": "#00E5FF",
-            "status_bar_dim": "#546E7A",
+            "status_bar_text": "#9FA8DA",
+            "status_bar_strong": "#B388FF",
+            "status_bar_dim": "#5C6BC0",
             "status_bar_good": "#69F0AE",
             "status_bar_warn": "#FFD740",
             "status_bar_bad": "#FF6E40",
             "status_bar_critical": "#FF5252",
-            "session_label": "#80D8FF",
-            "session_border": "#546E7A",
+            "session_label": "#B388FF",
+            "session_border": "#5C6BC0",
         },
         "spinner": {
-            "waiting_faces": ["(🧠)", "(⚡)", "(◈)", "(◎)", "(◇)"],
-            "thinking_faces": ["(🧠)", "(⚡)", "(◈)", "(⌁)", "(<>)"],
+            "waiting_faces": ["(✦)", "(⚡)", "(◈)", "(◎)", "(◇)"],
+            "thinking_faces": ["(✦)", "(⚡)", "(◈)", "(⌁)", "(<>)"],
             "thinking_verbs": [
                 "reasoning", "synthesizing", "retrieving", "planning",
-                "coding", "automating", "analyzing", "connecting",
+                "coding", "automating", "analyzing", "executing",
             ],
             "wings": [
-                ["⟨🧠", "🧠⟩"],
+                ["⟨✦", "✦⟩"],
                 ["⟨⚡", "⚡⟩"],
                 ["⟨◈", "◈⟩"],
             ],
         },
         "branding": {
-            "agent_name": "AI Brain",
-            "welcome": "AI Brain online. Code, automate, and execute tasks — type /help for commands.",
-            "goodbye": "Brain offline. See you next session.",
-            "response_label": " 🧠 Brain ",
+            "agent_name": "AIRIES Agent",
+            "welcome": "AIRIES Agent online. Code, automate, and execute — type /help for commands.",
+            "goodbye": "AIRIES signing off. See you next session.",
+            "response_label": " ✦ AIRIES ",
             "prompt_symbol": "▸",
-            "help_header": "(🧠) AI Brain Commands",
+            "help_header": "(✦) AIRIES Commands",
         },
         "tool_prefix": "▏",
-        "banner_logo": """[bold #00E5FF] █████╗ ██╗     ██████╗ ██████╗  █████╗ ██╗███╗   ██╗[/]
-[bold #40C4FF]██╔══██╗██║     ██╔══██╗██╔══██╗██╔══██╗██║████╗  ██║[/]
-[#1E88E5]███████║██║     ██████╔╝██████╔╝███████║██║██╔██╗ ██║[/]
-[#1565C0]██╔══██║██║     ██╔══██╗██╔══██╗██╔══██║██║██║╚██╗██║[/]
-[#0D47A1]██║  ██║███████╗██████╔╝██║  ██║██║  ██║██║██║ ╚████║[/]
-[#0D47A1]╚═╝  ╚═╝╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝[/]""",
+        "banner_logo": """[bold #B388FF] █████╗ ██╗██████╗ ██╗███████╗███████╗     █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #7C4DFF]██╔══██╗██║██╔══██╗██║██╔════╝██╔════╝    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#651FFF]███████║██║██████╔╝██║█████╗  ███████╗    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#512DA8]██╔══██║██║██╔══██╗██║██╔══╝  ╚════██║    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#311B92]██║  ██║██║██║  ██║██║███████╗███████║    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#311B92]╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
     },
     "ares": {
         "name": "ares",

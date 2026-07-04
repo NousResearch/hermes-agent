@@ -279,6 +279,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.subscription import build_subscription_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.security import build_security_parser
@@ -2415,9 +2416,9 @@ def cmd_gateway(args):
 
     config = load_config()
     if not cfg_get(config, "gateway", "enabled", default=False):
-        product = cfg_get(config, "agent", "product", default="ai-brain")
+        product = cfg_get(config, "agent", "product", default="airies-agent")
         print(
-            "Messaging gateway is disabled in AI Brain mode.\n"
+            "Messaging gateway is disabled in AIRIES Agent mode.\n"
             f"  product: {product}\n"
             "  Use the CLI (`hermes`), TUI (`hermes --tui`), or desktop app instead.\n"
             "  To re-enable chatbots, set gateway.enabled: true in config.yaml."
@@ -4236,6 +4237,64 @@ def cmd_webhook(args):
     from hermes_cli.webhook import webhook_command
 
     webhook_command(args)
+
+
+def cmd_subscription(args):
+    """AIRIES Agent subscription and usage management."""
+    from hermes_cli.airies_subscription import get_subscription_manager
+
+    mgr = get_subscription_manager()
+    action = getattr(args, "subscription_action", None) or "status"
+
+    if action == "status":
+        snap = mgr.get_snapshot()
+        print(f"\n  AIRIES Agent — {snap.tier.upper()} ({snap.status})")
+        print(f"  Period: {snap.period}")
+        print(f"  Turns:       {snap.turns_used:>6} / {snap.turns_limit}")
+        print(f"  Web fetches: {snap.web_fetches_used:>6} / {snap.web_fetches_limit}")
+        if snap.stripe_subscription_id:
+            print(f"  Stripe sub:  {snap.stripe_subscription_id}")
+        print()
+        return
+
+    if action == "checkout":
+        result = mgr.create_checkout_session(
+            args.tier,
+            success_url=args.success_url,
+            cancel_url=args.cancel_url,
+        )
+        if not result.get("success"):
+            print(f"  Error: {result.get('error')}")
+            raise SystemExit(1)
+        print(f"\n  Open this URL to subscribe ({args.tier}):\n  {result['url']}\n")
+        return
+
+    if action == "portal":
+        result = mgr.create_billing_portal(return_url=args.return_url)
+        if not result.get("success"):
+            print(f"  Error: {result.get('error')}")
+            raise SystemExit(1)
+        print(f"\n  Manage billing:\n  {result['url']}\n")
+        return
+
+    if action == "sync":
+        result = mgr.sync_from_stripe()
+        if not result.get("success"):
+            print(f"  Error: {result.get('error')}")
+            raise SystemExit(1)
+        print(f"  Synced: tier={result.get('tier', 'free')} status={result.get('status', 'active')}")
+        return
+
+    if action == "activate":
+        result = mgr.apply_checkout_session(args.session_id)
+        if not result.get("success"):
+            print(f"  Error: {result.get('error')}")
+            raise SystemExit(1)
+        print(f"  Activated {result.get('tier', 'pro')} subscription.")
+        return
+
+    print("  Unknown subscription action. Try: status, checkout, portal, sync, activate")
+    raise SystemExit(1)
 
 
 def cmd_slack(args):
@@ -12942,6 +13001,11 @@ def main():
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)
     # =========================================================================
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
+
+    # =========================================================================
+    # subscription command — AIRIES Stripe billing + usage
+    # =========================================================================
+    build_subscription_parser(subparsers, cmd_subscription=cmd_subscription)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing

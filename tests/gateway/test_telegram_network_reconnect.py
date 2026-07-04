@@ -856,15 +856,12 @@ async def test_handle_polling_network_error_updater_stop_timeout():
 
     app.updater.start_polling = AsyncMock(side_effect=_fake_start_polling)
 
-    # Patch the timeout constant so the test completes fast.
+    # Shrink the stop() watchdog bound so the test completes fast instead of
+    # waiting the full _UPDATER_STOP_TIMEOUT. Patching the named constant is
+    # cleaner than monkeypatching asyncio.wait_for process-wide.
     import plugins.platforms.telegram.adapter as _mod
-    original_wait_for = asyncio.wait_for
 
-    async def _fast_wait_for(coro, timeout):
-        # Substitute a 0.05s timeout so the test doesn't take 15s.
-        return await original_wait_for(coro, 0.05)
-
-    with patch("asyncio.wait_for", side_effect=_fast_wait_for):
+    with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
         await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
 
     # The reconnect ladder must have advanced past the hung stop().

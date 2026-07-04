@@ -32,11 +32,11 @@ only choice that is universally correct across self-hosted IDPs. (The ``nous``
 provider verifies its *access* token because Nous Portal mints a custom JWT
 access token with the dashboard claims baked in — a non-OIDC shortcut.)
 
-Public PKCE clients only. Confidential clients (with a ``client_secret``) are
-not yet supported — see the ``# TODO(confidential-client)`` seam in
-``complete_login`` / ``refresh_session``. Self-hosters configuring a CLI/SPA
-client almost always register a public + PKCE client, which is the smaller,
-simpler surface.
+Public PKCE clients remain the default. Confidential clients (with a
+``client_secret``) are also supported for IDPs that require token-endpoint
+authentication. Self-hosters configuring a CLI/SPA client still usually
+register a public + PKCE client, but the plugin now accepts a secret when the
+deployment needs one.
 
 Configuration surfaces (env wins over config.yaml when set non-empty, so a
 provisioned-but-not-populated secret can't shadow a valid config.yaml entry —
@@ -49,11 +49,13 @@ same precedence convention as the ``nous`` plugin)::
         self_hosted:
           issuer: https://auth.example.com/application/o/hermes/   # required
           client_id: hermes-dashboard                              # required
+          client_secret: <optional>                                # optional
           scopes: "openid profile email"                           # optional
 
     # Environment overrides (Docker/Fly secret injection)
     HERMES_DASHBOARD_OIDC_ISSUER
     HERMES_DASHBOARD_OIDC_CLIENT_ID
+    HERMES_DASHBOARD_OIDC_CLIENT_SECRET   # optional
     HERMES_DASHBOARD_OIDC_SCOPES        # optional; defaults to "openid profile email"
 
 Skip reasons: when the plugin loads but can't register (missing issuer /
@@ -172,6 +174,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         issuer: str,
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
+        client_secret: str = "",
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -186,6 +189,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
         self._scopes = scopes.strip() or _DEFAULT_SCOPES
+        self._client_secret = client_secret.strip()
 
         # Discovery + JWKS are lazily resolved on first use so plugin
         # registration never makes a network call (the IDP may be down at
@@ -245,9 +249,6 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "client_id": self._client_id,
             "code_verifier": code_verifier,
         }
-        # TODO(confidential-client): when client_secret support lands, add it
-        # here (and switch to HTTP Basic auth if the IDP's
-        # token_endpoint_auth_methods_supported prefers client_secret_basic).
         return self._exchange(
             disco["token_endpoint"], data, bad_request_exc=InvalidCodeError
         )
@@ -265,7 +266,6 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             # identity claims (some IDPs narrow scope on refresh otherwise).
             "scope": self._scopes,
         }
-        # TODO(confidential-client): add client_secret here when supported.
         return self._exchange(
             disco["token_endpoint"],
             data,
@@ -305,15 +305,23 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         if not endpoint:
             return None
         try:
+            request_kwargs: Dict[str, Any] = {
+                "data": self._token_request_data(
+                    {
+                        "token": refresh_token,
+                        "token_type_hint": "refresh_token",
+                        "client_id": self._client_id,
+                    }
+                ),
+                "headers": {"Accept": "application/json"},
+                "timeout": _TOKEN_ENDPOINT_TIMEOUT_SEC,
+            }
+            auth = self._token_request_auth()
+            if auth is not None:
+                request_kwargs["auth"] = auth
             httpx.post(
                 endpoint,
-                data={
-                    "token": refresh_token,
-                    "token_type_hint": "refresh_token",
-                    "client_id": self._client_id,
-                },
-                headers={"Accept": "application/json"},
-                timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
+                **request_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
@@ -337,11 +345,18 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         for the refresh path — preserving the middleware's distinct handling.
         """
         try:
+            request_data = self._token_request_data(data)
+            request_kwargs: Dict[str, Any] = {
+                "data": request_data,
+                "headers": {"Accept": "application/json"},
+                "timeout": _TOKEN_ENDPOINT_TIMEOUT_SEC,
+            }
+            auth = self._token_request_auth()
+            if auth is not None:
+                request_kwargs["auth"] = auth
             response = httpx.post(
                 token_endpoint,
-                data=data,
-                headers={"Accept": "application/json"},
-                timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
+                **request_kwargs,
             )
         except httpx.RequestError as exc:
             raise ProviderError(
@@ -489,6 +504,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "token_endpoint": token_endpoint,
             "jwks_uri": jwks_uri,
             "revocation_endpoint": revocation_endpoint,
+            "token_endpoint_auth_methods_supported": self._normalize_auth_methods(
+                payload.get("token_endpoint_auth_methods_supported")
+            ),
         }
 
     # ---- internals: JWT verification --------------------------------------
@@ -631,6 +649,43 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 f"got {redirect_uri!r}"
             )
 
+    def _token_request_data(self, data: Dict[str, str]) -> Dict[str, str]:
+        """Return token request form data, adding a secret when needed."""
+        if not self._client_secret or self._token_endpoint_prefers_basic():
+            return data
+        request_data = dict(data)
+        request_data["client_secret"] = self._client_secret
+        return request_data
+
+    def _token_request_auth(self) -> Optional[tuple[str, str]]:
+        """Return HTTP Basic auth when discovery prefers client_secret_basic."""
+        if not self._client_secret:
+            return None
+        if self._token_endpoint_prefers_basic():
+            return (self._client_id, self._client_secret)
+        return None
+
+    def _token_endpoint_prefers_basic(self) -> bool:
+        """Return True when discovery lists client_secret_basic before post."""
+        auth_methods = self._normalize_auth_methods(
+            self._get_discovery().get("token_endpoint_auth_methods_supported")
+        )
+        if not auth_methods:
+            return False
+        if "client_secret_basic" not in auth_methods:
+            return False
+        if "client_secret_post" not in auth_methods:
+            return True
+        return auth_methods.index("client_secret_basic") < auth_methods.index(
+            "client_secret_post"
+        )
+
+    @staticmethod
+    def _normalize_auth_methods(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
     def _parse_json_body(self, response: httpx.Response) -> Dict[str, Any]:
         ctype = response.headers.get("content-type", "")
         if not ctype.startswith("application/json"):
@@ -696,7 +751,7 @@ def register(ctx) -> None:
     client_id are configured (via ``HERMES_DASHBOARD_OIDC_*`` env vars or the
     ``dashboard.oauth.self_hosted`` block in config.yaml). Operator-owned
     loopback / ``--insecure`` dashboards leave these unset, so the plugin is a
-    no-op for them.
+    no-op for them. ``client_secret`` is optional and only used when present.
 
     On skip, writes a reason to :data:`LAST_SKIP_REASON` that names BOTH
     configuration surfaces so operators don't guess wrong about which to set.
@@ -712,6 +767,9 @@ def register(ctx) -> None:
     )
     client_id = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_ID", oidc_cfg.get("client_id")
+    )
+    client_secret = _resolve_setting(
+        "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
     )
     scopes = (
         _resolve_setting("HERMES_DASHBOARD_OIDC_SCOPES", oidc_cfg.get("scopes"))
@@ -733,7 +791,10 @@ def register(ctx) -> None:
 
     try:
         provider = SelfHostedOIDCProvider(
-            issuer=issuer, client_id=client_id, scopes=scopes
+            issuer=issuer,
+            client_id=client_id,
+            scopes=scopes,
+            client_secret=client_secret,
         )
     except (ValueError, ProviderError) as exc:
         LAST_SKIP_REASON = (

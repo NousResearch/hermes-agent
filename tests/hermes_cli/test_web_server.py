@@ -1620,6 +1620,36 @@ class TestWebServerEndpoints:
             "pid": 99,
         }
 
+    def test_action_status_tails_large_log_without_read_text(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        log_path = tmp_path / web_server._ACTION_LOG_FILES["hermes-update"]
+        log_path.write_text(
+            "stale-start\n"
+            + ("x" * (web_server._ACTION_LOG_TAIL_MAX_BYTES + 1024))
+            + "\ntail-one\ntail-two\n",
+            encoding="utf-8",
+        )
+        assert log_path.stat().st_size > web_server._ACTION_LOG_TAIL_MAX_BYTES
+
+        original_read_text = Path.read_text
+
+        def fail_if_status_reads_whole_log(path, *args, **kwargs):
+            if path == log_path:
+                raise AssertionError("action status must not read the entire log")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fail_if_status_reads_whole_log)
+
+        resp = self.client.get("/api/actions/hermes-update/status?lines=3")
+
+        assert resp.status_code == 200
+        assert resp.json()["lines"] == ["tail-one", "tail-two"]
+
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config

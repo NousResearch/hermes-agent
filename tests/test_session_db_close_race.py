@@ -148,3 +148,60 @@ def test_close_during_concurrent_readers_does_not_crash(db):
         f"close-during-read raised {counts['fail']} times: {errors[:3]}"
     )
     assert counts["ok"] > 0, "readers never landed a successful read"
+
+
+def test_close_during_search_messages_does_not_crash(db):
+    """Hammer search_messages (cursor-returning crash site) during close().
+
+    Pre-fix, ``search_messages`` captured a cursor from ``_execute_read`` and
+    called ``.fetchall()`` on it outside the helper. When ``_execute_read``
+    short-circuited to ``None`` (closed DB), ``None.fetchall()`` raised
+    ``AttributeError``. The fix moves ``.fetchall()`` into the lambda so the
+    helper returns ``[]`` (not a cursor) on close — this test pins that.
+    """
+    # Seed searchable content so the FTS path is exercised.
+    for i in range(5):
+        db.append_message(
+            session_id="sess-race",
+            role="user",
+            content=f"searchable token-{i} needle",
+        )
+        db.append_message(
+            session_id="sess-race",
+            role="assistant",
+            content=f"reply token-{i} haystack",
+        )
+
+    errors = []
+    counts = {"ok": 0, "fail": 0}
+    stop = threading.Event()
+
+    def searcher():
+        while not stop.is_set():
+            try:
+                results = db.search_messages("token")
+                # Must be a list, never None.
+                assert isinstance(results, list)
+                counts["ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                counts["fail"] += 1
+                errors.append(repr(exc))
+                if counts["fail"] >= 5:
+                    return
+
+    threads = [threading.Thread(target=searcher) for _ in range(8)]
+    for t in threads:
+        t.start()
+
+    time.sleep(0.1)
+    db.close()
+
+    time.sleep(0.3)
+    stop.set()
+    for t in threads:
+        t.join(timeout=2)
+
+    assert counts["fail"] == 0, (
+        f"close-during-search raised {counts['fail']} times: {errors[:3]}"
+    )
+    assert counts["ok"] > 0, "searchers never landed a successful search"

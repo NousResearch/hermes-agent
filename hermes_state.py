@@ -1158,7 +1158,15 @@ class SessionDB:
         with self._lock:
             if self._closed:
                 return cast(T, None)
-            return fn(cast(sqlite3.Connection, self._conn))
+            conn = cast(sqlite3.Connection, self._conn)
+        # ponytail: lock released before fn() — SQLite serialized mode handles
+        # concurrent same-connection reads so reads don't block writes. If
+        # close() closes conn after we captured it, fn() raises
+        # ProgrammingError, coalesced to the same None callers already handle.
+        try:
+            return fn(conn)
+        except sqlite3.ProgrammingError:
+            return cast(T, None)
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
@@ -1246,6 +1254,8 @@ class SessionDB:
         """
         try:
             with self._lock:
+                if self._closed:
+                    return
                 result = self._conn.execute(
                     "PRAGMA wal_checkpoint(TRUNCATE)"
                 ).fetchone()
@@ -3535,7 +3545,7 @@ class SessionDB:
         # scans is impossible — same race the helper fixes everywhere else,
         # just expressed via tuple instead of early-return to keep the
         # closed-DB short-circuit (None) returning the empty-window dict.
-        anchor_exists, before_rows, after_rows = self._execute_read(
+        result = self._execute_read(
             lambda c: (
                 c.execute(
                     "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
@@ -3555,6 +3565,9 @@ class SessionDB:
                 ).fetchall(),
             )
         )
+        if result is None:
+            return {"window": [], "messages_before": 0, "messages_after": 0}
+        anchor_exists, before_rows, after_rows = result
         if not anchor_exists:
             return {"window": [], "messages_before": 0, "messages_after": 0}
 
@@ -3664,7 +3677,7 @@ class SessionDB:
                 role_clause = f" AND role IN ({role_placeholders})"
                 role_params = list(keep_roles)
 
-            bookend_start_rows, bookend_end_rows = self._execute_read(
+            bookend_result = self._execute_read(
                 lambda c: (
                     c.execute(
                         f"SELECT * FROM messages "
@@ -3682,6 +3695,11 @@ class SessionDB:
                     ).fetchall(),
                 )
             )
+            if bookend_result is None:
+                bookend_start_rows = []
+                bookend_end_rows = []
+            else:
+                bookend_start_rows, bookend_end_rows = bookend_result
             # End rows came back DESC for the LIMIT cap; flip to ASC.
             bookend_end_rows = list(reversed(bookend_end_rows))
 
@@ -4403,14 +4421,14 @@ class SessionDB:
                 """
                 tri_params.extend([limit, offset])
                 try:
-                    tri_cursor = self._execute_read(
-                        lambda c: c.execute(tri_sql, tri_params)
+                    tri_matches = self._execute_read(
+                        lambda c: c.execute(tri_sql, tri_params).fetchall()
                     )
                 except sqlite3.OperationalError:
                     # Trigram query failed at runtime — fall through to LIKE.
                     pass
                 else:
-                    matches = [dict(row) for row in tri_cursor.fetchall()]
+                    matches = [dict(row) for row in (tri_matches or [])]
                     _trigram_succeeded = True
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
@@ -4456,24 +4474,26 @@ class SessionDB:
                 like_params.extend([limit, offset])
                 # instr() for snippet uses first search token
                 like_params = [non_op_tokens[0]] + like_params
-                like_cursor = self._execute_read(
-                    lambda c: c.execute(like_sql, like_params)
+                like_matches = self._execute_read(
+                    lambda c: c.execute(like_sql, like_params).fetchall()
                 )
-                matches = [dict(row) for row in like_cursor.fetchall()]
+                matches = [dict(row) for row in (like_matches or [])]
         else:
             try:
-                cursor = self._execute_read(lambda c: c.execute(sql, params))
+                fts_matches = self._execute_read(
+                    lambda c: c.execute(sql, params).fetchall()
+                )
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
                 return []
             else:
-                matches = [dict(row) for row in cursor.fetchall()]
+                matches = [dict(row) for row in (fts_matches or [])]
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
         for match in matches:
             try:
-                ctx_cursor = self._execute_read(lambda c: c.execute(
+                ctx_rows = self._execute_read(lambda c: c.execute(
                     """WITH target AS (
                            SELECT session_id, timestamp, id
                            FROM messages
@@ -4505,9 +4525,9 @@ class SessionDB:
                            LIMIT 1
                        )""",
                     (match["id"], match["id"]),
-                ))
+                ).fetchall())
                 context_msgs = []
-                for r in ctx_cursor.fetchall():
+                for r in (ctx_rows or []):
                         raw = r["content"]
                         decoded = self._decode_content(raw)
                         # Multimodal context: render a compact text-only
@@ -4604,19 +4624,19 @@ class SessionDB:
             ") m ON m.session_id = s.id "
         )
         if source:
-            cursor = self._execute_read(lambda c: c.execute(
+            rows = self._execute_read(lambda c: c.execute(
                 f"{select_with_last_active}"
                 "WHERE s.source = ? "
                 "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                 (source, limit, offset),
-            ))
+            ).fetchall())
         else:
-            cursor = self._execute_read(lambda c: c.execute(
+            rows = self._execute_read(lambda c: c.execute(
                 f"{select_with_last_active}"
                 "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
-            ))
-        return [dict(row) for row in cursor.fetchall()]
+            ).fetchall())
+        return [dict(row) for row in (rows or [])]
 
     # =========================================================================
     # Utility
@@ -4676,19 +4696,21 @@ class SessionDB:
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        # ponytail: _execute_read returns None on close; coerce to int 0 for
+        # the count contract — callers (dashboard, pruning) expect an int.
         return self._execute_read(
             lambda c: c.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params).fetchone()[0]
-        )
+        ) or 0
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         if session_id:
             return self._execute_read(lambda c: c.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            ).fetchone()[0])
+            ).fetchone()[0]) or 0
         return self._execute_read(lambda c: c.execute(
             "SELECT COUNT(*) FROM messages"
-        ).fetchone()[0])
+        ).fetchone()[0]) or 0
 
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
@@ -4952,12 +4974,12 @@ class SessionDB:
         to clean up, and pre-populate the confirm dialog with the actual
         count.
         """
-        return self._execute_read(lambda c: c.execute(
+        return (self._execute_read(lambda c: c.execute(
             "SELECT COUNT(*) FROM sessions "
             "WHERE message_count = 0 "
             "AND ended_at IS NOT NULL "
             "AND archived = 0"
-        ).fetchone()[0])  # ponytail: was unlocked pre-fix; _execute_read now locks + _closed-guard.
+        ).fetchone()[0]) or 0)  # ponytail: was unlocked pre-fix; _execute_read now locks + _closed-guard; None→0 on close.
 
     def delete_empty_sessions(
         self,
@@ -5638,6 +5660,8 @@ class SessionDB:
         """
         optimized = 0
         with self._lock:
+            if self._closed:
+                return optimized
             for tbl in self._FTS_TABLES:
                 if not self._fts_table_exists(tbl):
                     continue

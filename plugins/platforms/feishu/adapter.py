@@ -1361,8 +1361,26 @@ def _install_thread_local_ws_loop_proxy() -> None:
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local event loop."""
+    """Run the official Lark WS client in its own thread-local event loop.
+
+    The lark_oapi SDK's ws/client.py references a module-level ``loop`` global
+    for ``loop.create_task(...)`` calls inside ``_connect`` and
+    ``_receive_message_loop``. In multiplex mode several adapter threads start
+    near-simultaneously and each overwrites that global with its own loop, so a
+    later reconnect on an earlier client schedules coroutines on the wrong loop
+    ("Task got Future attached to a different loop"). We stash the per-thread
+    loop on the instance and patch the three methods that use the global so
+    they always reach for ``self._hermes_loop`` instead.
+    """
+    import types as _types
+    from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+
     import lark_oapi.ws.client as ws_client_module
+
+    from lark_oapi.ws.exception import (
+        ClientException as _LarkClientException,
+        ConnectionClosedException as _LarkConnectionClosedException,
+    )
 
     _install_thread_local_ws_loop_proxy()
 
@@ -1370,6 +1388,69 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     asyncio.set_event_loop(loop)
     ws_client_module.loop.set_thread_loop(loop)
     adapter._ws_thread_loop = loop
+
+    ws_client._hermes_loop = loop
+
+    async def _patched_connect(self: Any) -> None:
+        _loop = self._hermes_loop
+        await self._lock.acquire()
+        if self._conn is not None:
+            self._lock.release()
+            return
+        try:
+            conn_url = self._get_conn_url()
+            u = _urlparse(conn_url)
+            q = _parse_qs(u.query)
+            conn_id = q["device_id"][0]
+            service_id = q["service_id"][0]
+            conn = await ws_client_module.websockets.connect(conn_url)
+            self._conn = conn
+            self._conn_url = conn_url
+            self._conn_id = conn_id
+            self._service_id = service_id
+            ws_client_module.logger.info(self._fmt_log("connected to {}", conn_url))
+            _loop.create_task(self._receive_message_loop())
+        except ws_client_module.websockets.InvalidStatusCode as e:
+            ws_client_module._parse_ws_conn_exception(e)
+        finally:
+            self._lock.release()
+
+    async def _patched_receive_message_loop(self: Any) -> None:
+        _loop = self._hermes_loop
+        try:
+            while True:
+                if self._conn is None:
+                    raise _LarkConnectionClosedException("connection is closed")
+                msg = await self._conn.recv()
+                _loop.create_task(self._handle_message(msg))
+        except Exception as e:
+            ws_client_module.logger.error(self._fmt_log("receive message loop exit, err: {}", e))
+            await self._disconnect()
+            if self._auto_reconnect:
+                await self._reconnect()
+            else:
+                raise e
+
+    def _patched_start(self: Any) -> None:
+        _loop = self._hermes_loop
+        try:
+            _loop.run_until_complete(self._connect())
+        except _LarkClientException as e:
+            ws_client_module.logger.error(self._fmt_log("connect failed, err: {}", e))
+            raise e
+        except Exception as e:
+            ws_client_module.logger.error(self._fmt_log("connect failed, err: {}", e))
+            _loop.run_until_complete(self._disconnect())
+            if self._auto_reconnect:
+                _loop.run_until_complete(self._reconnect())
+            else:
+                raise e
+        _loop.create_task(self._ping_loop())
+        _loop.run_until_complete(ws_client_module._select())
+
+    ws_client.start = _types.MethodType(_patched_start, ws_client)
+    ws_client._connect = _types.MethodType(_patched_connect, ws_client)
+    ws_client._receive_message_loop = _types.MethodType(_patched_receive_message_loop, ws_client)
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)

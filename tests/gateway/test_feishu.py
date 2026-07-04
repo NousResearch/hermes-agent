@@ -596,7 +596,13 @@ class TestAdapterModule(unittest.TestCase):
                 self._reconnect_nonce = 30
                 self._reconnect_interval = 120
                 self._ping_interval = 120
+                self._auto_reconnect = True
+                self._conn = None
+                self._conn_url = ""
+                self._conn_id = ""
+                self._service_id = ""
                 self.configure_calls = []
+                self._lock = asyncio.Lock()
 
             def _configure(self, conf):
                 self.configure_calls.append(conf)
@@ -604,10 +610,25 @@ class TestAdapterModule(unittest.TestCase):
                 self._reconnect_interval = conf.ReconnectInterval
                 self._ping_interval = conf.PingInterval
 
-            def start(self):
+            def _get_conn_url(self):
                 conf = SimpleNamespace(ReconnectNonce=99, ReconnectInterval=88, PingInterval=77)
                 self._configure(conf)
-                raise RuntimeError("stop test client")
+                return "wss://example.test/ws?device_id=device-1&service_id=service-2"
+
+            async def _handle_message(self, _msg):
+                return None
+
+            async def _disconnect(self):
+                self._conn = None
+
+            async def _reconnect(self):
+                return None
+
+            async def _ping_loop(self):
+                await asyncio.sleep(3600)
+
+            def _fmt_log(self, template, *args):
+                return template.format(*args)
 
         fake_client = _FakeWSClient()
         fake_adapter = SimpleNamespace(
@@ -619,7 +640,32 @@ class TestAdapterModule(unittest.TestCase):
         )
         fake_client_module = ModuleType("lark_oapi.ws.client")
         fake_client_module.loop = None
-        fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_client_module.logger = SimpleNamespace(info=lambda *_a, **_k: None, error=lambda *_a, **_k: None)
+        fake_client_module._parse_ws_conn_exception = lambda exc: (_ for _ in ()).throw(exc)
+
+        class _FakeConn:
+            async def recv(self):
+                await asyncio.sleep(3600)
+                return b""
+
+        fake_client_module.websockets = SimpleNamespace(
+            connect=AsyncMock(return_value=_FakeConn()),
+            InvalidStatusCode=RuntimeError,
+        )
+        async def _fake_select():
+            return None
+
+        fake_client_module._select = _fake_select
+        fake_exception_module = ModuleType("lark_oapi.ws.exception")
+
+        class _FakeClientException(Exception):
+            pass
+
+        class _FakeConnectionClosedException(Exception):
+            pass
+
+        fake_exception_module.ClientException = _FakeClientException
+        fake_exception_module.ConnectionClosedException = _FakeConnectionClosedException
         fake_ws_module = ModuleType("lark_oapi.ws")
         fake_ws_module.client = fake_client_module
         fake_root_module = ModuleType("lark_oapi")
@@ -629,6 +675,7 @@ class TestAdapterModule(unittest.TestCase):
         sys.modules["lark_oapi"] = fake_root_module
         sys.modules["lark_oapi.ws"] = fake_ws_module
         sys.modules["lark_oapi.ws.client"] = fake_client_module
+        sys.modules["lark_oapi.ws.exception"] = fake_exception_module
         try:
             from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
 

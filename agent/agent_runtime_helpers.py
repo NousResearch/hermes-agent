@@ -2485,6 +2485,61 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
+
+    # 3. Enforce unique tool_call_id. Strict providers (DeepSeek) reject any
+    # tool_call_id that appears more than once — either as two tool results or
+    # as two assistant tool_calls — with HTTP 400 "Duplicate value for
+    # 'tool_call_id' of ... in message[N]". Context compaction / session-merge
+    # paths can leave the SAME assistant(tool_calls) group duplicated across two
+    # messages; the stub injection above then doubles a dropped result into two
+    # identical stubs, so both sides can end up with repeated ids. The orphan
+    # repair passes only fix missing/dangling links — never a genuine duplicate —
+    # so this dedup is the piece that keeps the pairing invariant atomic. First
+    # occurrence wins (assistant call and its first matching result are kept),
+    # so the surviving pair stays well-formed.
+    seen_assistant_ids: set = set()
+    seen_result_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    dropped_dup_calls = 0
+    dropped_dup_results = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg["tool_calls"]:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_ids:
+                    dropped_dup_calls += 1
+                    continue
+                if cid:
+                    seen_assistant_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg["tool_calls"]):
+                msg = {**msg, "tool_calls": kept_tcs}
+                if not kept_tcs:
+                    msg.pop("tool_calls", None)
+                    content = msg.get("content")
+                    if not content or (isinstance(content, str) and not content.strip()):
+                        msg["content"] = "(tool call removed)"
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_ids:
+                dropped_dup_results += 1
+                continue
+            if cid:
+                seen_result_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if dropped_dup_calls or dropped_dup_results:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d duplicate tool_call(s) and %d "
+            "duplicate tool result(s)",
+            dropped_dup_calls,
+            dropped_dup_results,
+        )
     return messages
 
 

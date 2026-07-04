@@ -132,6 +132,68 @@ class TestSanitizeApiMessages:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "c_valid"
 
+    def test_duplicate_tool_result_deduped(self):
+        """Two tool results sharing a tool_call_id → keep first, drop the rest.
+
+        Strict providers (DeepSeek) reject the second with HTTP 400
+        "Duplicate value for 'tool_call_id' ... in message[N]" (#58327).
+        """
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup")]},
+            tool_result("dup", "first"),
+            tool_result("dup", "second"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        tool_msgs = [m for m in out if m["role"] == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "first"
+
+    def test_duplicate_assistant_tool_call_deduped(self):
+        """Same tool_call_id declared by two assistant messages → keep first."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup")]},
+            tool_result("dup"),
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup")]},
+            tool_result("dup"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        call_ids = [
+            AIAgent._get_tool_call_id_static(tc)
+            for m in out
+            if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
+        assert call_ids == ["dup"]
+        assert len([m for m in out if m.get("role") == "tool"]) == 1
+
+    def test_duplicate_call_leaving_empty_assistant_gets_placeholder(self):
+        """Dropping the only (duplicate) tool_call must not leave an empty turn."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup")]},
+            tool_result("dup"),
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup")]},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Second assistant loses its duplicate call → keeps visible content,
+        # no dangling tool_calls, and no duplicate tool result.
+        assert all(m.get("tool_calls") != [] for m in out)
+        empty_asst = [
+            m for m in out
+            if m.get("role") == "assistant" and not m.get("tool_calls")
+        ]
+        assert empty_asst and empty_asst[0]["content"]
+
+    def test_distinct_ids_not_treated_as_duplicates(self):
+        """A valid assistant-call + matching result pair is NOT a duplicate."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("a")]},
+            tool_result("a"),
+            {"role": "assistant", "tool_calls": [assistant_dict_call("b")]},
+            tool_result("b"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out == msgs
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

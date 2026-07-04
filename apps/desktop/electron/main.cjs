@@ -4066,7 +4066,7 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      { role: 'togglefullscreen', accelerator: 'F11' }
     ]
   })
   template.push({
@@ -7568,11 +7568,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
+  Menu.setApplicationMenu(buildApplicationMenu())
   installMediaPermissions()
   registerMediaProtocol()
   installEmbedReferer()

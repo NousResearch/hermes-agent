@@ -7,6 +7,8 @@ import {
   $attentionSessionIds,
   $cronSessions,
   $messagingSessions,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
   $sessions,
   $workingSessionIds
 } from '@/store/session'
@@ -113,7 +115,9 @@ describe('ProfileRail attention badges', () => {
     $cronSessions.set([])
     $messagingSessions.set([])
     $workingSessionIds.set([])
-    $attentionSessionIds.set(['s1', 's2'])
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set(['s1', 's2'])
+    $replyReadySessionProfiles.set({ s1: 'film-maker', s2: 'film-maker' })
     Object.assign(window, { hermesDesktop: { api: vi.fn(async () => ({ current: 'default' })) } })
   })
 
@@ -130,6 +134,8 @@ describe('ProfileRail attention badges', () => {
     $messagingSessions.set([])
     $workingSessionIds.set([])
     $attentionSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
   })
 
   it('shows a waiting-reply count on the owning profile square', () => {
@@ -142,6 +148,55 @@ describe('ProfileRail attention badges', () => {
     const profileButton = screen.getByRole('button', { name: /film-maker, 2 waiting for your reply/i })
 
     expect(profileButton.textContent).toContain('2')
+  })
+
+  it('keeps waiting-reply counts in the profile rail layout flow', () => {
+    render(
+      <MemoryRouter>
+        <ProfileRail />
+      </MemoryRouter>
+    )
+
+    const profileButton = screen.getByRole('button', { name: /film-maker, 2 waiting for your reply/i })
+    const countChip = profileButton.querySelector('[data-profile-count]')
+
+    expect(profileButton.className).toContain('h-5')
+    expect(profileButton.className).toContain('min-w-7')
+    expect(countChip?.className).toContain('font-mono')
+    expect(countChip?.className).not.toContain('absolute')
+  })
+
+  it('does not refresh profiles from the rail mount path when the cache is warm', () => {
+    const api = vi.fn(async () => ({ current: 'default' }))
+    Object.assign(window, { hermesDesktop: { api } })
+
+    render(
+      <MemoryRouter>
+        <ProfileRail />
+      </MemoryRouter>
+    )
+
+    expect(api).not.toHaveBeenCalled()
+    expect(getProfilesMock).not.toHaveBeenCalled()
+  })
+
+  it('refreshes profiles when the rail mounts with an empty cache', async () => {
+    const api = vi.fn(async () => ({ current: 'default' }))
+    Object.assign(window, { hermesDesktop: { api } })
+    $profiles.set([])
+    getProfilesMock.mockResolvedValueOnce({
+      profiles: [profileInfo('default', true), profileInfo('bina-meatzevet')]
+    })
+
+    render(
+      <MemoryRouter>
+        <ProfileRail />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: 'bina-meatzevet' })).toBeDefined()
+    expect(api).toHaveBeenCalledWith({ path: '/api/profiles/active' })
+    expect(getProfilesMock).toHaveBeenCalledTimes(1)
   })
 
   it('exposes overflowed profiles with explicit rail scroll controls', async () => {
@@ -166,9 +221,12 @@ describe('ProfileRail attention badges', () => {
     mockRailMetrics(rail, { clientWidth: 52, scrollLeft: 0, scrollWidth: 220 })
     fireEvent.scroll(rail)
 
-    const next = await screen.findByRole('button', { name: 'Scroll profiles right' })
+    const next = await screen.findByRole('button', { name: /Scroll profiles right, 2 waiting for your reply/i })
 
     expect(screen.getByRole('button', { name: 'office-work' })).toBeDefined()
+    expect(next.className).toContain('h-5')
+    expect(next.className).toContain('min-w-7')
+    expect(next.textContent).toContain('2')
     expect(screen.getByRole('button', { name: 'Scroll profiles left' }).hasAttribute('disabled')).toBe(true)
 
     fireEvent.click(next)

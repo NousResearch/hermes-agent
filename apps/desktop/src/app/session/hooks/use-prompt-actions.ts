@@ -51,6 +51,7 @@ import {
   setMessages,
   setModelPickerOpen,
   setSessionPickerOpen,
+  setSessionReplyReady,
   setSessions,
   setYoloActive
 } from '@/store/session'
@@ -661,9 +662,25 @@ export function usePromptActions({
         )
       }
 
+      const removeOptimisticFromSession = (sid: null | string) => {
+        if (!sid) {
+          return
+        }
+
+        updateSessionState(
+          sid,
+          state => ({
+            ...state,
+            messages: state.messages.filter(m => m.id !== optimisticId)
+          }),
+          selectedStoredSessionIdRef.current
+        )
+      }
+
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
+      setSessionReplyReady(selectedStoredSessionIdRef.current ?? activeSessionIdRef.current, false)
       clearNotifications()
 
       let sessionId: null | string = activeSessionId
@@ -709,24 +726,69 @@ export function usePromptActions({
         const text = buildContextText(syncedAttachments)
 
         // On sleep/wake the gateway's in-memory session may have been cleared
-        // while the desktop app still holds the old session ID. Detect this,
-        // resume the stored session to re-register it, and retry once.
+        // while the desktop app still holds the old session ID. Detect this and
+        // retry once: resume durable stored sessions, or create a fresh runtime
+        // session when the user is composing from a new draft.
         let submitErr: unknown = null
 
         try {
           await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
         } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
-            // Re-register the session in the gateway and get a fresh live ID.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
-            })
+          if (isSessionNotFoundError(firstErr)) {
+            const storedSessionId = selectedStoredSessionIdRef.current
 
-            const recoveredId = resumed?.session_id
+            if (storedSessionId) {
+              let recoveredId: null | string = null
 
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
+              try {
+                // Re-register the session in the gateway and get a fresh live ID.
+                const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                  session_id: storedSessionId
+                })
+
+                recoveredId = resumed?.session_id || null
+              } catch (resumeErr) {
+                if (!isSessionNotFoundError(resumeErr) || options?.fromQueue) {
+                  submitErr = resumeErr
+                }
+              }
+
+              if (!recoveredId && submitErr === null && !options?.fromQueue) {
+                recoveredId = await createBackendSessionForSend(visibleText)
+              }
+
+              if (recoveredId) {
+                activeSessionIdRef.current = recoveredId
+
+                if (sessionId !== recoveredId) {
+                  removeOptimisticFromSession(sessionId)
+                }
+
+                sessionId = recoveredId
+                seedOptimistic(recoveredId)
+                rewriteOptimistic(recoveredId)
+                await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
+              } else if (submitErr === null) {
+                submitErr = firstErr
+              }
+            } else if (!options?.fromQueue) {
+              const staleSessionId = sessionId
+              const recoveredId = await createBackendSessionForSend(visibleText)
+
+              if (recoveredId) {
+                activeSessionIdRef.current = recoveredId
+                sessionId = recoveredId
+
+                if (staleSessionId !== recoveredId) {
+                  removeOptimisticFromSession(staleSessionId)
+                }
+
+                seedOptimistic(recoveredId)
+                rewriteOptimistic(recoveredId)
+                await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
+              } else {
+                submitErr = firstErr
+              }
             } else {
               submitErr = firstErr
             }
@@ -787,6 +849,7 @@ export function usePromptActions({
     },
     [
       activeSessionId,
+      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
@@ -1487,6 +1550,8 @@ export function usePromptActions({
           seedOptimistic(recoveredId)
           await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
         }
+
+        setSessionReplyReady(storedSessionId, false)
 
         return true
       } catch (err) {

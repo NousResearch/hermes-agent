@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { useTuiText } from '../i18n/index.js'
 import type {
   SessionActiveItem,
   SessionActiveListResponse,
@@ -302,6 +303,7 @@ export function ActiveSessionSwitcher({
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
+  const tr = useTuiText()
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
@@ -675,7 +677,7 @@ export function ActiveSessionSwitcher({
   }
 
   if (loading) {
-    return <Text color={t.color.muted}>loading sessions…</Text>
+    return <Text color={t.color.muted}>{tr.sessions.loading}</Text>
   }
 
   // The "+ new" row (sel 0) is pinned at the top so it's always visible; the
@@ -737,7 +739,7 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {!listLen && <Text color={t.color.muted}>{tr.sessions.noOther}</Text>}
 
       {visibleRows.map(i => {
         const selected = sel === i

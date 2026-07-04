@@ -34,7 +34,8 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  requestComposerFocus
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
@@ -92,13 +93,23 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { splitAssistantMessageIntoReplyChunks } from '@/lib/message-chunks'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
+import {
+  $messageRepliesEnabled,
+  $messageReplyTarget,
+  messageRepliesEnabledForProfile,
+  messageTextCanBeRepliedTo,
+  parseMessageReply,
+  startMessageReply
+} from '@/store/message-replies'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -272,6 +283,20 @@ const AssistantMessage: FC<{
     s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
   )
 
+  const replyTarget = useStore($messageReplyTarget)
+  const activeProfile = useStore($activeGatewayProfile)
+  const repliesEnabled = useStore($messageRepliesEnabled) || messageRepliesEnabledForProfile(activeProfile)
+
+  const replyChunks = useMemo(
+    () => (!isRunning && repliesEnabled && completedText ? splitAssistantMessageIntoReplyChunks(completedText) : []),
+    [completedText, isRunning, repliesEnabled]
+  )
+
+  const renderReplyChunks = replyChunks.length > 1
+
+  const replyingToThisMessage =
+    replyTarget?.messageId === messageId || Boolean(replyTarget?.messageId.startsWith(`${messageId}:chunk:`))
+
   const previewTargets = useMemo(() => {
     if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
       return []
@@ -290,7 +315,11 @@ const AssistantMessage: FC<{
 
   return (
     <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
+      className={cn(
+        'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden rounded-xl transition-[box-shadow,outline-color] duration-150',
+        replyingToThisMessage && 'outline outline-1 outline-[color-mix(in_srgb,var(--dt-composer-ring)_70%,transparent)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--dt-composer-ring)_12%,transparent)]'
+      )}
+      data-reply-target={replyingToThisMessage ? 'true' : undefined}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       data-streaming={isRunning ? 'true' : undefined}
@@ -301,7 +330,45 @@ const AssistantMessage: FC<{
         data-slot="aui_assistant-message-content"
       >
         {/* Todos render in the composer status stack now, not inline. */}
-        <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        {renderReplyChunks ? (
+          <div className="flex w-full min-w-0 flex-col gap-3" data-slot="aui_reply-chunks">
+            {replyChunks.map(chunk => {
+              const chunkMessageId = `${messageId}:chunk:${chunk.index}`
+              const selected = replyTarget?.messageId === chunkMessageId
+
+              return (
+                <section
+                  className={cn(
+                    'min-w-0 rounded-xl border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,var(--ui-editor-surface-background)_76%,transparent)] px-3 py-2.5 transition-[border-color,box-shadow]',
+                    selected &&
+                      'border-[color-mix(in_srgb,var(--dt-composer-ring)_58%,transparent)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--dt-composer-ring)_10%,transparent)]'
+                  )}
+                  data-slot="aui_reply-chunk"
+                  key={chunkMessageId}
+                >
+                  <MarkdownTextContent isRunning={false} text={chunk.text} />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-[color-mix(in_srgb,var(--dt-composer-ring)_30%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_8%,transparent)] px-2 text-[0.7rem] font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))] transition-colors hover:bg-[color-mix(in_srgb,var(--dt-composer-ring)_15%,transparent)]"
+                      onClick={() => {
+                        startMessageReply({ messageId: chunkMessageId, quote: chunk.text })
+                        triggerHaptic('selection')
+                        requestComposerFocus('main')
+                      }}
+                      title="Reply to this part"
+                      type="button"
+                    >
+                      <Codicon name="reply" size="0.75rem" />
+                      Reply
+                    </button>
+                  </div>
+                </section>
+              )
+            })}
+          </div>
+        ) : (
+          <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        )}
         {isRunning && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -329,7 +396,7 @@ const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {hasVisibleText && (
+      {hasVisibleText && !renderReplyChunks && (
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
@@ -671,9 +738,36 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   const { t } = useI18n()
   const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
+  const activeProfile = useStore($activeGatewayProfile)
+  const repliesEnabled = useStore($messageRepliesEnabled) || messageRepliesEnabledForProfile(activeProfile)
+
+  const replyToMessage = useCallback(() => {
+    const text = getMessageText()
+
+    if (!text.trim()) {
+      return
+    }
+
+    startMessageReply({ messageId, quote: text })
+    triggerHaptic('selection')
+    requestComposerFocus('main')
+  }, [getMessageText, messageId])
+
+  const showReply = repliesEnabled && messageTextCanBeRepliedTo(getMessageText())
 
   return (
-    <div className="relative flex w-full shrink-0 justify-end">
+    <div className="relative flex w-full shrink-0 items-center justify-end gap-2">
+      {showReply && (
+        <button
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-[color-mix(in_srgb,var(--dt-composer-ring)_30%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_8%,transparent)] px-2 text-[0.7rem] font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))] transition-colors hover:bg-[color-mix(in_srgb,var(--dt-composer-ring)_15%,transparent)]"
+          onClick={replyToMessage}
+          title="Reply to this message"
+          type="button"
+        >
+          <Codicon name="reply" size="0.75rem" />
+          Reply
+        </button>
+      )}
       <ActionBarPrimitive.Root
         className={cn(
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -880,7 +974,9 @@ const UserMessage: FC<{
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
-  const messageText = messageContentText(content)
+  const rawMessageText = messageContentText(content)
+  const parsedReply = parseMessageReply(rawMessageText)
+  const messageText = parsedReply.body
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -982,6 +1078,17 @@ const UserMessage: FC<{
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
       <div className="min-h-[1.25rem]" ref={clampInnerRef}>
+        {parsedReply.quote && (
+          <div
+            className="mb-1.5 rounded-lg border-r-2 border-[color-mix(in_srgb,var(--dt-composer-ring)_74%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_10%,transparent)] px-2 py-1 text-[0.72rem] leading-snug text-muted-foreground/90"
+            data-slot="aui_reply-quote"
+          >
+            <div className="mb-0.5 font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))]">
+              Replying to Hermes
+            </div>
+            <div className="line-clamp-2 wrap-anywhere">{parsedReply.quote}</div>
+          </div>
+        )}
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { getSessionMessages } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -29,7 +29,7 @@ interface ActiveChatsViewProps extends React.ComponentProps<'section'> {
   onSendReply: (session: SessionInfo, text: string) => Promise<boolean>
 }
 
-type ChatState = 'idle' | 'recent' | 'running' | 'waiting'
+type ChatState = 'idle' | 'recent' | 'reply' | 'running' | 'waiting'
 type GroupMode = 'profile' | 'status' | 'workspace'
 
 interface ActiveGroup {
@@ -40,7 +40,7 @@ interface ActiveGroup {
 }
 
 const PREVIEW_LIMIT = 10
-const RECENT_WINDOW_MS = 45 * 60 * 1000
+const REPLY_SCAN_LIMIT = 100
 
 function sessionKey(session: SessionInfo): string {
   return `${session.profile || 'default'}:${session.id}`
@@ -50,7 +50,12 @@ function sessionTimestamp(session: SessionInfo): number {
   return (session.last_active || session.started_at || 0) * 1000
 }
 
-function chatState(session: SessionInfo, workingIds: string[], attentionIds: string[]): ChatState {
+function chatState(
+  session: SessionInfo,
+  workingIds: string[],
+  attentionIds: string[],
+  replyNeededKeys: ReadonlySet<string>
+): ChatState {
   if (attentionIds.includes(session.id)) {
     return 'waiting'
   }
@@ -59,7 +64,7 @@ function chatState(session: SessionInfo, workingIds: string[], attentionIds: str
     return 'running'
   }
 
-  return Date.now() - sessionTimestamp(session) <= RECENT_WINDOW_MS ? 'recent' : 'idle'
+  return replyNeededKeys.has(sessionKey(session)) ? 'reply' : 'idle'
 }
 
 function stateRank(state: ChatState): number {
@@ -71,15 +76,25 @@ function stateRank(state: ChatState): number {
     return 1
   }
 
-  if (state === 'recent') {
+  if (state === 'reply') {
     return 2
   }
 
-  return 3
+  if (state === 'recent') {
+    return 3
+  }
+
+  return 4
 }
 
-function activeState(state: ChatState): state is 'running' | 'waiting' {
-  return state === 'running' || state === 'waiting'
+function activeState(state: ChatState): state is 'reply' | 'running' | 'waiting' {
+  return state === 'reply' || state === 'running' || state === 'waiting'
+}
+
+function transcriptNeedsReply(messages: ChatMessage[]): boolean {
+  const lastVisible = messages.filter(message => !message.hidden).at(-1)
+
+  return lastVisible?.role === 'user'
 }
 
 function workspaceLabel(session: SessionInfo): string {
@@ -122,6 +137,8 @@ export function ActiveChatsView({
   const workingIds = useStore($workingSessionIds)
   const attentionIds = useStore($attentionSessionIds)
   const sessionsLoading = useStore($sessionsLoading)
+  const [scannedSessions, setScannedSessions] = useState<SessionInfo[]>([])
+  const [replyNeededKeys, setReplyNeededKeys] = useState<Set<string>>(() => new Set())
   const [query, setQuery] = useState('')
   const [groupMode, setGroupMode] = useState<GroupMode>('status')
   const [selectedKey, setSelectedKey] = useState('')
@@ -131,21 +148,33 @@ export function ActiveChatsView({
   const [draftBySession, setDraftBySession] = useState<Record<string, string>>({})
   const [sendingKey, setSendingKey] = useState('')
 
+  const candidateRows = useMemo(() => {
+    const byKey = new Map<string, SessionInfo>()
+
+    for (const session of [...scannedSessions, ...sessions, ...messagingSessions]) {
+      byKey.set(sessionKey(session), session)
+    }
+
+    return [...byKey.values()].sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
+  }, [messagingSessions, scannedSessions, sessions])
+
   const activeRows = useMemo(() => {
     const byKey = new Map<string, SessionInfo>()
 
-    for (const session of [...sessions, ...messagingSessions]) {
-      if (activeState(chatState(session, workingIds, attentionIds))) {
+    for (const session of candidateRows) {
+      if (activeState(chatState(session, workingIds, attentionIds, replyNeededKeys))) {
         byKey.set(sessionKey(session), session)
       }
     }
 
     return [...byKey.values()].sort((a, b) => {
-      const stateDelta = stateRank(chatState(a, workingIds, attentionIds)) - stateRank(chatState(b, workingIds, attentionIds))
+      const stateDelta =
+        stateRank(chatState(a, workingIds, attentionIds, replyNeededKeys)) -
+        stateRank(chatState(b, workingIds, attentionIds, replyNeededKeys))
 
       return stateDelta || sessionTimestamp(b) - sessionTimestamp(a)
     })
-  }, [attentionIds, messagingSessions, sessions, workingIds])
+  }, [attentionIds, candidateRows, replyNeededKeys, workingIds])
 
   const visibleRows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -165,7 +194,7 @@ export function ActiveChatsView({
     const groups = new Map<string, ActiveGroup>()
 
     for (const session of visibleRows) {
-      const state = chatState(session, workingIds, attentionIds)
+      const state = chatState(session, workingIds, attentionIds, replyNeededKeys)
 
       const id =
         groupMode === 'status'
@@ -193,7 +222,7 @@ export function ActiveChatsView({
 
       return a.label.localeCompare(b.label)
     })
-  }, [attentionIds, copy, groupMode, visibleRows, workingIds])
+  }, [attentionIds, copy, groupMode, replyNeededKeys, visibleRows, workingIds])
 
   const selected = useMemo(() => {
     if (!visibleRows.length) {
@@ -206,8 +235,61 @@ export function ActiveChatsView({
   const selectedSessionKey = selected ? sessionKey(selected) : ''
   const visibleMessages = useMemo(() => (messages ?? []).filter(message => !message.hidden).slice(-PREVIEW_LIMIT), [messages])
   const draft = selectedSessionKey ? (draftBySession[selectedSessionKey] ?? '') : ''
-  const waitingCount = activeRows.filter(session => chatState(session, workingIds, attentionIds) === 'waiting').length
-  const runningCount = activeRows.filter(session => chatState(session, workingIds, attentionIds) === 'running').length
+
+  const waitingCount = activeRows.filter(
+    session => chatState(session, workingIds, attentionIds, replyNeededKeys) === 'waiting'
+  ).length
+
+  const runningCount = activeRows.filter(
+    session => chatState(session, workingIds, attentionIds, replyNeededKeys) === 'running'
+  ).length
+
+  useEffect(() => {
+    let cancelled = false
+
+    listAllProfileSessions(REPLY_SCAN_LIMIT, 1, 'exclude', 'recent', 'all', { excludeSources: ['cron'] })
+      .then(result => {
+        if (!cancelled) {
+          setScannedSessions(result.sessions)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const candidates = candidateRows.slice(0, REPLY_SCAN_LIMIT)
+
+    void Promise.all(
+      candidates.map(async session => {
+        if (attentionIds.includes(session.id) || workingIds.includes(session.id)) {
+          return [sessionKey(session), false] as const
+        }
+
+        try {
+          const result = await getSessionMessages(session.id, session.profile)
+
+          return [sessionKey(session), transcriptNeedsReply(toChatMessages(result.messages))] as const
+        } catch {
+          return [sessionKey(session), false] as const
+        }
+      })
+    ).then(results => {
+      if (cancelled) {
+        return
+      }
+
+      setReplyNeededKeys(new Set(results.filter(([, needsReply]) => needsReply).map(([key]) => key)))
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [attentionIds, candidateRows, workingIds])
 
   useEffect(() => {
     if (selected && selectedSessionKey !== selectedKey) {
@@ -300,8 +382,8 @@ export function ActiveChatsView({
           <aside className="flex min-h-0 flex-col border-r border-(--ui-stroke-tertiary)">
             <div className="shrink-0 border-b border-(--ui-stroke-tertiary) px-3 py-3">
               <div className="grid grid-cols-2 gap-2">
-                <QueueMetric icon={<Zap className="size-3.5" />} label={copy.running} value={runningCount} />
                 <QueueMetric icon={<Clock className="size-3.5" />} label={copy.waiting} value={waitingCount} />
+                <QueueMetric icon={<Zap className="size-3.5" />} label={copy.running} value={runningCount} />
               </div>
               <div className="mt-3 grid grid-cols-3 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-surface-muted) p-0.5">
                 <GroupButton active={groupMode === 'status'} icon={<Zap className="size-3.5" />} label={copy.groupStatus} onClick={() => setGroupMode('status')} />
@@ -324,7 +406,7 @@ export function ActiveChatsView({
                     </div>
                     <ul className="space-y-1">
                       {group.sessions.map(session => {
-                        const state = chatState(session, workingIds, attentionIds)
+                        const state = chatState(session, workingIds, attentionIds, replyNeededKeys)
                         const active = sessionKey(session) === selectedSessionKey
 
                         return (
@@ -353,7 +435,7 @@ export function ActiveChatsView({
                       <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">
                         {sessionTitle(selected)}
                       </h3>
-                      <StatePill state={chatState(selected, workingIds, attentionIds)} />
+                      <StatePill state={chatState(selected, workingIds, attentionIds, replyNeededKeys)} />
                     </div>
                     <p className="mt-1 truncate text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
                       {selected.profile ? copy.profile(selected.profile) : selected.cwd || selected.id}

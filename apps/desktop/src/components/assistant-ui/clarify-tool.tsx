@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState, type ComponentProps } from 'react'
+import { type ComponentProps, type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
@@ -205,7 +205,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         >
           <HelpCircle className="size-3.5" />
         </span>
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">{question}</span>
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground" data-bidi-plaintext="">
+          {question}
+        </span>
       </div>
 
       {!typing && hasChoices && (
@@ -227,7 +229,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
               type="button"
             >
               <RadioDot selected={selectedChoice === choice} />
-              <span className="flex-1 wrap-anywhere">{choice}</span>
+              <span className="flex-1 wrap-anywhere" data-bidi-plaintext="">
+                {choice}
+              </span>
               {selectedChoice === choice && <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />}
             </button>
           ))}
@@ -241,7 +245,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             type="button"
           >
             <RadioDot selected={false} />
-            <span className="flex-1">{copy.other}</span>
+            <span className="flex-1" data-bidi-plaintext="">
+              {copy.other}
+            </span>
           </button>
         </div>
       )}
@@ -250,6 +256,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         <form className="grid gap-2" onSubmit={handleSubmitFreeform}>
           <Textarea
             className="min-h-20 resize-y rounded-lg border-transparent bg-accent/40 text-sm focus-visible:bg-background/60"
+            dir="auto"
             disabled={submitting}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={handleTextareaKey}

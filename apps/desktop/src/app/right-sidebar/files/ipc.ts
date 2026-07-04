@@ -1,7 +1,7 @@
 import ignore from 'ignore'
 
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
+import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 

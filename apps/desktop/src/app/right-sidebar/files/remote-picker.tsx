@@ -13,10 +13,13 @@ function clean(path: string) {
 
 function parentDir(path: string) {
   const value = clean(path)
+
   if (value === '/') {
     return '/'
   }
+
   const parent = value.slice(0, value.lastIndexOf('/'))
+
   return parent || '/'
 }
 
@@ -48,6 +51,7 @@ export function RemoteFolderPicker() {
           setPending({ defaultPath, resolve, title: options?.title || r.remotePickerTitle })
         })
     })
+
     return () => setDesktopFsRemotePicker(null)
   }, [r.remotePickerTitle])
 
@@ -65,11 +69,14 @@ export function RemoteFolderPicker() {
         if (!active) {
           return
         }
+
         if (result.error) {
           setError(result.error)
           setEntries([])
+
           return
         }
+
         setEntries(result.entries.filter(entry => entry.isDirectory).map(entry => ({ name: entry.name, path: entry.path })))
       })
       .catch(err => {
@@ -93,10 +100,12 @@ export function RemoteFolderPicker() {
     const parts = clean(currentPath).split('/').filter(Boolean)
     const out = [{ label: '/', path: '/' }]
     let acc = ''
+
     for (const part of parts) {
       acc += `/${part}`
       out.push({ label: part, path: acc })
     }
+
     return out
   }, [currentPath])
 

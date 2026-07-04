@@ -13,8 +13,8 @@ import {
 } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short

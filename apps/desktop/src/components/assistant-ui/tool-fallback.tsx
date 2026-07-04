@@ -391,6 +391,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 view.status === 'error' && 'text-destructive',
                 view.status === 'warning' && 'text-amber-700 dark:text-amber-300'
               )}
+              data-bidi-plaintext=""
             >
               {view.title}
             </FadeText>

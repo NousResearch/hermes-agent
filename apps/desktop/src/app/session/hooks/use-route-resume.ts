@@ -200,6 +200,7 @@ export function useRouteResume({
     // the store/session.ts + use-session-actions.ts comments promise. (Point 2)
     const wasExhausted = prevResumeExhaustedRef.current
     prevResumeExhaustedRef.current = resumeExhaustedSessionId
+
     if (wasExhausted && wasExhausted === routedSessionId && resumeExhaustedSessionId !== wasExhausted) {
       retrySessionIdRef.current = routedSessionId
       retryAttemptRef.current = 0

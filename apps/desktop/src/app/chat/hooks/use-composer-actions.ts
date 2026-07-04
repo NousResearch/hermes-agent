@@ -226,6 +226,7 @@ const attachToMain = (attachment: ComposerAttachment) => {
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
   }, [copy.imagePreviewFailed])

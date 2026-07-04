@@ -15,7 +15,17 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 
-const { $activeGatewayProfile, $profileIcons, ensureGatewayProfile, setProfileIcon } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $profileIcons,
+  $profileScope,
+  $selectedProfileScope,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  selectProfile,
+  setProfileIcon
+} = await import('./profile')
+
 const { $connection } = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
@@ -29,8 +39,11 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  ensureGatewayForProfile.mockImplementation(async () => undefined)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
   $connection.set(localConn())
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
 })
@@ -110,5 +123,48 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('selectProfile', () => {
+  it('updates the visible profile scope before the gateway finishes switching', async () => {
+    let resolveGateway!: () => void
+
+    const gatewayReady = new Promise<undefined>(resolve => {
+      resolveGateway = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile.mockImplementationOnce(() => gatewayReady)
+
+    selectProfile('content-creator')
+
+    expect($profileScope.get()).toBe('content-creator')
+    expect($selectedProfileScope.get()).toBe('content-creator')
+    expect($activeGatewayProfile.get()).toBe('default')
+
+    resolveGateway()
+    await gatewayReady
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('content-creator'))
+  })
+
+  it('does not let a slower previous gateway activation override a newer selected scope', async () => {
+    let resolveFirst!: () => void
+
+    const firstGatewayReady = new Promise<undefined>(resolve => {
+      resolveFirst = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile
+      .mockImplementationOnce(() => firstGatewayReady)
+      .mockImplementationOnce(async () => undefined)
+
+    selectProfile('content-creator')
+    selectProfile('bina-meatzevet')
+
+    expect($profileScope.get()).toBe('bina-meatzevet')
+
+    resolveFirst()
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('bina-meatzevet'))
+    expect($profileScope.get()).toBe('bina-meatzevet')
   })
 })

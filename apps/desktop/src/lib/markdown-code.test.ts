@@ -20,4 +20,23 @@ describe('isLikelyProseCodeBlock', () => {
   it('keeps real code blocks', () => {
     expect(isLikelyProseCodeBlock('ts', 'const value = { bunny: true };\nreturn value')).toBe(false)
   })
+
+  it('treats short RTL text fences as prose, not LTR code cards', () => {
+    expect(isLikelyProseCodeBlock('text', 'אני פונה אליכם כי אתם עוסקים ב OPEN AI ובעבודה עם מודלים.')).toBe(
+      true
+    )
+  })
+
+  it('treats RTL text fences with URLs/emails/punctuation as prose', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        'text',
+        [
+          'אני פונה אליכם כי אתם עוסקים ב-OPEN AI ובעבודה עם מודלים.',
+          'אפשר ליצור קשר ב-test@example.com או דרך https://example.com/path?x=1.',
+          'האם זה משהו שאפשר לקדם?'
+        ].join('\n')
+      )
+    ).toBe(true)
+  })
 })

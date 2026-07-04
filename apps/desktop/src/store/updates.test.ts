@@ -53,6 +53,7 @@ const {
   $updateOverlayOpen,
   resetUpdateApplyState
 } = await import('./updates')
+
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({

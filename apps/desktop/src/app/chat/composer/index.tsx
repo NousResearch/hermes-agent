@@ -16,6 +16,7 @@ import {
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
+import { getHermesConfigRecord } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -44,8 +45,8 @@ import {
   $composerPopoutPosition,
   $composerPoppedOut,
   POPOUT_WIDTH_REM,
-  setComposerPoppedOut,
-  setComposerPopoutPosition
+  setComposerPopoutPosition,
+  setComposerPoppedOut
 } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
@@ -59,7 +60,16 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
+import {
+  $messageRepliesEnabled,
+  $messageReplyTarget,
+  clearMessageReply,
+  messageRepliesEnabledForProfile,
+  messageRepliesEnabledFromConfig,
+  withReplyContext
+} from '@/store/message-replies'
 import { notify } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -195,6 +205,10 @@ export function ChatBar({
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const activeProfile = useStore($activeGatewayProfile)
+  const repliesEnabled = useStore($messageRepliesEnabled) || messageRepliesEnabledForProfile(activeProfile)
+  const replyTarget = useStore($messageReplyTarget)
+  const replyActive = repliesEnabled ? replyTarget : null
   // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
   // tiny window, subagent watch windows) always start docked and can't pop out:
   // a floating composer makes no sense in a single-session side window, and it
@@ -203,6 +217,33 @@ export function ChatBar({
   const poppedOut = useStore($composerPoppedOut) && popoutAllowed
   const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+
+  useEffect(() => {
+    let cancelled = false
+
+    getHermesConfigRecord()
+      .then(config => {
+        if (!cancelled) {
+          $messageRepliesEnabled.set(messageRepliesEnabledFromConfig(config))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          $messageRepliesEnabled.set(false)
+          clearMessageReply()
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeProfile])
+
+  useEffect(() => {
+    if (!repliesEnabled && replyTarget) {
+      clearMessageReply()
+    }
+  }, [repliesEnabled, replyTarget])
 
   const queuedPrompts = useMemo(
     () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
@@ -1461,21 +1502,27 @@ export function ChatBar({
     return true
   }
 
+  const textWithReplyContext = useCallback(
+    (text: string) => withReplyContext(text, replyActive),
+    [replyActive]
+  )
+
   const queueCurrentDraft = useCallback(() => {
     if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: textWithReplyContext(draft), attachments })) {
       return false
     }
 
     clearDraft()
     clearComposerAttachments()
+    clearMessageReply()
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft, draft, textWithReplyContext])
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
@@ -1654,14 +1701,30 @@ export function ChatBar({
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
+    const submittedReply = replyActive
+    const submittedText = withReplyContext(text, submittedReply)
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
       stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+
+      if (submittedReply) {
+        $messageReplyTarget.set(submittedReply)
+      }
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+    void Promise.resolve(attachments ? onSubmit(submittedText, { attachments }) : onSubmit(submittedText))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearSessionDraft(submittedScope)
+
+          if (submittedReply) {
+            clearMessageReply()
+          }
+        }
+      })
       .catch(restore)
   }
 
@@ -2086,6 +2149,28 @@ export function ChatBar({
                         {t.common.save}
                       </Button>
                     </div>
+                  </div>
+                )}
+                {replyActive && (
+                  <div
+                    className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_28%,transparent)] border-r-[3px] border-r-[color-mix(in_srgb,var(--dt-composer-ring)_72%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_9%,transparent)] px-2 py-1 text-[0.7rem] leading-snug text-muted-foreground/90"
+                    data-slot="composer-reply-preview"
+                  >
+                    <div className="min-w-0 truncate">
+                      <span className="font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))]">
+                        Replying to Hermes:
+                      </span>{' '}
+                      {replyActive.quote}
+                    </div>
+                    <Button
+                      aria-label="Cancel reply"
+                      className="h-5 shrink-0 rounded-md px-1.5 text-[0.68rem]"
+                      onClick={clearMessageReply}
+                      type="button"
+                      variant="ghost"
+                    >
+                      ×
+                    </Button>
                   </div>
                 )}
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}

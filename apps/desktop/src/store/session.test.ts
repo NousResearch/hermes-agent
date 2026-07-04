@@ -152,6 +152,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'tip-4', _lineage_root_id: 'root' }),
       session({ id: 'other' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'tip-5', _lineage_root_id: 'root' }),
     ] as SessionInfo[]
@@ -173,6 +174,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
       session({ id: 'b', _lineage_root_id: 'lineage-b' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
     ] as SessionInfo[]

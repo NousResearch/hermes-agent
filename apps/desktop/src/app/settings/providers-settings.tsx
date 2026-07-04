@@ -391,6 +391,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
 
   if (showApiKeys) {
     const q = keyQuery.trim().toLowerCase()
+
     const visibleGroups = q
       ? keyGroups.filter(group => {
           const haystack = [

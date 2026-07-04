@@ -131,7 +131,11 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   }
 
   if (isLikelyProseCodeBlock(language, trimmed)) {
-    return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{trimmed}</div>
+    return (
+      <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground" data-bidi-plaintext="">
+        {trimmed}
+      </div>
+    )
   }
 
   const cleanLanguage = sanitizeLanguageTag(language || '')

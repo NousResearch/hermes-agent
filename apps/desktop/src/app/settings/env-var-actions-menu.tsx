@@ -10,8 +10,8 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
-import { Eye, EyeOff, ExternalLink, Trash2 } from '@/lib/icons'
 import { triggerHaptic } from '@/lib/haptics'
+import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 interface EnvVarActionsMenuProps

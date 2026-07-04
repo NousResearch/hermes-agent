@@ -397,6 +397,54 @@ class TestPauseResumeJob:
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
 
+    def test_resume_cron_sets_error_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
+        """Parity with mark_job_run() fix (#16265): resume_job() must set
+        state=error when croniter is absent and compute_next_run() cannot
+        produce a next_run_at for a cron-kind job.
+
+        Before this fix, resume_job() called update_job() with next_run_at=None,
+        leaving the job at state="scheduled" with no next run — it silently
+        never fired and the user had no visible signal.
+        """
+        pytest.importorskip("croniter")  # need croniter to create the cron job
+        job = create_job(prompt="Cron job", schedule="0 9 * * 1-5")
+        assert job["schedule"]["kind"] == "cron"
+        pause_job(job["id"])
+
+        # Simulate croniter going missing after the job was persisted.
+        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+
+        resumed = resume_job(job["id"])
+
+        assert resumed is not None
+        assert resumed["enabled"] is True, (
+            "job must stay enabled — croniter-missing is a runtime dep issue, "
+            "not a reason to silently disable the job"
+        )
+        assert resumed["state"] == "error"
+        assert resumed["next_run_at"] is None
+        assert resumed["last_error"]
+        assert "croniter" in resumed["last_error"].lower()
+
+    def test_resume_recurring_any_kind_sets_error_when_next_run_none(self, tmp_cron_dir, monkeypatch):
+        """Defensive sibling: any recurring job whose compute_next_run() returns
+        None (e.g. future regression or corrupt schedule) must get state=error,
+        not state=scheduled with a phantom next_run_at.  Mirrors the interval
+        guard in TestMarkJobRun.
+        """
+        job = create_job(prompt="Interval job", schedule="every 1h")
+        assert job["schedule"]["kind"] == "interval"
+        pause_job(job["id"])
+
+        monkeypatch.setattr("cron.jobs.compute_next_run", lambda *a, **kw: None)
+
+        resumed = resume_job(job["id"])
+
+        assert resumed is not None
+        assert resumed["enabled"] is True
+        assert resumed["state"] == "error"
+        assert resumed["next_run_at"] is None
+
 
 class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""

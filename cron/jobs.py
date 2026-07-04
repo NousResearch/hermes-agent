@@ -1181,6 +1181,30 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
+
+    # Parity with mark_job_run() (#16265): when compute_next_run() cannot
+    # produce a timestamp for a recurring schedule (e.g. croniter absent),
+    # mark state=error rather than scheduling with next_run_at=None.  A job
+    # sitting at state="scheduled" with no next_run_at silently never fires,
+    # giving the user no indication that the resume failed.
+    if next_run_at is None:
+        kind = job.get("schedule", {}).get("kind")
+        if kind in ("cron", "interval"):
+            return update_job(
+                job_id,
+                {
+                    "enabled": True,
+                    "state": "error",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "next_run_at": None,
+                    "last_error": (
+                        "Cannot resume: failed to compute next run for recurring "
+                        "schedule (is the 'croniter' package installed?)"
+                    ),
+                },
+            )
+
     return update_job(
         job["id"],
         {

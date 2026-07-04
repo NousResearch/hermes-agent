@@ -1638,6 +1638,32 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
+def _load_standalone_bridge_token(extra: Dict[str, Any]) -> Optional[str]:
+    """Read the persisted bridge capability token for standalone sends.
+
+    Mirrors ``WhatsAppAdapter._load_or_create_bridge_token``'s session_path
+    resolution, but only READS the file — never creates it. The live adapter
+    is the sole writer/rotator: it generates the token, persists it 0600 in
+    the session dir, and launches the bridge process with it in
+    ``WHATSAPP_BRIDGE_TOKEN`` env. A standalone caller (cron running detached
+    from the gateway) just needs to present that same already-persisted
+    secret back to the bridge's ``X-Hermes-Bridge-Token`` gate. If the file
+    isn't there yet (bridge never started by a live adapter), there is no
+    token to send — the bridge will 401 the request, which is correct
+    fail-closed behavior rather than fabricating a token that won't match.
+    """
+    session_path = Path(extra.get(
+        "session_path",
+        get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"),
+    ))
+    token_path = session_path / "bridge-token"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+        return token or None
+    except OSError:
+        return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1664,7 +1690,18 @@ async def _standalone_send(
         media = media_files or []
         text = message or ""
         last_message_id = None
-        async with aiohttp.ClientSession() as session:
+        # The bridge's state-changing endpoints (/send, /send-media) are
+        # gated behind the X-Hermes-Bridge-Token capability token when the
+        # live adapter started it with tokenAuth enabled (the default since
+        # the bridge's capability-token hardening). Without this header every
+        # standalone (cron-detached) delivery 401s — this was firing silently
+        # on any cron job whose delivery took this fallback path instead of
+        # the live-adapter path in _deliver_result (#jellyfin-cron-401).
+        headers = {}
+        bridge_token = _load_standalone_bridge_token(extra)
+        if bridge_token:
+            headers["X-Hermes-Bridge-Token"] = bridge_token
+        async with aiohttp.ClientSession(headers=headers) as session:
             # 1) Text first (skip the /send call when this chunk is media-only).
             if text.strip():
                 async with session.post(

@@ -362,7 +362,9 @@ class TestThreadNotFoundFallbackSitesPruneBinding:
         # ``send_message`` so the prune happens whether or not
         # the retry itself succeeds.
         prune_idx = src.find("_prune_stale_dm_topic_binding")
-        retry_idx = src.find("send_message(**retry_kwargs)")
+        retry_idx = src.find("_rate_limited_telegram_call", prune_idx)
+        if retry_idx < 0:
+            retry_idx = src.find("send_message(**retry_kwargs)", prune_idx)
         assert 0 <= prune_idx < retry_idx, (
             "_prune_stale_dm_topic_binding must run before the "
             "fallback send_message retry."

@@ -621,3 +621,92 @@ def test_repair_does_NOT_merge_codex_interim_assistants():
     assert len(interim) == 2
     encs = [m["codex_reasoning_items"][0]["encrypted_content"] for m in interim]
     assert "enc_first" in encs and "enc_second" in encs
+
+
+# ── tool_call_id de-duplication (#58327) ────────────────────────────────────
+# Strict providers (DeepSeek) reject a payload where the same tool_call_id
+# appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'".
+
+
+def test_repair_deduplicates_duplicate_tool_results():
+    """A second tool result reusing an already-matched tool_call_id is dropped.
+
+    repair_message_sequence consumes the id from known_tool_ids on first match
+    so the duplicate falls into the repair/drop branch (#58327, kernel #55436).
+    """
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run the tool"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "test", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "res1"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "res1 duplicate"},
+    ]
+    repairs = repair_message_sequence(agent, messages)
+    assert repairs == 1
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["content"] == "res1"
+
+
+def test_sanitize_deduplicates_duplicate_tool_results():
+    """sanitize_api_messages (final pre-API chokepoint) drops duplicate tool
+    results sharing a tool_call_id."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_X", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_X", "content": "A"},
+        {"role": "tool", "tool_call_id": "call_X", "content": "B (duplicate)"},
+        {"role": "assistant", "content": "done"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    tool_ids = [m["tool_call_id"] for m in out if m.get("role") == "tool"]
+    assert tool_ids == ["call_X"]  # exactly one survives
+
+
+def test_sanitize_deduplicates_duplicate_assistant_tool_call_ids():
+    """sanitize_api_messages collapses duplicate tool_calls sharing an id
+    WITHIN a single assistant message (the message[6] shape from #58327)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_Y", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}},
+            {"id": "call_Y", "type": "function",
+             "function": {"name": "bar", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Y", "content": "r"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    ids = [tc["id"] for tc in assistant["tool_calls"]]
+    assert ids == ["call_Y"]  # duplicate collapsed
+
+
+def test_sanitize_preserves_distinct_tool_call_ids():
+    """Negative control: legitimate DISTINCT tool_call_ids must NOT be dropped
+    (guards against over-dedup)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_A", "type": "function",
+             "function": {"name": "a", "arguments": "{}"}},
+            {"id": "call_B", "type": "function",
+             "function": {"name": "b", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "ra"},
+        {"role": "tool", "tool_call_id": "call_B", "content": "rb"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
+    assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]

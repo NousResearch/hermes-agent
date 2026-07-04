@@ -1354,3 +1354,15 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## DOX Framework Contract
+
+- This `AGENTS.md` participates in a DOX-style documentation hierarchy inspired by `agent0ai/dox`: root and child `AGENTS.md` files form the local operating contract for their subtrees.
+- Before editing, read the nearest applicable `AGENTS.md` chain from the workspace/profile root down to the target path. Do not rely on memory when the current files can be read.
+- After meaningful changes, update the closest owning `AGENTS.md` and any affected parent/child index when purpose, scope, workflow, ownership, inputs, outputs, side effects, permissions, verification, or durable structure changes.
+- Child docs may add local detail, but no child doc may weaken system, developer, user, profile, project, safety, approval, credential, legal/tax/accounting/financial, public-posting, trading, production, or destructive-action gates.
+- Keep DOX docs concise and operational: stable contracts only, no diary entries, no raw secrets, no copied credentials, and no unverified success claims.
+
+## Child DOX Index
+
+- No child `AGENTS.md` files are currently indexed for this root. Add entries when durable child documentation boundaries are created.

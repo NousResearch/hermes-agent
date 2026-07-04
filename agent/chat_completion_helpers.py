@@ -2717,6 +2717,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
+                        # Some local OpenAI-compatible proxies ignore stream=True
+                        # and return a regular JSON chat completion. The OpenAI
+                        # SDK's streaming iterator then yields no chunks, which
+                        # trips the zero-chunk guard above. Treat that local-only
+                        # malformed-SSE shape as permanent streaming unsupported
+                        # for this agent session so the main loop retries through
+                        # the working non-streaming path instead of failing the
+                        # turn.
+                        _agent_base_url = getattr(agent, "base_url", "") or ""
+                        _is_local_empty_stream = (
+                            is_local_endpoint(str(_agent_base_url))
+                            and "empty stream with no finish_reason" in _err_lower
+                        )
+                        if _is_local_empty_stream:
+                            agent._disable_streaming = True
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()
@@ -2738,13 +2753,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        if _is_stream_unsupported or _is_bedrock_stream_denied or _is_local_empty_stream:
                             agent._disable_streaming = True
                             agent._safe_print(
                                 "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
                                 "Switching to non-streaming.\n"
                                 "   Grant that action to restore streaming output.\n"
                                 if _is_bedrock_stream_denied else
+                                "\n⚠  Local provider returned an empty streaming response. "
+                                "Switching to non-streaming.\n"
+                                if _is_local_empty_stream else
                                 "\n⚠  Streaming is not supported for this "
                                 "model/provider. Switching to non-streaming.\n"
                                 "   To avoid this delay, set display.streaming: false "

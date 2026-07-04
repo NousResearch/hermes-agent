@@ -131,6 +131,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const KanbanView = lazy(async () => ({ default: (await import('./kanban')).KanbanView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
@@ -221,6 +222,7 @@ export function DesktopController() {
     commandCenterOpen,
     cronOpen,
     currentView,
+    kanbanOpen,
     openAgents,
     openCommandCenterSection,
     openStarmap,
@@ -1118,6 +1120,12 @@ export function DesktopController() {
         </Suspense>
       )}
 
+      {kanbanOpen && (
+        <Suspense fallback={null}>
+          <KanbanView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
       {profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
@@ -1338,6 +1346,7 @@ export function DesktopController() {
             path="artifacts"
           />
           <Route element={null} path="cron" />
+          <Route element={null} path="kanban" />
           <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />

@@ -49,6 +49,7 @@ import {
   Star,
   Terminal,
   Users,
+  Wallet,
   Webhook,
   Wrench,
   X,
@@ -81,6 +82,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
+import PaymentsPage from "@/pages/PaymentsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -138,6 +140,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
+  "/payments": PaymentsPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/mcp": McpPage,
@@ -182,6 +185,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
+  { path: "/payments", label: "Payments", icon: Wallet },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
@@ -218,6 +222,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Database,
   Shield,
   Users,
+  Wallet,
   Wrench,
   Zap,
   Heart,

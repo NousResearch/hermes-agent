@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "Web Dashboard"
-description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
+description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, payment requests, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
 ---
 
 # Web Dashboard
@@ -228,6 +228,19 @@ Each key shows:
 
 Advanced/rarely-used keys are hidden by default behind a toggle.
 
+### Files
+
+Browse and manage files inside the dashboard without dropping to a shell.
+
+- **Browse directories** — list files under the currently selected path
+- **Navigate** — move up the directory tree or jump directly to another path
+- **Upload** — send local files into the current directory
+- **Create folder** — add directories inline
+- **Download** — fetch any file back to your machine
+- **Delete** — remove files or folders after confirmation
+
+This is the easiest staging surface for invoice PDFs, screenshots, and other payment-request artifacts you want Hermes to review later.
+
 ### Sessions
 
 Browse and inspect all agent sessions. Each row shows the session title, source platform icon (CLI, Telegram, Discord, Slack, cron), model name, message count, tool call count, and how long ago it was active. Live sessions are marked with a pulsing badge.
@@ -273,6 +286,18 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Edit** — open a pre-filled modal to change a job's prompt, schedule, name, or delivery target
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
+
+### Payments
+
+Review captured invoices and payment requests before paying them manually in your banking app.
+
+- **Sync Gmail** — search Gmail for likely invoices / payment-due messages and import or update queue entries through the existing Google Workspace bridge
+- **Queue** — review vendor, amount, due date, source, confidence, and manual status (`new`, `needs_review`, `ready_to_pay`, `paid`, `ignored`)
+- **Detail view** — inspect the source message summary, warnings, attachments, and a link back to the original Gmail message when available
+- **Copy-ready payment fields** — payee, account holder, account number, sort code, IBAN, SWIFT, routing number, amount, reference, invoice number, due date, and other extracted details
+- **Manual-review only** — the page never initiates transfers; it organizes details for you to copy into your banking app
+
+See [Payments Review](./payments.md) for the full workflow and current limitations.
 
 ### Profiles
 

@@ -66,6 +66,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
   "/api/analytics",
+  "/api/payments",
   "/api/skills",
   "/api/tools/toolsets",
   "/api/config",
@@ -556,6 +557,22 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    }),
+
+  // Payments
+  getPayments: () =>
+    fetchJSON<PaymentsResponse>("/api/payments"),
+  syncPayments: (body?: { source?: string; query?: string; max_results?: number }) =>
+    fetchJSON<PaymentSyncResponse>("/api/payments/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }),
+  updatePaymentStatus: (id: string, status: PaymentRequest["status"]) =>
+    fetchJSON<PaymentRequest>(`/api/payments/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
     }),
 
   // Profiles
@@ -1756,6 +1773,66 @@ export interface ManagedFileWriteResponse {
   root: string | null;
   locked_root: string | null;
   can_change_path: boolean;
+}
+
+export interface PaymentSourceStatus {
+  id: string;
+  label: string;
+  connected: boolean;
+  detail: string;
+}
+
+export interface PaymentRequest {
+  id: string;
+  source: string;
+  source_label: string;
+  status: "new" | "needs_review" | "ready_to_pay" | "paid" | "ignored";
+  confidence: string;
+  received_at: string | null;
+  updated_at: string | null;
+  vendor: string;
+  title: string;
+  amount: {
+    value: number | null;
+    currency: string;
+    display: string;
+  };
+  due_date: string | null;
+  payee_name: string;
+  account_holder: string;
+  account_number: string;
+  sort_code: string;
+  iban: string;
+  swift: string;
+  routing_number: string;
+  payment_reference: string;
+  invoice_number: string;
+  billing_address: string;
+  tax_details: string;
+  preview_text: string;
+  warnings: string[];
+  attachments: string[];
+  original: {
+    label: string;
+    url: string;
+    message_id: string;
+    thread_id: string;
+  };
+}
+
+export interface PaymentsResponse {
+  sources: PaymentSourceStatus[];
+  requests: PaymentRequest[];
+  storage_path: string;
+}
+
+export interface PaymentSyncResponse {
+  source: string;
+  query: string;
+  fetched: number;
+  imported: number;
+  updated: number;
+  requests: PaymentRequest[];
 }
 
 export interface AnalyticsDailyEntry {

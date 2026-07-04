@@ -7962,6 +7962,65 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
 
 
 # ---------------------------------------------------------------------------
+# Payments dashboard endpoints — profile-scoped manual-payment review queue.
+# ---------------------------------------------------------------------------
+
+
+class PaymentStatusUpdate(BaseModel):
+    status: str
+
+
+class PaymentSyncRequest(BaseModel):
+    source: str = "gmail"
+    query: Optional[str] = None
+    max_results: Optional[int] = None
+
+
+@app.get("/api/payments")
+async def list_payments(profile: Optional[str] = None):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        return payments_store.list_payment_requests()
+
+
+@app.post("/api/payments/{payment_id}/status")
+async def update_payment_status(
+    payment_id: str,
+    body: PaymentStatusUpdate,
+    profile: Optional[str] = None,
+):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        try:
+            return payments_store.update_payment_status(payment_id, body.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Payment request not found") from exc
+
+
+@app.post("/api/payments/sync")
+async def sync_payments(body: PaymentSyncRequest, profile: Optional[str] = None):
+    from hermes_cli import payments as payments_store
+
+    source = (body.source or "gmail").strip().lower()
+    with _profile_scope(profile):
+        try:
+            if source != "gmail":
+                raise HTTPException(status_code=400, detail=f"Unsupported payment source: {source}")
+            return payments_store.sync_gmail_payment_requests(
+                query=body.query or payments_store.DEFAULT_GMAIL_QUERY,
+                max_results=int(body.max_results or payments_store.DEFAULT_GMAIL_MAX_RESULTS),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # MCP server endpoints — list / add / remove / test.
 #
 # Wraps the same config data layer the CLI uses (hermes_cli.mcp_config), so

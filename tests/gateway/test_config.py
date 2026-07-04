@@ -1170,6 +1170,138 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_bridges_session_reset_by_platform_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  mode: both\n"
+            "  idle_minutes: 180\n"
+            "  at_hour: 4\n"
+            "  by_platform:\n"
+            "    telegram:\n"
+            "      mode: idle\n"
+            "      idle_minutes: 30\n"
+            "    discord:\n"
+            "      mode: none\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "both"
+        assert config.default_reset_policy.idle_minutes == 180
+        assert config.default_reset_policy.at_hour == 4
+
+        assert Platform.TELEGRAM in config.reset_by_platform
+        telegram_policy = config.reset_by_platform[Platform.TELEGRAM]
+        assert telegram_policy.mode == "idle"
+        assert telegram_policy.idle_minutes == 30
+
+        assert Platform.DISCORD in config.reset_by_platform
+        assert config.reset_by_platform[Platform.DISCORD].mode == "none"
+
+        # get_reset_policy returns the per-platform override first
+        resolved = config.get_reset_policy(platform=Platform.TELEGRAM)
+        assert resolved.mode == "idle"
+        assert resolved.idle_minutes == 30
+
+    def test_bridges_session_reset_by_type_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  mode: idle\n"
+            "  idle_minutes: 180\n"
+            "  by_type:\n"
+            "    dm:\n"
+            "      mode: idle\n"
+            "      idle_minutes: 60\n"
+            "    group:\n"
+            "      mode: daily\n"
+            "      at_hour: 4\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.idle_minutes == 180
+        assert "dm" in config.reset_by_type
+        assert config.reset_by_type["dm"].idle_minutes == 60
+        assert config.reset_by_type["group"].mode == "daily"
+
+        # get_reset_policy: type override returned when no platform override
+        resolved = config.get_reset_policy(session_type="dm")
+        assert resolved.mode == "idle"
+        assert resolved.idle_minutes == 60
+
+    def test_session_reset_default_only_leaves_overrides_empty(self, tmp_path, monkeypatch):
+        """Legacy-style session_reset with only top-level keys still works."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  mode: both\n"
+            "  idle_minutes: 180\n"
+            "  at_hour: 4\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "both"
+        assert config.default_reset_policy.idle_minutes == 180
+        assert config.reset_by_type == {}
+        assert config.reset_by_platform == {}
+
+    def test_invalid_session_reset_by_platform_is_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  mode: idle\n"
+            "  idle_minutes: 180\n"
+            "  by_platform: not-a-mapping\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.idle_minutes == 180
+        assert config.reset_by_platform == {}
+
+    def test_invalid_session_reset_by_type_is_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  mode: idle\n"
+            "  idle_minutes: 180\n"
+            "  by_type:\n"
+            "  - not-a-mapping\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.idle_minutes == 180
+        assert config.reset_by_type == {}
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

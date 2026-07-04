@@ -901,7 +901,32 @@ def load_gateway_config() -> GatewayConfig:
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
-                gw_data["default_reset_policy"] = sr
+                # Split per-type / per-platform overrides out of the default
+                # policy.  The nested keys map to GatewayConfig.reset_by_type
+                # and reset_by_platform; only the top-level policy fields
+                # belong on default_reset_policy.
+                by_type = sr.get("by_type")
+                by_platform = sr.get("by_platform")
+                gw_data["default_reset_policy"] = {
+                    k: v for k, v in sr.items()
+                    if k not in ("by_type", "by_platform")
+                }
+                if isinstance(by_type, dict):
+                    gw_data["reset_by_type"] = by_type
+                elif by_type is not None:
+                    logger.warning(
+                        "Ignoring invalid session_reset.by_type in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(by_type).__name__,
+                    )
+                if isinstance(by_platform, dict):
+                    gw_data["reset_by_platform"] = by_platform
+                elif by_platform is not None:
+                    logger.warning(
+                        "Ignoring invalid session_reset.by_platform in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(by_platform).__name__,
+                    )
 
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:

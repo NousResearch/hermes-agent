@@ -45,6 +45,15 @@ class GatewayLifecycleBlocked(ValueError):
 # Shell-level command shapes that target the gateway lifecycle. Each branch
 # is anchored on a concrete command identifier so a match can only fire on
 # actual shell-command-shaped strings, not on prose.
+# Prefix patterns that dispatch the command in a separate systemd cgroup
+# or process tree, making it immune to SIGTERM propagation.
+# systemd-run creates a transient timer unit outside the caller's cgroup.
+_SAFE_DISPATCH_PREFIX = re.compile(
+    r"(?i)"
+    r"(?:systemd-run\s+(?:-\S+\s+)*(?:--\S+(?:=\S+)?\s+)*)"
+)
+
+
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
@@ -67,8 +76,16 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 
 
 def contains_gateway_lifecycle_command(text: str) -> bool:
-    """Return True if *text* contains a gateway lifecycle command pattern."""
+    """Return True if *text* contains a gateway lifecycle command pattern.
+
+    Safe dispatch wrappers (systemd-run) isolate the wrapped command into a
+    separate systemd scope/cgroup, making it immune to SIGTERM propagation
+    when the gateway process is killed.  If any safe dispatch prefix is
+    found, the command is allowed.
+    """
     if not text:
+        return False
+    if _SAFE_DISPATCH_PREFIX.search(text.strip()):
         return False
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
 

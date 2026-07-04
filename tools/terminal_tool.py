@@ -2253,13 +2253,21 @@ def terminal_tool(
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from hermes_cli.cron import _contains_gateway_lifecycle_command
             if _contains_gateway_lifecycle_command(command):
+                safe_hint = ""
+                if "systemctl" in command or "systemd" in command:
+                    safe_hint = (
+                        " To restart safely from inside the gateway, wrap with "
+                        "`systemd-run`:\n"
+                        "  systemd-run --on-active=15 systemctl --user restart hermes-gateway"
+                    )
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
                     "error": (
                         "Blocked: cannot restart or stop the gateway from inside the "
                         "gateway process. The gateway would kill this command before "
-                        "it could complete (SIGTERM propagates to child processes). "
+                        "it could complete (SIGTERM propagates to child processes)."
+                        f"{safe_hint}\n"
                         "Run `hermes gateway restart` from a separate shell outside "
                         "the running gateway."
                     ),

@@ -214,6 +214,32 @@ class EventBridge:
 
     This is the Hermes equivalent of OpenClaw's WebSocket gateway bridge.
     Instead of WebSocket events, we poll the SQLite database for changes.
+
+    Threading model
+    ---------------
+    The bridge runs a single background poll thread (see ``start`` /
+    ``_poll_loop``) alongside any number of foreground callers using
+    ``poll_events``, ``wait_for_event``, ``list_pending_approvals``, and
+    ``respond_to_approval``. The following attributes are shared between
+    those threads and **must** only be read or mutated while holding
+    ``self._lock``:
+
+    - ``_queue`` and ``_cursor`` — the event queue and its monotonically
+      increasing cursor
+    - ``_pending_approvals`` — approval requests observed by the bridge
+    - ``_last_poll_timestamps`` — per-session last-seen message timestamp,
+      written by the background poll thread and read on every iteration
+      (see issue #23096 for the regression that motivated this contract).
+
+    Attributes that are only mutated by the poll thread
+    (``_sessions_json_mtime``, ``_state_db_mtime``,
+    ``_cached_sessions_index``) do not need the lock; treat them as
+    poll-thread-private state.
+
+    Use ``_read_last_poll_timestamp`` and ``_record_last_poll_timestamp``
+    to access ``_last_poll_timestamps`` rather than touching the dict
+    directly — the helpers exist precisely so the lock discipline cannot
+    be forgotten.
     """
 
     def __init__(self):
@@ -223,10 +249,13 @@ class EventBridge:
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        # In-memory approval tracking (populated from events)
+        # session_key -> unix timestamp; access ONLY via the
+        # _read_last_poll_timestamp / _record_last_poll_timestamp helpers,
+        # never touch this dict directly. See class docstring + #23096.
+        self._last_poll_timestamps: Dict[str, float] = {}
+        # In-memory approval tracking (populated from events). Lock-protected.
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when files haven't changed
+        # mtime cache — owned by the poll thread, no lock needed.
         self._sessions_json_mtime: float = 0.0
         self._state_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
@@ -307,6 +336,25 @@ class EventBridge:
                 self._pending_approvals.values(),
                 key=lambda a: a.get("created_at", ""),
             )
+
+    def _read_last_poll_timestamp(self, session_key: str) -> float:
+        """Lock-safe read of _last_poll_timestamps[session_key].
+
+        Centralises the lock invariant for #23096 so every caller — most
+        notably the background _poll_once loop — cannot accidentally drop
+        the lock again.
+        """
+        with self._lock:
+            return self._last_poll_timestamps.get(session_key, 0.0)
+
+    def _record_last_poll_timestamp(self, session_key: str, timestamp: float) -> None:
+        """Lock-safe write of _last_poll_timestamps[session_key].
+
+        See `_read_last_poll_timestamp` for the rationale; both helpers
+        exist purely to make the lock discipline impossible to forget.
+        """
+        with self._lock:
+            self._last_poll_timestamps[session_key] = timestamp
 
     def respond_to_approval(self, approval_id: str, decision: str) -> dict:
         """Resolve a pending approval (best-effort without gateway IPC)."""
@@ -402,7 +450,12 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            # _last_poll_timestamps is shared with foreground bridge methods
+            # (_enqueue, poll_events, wait_for_event, list_pending_approvals,
+            # respond_to_approval) and must be touched under self._lock — see
+            # issue #23096. The dedicated helpers below ensure the lock
+            # discipline cannot be forgotten by future contributors.
+            last_seen = self._read_last_poll_timestamp(session_key)
 
             try:
                 messages = db.get_messages(session_id)
@@ -454,12 +507,15 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
+            # Update last seen to the most recent message timestamp. The
+            # latest timestamp is computed without the lock so _ts_float and
+            # max() do not block other bridge methods; the lock is only
+            # taken inside _record_last_poll_timestamp for the dict write.
             all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+                    self._record_last_poll_timestamp(session_key, latest)
 
 
 # ---------------------------------------------------------------------------

@@ -121,6 +121,18 @@ def _normalize_job(raw: dict) -> dict:
     }
 
 
+def _format_http_warning(*, label: str, resource_id: str, err: urllib.error.HTTPError) -> str:
+    reason = err.reason or ""
+    return (
+        f"Could not list {label} for {resource_id} "
+        f"(HTTP {err.code}{f' {reason}' if reason else ''}); generated a partial report without those jobs."
+    )
+
+
+def _allow_partial_jobs(err: urllib.error.HTTPError) -> bool:
+    return err.code == 403
+
+
 def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     """Collect job/step timings from the GitHub API.
 
@@ -128,16 +140,36 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
        Skip workflow-call placeholder jobs (step name starts with "Run ./.github/").
     2. Find sub-workflow runs via head_sha + event=workflow_call.
     3. Get each sub-workflow run's jobs with full step timing.
+
+    Some fork PR contexts can read the run metadata but receive HTTP 403 when
+    listing jobs. In that case we keep the report non-fatal, emit a warning,
+    and return the partial data we could still collect.
     """
     owner, repo_name = repo.split("/")
+    warnings: list[str] = []
 
     # Orchestrator run info
     run_info = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}", token)
     created_at = run_info.get("created_at", "")
 
     # Orchestrator direct jobs
-    orch_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
-                        token, list_key="jobs")
+    try:
+        orch_jobs = api_get(
+            f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
+            token,
+            list_key="jobs",
+        )
+    except urllib.error.HTTPError as err:
+        if not _allow_partial_jobs(err):
+            raise
+        orch_jobs = []
+        warnings.append(
+            _format_http_warning(
+                label="orchestrator jobs",
+                resource_id=f"run {run_id}",
+                err=err,
+            )
+        )
 
     direct = []
     for job in orch_jobs:
@@ -149,19 +181,46 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         direct.append(job)
 
     # Sub-workflow runs
-    sub_runs = api_get(f"/repos/{owner}/{repo_name}/actions/runs", token, params={
-        "head_sha": head_sha,
-        "event": "workflow_call",
-        "per_page": 100,
-    }, list_key="workflow_runs")
+    try:
+        sub_runs = api_get(f"/repos/{owner}/{repo_name}/actions/runs", token, params={
+            "head_sha": head_sha,
+            "event": "workflow_call",
+            "per_page": 100,
+        }, list_key="workflow_runs")
+    except urllib.error.HTTPError as err:
+        if not _allow_partial_jobs(err):
+            raise
+        sub_runs = []
+        warnings.append(
+            _format_http_warning(
+                label="sub-workflow runs",
+                resource_id=f"head {head_sha}",
+                err=err,
+            )
+        )
     sub_runs = [r for r in sub_runs if r.get("created_at", "") >= created_at]
 
     sub_jobs_raw = []
     for sr in sub_runs:
         sr_id = sr["id"]
         sr_name = sr.get("name", "")
-        sr_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{sr_id}/jobs",
-                          token, list_key="jobs")
+        try:
+            sr_jobs = api_get(
+                f"/repos/{owner}/{repo_name}/actions/runs/{sr_id}/jobs",
+                token,
+                list_key="jobs",
+            )
+        except urllib.error.HTTPError as err:
+            if not _allow_partial_jobs(err):
+                raise
+            warnings.append(
+                _format_http_warning(
+                    label=f"sub-workflow jobs for {sr_name or 'workflow_call'}",
+                    resource_id=f"run {sr_id}",
+                    err=err,
+                )
+            )
+            continue
         for j in sr_jobs:
             j["_workflow_name"] = sr_name
             j["_workflow_run_id"] = sr_id
@@ -177,6 +236,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         "head_sha": head_sha,
         "created_at": created_at,
         "jobs": all_jobs,
+        "warnings": warnings,
     }
 
 
@@ -643,6 +703,7 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     sha_short = (timings.get("head_sha") or "")[:7]
     run_id = timings.get("run_id", "?")
     created = timings.get("created_at", "")
+    warnings = timings.get("warnings") or []
 
     bl_info = ""
     if baseline:
@@ -660,6 +721,11 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
         f'<div class="meta">Run <code>{escape(run_id)}</code> | SHA <code>{sha_short}</code>'
         f' | Generated {escape(created)}{bl_info}</div>\n'
     )
+
+    if warnings:
+        html += '<div class="meta"><strong>Warnings:</strong><ul>'
+        html += "".join(f"<li>{escape(warning)}</li>" for warning in warnings)
+        html += '</ul></div>\n'
 
     html += '<h2>Global Stats</h2>\n'
     html += _stats_cards(stats)
@@ -688,8 +754,15 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
 def generate_summary(timings: dict, baseline: dict | None = None) -> str:
     stats = compute_stats(timings, baseline)
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
+    warnings = timings.get("warnings") or []
 
     lines = ["## CI Timing Summary\n"]
+
+    if warnings:
+        lines.append("### Warnings")
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     # Global stats table
     lines.append("| Metric | Current | Baseline | Delta |")
@@ -748,8 +821,7 @@ def main():
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
-
-    timings = collect_timings(token, repo, run_id, head_sha)
+        timings = collect_timings(token, repo, run_id, head_sha)
 
     # Save JSON
     with open(args.json_out, "w", encoding="utf-8") as f:

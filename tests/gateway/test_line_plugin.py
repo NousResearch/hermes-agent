@@ -491,6 +491,57 @@ class TestEnvEnablement:
         result = _env_enablement()
         assert result["public_url"] == "https://my-tunnel.example.com"
 
+    def test_seeds_home_channel_as_dict(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "sec")
+        monkeypatch.setenv("LINE_HOME_CHANNEL", "Uhome")
+        result = _env_enablement()
+        assert result["home_channel"] == {"chat_id": "Uhome", "name": "Home"}
+
+
+class TestGatewayRuntimeConfig:
+
+    class _RegistryCtx:
+        def register_platform(self, **kw):
+            from gateway.platform_registry import PlatformEntry, platform_registry
+
+            platform_registry.register(PlatformEntry(**kw))
+
+    def test_top_level_line_home_channel_from_config_yaml_reaches_runtime(self, tmp_path, monkeypatch):
+        from gateway.config import Platform, load_gateway_config
+        from gateway.platform_registry import platform_registry
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    line:\n"
+            "      enabled: true\n"
+            "LINE_HOME_CHANNEL: U-config-home\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "sec")
+        monkeypatch.delenv("LINE_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("LINE_HOME_CHANNEL_NAME", raising=False)
+
+        original_entries = dict(platform_registry._entries)
+        try:
+            platform_registry._entries.clear()
+            register(self._RegistryCtx())
+            cfg = load_gateway_config()
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original_entries)
+
+        line_cfg = cfg.platforms[Platform("line")]
+        assert line_cfg.enabled is True
+        assert line_cfg.home_channel is not None
+        assert line_cfg.home_channel.chat_id == "U-config-home"
+
 
 class TestStandaloneSend:
 

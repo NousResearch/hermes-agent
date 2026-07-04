@@ -4884,8 +4884,15 @@ def run_conversation(
                         )
                         agent._emit_status(
                             "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
+                            "response — surfacing reasoning as response."
                         )
+                        # Surface reasoning/thinking content as the response
+                        # instead of "(empty)".  Models that put their entire
+                        # reply inside <think>/<thinking> blocks or return
+                        # content only via reasoning_content/reasoning_details
+                        # API fields would otherwise show blank to the user
+                        # and cause infinite retry loops (#58117).
+                        final_response = reasoning_text
                     else:
                         logger.warning(
                             "Empty response (no content or reasoning) "
@@ -4899,8 +4906,7 @@ def run_conversation(
                             + (" and fallback attempts." if agent._fallback_chain else
                                ". No fallback providers configured.")
                         )
-
-                    final_response = "(empty)"
+                        final_response = "(empty)"
                     break
                 
                 # Reset retry counter/signature on successful content

@@ -4211,9 +4211,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # #34452: explanation replaces the bare "(empty)" sentinel.
+        # #58117: reasoning content is surfaced as the response instead of "(empty)".
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert result["final_response"] == "structured reasoning answer"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):

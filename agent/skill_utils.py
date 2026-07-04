@@ -497,12 +497,46 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local → platform → external.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    Resolution order (first match wins on skill lookup):
+
+    1. **Local** — ``<HERMES_HOME>/skills/`` (i.e. the active profile's
+       ``skills/`` in profile mode, or the platform ``~/.hermes/skills/``
+       in default mode).
+    2. **Platform** — ``<default_hermes_root>/skills/`` when running in
+       profile mode (i.e. ``HERMES_HOME = ~/.hermes/profiles/<name>``).
+       This is what makes platform-level skill stubs (e.g. shared
+       ``~/.hermes/skills/totum-platform-audit/``) visible to every
+       profile worker, including kanban-spawned ones whose HERMES_HOME
+       is pinned to the profile.  In default mode the platform dir IS
+       the local dir, so it is not added twice.
+    3. **External** — paths declared in ``skills.external_dirs`` in
+       config.yaml, in declared order, deduplicated.
+
+    No-op when the platform dir does not exist on disk (e.g. a brand-new
+    install that has not yet run ``hermes setup``).
+
+    See ADR-0001 (docs/adrs/0001-platform-level-skill-stubs.md) for the
+    rationale and contract.
     """
-    dirs = [get_skills_dir()]
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+
+    dirs: List[Path] = [get_skills_dir()]
+
+    # In profile mode (HERMES_HOME != platform root), include the
+    # platform-level skills dir so platform stubs are visible to every
+    # profile worker. In default mode, get_skills_dir() already returns
+    # the platform dir, so the add would be a duplicate.
+    home = get_hermes_home().resolve()
+    platform_root = get_default_hermes_root().resolve()
+    if platform_root != home:
+        platform_skills = (platform_root / "skills").resolve()
+        if platform_skills.is_dir() and not any(
+            d.resolve() == platform_skills for d in dirs
+        ):
+            dirs.append(platform_skills)
+
     dirs.extend(get_external_skills_dirs())
     return dirs
 

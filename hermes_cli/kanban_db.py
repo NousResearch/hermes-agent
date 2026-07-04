@@ -8522,6 +8522,11 @@ def read_worker_log(
             if size > tail_bytes:
                 f.seek(size - tail_bytes)
                 # Skip a partial line if we tailed mid-line. But if the
+                # If seek landed at a newline, readline() would discard
+                # a complete first line. Peek past it (#58411).
+                if f.peek(1)[:1] == b'\n':
+                    f.read(1)
+
                 # window has no newline at all (one giant log line),
                 # readline() would eat everything — in that case don't
                 # skip and return the raw tail.

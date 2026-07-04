@@ -728,8 +728,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Print the worker log for a task (from <kanban-root>/kanban/logs/)",
     )
     p_log.add_argument("task_id")
-    p_log.add_argument("--tail", type=int, default=None,
-                       help="Only print the last N bytes")
+    def _positive_tail(value):
+        v = int(value)
+        if v <= 0:
+            raise argparse.ArgumentTypeError("--tail must be > 0")
+        return v
+    p_log.add_argument("--tail", type=_positive_tail, default=None,
+                       help="Only print the last N bytes (must be > 0)")
 
     # --- runs (per-attempt history for a task) ---
     p_runs = sub.add_parser(

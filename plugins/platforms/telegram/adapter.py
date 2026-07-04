@@ -8183,8 +8183,15 @@ class TelegramAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
-            if event.text:
+            # Append text from the follow-up chunk. Skip exact duplicates of
+            # the text buffered so far — this happens when a user resends
+            # the same message verbatim during an unresponsive stretch (e.g.
+            # the backend retrying for minutes), which would otherwise glue
+            # N identical copies of the same text into one garbled turn.
+            # Genuine Telegram auto-split continuations are always distinct
+            # substrings of the original message, so this never affects
+            # that case.
+            if event.text and event.text.strip() != (existing.text or "").strip():
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             # Merge any media that might be attached

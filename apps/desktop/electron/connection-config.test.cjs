@@ -19,10 +19,12 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  describeOauthTicketMintFailure,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
   normAuthMode,
+  oauthTicketMintError,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
@@ -368,24 +370,59 @@ test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {
   assert.equal(url, 'wss://gw.example.com/api/ws?ticket=tkt-9')
 })
 
-test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validation', async () => {
+test('resolveTestWsUrl (oauth, auth failure) asks the user to sign in again', async () => {
   await assert.rejects(
     () =>
       resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
         mintTicket: async () => {
-          throw new Error('401 ticket mint failed')
+          const err = new Error('401: session expired')
+          err.statusCode = 401
+          throw err
         }
       }),
     err => {
-      // Actionable, points the user at re-auth, and preserves the cause + flag
-      // the boot overlay uses to offer a sign-in prompt.
-      assert.match(err.message, /WebSocket ticket/i)
-      assert.match(err.message, /sign in again/i)
+      assert.match(err.message, /session has expired/i)
+      assert.match(err.message, /sign in/i)
       assert.equal(err.needsOauthLogin, true)
+      assert.equal(err.transientGatewayFailure, false)
       assert.ok(err.cause instanceof Error)
       return true
     }
   )
+})
+
+test('resolveTestWsUrl (oauth, timeout) does not mislabel gateway slowness as expired auth', async () => {
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw new Error('Timed out connecting to Hermes backend after 8000ms')
+        }
+      }),
+    err => {
+      assert.match(err.message, /did not mint a WebSocket ticket in time/i)
+      assert.equal(err.needsOauthLogin, false)
+      assert.equal(err.transientGatewayFailure, true)
+      assert.ok(err.cause instanceof Error)
+      return true
+    }
+  )
+})
+
+test('oauthTicketMintError maps 5xx failures to transient gateway failures', () => {
+  const cause = new Error('502: bad gateway')
+  const err = oauthTicketMintError(cause)
+  assert.match(err.message, /did not mint a WebSocket ticket in time/i)
+  assert.equal(err.needsOauthLogin, false)
+  assert.equal(err.transientGatewayFailure, true)
+  assert.equal(err.cause, cause)
+})
+
+test('describeOauthTicketMintFailure maps missing endpoints to backend upgrade guidance', () => {
+  const details = describeOauthTicketMintFailure(new Error('404: not found'))
+  assert.match(details.message, /does not expose the OAuth WebSocket-ticket endpoint/i)
+  assert.equal(details.needsOauthLogin, false)
+  assert.equal(details.transient, false)
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

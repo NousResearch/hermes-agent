@@ -78,6 +78,72 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+function statusCodeFromError(error) {
+  const explicit = Number(error?.statusCode)
+  if (Number.isInteger(explicit)) {
+    return explicit
+  }
+
+  const match = String(error?.message || '').match(/(?:^|\b)(\d{3})(?::|\b)/)
+  return match ? Number(match[1]) : null
+}
+
+function describeOauthTicketMintFailure(error) {
+  const statusCode = statusCodeFromError(error)
+  const rawMessage = String(error?.message || '')
+  const authFailure = statusCode === 401 || statusCode === 403
+  const timeoutFailure = /timed out|timeout|etimedout/i.test(rawMessage)
+  const serverFailure = statusCode !== null && statusCode >= 500
+  const missingEndpoint = statusCode === 404 || statusCode === 405
+
+  if (authFailure) {
+    return {
+      message:
+        'Your remote gateway session has expired or is no longer authorized. ' +
+        'Open Settings → Gateway and click "Sign in" again.',
+      needsOauthLogin: true,
+      transient: false
+    }
+  }
+
+  if (timeoutFailure || serverFailure) {
+    return {
+      message:
+        'Reached the remote Hermes gateway, but it did not mint a WebSocket ticket in time. ' +
+        'Retry after the gateway finishes starting, or switch back to Local if the outage continues.',
+      needsOauthLogin: false,
+      transient: true
+    }
+  }
+
+  if (missingEndpoint) {
+    return {
+      message:
+        'Reached the remote Hermes gateway, but it does not expose the OAuth WebSocket-ticket endpoint. ' +
+        'Update the remote backend or switch back to Local.',
+      needsOauthLogin: false,
+      transient: false
+    }
+  }
+
+  return {
+    message:
+      'Reached the remote Hermes gateway, but could not mint a WebSocket ticket for this OAuth session. ' +
+      'Retry, or open Settings → Gateway and sign in again if the problem persists.',
+    needsOauthLogin: false,
+    transient: true
+  }
+}
+
+function oauthTicketMintError(error) {
+  const details = describeOauthTicketMintFailure(error)
+  const err = new Error(details.message)
+  err.needsOauthLogin = details.needsOauthLogin
+  err.transientGatewayFailure = details.transient
+  err.cause = error
+  return err
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -115,13 +181,7 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
-      )
-      err.needsOauthLogin = true
-      err.cause = error
-      throw err
+      throw oauthTicketMintError(error)
     }
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
   }
@@ -270,10 +330,12 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  describeOauthTicketMintFailure,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
   normAuthMode,
+  oauthTicketMintError,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,

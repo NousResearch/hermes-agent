@@ -111,6 +111,7 @@ const {
   cookiesHaveSession,
   cookiesHaveLiveSession,
   normAuthMode,
+  oauthTicketMintError,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
@@ -4899,12 +4900,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
-      )
-      err.needsOauthLogin = true
-      err.cause = error
-      throw err
+      throw oauthTicketMintError(error)
     }
 
     return {

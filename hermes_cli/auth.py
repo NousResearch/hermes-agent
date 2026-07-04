@@ -2948,6 +2948,26 @@ def login_spotify_command(args) -> None:
         else:
             print("Could not open the browser automatically; use the URL above.")
 
+    # Fail fast instead of blocking when no one can complete the browser
+    # authorization. The dashboard spawns `hermes tools post-setup spotify`
+    # detached with stdin=DEVNULL and HERMES_NONINTERACTIVE=1 (see
+    # hermes_cli/web_server.py::_spawn_hermes_action) -- unlike a genuinely
+    # supervised GUI flow, there is no one watching to open the URL above, so
+    # binding the callback listener would just block for the full timeout and
+    # then, on retry, collide on the still-bound port. `_is_remote_session()`
+    # covers a different case (a human present but on another machine, e.g.
+    # SSH/Cloud Shell -- the loopback-tunnel hint above already handles that);
+    # this checks whether anyone can act on the URL at all.
+    from hermes_cli.setup import is_noninteractive
+
+    if is_noninteractive():
+        raise SystemExit(
+            "Spotify authorization requires a browser but no interactive "
+            "session is available (non-interactive/background context). "
+            "Run `hermes auth spotify` interactively to authorize, then "
+            "retry."
+        )
+
     callback = _spotify_wait_for_callback(
         redirect_uri,
         timeout_seconds=float(getattr(args, "timeout", None) or 180.0),

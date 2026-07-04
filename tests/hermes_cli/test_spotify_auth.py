@@ -164,6 +164,65 @@ def test_spotify_interactive_setup_persists_client_id(
     assert auth_mod.SPOTIFY_DOCS_URL in output
 
 
+def test_login_spotify_fails_fast_when_noninteractive(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`hermes tools post-setup spotify` spawns detached with stdin=DEVNULL
+    and HERMES_NONINTERACTIVE=1 (hermes_cli/web_server.py::_spawn_hermes_action).
+    Before this fix, login_spotify_command would still print the authorize
+    URL and block in _spotify_wait_for_callback for the full timeout with no
+    one able to complete the browser flow, then fail with "Address already in
+    use" on the next retry. It must instead fail fast with an actionable
+    message and never bind the callback listener."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SPOTIFY_CLIENT_ID", "test-client")
+    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+
+    def _fail_if_called(*_a, **_k):
+        raise AssertionError(
+            "_spotify_wait_for_callback must not be reached when non-interactive"
+        )
+
+    monkeypatch.setattr(auth_mod, "_spotify_wait_for_callback", _fail_if_called)
+    monkeypatch.setattr(auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False))
+
+    with pytest.raises(SystemExit, match="non-interactive"):
+        auth_mod.login_spotify_command(SimpleNamespace(
+            client_id=None, redirect_uri=None, scope=None,
+            no_browser=False, timeout=None,
+        ))
+
+
+def test_login_spotify_waits_for_callback_when_interactive(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Positive control: an interactive session must still reach the
+    callback wait — the non-interactive guard must not over-fire."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SPOTIFY_CLIENT_ID", "test-client")
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    called = {}
+
+    def _fake_wait(redirect_uri, timeout_seconds):
+        called["reached"] = True
+        return {"error": "access_denied", "error_description": "user cancelled"}
+
+    monkeypatch.setattr(auth_mod, "_spotify_wait_for_callback", _fake_wait)
+    monkeypatch.setattr(auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False))
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+
+    with pytest.raises(SystemExit, match="user cancelled"):
+        auth_mod.login_spotify_command(SimpleNamespace(
+            client_id=None, redirect_uri=None, scope=None,
+            no_browser=False, timeout=None,
+        ))
+
+    assert called.get("reached") is True
+
+
 def test_spotify_interactive_setup_empty_aborts(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

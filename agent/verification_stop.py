@@ -132,7 +132,10 @@ def _session_is_messaging_surface() -> bool:
     return False
 
 
-def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
+def verify_on_stop_enabled(
+    config: dict[str, Any] | None = None,
+    platform: str | None = None,
+) -> bool:
     """Return whether edit -> verify-before-finish behavior is enabled.
 
     Precedence: an explicit ``HERMES_VERIFY_ON_STOP`` env var wins, then an
@@ -143,6 +146,15 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
     verification narrative would reach a human as chat noise. An explicit
     bool forces the behavior in either direction. A missing or unrecognized
     value falls back to the surface-aware ``"auto"`` default.
+
+    Subagents dispatched via ``delegate_task`` set ``platform="subagent"``.
+    Their output is consumed programmatically by the parent agent, not shown
+    to a human, and the parent is responsible for verification. Letting
+    verify-on-stop fire for a subagent silently replaces its actual findings
+    with verification output (#58490), so the ``"auto"`` default resolves OFF
+    for ``platform="subagent"``. An explicit ``HERMES_VERIFY_ON_STOP`` env
+    var or explicit ``agent.verify_on_stop`` config value still overrides — a
+    user who genuinely wants subagent verification can opt in.
     """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
@@ -165,8 +177,16 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         if token in {"0", "false", "no", "off"}:
             return False
         if token == "auto":
+            # Subagent sessions are consumed programmatically by the parent
+            # agent, not shown to a human. verify-on-stop would silently
+            # replace the subagent's actual findings with verification output
+            # (#58490). The "auto" default resolves OFF for subagents.
+            if str(platform or "").strip().lower() == "subagent":
+                return False
             return not _session_is_messaging_surface()
     # Missing or unrecognized value -> surface-aware "auto" default.
+    if str(platform or "").strip().lower() == "subagent":
+        return False
     return not _session_is_messaging_surface()
 
 

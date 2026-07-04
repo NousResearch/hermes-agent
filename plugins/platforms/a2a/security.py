@@ -13,10 +13,14 @@ Layers (all opt-out-able only by explicit config, never silently):
                          inbound task text before it reaches the agent
   4. Outbound redaction — scrub credential-shaped strings from anything we send
   5. Audit log         — append-only JSONL of every inbound + outbound exchange
+  6. Rate limiting     — token-bucket per peer (delegates to protocol.rate_limit_*)
+  7. Trusted peers     — explicit allow-list for cross-machine delegation
+  8. Push auth         — HMAC-SHA256 webhook signing for push notifications
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -82,6 +86,62 @@ def resolve_bind_host() -> str:
         )
         return "127.0.0.1"
     return requested
+
+
+# --------------------------------------------------------------------------
+# Trusted peer approval (Issue #56434)
+# --------------------------------------------------------------------------
+
+def get_trusted_peers() -> set[str]:
+    """Return the set of trusted peer identifiers.
+
+    Trusted peers can send tasks without per-task approval. Configured via
+    A2A_TRUSTED_PEERS env var (comma-separated) or config.yaml under
+    a2a.trusted_peers.
+
+    When A2A_ALLOW_ALL_USERS is set, all peers are trusted (open mode).
+    """
+    if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
+        return set()  # empty set signals "all allowed" when checked with is_trusted
+
+    # Check env var
+    env_peers = os.getenv("A2A_TRUSTED_PEERS", "").strip()
+    if env_peers:
+        return {p.strip() for p in env_peers.split(",") if p.strip()}
+
+    # Check config.yaml
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        peers_list = (cfg.get("a2a") or {}).get("trusted_peers", [])
+        if isinstance(peers_list, list):
+            return {str(p).strip() for p in peers_list if p}
+    except Exception:
+        pass
+
+    # No trusted peers configured — localhost-only mode trusts all
+    if localhost_only():
+        return set()  # will be treated as "all allowed" by is_trusted
+
+    return set()
+
+
+def is_trusted_peer(peer_id: str) -> bool:
+    """Check if a peer is trusted (or if all peers are trusted in open mode)."""
+    if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if localhost_only():
+        return True  # localhost-only mode = trust all local peers
+    trusted = get_trusted_peers()
+    return peer_id in trusted
+
+
+def is_open_mode() -> bool:
+    """True when all peers are trusted (open mode)."""
+    return (
+        os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+        or localhost_only()
+    )
 
 
 # --------------------------------------------------------------------------
@@ -180,6 +240,48 @@ def redact_outbound(text: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Push notification HMAC signing
+# --------------------------------------------------------------------------
+
+def get_push_secret() -> str:
+    """Return the secret used for HMAC-SHA256 push notification signing.
+
+    Falls back to the bearer token if no dedicated push secret is set.
+    If neither is configured, push notifications are unsigned (localhost-only mode).
+    """
+    secret = os.getenv("A2A_PUSH_SECRET", "").strip()
+    if secret:
+        return secret
+    return get_bearer_token()
+
+
+def sign_push_payload(payload: dict) -> str:
+    """HMAC-SHA256 sign a push notification payload.
+
+    Returns hex-encoded signature. Empty string if no secret configured.
+    """
+    secret = get_push_secret()
+    if not secret:
+        return ""
+    body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def verify_push_signature(payload: dict, signature: str) -> bool:
+    """Verify a push notification HMAC signature.
+
+    Returns True if signature matches or no secret configured (localhost mode).
+    """
+    secret = get_push_secret()
+    if not secret:
+        return True
+    if not signature:
+        return False
+    expected = sign_push_payload(payload)
+    return hmac.compare_digest(signature, expected)
+
+
+# --------------------------------------------------------------------------
 # Audit log
 # --------------------------------------------------------------------------
 
@@ -197,7 +299,7 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
     try:
         rec = {
             "ts": time.time(),
-            "direction": direction,  # "inbound" | "outbound"
+            "direction": direction,  # "inbound" | "outbound" | "push"
             "peer": peer,
             "task_id": task_id,
             "summary": (summary or "")[:500],

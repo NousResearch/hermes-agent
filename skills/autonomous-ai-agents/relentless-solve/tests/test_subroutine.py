@@ -161,6 +161,97 @@ class RecursionGuard(EnvBase):
         self.assertIsNone(os.environ.get("RELENTLESS_ACTIVE"))
 
 
+class RunOneshotDispatch(unittest.TestCase):
+    def test_existing_binary_uses_direct(self):
+        calls = []
+        stub = types.SimpleNamespace(
+            run_direct=lambda *a, **kw: calls.append("direct") or
+                types.SimpleNamespace(stdout="direct answer"),
+            run_docker_exec=lambda *a, **kw: calls.append("docker") or
+                types.SimpleNamespace(stdout="docker answer"))
+        old_bin, old_oneshot = relentless.HERMES_BIN, relentless._oneshot
+        binary = os.path.join(tempfile.mkdtemp(prefix="oneshot-bin-"), "hermes")
+        with open(binary, "w", encoding="utf-8") as fh:
+            fh.write("")
+        relentless.HERMES_BIN = binary
+        relentless._oneshot = lambda: stub
+        try:
+            relentless.run_oneshot("prompt")
+        finally:
+            relentless.HERMES_BIN, relentless._oneshot = old_bin, old_oneshot
+            shutil.rmtree(os.path.dirname(binary), ignore_errors=True)
+        self.assertEqual(calls, ["direct"])
+
+    def test_missing_binary_uses_docker_exec(self):
+        calls = []
+        stub = types.SimpleNamespace(
+            run_direct=lambda *a, **kw: calls.append("direct") or
+                types.SimpleNamespace(stdout="direct answer"),
+            run_docker_exec=lambda *a, **kw: calls.append("docker") or
+                types.SimpleNamespace(stdout="docker answer"))
+        old_bin, old_oneshot = relentless.HERMES_BIN, relentless._oneshot
+        relentless.HERMES_BIN = os.path.join(tempfile.gettempdir(), "missing-hermes-binary")
+        relentless._oneshot = lambda: stub
+        try:
+            relentless.run_oneshot("prompt")
+        finally:
+            relentless.HERMES_BIN, relentless._oneshot = old_bin, old_oneshot
+        self.assertEqual(calls, ["docker"])
+
+    def test_direct_output_is_returned(self):
+        stub = types.SimpleNamespace(
+            run_direct=lambda *a, **kw: types.SimpleNamespace(stdout="  answer text  "),
+            run_docker_exec=lambda *a, **kw: self.fail("docker path used"))
+        old_bin, old_oneshot = relentless.HERMES_BIN, relentless._oneshot
+        relentless.HERMES_BIN = __file__
+        relentless._oneshot = lambda: stub
+        try:
+            out = relentless.run_oneshot("prompt")
+        finally:
+            relentless.HERMES_BIN, relentless._oneshot = old_bin, old_oneshot
+        self.assertEqual(out, "answer text")
+
+
+class ResumeKnowledgeRestore(EnvBase):
+    @staticmethod
+    def _fake_engine():
+        def flow(**kwargs):
+            return lambda fn: fn
+        return flow, lambda flow_obj, argv: 1
+
+    def test_resume_restores_knowledge_and_project_from_journal(self):
+        state_dir = os.path.join(self.tmp, "state")
+        os.makedirs(state_dir)
+        with open(os.path.join(state_dir, "journal.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "run_started", "input": {
+                "knowledge": "off", "project": "projX"}}) + "\n")
+        calls = []
+        old_load, old_set = relentless._load_engine, relentless.set_knowledge_ctx
+        relentless._load_engine = self._fake_engine
+        relentless.set_knowledge_ctx = lambda enabled, project, slug: calls.append(
+            (enabled, project, slug))
+        try:
+            relentless.main(["resume", "--slug", "s", "--answer", "yes",
+                             "--state-dir", state_dir])
+        finally:
+            relentless._load_engine, relentless.set_knowledge_ctx = old_load, old_set
+        self.assertEqual(calls, [(False, "projX", "s")])
+
+    def test_resume_missing_journal_uses_conservative_knowledge_fallback(self):
+        state_dir = os.path.join(self.tmp, "missing-state")
+        calls = []
+        old_load, old_set = relentless._load_engine, relentless.set_knowledge_ctx
+        relentless._load_engine = self._fake_engine
+        relentless.set_knowledge_ctx = lambda enabled, project, slug: calls.append(
+            (enabled, project, slug))
+        try:
+            relentless.main(["resume", "--slug", "s", "--answer", "yes",
+                             "--state-dir", state_dir])
+        finally:
+            relentless._load_engine, relentless.set_knowledge_ctx = old_load, old_set
+        self.assertEqual(calls, [(True, None, "s")])
+
+
 class SolveJsonContract(EnvBase):
     VERDICT = {"slug": "s", "route": "trivial", "why": "w", "source": "model",
                "risk": "act", "budget": {"total": 60, "splits": ""}}

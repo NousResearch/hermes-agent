@@ -125,5 +125,55 @@ class EngineContract(tl.LoopBase):
         self.assertTrue(any("prefer source D" in r["text"] for r in facts))
 
 
+@unittest.skipUnless(_HAVE_ENGINE, f"resumable-script engine not found in {_ENGINE_DIR!r}")
+class RetroTailReplay(tl.LoopBase):
+    def setUp(self):
+        super().setUp()
+        import engine  # noqa: E402
+        self.engine = engine
+        self.flow_obj = engine.flow(id="relentless-retro-tail-replay", version=1)(
+            relentless.relentless_flow)
+        self.state_dir = tempfile.mkdtemp(prefix="rls-retro-tail-replay-")
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.state_dir, ignore_errors=True)
+
+    def _wire_cascade_success(self):
+        self.wire([tl.clar([tl.ts("q1", "a1")])], [tl.pl(tl.tk("t1"))])
+        self.hindsight_calls = []
+
+        def fake_hindsight(jobj, slug_dir, timeout):
+            self.hindsight_calls.append((jobj, slug_dir, timeout))
+            return {"optimality": "near-optimal", "avoidable_branches": [],
+                    "unavoidable_branches": [], "hindsight_path": [],
+                    "promoted_learnings": []}
+
+        relentless.run_hindsight = fake_hindsight
+
+    def test_retro_tail_fires_and_replays_under_real_engine(self):
+        self._wire_cascade_success()
+        inp = tl.inp(cascade=True, wallclock=2000)
+        argv = ["run", "--input", json.dumps(inp),
+                "--state-dir", self.state_dir, "--auto"]
+
+        rc1, p1 = _run_engine(self.flow_obj, self.engine, argv)
+        self.assertEqual(rc1, 0)
+        self.assertEqual(p1["status"], "completed")
+        self.assertEqual(p1["result"]["outcome"], "success")
+        self.assertEqual(len(self.hindsight_calls), 1)
+        self.assertEqual(len(self.journeys), 1)
+
+        def boom(*a, **kw):
+            raise AssertionError("replay must not re-execute any phase helper")
+        for n in self.PATCHED:
+            setattr(relentless, n, boom)
+
+        rc2, p2 = _run_engine(self.flow_obj, self.engine, argv)
+        self.assertEqual(rc2, 0)
+        self.assertEqual(p2["status"], "completed")
+        self.assertEqual(p2["result"], p1["result"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

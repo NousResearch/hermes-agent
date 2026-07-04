@@ -206,8 +206,12 @@ def run_oneshot(prompt, timeout=GATE_TIMEOUT):
     """One bare `hermes -z` in the container (host-side docker exec; stdout = the final
     response only). Injectable for tests. Dispatches via the shared oneshot module (see
     _oneshot()) — the same primitive method-explorer's drive.py uses in-container."""
-    return _oneshot().run_docker_exec(prompt, timeout, CONTAINER, hermes_bin=HERMES_BIN,
-                                      pad=60).stdout.strip()
+    if os.path.exists(HERMES_BIN):
+        p = _oneshot().run_direct(prompt, timeout, hermes_bin=HERMES_BIN, pad=60)
+    else:
+        p = _oneshot().run_docker_exec(prompt, timeout, CONTAINER, hermes_bin=HERMES_BIN,
+                                       pad=60)
+    return p.stdout.strip()
 
 
 def classify(intent, risk, oneshot=None):
@@ -1209,26 +1213,36 @@ def write_report(slug_dir, outcome, ledger, cycles, detail, requirements=None,
     synthesized_learning = None
     if (isinstance(hindsight, dict) and "skipped" not in hindsight
             and hindsight.get("hindsight_path")):
-        path_entries = hindsight["hindsight_path"]
-        methods = [str(entry.get("method", "")).strip() for entry in path_entries]
-        promoted = hindsight.setdefault("promoted_learnings", [])
-        already_repeated = any(
-            method.lower() in str(learning).lower()
-            for method in methods if method
-            for learning in promoted)
-        if not already_repeated:
-            why = next((str(entry.get("why_available_earlier", "")).strip()
-                        for entry in path_entries
-                        if str(entry.get("why_available_earlier", "")).strip()), "")
-            if not why:
-                why = next((str(branch.get("why", "")).strip()
-                            for branch in hindsight.get("avoidable_branches", [])
-                            if str(branch.get("why", "")).strip()), "")
-            why = why or "a more direct route was available"
-            synthesized_learning = (
-                f"With hindsight, a shorter route existed: {' → '.join(methods)} — {why}"
-                [:LEARNINGS_MAX_CHARS])
-            promoted.append(synthesized_learning)
+        try:
+            path_entries = hindsight["hindsight_path"]
+            methods = [str(entry.get("method", "")).strip() for entry in path_entries]
+            promoted = hindsight.setdefault("promoted_learnings", [])
+            nonempty_methods = [method for method in methods if method]
+            all_covered = bool(nonempty_methods) and all(
+                any(method.lower() in str(learning).lower() for learning in promoted)
+                for method in nonempty_methods)
+            if not all_covered:
+                why = next((str(entry.get("why_available_earlier", "")).strip()
+                            for entry in path_entries
+                            if str(entry.get("why_available_earlier", "")).strip()), "")
+                if not why:
+                    why = next((str(branch.get("why", "")).strip()
+                                for branch in hindsight.get("avoidable_branches", [])
+                                if str(branch.get("why", "")).strip()), "")
+                why = why or "a more direct route was available"
+                synthesized_learning = (
+                    f"With hindsight, a shorter route existed: {' → '.join(methods)} — {why}"
+                    [:LEARNINGS_MAX_CHARS])
+                promoted.append(synthesized_learning)
+        except Exception as e:
+            synthesized_learning = None
+            print(f"hindsight synthesis skipped: {e.__class__.__name__}: {e}",
+                  file=sys.stderr)
+    if (isinstance(hindsight, dict) and "skipped" not in hindsight
+            and isinstance(hindsight.get("promoted_learnings"), list)
+            and len(hindsight["promoted_learnings"]) > LEARNINGS_MAX_COUNT):
+        hindsight["promoted_learnings"] = hindsight["promoted_learnings"][
+            -LEARNINGS_MAX_COUNT:]
     if journey_obj is not None:
         journey_obj = {**journey_obj, "hindsight": hindsight}
         _atomic_write(os.path.join(slug_dir, "journey.json"),
@@ -1299,19 +1313,30 @@ def build_journey(slug_dir, slug, verdict, detail, receipts, trace, ledger):
     return jobj
 
 
+def _quarantine(path, suffix):
+    """Best-effort artifact quarantine; return a reason instead of raising."""
+    try:
+        if os.path.exists(path):
+            os.replace(path, path + suffix)
+    except Exception as e:
+        return f"{e.__class__.__name__}: {e}"
+    return None
+
+
 def run_hindsight(jobj, slug_dir, timeout):
     """One hindsight oneshot against the journey's COMPACT render, citation-validated
     by code with one violation-echo retry. INVARIANT: this can never un-succeed a run —
     every failure mode returns a {"skipped": <reason>} sentinel, and the caller only
     ever splices the result into the journey's advisory `hindsight` slot."""
     out_path = os.path.join(slug_dir, "retro.json")
-    if os.path.exists(out_path):
-        # Artifact beats stdout, so quarantine a previous run's artifact before this
-        # run can accidentally treat it as fresh judge output.
-        os.replace(out_path, out_path + ".prior")
+    # Artifact beats stdout, so quarantine a previous run's artifact before this run
+    # can accidentally treat it as fresh judge output.
+    quarantine_error = _quarantine(out_path, ".prior")
+    if quarantine_error:
+        return {"skipped": f"retro quarantine failed: {quarantine_error}"}
     compact = journeylib.render_journey(jobj, level="COMPACT")
     violations = None
-    for _ in range(RETRO_ATTEMPTS):
+    for attempt in range(RETRO_ATTEMPTS):
         prompt = retro_envelope.hindsight_prompt(compact, out_path)
         if violations:
             prompt += retro_envelope.retry_suffix(violations)
@@ -1326,12 +1351,15 @@ def run_hindsight(jobj, slug_dir, timeout):
             obj = extract_json_object(stdout)
         if not isinstance(obj, dict):
             violations = ["no retro.json artifact and no parseable JSON in the reply"]
+            _quarantine(out_path, f".rej{attempt}")
             continue
         violations = journeylib.validate_hindsight(obj, jobj)
         if not violations:
-            return journeylib.stamp_tiers(jobj, obj)
-        if os.path.exists(out_path):
-            os.replace(out_path, out_path + ".rej")
+            try:
+                return journeylib.stamp_tiers(jobj, obj)
+            except Exception as e:
+                violations = [f"hindsight stamping error ({e.__class__.__name__}): {e}"]
+        _quarantine(out_path, f".rej{attempt}")
     return {"skipped": f"hindsight failed validation after {RETRO_ATTEMPTS} attempts: "
                        f"{violations}"}
 
@@ -2311,6 +2339,22 @@ def _load_engine():
     return flow, run_cli
 
 
+def _resume_knowledge_ctx(state_dir):
+    """Recover the run's immutable knowledge settings from its first journal record."""
+    try:
+        if _ENGINE_DIR not in sys.path:
+            sys.path.insert(0, _ENGINE_DIR)
+        from engine import FileStore, _input_from_journal  # noqa: E402
+        inp = _input_from_journal(FileStore(state_dir))
+        if not isinstance(inp, dict):
+            raise ValueError("run_started input is missing or is not an object")
+        return inp.get("knowledge", "on") != "off", inp.get("project")
+    except Exception as e:
+        print(f"resume knowledge context fallback: {e.__class__.__name__}: {e}",
+              file=sys.stderr)
+        return True, None
+
+
 def _main(argv=None):
     p = argparse.ArgumentParser(description="Relentlessly solve a prompt: clarify → execute → "
                                             "harvest failures → repeat.")
@@ -2488,13 +2532,11 @@ def _main(argv=None):
         return engine_run(inp, args.slug, args)
 
     os.environ["RELENTLESS_ACTIVE"] = args.slug  # B1 (resume path)
-    # resume has no answer_cwd; a promotion from a resumed run carries project=None
-    # (never seeds — acceptable: the original run's promotion usually landed already,
-    # and fp dedup keeps this from duplicating records).
-    set_knowledge_ctx(True, None, args.slug)
+    state_dir = args.state_dir or os.path.join(_HOME, "relentless", args.slug, "flow")
+    knowledge_enabled, project = _resume_knowledge_ctx(state_dir)
+    set_knowledge_ctx(knowledge_enabled, project, args.slug)
     flow, run_cli = _load_engine()
     FLOW = flow(id="relentless-solve", version=5)(relentless_flow)
-    state_dir = args.state_dir or os.path.join(_HOME, "relentless", args.slug, "flow")
     eng_argv = ["resume", "--answer", args.answer, "--state-dir", state_dir]
     if args.key:
         eng_argv += ["--key", args.key]

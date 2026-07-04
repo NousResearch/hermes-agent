@@ -60,7 +60,7 @@ def fp(text):
 
 
 def _cap(text, n=TEXT_CAP):
-    t = str(text or "").strip()
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
     return t if len(t) <= n else t[:n - 1] + "…"
 
 
@@ -200,10 +200,12 @@ def fold_journey(slug, verdict, detail, receipts, trace, ledger):
                         and not (r.get("meta") or {}).get("learning_from")}
     anonymous_dead_fps = {r["fp"] for r in ledger if r["kind"] == "dead-end"
                           and not (r.get("meta") or {}).get("task")}
-    worked_ids = {meta.get("task") for r in ledger if r["kind"] == "fact"
+    worked_ids = {(r.get("cycle"), meta.get("task"))
+                  for r in ledger if r["kind"] == "fact"
                   for meta in [r.get("meta") or {}]
                   if meta.get("task") and not meta.get("learning_from")}
-    dead_ids = {meta.get("task") for r in ledger if r["kind"] == "dead-end"
+    dead_ids = {(r.get("cycle"), meta.get("task"))
+                for r in ledger if r["kind"] == "dead-end"
                 for meta in [r.get("meta") or {}] if meta.get("task")}
     empty_fp = fp("")
     nodes, raw_deltas, prev = [], [], 0
@@ -228,9 +230,10 @@ def fold_journey(slug, verdict, detail, receipts, trace, ledger):
             for t in o.get("tasks") or ():
                 m = t.get("method")
                 tid = t.get("id")
-                if tid in worked_ids:
+                task_coord = (ev.get("cycle"), tid)
+                if task_coord in worked_ids:
                     outcome = "worked"
-                elif tid in dead_ids:
+                elif task_coord in dead_ids:
                     outcome = "failed"
                 elif fp(m) != empty_fp:
                     outcome = ("worked" if fp("ok " + (m or "")) in anonymous_ok_fps
@@ -256,13 +259,14 @@ def fold_journey(slug, verdict, detail, receipts, trace, ledger):
     # "S<k>:<method>" of the taken option that planned that task — keeping the bare id
     # as from_task. Tolerant: an unresolvable id (e.g. a delegation sub-run's record)
     # keeps the task id. Tree edges are now reconstructible without scanning options.
+    # Within a cycle this map is deliberately last-wins: a replan splice can reuse a
+    # task id while superseding its original tail, whose earlier planning never ran.
     coord = {}
     for n in nodes:
         for o in n["options"]:
             if o.get("taken"):
                 for t in o.get("tasks") or ():
-                    coord.setdefault((n.get("cycle"), t.get("id")),
-                                     f"{n['key']}:{t.get('method')}")
+                    coord[(n.get("cycle"), t.get("id"))] = f"{n['key']}:{t.get('method')}"
     for n, raw_delta in zip(nodes, raw_deltas):
         for e, raw in zip(n["evidence"], raw_delta):
             if "from" in e:
@@ -349,6 +353,15 @@ def validate_hindsight(obj, journey):
     v = []
     if obj.get("optimality") not in OPTIMALITY:
         v.append(f'"optimality" must be one of {list(OPTIMALITY)}')
+    hp = obj.get("hindsight_path", [])
+    if not isinstance(hp, list):
+        v.append('"hindsight_path" must be a list')
+    else:
+        for i, step in enumerate(hp):
+            if not isinstance(step, dict):
+                v.append(f"hindsight_path[{i}] must be an object")
+            elif not isinstance(step.get("method"), str) or not step["method"].strip():
+                v.append(f"hindsight_path[{i}].method must be a non-empty string")
     keys = {n["key"] for n in journey["nodes"]} | {n["at"] for n in journey["nodes"]}
     fps = {e["fp"] for e in derive_ledger(journey)}
     for field in ("avoidable_branches", "unavoidable_branches"):
@@ -360,13 +373,22 @@ def validate_hindsight(obj, journey):
             if not isinstance(c, dict):
                 v.append(f"{field}[{i}] must be an object")
                 continue
-            if c.get("node") not in keys:
+            node = c.get("node")
+            if not isinstance(node, str):
+                v.append(f"{field}[{i}].node must be a string")
+            elif node not in keys:
                 v.append(f"{field}[{i}].node {c.get('node')!r} names no node in the "
                          f"journey (valid keys: S0..S{len(journey['nodes']) - 1})")
+            if "option" in c and not isinstance(c["option"], str):
+                v.append(f"{field}[{i}].option must be a string")
             cited = c.get("enabling_evidence_fp")
-            if field == "avoidable_branches" and cited not in fps:
-                v.append(f"{field}[{i}].enabling_evidence_fp {cited!r} resolves to no "
-                         f"evidence fp in the journey — cite one exactly as rendered")
+            if field == "avoidable_branches":
+                if not isinstance(cited, str):
+                    v.append(f"{field}[{i}].enabling_evidence_fp must be a string")
+                elif cited not in fps:
+                    v.append(f"{field}[{i}].enabling_evidence_fp {cited!r} resolves to "
+                             f"no evidence fp in the journey — cite one exactly as "
+                             f"rendered")
     pl = obj.get("promoted_learnings", [])
     if not isinstance(pl, list) or not all(isinstance(x, str) for x in pl):
         v.append('"promoted_learnings" must be a list of strings')
@@ -391,28 +413,14 @@ def _fp_birth_node(journey, fpv):
     return None
 
 
-_MATCH_STOP = frozenset(
-    "a an and are be for from how in into is it of on or over the this to under use "
-    "using we what when which with".split())
-
-
-def _match_words(text):
-    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
-            if w not in _MATCH_STOP and len(w) > 2}
-
-
 def _option_matches(claimed, method):
-    """Was the claimed option THE recorded one? fp equality first; a normalized
-    significant-word fallback where either label's words are a subset of the other's
-    absorbs judge paraphrase — the prompt asks for verbatim labels, but a paraphrase
-    must degrade to a fuzzy match, not silently demote the claim's tier."""
-    if fp(claimed) == fp(method):
-        return True
-    cw, mw = _match_words(claimed), _match_words(method)
-    if not cw or not mw:
+    """Exact normalized identity only: tiering is authoritative/advisory, so a judge
+    paraphrase is conservatively a blind spot rather than a fuzzy avoidability claim;
+    its prompt already requests verbatim labels. Empty normalization proves nothing."""
+    if not isinstance(claimed, str) or not claimed or not isinstance(method, str) or not method:
         return False
-    overlap = cw & mw
-    return overlap in (cw, mw)
+    claimed_fp, method_fp, empty_fp = fp(claimed), fp(method), fp("")
+    return claimed_fp != empty_fp and method_fp != empty_fp and claimed_fp == method_fp
 
 
 def stamp_tiers(journey, hindsight):
@@ -455,7 +463,7 @@ def _option_line(o, cap):
         bits.append(_cap(why, cap))
     if o.get("sub_run"):
         bits.append(f"sub-run: {_cap(o['sub_run'], cap)}")
-    return " — ".join(bits)
+    return _cap(" — ".join(bits), cap)
 
 
 def _evidence_line(e, cap):
@@ -463,7 +471,7 @@ def _evidence_line(e, cap):
     if e.get("from"):
         label = "learning from" if e.get("via") == "learning" else "from"
         frm = f" ({label} {_cap(e['from'], cap)})"
-    return f"- [{e['kind']}·fp {e['fp']}] {_cap(e['text'], cap)}{frm}"
+    return _cap(f"- [{e['kind']}·fp {e['fp']}] {_cap(e['text'], cap)}{frm}", cap)
 
 
 def _hindsight_section(hs, cap):
@@ -473,16 +481,17 @@ def _hindsight_section(hs, cap):
                 f"{_cap((hs or {}).get('skipped', 'not run'), cap)}", ""]
     lines = ["## Hindsight (advisory)", "", f"optimality: {hs.get('optimality')}"]
     if hs.get("hindsight_path"):
-        lines.append("shorter path, with hindsight: " + " → ".join(
+        lines.append(_cap("shorter path, with hindsight: " + " → ".join(
             _cap(p.get("method", "?") if isinstance(p, dict) else str(p), cap)
-            for p in hs["hindsight_path"]))
+            for p in hs["hindsight_path"]), cap))
     for field, title in (("avoidable_branches", "avoidable"),
                          ("unavoidable_branches", "unavoidable")):
         for c in hs.get(field) or []:
             tier = f" [{c['tier']}]" if c.get("tier") else ""
             why = c.get("why") or c.get("why_necessary") or ""
-            lines.append(f"- {title}{tier}: {c.get('node')} "
-                         f"{_cap(c.get('option', ''), cap)} — {_cap(why, cap)}")
+            lines.append(_cap(f"- {title}{tier}: {c.get('node')} "
+                              f"{_cap(c.get('option', ''), cap)} — "
+                              f"{_cap(why, cap)}", cap))
     for l in hs.get("promoted_learnings") or []:
         lines.append(f"- learned: {_cap(l, cap)}")
     lines.append("")
@@ -603,7 +612,7 @@ def render_journey(journey, level="FULL"):
             lines += [_evidence_line(e, cap) for e in n["evidence"]]
         if n["options"]:
             lines.append("options (as recorded at the time — not all possible options):")
-            lines += [f"- {_option_line(o, cap)}" for o in n["options"]]
+            lines += [_cap(f"- {_option_line(o, cap)}", cap) for o in n["options"]]
         if n.get("chose"):
             c = n["chose"]
             outcome = f" → {_cap(c['outcome'], cap)}" if c.get("outcome") else ""

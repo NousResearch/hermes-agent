@@ -114,6 +114,50 @@ class RunHindsight(unittest.TestCase):
         with open(os.path.join(self.tmp, "retro.json.prior"), "rb") as fh:
             self.assertEqual(fh.read(), prior)
 
+    def test_prior_quarantine_failure_becomes_a_skip_sentinel(self):
+        with open(os.path.join(self.tmp, "retro.json"), "w", encoding="utf-8") as fh:
+            fh.write("[]\n")
+        old = relentless.os.replace
+        relentless.os.replace = lambda src, dst: (_ for _ in ()).throw(
+            PermissionError("read-only directory"))
+        self._wire([json.dumps(valid_hindsight(self.j))])
+        try:
+            out = relentless.run_hindsight(self.j, self.tmp, 60)
+        finally:
+            relentless.os.replace = old
+        self.assertIn("retro quarantine failed", out["skipped"])
+        self.assertIn("PermissionError", out["skipped"])
+
+    def test_rejected_non_object_artifact_is_quarantined_before_retry(self):
+        def write_non_object(out_path):
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump([], fh)
+            return "not json"
+        self._wire([write_non_object, json.dumps(valid_hindsight(self.j))])
+        out = relentless.run_hindsight(self.j, self.tmp, 60)
+        self.assertEqual(out["optimality"], "acceptable")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "retro.json.rej0")))
+
+    def test_stamping_exception_is_quarantined_and_skipped(self):
+        def write_artifact(out_path):
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(valid_hindsight(self.j), fh)
+            return ""
+        self._wire([write_artifact])
+        old_validate = relentless.journeylib.validate_hindsight
+        old_stamp = relentless.journeylib.stamp_tiers
+        relentless.journeylib.validate_hindsight = lambda obj, jobj: []
+        relentless.journeylib.stamp_tiers = lambda jobj, obj: (_ for _ in ()).throw(
+            TypeError("malformed branch"))
+        try:
+            out = relentless.run_hindsight(self.j, self.tmp, 60)
+        finally:
+            relentless.journeylib.validate_hindsight = old_validate
+            relentless.journeylib.stamp_tiers = old_stamp
+        self.assertIn("stamping error", out["skipped"])
+        self.assertIn("TypeError", out["skipped"])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "retro.json.rej1")))
+
     def test_non_object_claim_retries_then_accepts_valid_reply(self):
         bad = dict(valid_hindsight(self.j))
         bad["avoidable_branches"] = ["not an object"]
@@ -253,7 +297,20 @@ class ReportSplice(unittest.TestCase):
         self.assertIn("inspect loader → patch loader", learnings[0])
         self.assertTrue(any(r["text"] == learnings[0] for r in self.promoted))
 
-    def test_existing_path_learning_is_not_duplicated(self):
+    def test_fully_covered_path_learning_is_not_duplicated(self):
+        hs = {"optimality": "acceptable", "avoidable_branches": [],
+              "unavoidable_branches": [],
+              "hindsight_path": [
+                  {"method": "inspect loader", "why_available_earlier": "logs named it"},
+                  {"method": "patch loader", "why_available_earlier": ""}],
+              "promoted_learnings": [
+                  "Future runs should inspect loader, then patch loader."]}
+        relentless.write_report(self.tmp, "success", [], 1, "d",
+                                journey_obj=self.j, hindsight=hs)
+        self.assertEqual(hs["promoted_learnings"],
+                         ["Future runs should inspect loader, then patch loader."])
+
+    def test_partially_covered_path_still_synthesizes_learning(self):
         hs = {"optimality": "acceptable", "avoidable_branches": [],
               "unavoidable_branches": [],
               "hindsight_path": [
@@ -262,8 +319,53 @@ class ReportSplice(unittest.TestCase):
               "promoted_learnings": ["Future runs should inspect loader first."]}
         relentless.write_report(self.tmp, "success", [], 1, "d",
                                 journey_obj=self.j, hindsight=hs)
-        self.assertEqual(hs["promoted_learnings"],
-                         ["Future runs should inspect loader first."])
+        self.assertEqual(len(hs["promoted_learnings"]), 2)
+        self.assertIn("inspect loader → patch loader", hs["promoted_learnings"][-1])
+
+    def test_malformed_synthesis_inputs_do_not_break_report_or_journey(self):
+        cases = [
+            {"hindsight_path": ["bare string"], "avoidable_branches": []},
+            {"hindsight_path": [{"method": "inspect", "why_available_earlier": ""}],
+             "avoidable_branches": [{"node": "S0", "option": 123, "why": "known"}]},
+            {"hindsight_path": [{"method": "inspect", "why_available_earlier": ""}],
+             "avoidable_branches": [{"node": [], "option": "patch", "why": "known"}]},
+        ]
+        for i, malformed in enumerate(cases):
+            with self.subTest(case=i):
+                slug_dir = os.path.join(self.tmp, str(i))
+                hs = {"optimality": "acceptable", "unavoidable_branches": [],
+                      "promoted_learnings": [], **malformed}
+                relentless.write_report(
+                    slug_dir, "success", [], 1, "d",
+                    journey_obj=json.loads(json.dumps(self.j)), hindsight=hs)
+                self.assertTrue(os.path.exists(os.path.join(slug_dir, "report.md")))
+                self.assertTrue(os.path.exists(os.path.join(slug_dir, "journey.json")))
+
+    def test_synthesized_learning_is_kept_when_spliced_list_is_capped(self):
+        hs = {"optimality": "acceptable", "avoidable_branches": [],
+              "unavoidable_branches": [],
+              "hindsight_path": [
+                  {"method": "inspect loader", "why_available_earlier": "logs named it"},
+                  {"method": "patch loader", "why_available_earlier": ""}],
+              "promoted_learnings": [f"model learning {i}" for i in range(5)]}
+        relentless.write_report(self.tmp, "success", [], 1, "d",
+                                journey_obj=self.j, hindsight=hs)
+        with open(os.path.join(self.tmp, "journey.json"), encoding="utf-8") as fh:
+            spliced = json.load(fh)
+        learnings = spliced["hindsight"]["promoted_learnings"]
+        self.assertEqual(len(learnings), relentless.LEARNINGS_MAX_COUNT)
+        self.assertTrue(any(" → " in learning for learning in learnings))
+
+    def test_model_learnings_are_capped_without_synthesis(self):
+        hs = {"optimality": "acceptable", "avoidable_branches": [],
+              "unavoidable_branches": [], "hindsight_path": [],
+              "promoted_learnings": [f"model learning {i}" for i in range(6)]}
+        relentless.write_report(self.tmp, "success", [], 1, "d",
+                                journey_obj=self.j, hindsight=hs)
+        with open(os.path.join(self.tmp, "journey.json"), encoding="utf-8") as fh:
+            spliced = json.load(fh)
+        self.assertEqual(len(spliced["hindsight"]["promoted_learnings"]),
+                         relentless.LEARNINGS_MAX_COUNT)
 
     def test_legacy_shape_without_a_journey_is_unchanged(self):
         path = relentless.write_report(self.tmp, "success", [], 2, "detail text")

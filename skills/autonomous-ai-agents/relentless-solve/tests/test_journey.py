@@ -221,6 +221,49 @@ class Fold(unittest.TestCase):
                          [{"node": "S0", "task": "t1", "method": "method-a"},
                           {"node": "S1", "task": "t1", "method": "method-b"}])
 
+    def test_within_cycle_replan_splice_provenance_points_to_splice(self):
+        ledger = [
+            rec(0, "fact", "Done method-a", fpv=journey.fp("ok method-a"), task="t1"),
+            rec(0, "fact", "Done spliced-t2: complete",
+                fpv=journey.fp("ok spliced-t2"), task="t2"),
+        ]
+        trace = [
+            journey.plan_event(
+                "c0/plan", "plan", 0,
+                {"disposition": "tasks", "rationale": "initial plan",
+                 "tasks": [tk("t1", "method-a"), tk("t2", "orig-t2")]}, {}, 0),
+            journey.plan_event(
+                "c0/replan/after-t1", "replan", 0,
+                {"disposition": "tasks", "rationale": "splice replacement tail",
+                 "tasks": [tk("t2", "spliced-t2")]}, {}, 1,
+                superseded=[tk("t2", "orig-t2")], stale_reason="stale-tail"),
+        ]
+        j = journey.fold_journey("splice", "success", "done", {"cycles": 1},
+                                 trace, ledger)
+        evidence = next(e for n in j["nodes"] for e in n["evidence"]
+                        if e["text"].startswith("Done spliced-t2"))
+        self.assertEqual(evidence["from"], "S1:spliced-t2")
+        self.assertEqual(evidence["from_task"], "t2")
+
+    def test_task_outcomes_are_cycle_aware_when_ids_repeat(self):
+        ledger = [
+            rec(0, "dead-end", "method-a failed", fpv=journey.fp("method-a"), task="t1"),
+            rec(1, "dead-end", "method-b failed", fpv=journey.fp("method-b"), task="t1"),
+            rec(2, "fact", "Done method-c", fpv=journey.fp("ok method-c"), task="t1"),
+        ]
+        trace = [
+            journey.plan_event(f"c{i}/plan", "plan", i,
+                               {"disposition": "tasks", "rationale": method,
+                                "tasks": [tk("t1", method)]}, {}, i + 1)
+            for i, method in enumerate(("method-a", "method-b", "method-c"))
+        ]
+        j = journey.fold_journey("cycles", "success", "done", {"cycles": 3},
+                                 trace, ledger)
+        outcomes = [n["options"][0]["tasks"][0]["outcome"] for n in j["nodes"][:3]]
+        self.assertEqual(outcomes, ["failed", "failed", "worked"])
+        self.assertEqual(j["success_path"],
+                         [{"node": "S2", "task": "t1", "method": "method-c"}])
+
     def test_outcomes_are_scoped_to_task_identity(self):
         method = "shared-method"
         trace = [journey.plan_event(
@@ -337,8 +380,29 @@ class HindsightSupport(unittest.TestCase):
                 "unavoidable_branches": unavoidable or [], "promoted_learnings": []}
 
     def test_valid_hindsight_passes(self):
-        self.assertEqual(journey.validate_hindsight(self._hs([self._claim()]), self.j),
-                         [])
+        hs = self._hs([self._claim()])
+        hs["hindsight_path"] = [{"method": "patch-loader"}]
+        self.assertEqual(journey.validate_hindsight(hs, self.j), [])
+
+    def test_hindsight_path_requires_list_of_non_empty_methods(self):
+        for malformed in ("bad", ["bad"], [{}], [{"method": ""}]):
+            with self.subTest(hindsight_path=malformed):
+                hs = self._hs()
+                hs["hindsight_path"] = malformed
+                self.assertTrue(journey.validate_hindsight(hs, self.j))
+
+    def test_branch_claim_option_must_be_string(self):
+        self.assertTrue(journey.validate_hindsight(
+            self._hs([self._claim(option=123)]), self.j))
+
+    def test_branch_claim_node_must_be_string(self):
+        self.assertTrue(journey.validate_hindsight(
+            self._hs([self._claim(node=[])]), self.j))
+
+    def test_branch_claim_lookup_fp_must_be_string(self):
+        claim = self._claim()
+        claim["enabling_evidence_fp"] = []
+        self.assertTrue(journey.validate_hindsight(self._hs([claim]), self.j))
 
     def test_citation_contract_rejects_dangling_node_and_fp(self):
         v = journey.validate_hindsight(self._hs([self._claim(node="S99")]), self.j)
@@ -367,22 +431,31 @@ class HindsightSupport(unittest.TestCase):
         self.assertEqual(c["tier"], "blind-spot")
         self.assertFalse(c["seen_at_the_time"])
 
-    def test_tier_survives_judge_paraphrase_of_a_recorded_option(self):
-        # "patch the loader" ≠ "patch-loader" by fingerprint, but the word-overlap
-        # fallback recognizes the recorded option — the claim must NOT silently
-        # demote to blind-spot over a paraphrase.
+    def test_tier_conservatively_rejects_judge_paraphrase(self):
+        # Exact-fp identity is the safer authoritative rule: a paraphrase that does
+        # not normalize equally is conservatively classified as a blind spot.
         hs = journey.stamp_tiers(
             self.j, self._hs([self._claim(option="patch the loader")]))
         c = hs["avoidable_branches"][0]
-        self.assertEqual(c["tier"], "genuinely-avoidable")
-        self.assertTrue(c["seen_at_the_time"])
+        self.assertEqual(c["tier"], "blind-spot")
+        self.assertFalse(c["seen_at_the_time"])
 
-    def test_tier_rejects_incidental_two_word_overlap(self):
+    def test_tier_rejects_subset_label(self):
         j = copy.deepcopy(self.j)
         alternative = next(o for o in j["nodes"][0]["options"] if not o["taken"])
-        alternative["method"] = "verify loader config"
+        alternative["method"] = "verify config loader"
         hs = journey.stamp_tiers(
-            j, self._hs([self._claim(option="patch loader config")]))
+            j, self._hs([self._claim(option="verify config")]))
+        c = hs["avoidable_branches"][0]
+        self.assertEqual(c["tier"], "blind-spot")
+        self.assertFalse(c["seen_at_the_time"])
+
+    def test_tier_distinct_unicode_only_labels_do_not_match(self):
+        j = copy.deepcopy(self.j)
+        alternative = next(o for o in j["nodes"][0]["options"] if not o["taken"])
+        alternative["method"] = "修復🚀"
+        hs = journey.stamp_tiers(
+            j, self._hs([self._claim(option="診断🔥")]))
         c = hs["avoidable_branches"][0]
         self.assertEqual(c["tier"], "blind-spot")
         self.assertFalse(c["seen_at_the_time"])
@@ -469,6 +542,58 @@ class Render(unittest.TestCase):
             text = journey.render_journey(j, level)
             self.assertNotIn("x" * (cap + 2), text,
                              f"{level} render exceeded its text cap")
+
+    def test_composed_option_and_evidence_lines_are_capped(self):
+        long_method, long_why, long_text = "m" * 450, "w" * 450, "e" * 900
+        trace = [journey.plan_event(
+            "c0/plan", "plan", 0,
+            {"disposition": "tasks", "rationale": long_why,
+             "tasks": [tk("t1", long_method)]}, {}, 1)]
+        ledger = [rec(0, "fact", long_text, source="clarify")]
+        j = journey.fold_journey("caps", "failed", "stopped", {"cycles": 1},
+                                 trace, ledger)
+        for level, cap in (("FULL", journey.TEXT_CAP),
+                           ("COMPACT", journey.COMPACT_TEXT_CAP)):
+            lines = journey.render_journey(j, level).splitlines()
+            option = next(line for line in lines if line.startswith("- ✓ "))
+            evidence = next(line for line in lines if line.startswith("- [fact·fp "))
+            self.assertLessEqual(len(option), cap)
+            self.assertLessEqual(len(evidence), cap)
+
+    def test_composed_hindsight_lines_are_capped(self):
+        j = copy.deepcopy(self.j)
+        j["hindsight"] = {
+            "optimality": "acceptable",
+            "hindsight_path": [{"method": "x" * 115} for _ in range(6)],
+            "avoidable_branches": [{
+                "node": "S0", "option": "o" * 115,
+                "tier": "blind-spot", "why": "w" * 115,
+            }],
+            "promoted_learnings": [],
+        }
+        for level, cap in (("FULL", journey.TEXT_CAP),
+                           ("COMPACT", journey.COMPACT_TEXT_CAP)):
+            text = journey.render_journey(j, level)
+            hindsight = text.split("## Hindsight", 1)[1].split("RECAP:", 1)[0]
+            for line in hindsight.splitlines():
+                self.assertLessEqual(len(line), cap, f"{level}: {line}")
+
+    def test_rendered_free_text_cannot_inject_markdown_lines(self):
+        hostile = "method\r\n## Heading\n```\ncode\n```"
+        option = {"method": hostile, "taken": False, "why_not": hostile}
+        evidence = {"kind": "fact", "fp": journey.fp("hostile"), "text": hostile}
+        option_line = journey._option_line(option, journey.TEXT_CAP)
+        evidence_line = journey._evidence_line(evidence, journey.TEXT_CAP)
+        self.assertNotIn("\n", option_line)
+        self.assertNotIn("\n", evidence_line)
+        self.assertNotIn("\n## Heading", option_line + evidence_line)
+        self.assertNotRegex(option_line + "\n" + evidence_line, r"(?m)^```$")
+        j = copy.deepcopy(self.j)
+        j["nodes"][0]["options"].append(option)
+        j["nodes"][0]["evidence"].append(evidence)
+        block = journey.render_journey(j, "COMPACT").split("## Hindsight", 1)[0]
+        self.assertNotIn("\n## Heading", block)
+        self.assertNotRegex(block, r"(?m)^```$")
 
     def test_hindsight_section_renders_verdict_or_skip_reason(self):
         withhs = dict(self.j)

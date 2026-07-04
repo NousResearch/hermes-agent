@@ -614,3 +614,42 @@ it would bump flow_hash and pay judge cost without a gate receipt; tier stamping
 are impossible because task ids are lowercase while S-keys are `S<digit>`; and
 fp-normalization's word-overlap fallback retains known non-ASCII limits, mitigated by
 identity-based outcome annotation elsewhere in the system.
+
+## Round 4 — adversarial code review + fixes (2026-07-03)
+
+A cross-model Codex adversarial review of the merged v5 journey/hindsight code
+returned 11 CONFIRMED findings (1 Critical, 4 High, 4 Medium, 1 Low, 1 Low) and
+CLEARED the key invariants: `relentless_flow` byte-identity, fp lockstep, retro-tail
+clocks memoized/replay-derived, merge-seam ordering, Mermaid un-escapable, knowledge
+promotion non-mutating.
+
+FIXED this pass (each test-pinned):
+
+- **Critical** — malformed-but-valid hindsight (`hindsight_path`/`branch` field types)
+  could throw past `run_hindsight`/`write_report` and un-succeed a run. Fixed with
+  strict `validate_hindsight` typing plus defensive try/except in `run_hindsight`
+  (stamp_tiers) and `write_report` (synthesis), always degrading to a skip/omit.
+- **High** — `run_oneshot` now adapts (`run_direct` when `HERMES_BIN` exists, like
+  `invoke_hermes`) so the gate AND trivial route work in-container; resume restores
+  knowledge-ctx (enabled/project) from the journal instead of forcing
+  `enabled=True`/`project=None` (fixes a `--knowledge off` hermetic violation);
+  cross-cycle outcome annotation is now keyed by `(cycle, task_id)` not bare id (a
+  reused id no longer marks every cycle worked / pollutes `success_path`); retro.json
+  quarantine is wrapped so a failed `os.replace` can't un-succeed a run.
+- **Medium** — `_option_matches` is now exact-normalized-fp match with an empty-fp
+  guard (kills the subset false-positive and unicode-only aliasing; a paraphrase now
+  conservatively falls to blind-spot); every rejected retro artifact is quarantined
+  before retry (a stale non-object artifact no longer poisons a later valid stdout);
+  shorter-path synthesis is suppressed only when ALL path methods are already covered.
+- **Also**: `_cap` flattens CR/LF and composed render lines are re-capped (prevents
+  markdown-injection + over-cap lines); `promoted_learnings` is capped to
+  `LEARNINGS_MAX_COUNT` in the journal too; a real-engine retro-tail
+  replay-determinism test (`RetroTailReplay` in `test_engine_contract`).
+
+DEFERRED: finding #10 — `run_hindsight` crash-window non-idempotence. If the model
+wrote a valid `retro.json` but the step didn't record completion, replay quarantines
+it and re-calls the judge; a second-call failure downgrades a valid judgment to
+skipped. Rationale: the window is narrow, the outcome (skip) is always valid and
+NEVER un-succeeds a run, and reconciling reuse-on-replay with the aggressive-quarantine
+fixes (#5/#7) needs a journey/run-identity design out of proportion to a lost advisory
+judgment. Revisit if crash-window judgment loss is ever observed.

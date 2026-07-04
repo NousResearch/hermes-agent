@@ -2006,6 +2006,11 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
+// Set once Electron is really exiting. Distinct from isQuittingForHandoff:
+// normal user quits also need this so helper-window shutdown does not persist
+// renderer state that should survive the next launch.
+let isAppQuitting = false
+
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
 // window-all-closed deliberately keeps the process alive (standard Electron
@@ -5884,9 +5889,9 @@ function spawnPetOverlayWindow(bounds) {
     }
 
     // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
-    // pop the pet back in so it doesn't stay hidden. Harmless echo when we're
-    // the ones who closed it (popInPet already cleared the active flag).
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // pop the pet back in so it doesn't stay hidden. During app quit, keep the
+    // persisted "popped out" flag intact so the overlay restores next launch.
+    if (mainWindow && !mainWindow.isDestroyed() && !isAppQuitting) {
       mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
     }
   })
@@ -5990,7 +5995,12 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', () => {
+    schedulePersistWindowState.flush()
+    if (!IS_MAC) {
+      isAppQuitting = true
+    }
+  })
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks
@@ -7622,6 +7632,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isAppQuitting = true
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

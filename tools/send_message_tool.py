@@ -73,6 +73,7 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_YUANBAO_ADAPTER_WAIT_DELAYS = (2.0, 2.0)
 
 
 def _sanitize_error_text(text) -> str:
@@ -1768,6 +1769,19 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return _error("Yuanbao adapter module not available.")
 
     adapter = get_active_adapter()
+    for attempt, delay in enumerate(_YUANBAO_ADAPTER_WAIT_DELAYS, start=1):
+        if adapter is not None:
+            break
+        logger.warning(
+            "Yuanbao adapter is not running for send to %s; retrying in %.1fs "
+            "(attempt %d/%d)",
+            chat_id,
+            delay,
+            attempt,
+            len(_YUANBAO_ADAPTER_WAIT_DELAYS),
+        )
+        await asyncio.sleep(delay)
+        adapter = get_active_adapter()
     if adapter is None:
         return _error(
             "Yuanbao adapter is not running. "

@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.status import looks_like_gateway_command_line as matches
+from gateway.status import (
+    looks_like_gateway_command_line as matches,
+    looks_like_gateway_runtime_command_line as matches_runtime,
+)
 
 
 ACCEPT = [
@@ -58,3 +61,9 @@ def test_accepts_real_gateway_run(cmd):
 @pytest.mark.parametrize("cmd", REJECT)
 def test_rejects_non_gateway_run(cmd):
     assert matches(cmd) is False
+
+
+def test_runtime_matcher_accepts_no_supervisor_restart_process():
+    assert matches("python -m hermes_cli.main gateway restart") is False
+    assert matches_runtime("python -m hermes_cli.main gateway restart") is True
+    assert matches_runtime("python -m hermes_cli.main gateway status") is False

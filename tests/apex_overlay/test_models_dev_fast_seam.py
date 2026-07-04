@@ -265,32 +265,9 @@ def test_effective_threshold_is_larger_in_cn_mode():
 
 def test_plugin_register_applies_seam():
     """The bundled apex-overlay plugin's register() applies this seam too."""
-    import importlib.util
-    from pathlib import Path
+    from tests.apex_overlay.conftest import run_plugin_register_with_stubbed_seams
 
-    plugin_init = (
-        Path(__file__).resolve().parents[2]
-        / "plugins" / "apex-overlay" / "__init__.py"
-    )
-    assert plugin_init.exists(), "apex-overlay plugin __init__.py missing"
-
-    spec = importlib.util.spec_from_file_location(
-        "_apex_overlay_plugin_under_test_mdf", plugin_init
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    called = {}
-    with patch.object(
-        models_dev_fast, "apply",
-        lambda: called.setdefault("applied", True) or True,
-    ):
-        # Other seams may fail to import in a bare test env; that's fine — we
-        # only assert OUR apply() got called by register().
-        try:
-            mod.register(ctx=None)
-        except Exception:
-            pass
-    assert called.get("applied") is True, (
+    called = run_plugin_register_with_stubbed_seams("_apex_overlay_plugin_under_test_mdf")
+    assert "models_dev_fast" in called, (
         "plugin.register() must call models_dev_fast.apply()"
     )

@@ -20,13 +20,23 @@ well-tested seam (monkey-patch where clean, a one-line hook otherwise).
 
 Layout
 ------
-- ``provider_filter`` — hc-392 copilot/provider denylist (the pilot seam).
+- ``provider_filter``   — hc-392 copilot/provider denylist (the pilot seam).
+- ``models_dev_fast``   — non-blocking models.dev catalog fetch (CN first paint).
+- ``region``            — CN-mode detection (read side of the install-time choice).
+- ``gateway_bootstrap`` — hc-384/385 non-blocking platform startup.
+- ``feishu_supervisor`` — hc-384 WS self-reconnect + hc-385 heartbeat
+  (v0.18: attaches via the platform registry; Feishu is a bundled plugin now).
 
 See ``apex_overlay/README.md`` for the full pattern (plugin wiring +
-monkey-patch + seam-test) that later phases (gateway/run.py, feishu.py,
-install.sh) should copy.
+monkey-patch + seam-test).
 """
 
 from __future__ import annotations
 
-__all__ = ["provider_filter"]
+__all__ = [
+    "provider_filter",
+    "models_dev_fast",
+    "region",
+    "gateway_bootstrap",
+    "feishu_supervisor",
+]

@@ -79,6 +79,40 @@ class TestFalEditPayload:
         assert FAL_MODELS["fal-ai/nano-banana-pro"].get("edit_endpoint")
 
 
+class TestMandatoryKeysSurviveWhitelist:
+    """A model whose whitelist forgets the mandatory keys must not produce a
+    request with the prompt / source images silently stripped."""
+
+    _SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
+
+    def test_edit_keeps_prompt_and_image_urls(self, monkeypatch):
+        from tools import image_generation_tool as t
+
+        fake = {
+            "size_style": "image_size_preset",
+            "sizes": self._SIZES,
+            "edit_supports": {"seed"},  # intentionally omits prompt + image_urls
+        }
+        monkeypatch.setitem(t.FAL_MODELS, "test/edit-model", fake)
+        payload = t._build_fal_edit_payload(
+            "test/edit-model", "make it blue", ["https://x/y.png"], "square",
+        )
+        assert payload["prompt"] == "make it blue"
+        assert payload["image_urls"] == ["https://x/y.png"]
+
+    def test_text_keeps_prompt(self, monkeypatch):
+        from tools import image_generation_tool as t
+
+        fake = {
+            "size_style": "image_size_preset",
+            "sizes": self._SIZES,
+            "supports": {"seed"},  # intentionally omits prompt
+        }
+        monkeypatch.setitem(t.FAL_MODELS, "test/text-model", fake)
+        payload = t._build_fal_payload("test/text-model", "a cat", aspect_ratio="square")
+        assert payload["prompt"] == "a cat"
+
+
 class TestFalRouting:
     def _patch_submit(self, monkeypatch, image_tool, capture: dict):
         class _Handler:

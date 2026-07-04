@@ -140,3 +140,9 @@ apps/desktop/demo/
 
 # node_modules 无论目录还是软链都忽略(带斜杠的旧规则不匹配软链,曾把软链带进提交)
 node_modules
+
+# PR infographics are rendered locally and embedded in PR descriptions via the
+# image-provider (fal.media) URL — they are NEVER committed to the repo. The
+# PR body is the archive. See the hermes-agent-dev skill's
+# pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+infographic/

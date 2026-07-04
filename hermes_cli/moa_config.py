@@ -10,53 +10,36 @@ from typing import Any
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
 
-# ── ApexNodes default MoA preset (domestic + managed relay) ──────────────────
-# Upstream defaults point reference/aggregator slots at foreign providers
-# (openai-codex, openrouter→anthropic). ApexNodes is a China-first MANAGED RELAY
-# product: the local runtime sends every inference call to the OpenAI-compatible
-# relay (custom provider `Apex-nodes.com`, slug `custom:apex-nodes.com`) using
-# the signed-in user's relay key, and the relay bills the user's cloud account
-# and routes to a domestic model (apps/desktop/electron/apex-managed.cjs +
-# api-relay/main.py).
-#
-# So every MoA slot here uses provider `custom:apex-nodes.com`. At runtime
-# agent/moa_loop.py:_slot_runtime() calls resolve_runtime_provider(requested=
-# "custom:apex-nodes.com"), which matches the desktop-seeded `custom_providers`
-# entry and returns the relay base_url + the user's key — i.e. reference AND
-# aggregator calls go through the same relay as normal chat (verified). No
-# foreign endpoint is ever contacted.
-#
-# ⚠️ Model ids below are RELAY CATALOG ROUTE NAMES (no `-APEX` display suffix).
-# Per-request routing landed in the relay (api-relay/main.py:_select_requested_
-# model, hc-184/#448): for the MANAGED path the relay honours the request's
-# `model` field only when it clears BOTH DB gates — the plan's
-# `entitlements.allowed_models` AND a catalog entry that is present + `enabled`
-# (matched case-insensitively, fail-closed on disabled). A name that misses
-# either gate returns None and silently falls back to the agent's default model
-# (deepseek-v4-pro), so a `-APEX` display name would NOT match the catalog
-# (`glm-5.2`, etc.) and could never diverge. These names MUST therefore stay in
-# sync with the `api-relay` catalog (_default_platform_model_catalog) + each
-# plan's allowed_models.
-#
-# Today only `deepseek-v4-pro` (+ `deepseek-v4-flash`) are `enabled` in the
-# catalog; `glm-5.2` / `kimi-k2.6` are `enabled: False` and `qwen3.7-max` is not
-# in the managed catalog yet (it exists as a BYOK preset). So glm-5.2 + qwen3.7-
-# max currently fall back to deepseek-v4-pro — MoA plumbing runs end-to-end but
-# true model diversity only switches on once those catalog rows are enabled (and
-# qwen3.7-max added + allow-listed). After Kael's benchmark, adjust the model
-# names here (mirror the `moa:` block in cli-config.yaml.example).
-APEX_MOA_PROVIDER = "custom:apex-nodes.com"
-
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
-    {"provider": APEX_MOA_PROVIDER, "model": "deepseek-v4-pro"},
-    {"provider": APEX_MOA_PROVIDER, "model": "glm-5.2"},
-    {"provider": APEX_MOA_PROVIDER, "model": "qwen3.7-max"},
+    {"provider": "openai-codex", "model": "gpt-5.5"},
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
 ]
 
 DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
-    "provider": APEX_MOA_PROVIDER,
-    "model": "deepseek-v4-pro",
+    "provider": "openrouter",
+    "model": "anthropic/claude-opus-4.8",
 }
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
 
 
 def _clean_slot(slot: Any) -> dict[str, str] | None:
@@ -65,6 +48,13 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
     if not provider or not model:
+        return None
+    # MoA is a virtual provider whose presets are themselves MoA runs. Allowing
+    # one as a reference or aggregator slot would create a recursive MoA tree
+    # (the runtime guards in moa_loop.py skip references / raise on aggregators,
+    # but that surfaces only mid-turn). Reject it here so it can never be saved:
+    # an invalid slot is dropped, falling back to the preset's defaults.
+    if provider.lower() == "moa":
         return None
     return {"provider": provider, "model": model}
 
@@ -84,7 +74,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    refs = [_clean_slot(item) for item in raw.get("reference_models") or []]
+    raw_refs = raw.get("reference_models")
+    if not isinstance(raw_refs, list):
+        # A hand-edited scalar / single mapping (or a bad type) must degrade to
+        # defaults instead of crashing the iteration, mirroring the tolerance
+        # for the scalar fields below (reference_temperature / max_tokens).
+        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
+    refs = [_clean_slot(item) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
@@ -95,9 +91,9 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
-        "reference_temperature": float(raw.get("reference_temperature", 0.6) or 0.6),
-        "aggregator_temperature": float(raw.get("aggregator_temperature", 0.4) or 0.4),
-        "max_tokens": int(raw.get("max_tokens", 4096) or 4096),
+        "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
+        "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
+        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
     }
 
 
@@ -162,11 +158,26 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:

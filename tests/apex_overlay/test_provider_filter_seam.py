@@ -210,29 +210,13 @@ def test_cached_provider_model_ids_short_circuits_disabled_only(_denylist):
 # ---------------------------------------------------------------------------
 
 def test_plugin_register_applies_seam():
-    """The bundled apex-overlay plugin's register() applies the seam.
+    """The bundled apex-overlay plugin's register() applies this seam too."""
+    from tests.apex_overlay.conftest import run_plugin_register_with_stubbed_seams
 
-    This is the load mechanism: plugin discovery (which runs before the
-    /model picker cache prewarm in cli.py and at gateway boot) calls this.
-    """
-    import importlib.util
-    from pathlib import Path
-
-    plugin_init = (
-        Path(__file__).resolve().parents[2]
-        / "plugins" / "apex-overlay" / "__init__.py"
+    called = run_plugin_register_with_stubbed_seams("_apex_overlay_plugin_under_test")
+    assert "provider_filter" in called, (
+        "plugin.register() must call provider_filter.apply()"
     )
-    assert plugin_init.exists(), "apex-overlay plugin __init__.py missing"
-
-    spec = importlib.util.spec_from_file_location("_apex_overlay_plugin_under_test", plugin_init)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert hasattr(mod, "register"), "plugin must expose register(ctx)"
-
-    called = {}
-    with patch.object(provider_filter, "apply", lambda: called.setdefault("applied", True) or True):
-        mod.register(ctx=None)
-    assert called.get("applied") is True, "plugin.register() must call provider_filter.apply()"
 
 
 def test_apex_overlay_enabled_in_config_and_discovered_before_prewarm():

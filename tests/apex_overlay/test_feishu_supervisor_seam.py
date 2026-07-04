@@ -1,31 +1,29 @@
-"""Seam-test + behavior test for the apex_overlay hc-384 Feishu supervisor.
+"""Seam-test + behavior test for the apex_overlay hc-384/385 Feishu seam.
 
-This pins the upstream symbols that ``apex_overlay.feishu_supervisor``
-monkey-patches/depends on, so an upstream rename/move turns a *silently
-reverted-to-SDK-reconnect* Feishu adapter into a *loud CI failure* — the
-prerequisite for trusting the monkey-patch (see ``apex_overlay/README.md``).
+This pins the upstream symbols ``apex_overlay.feishu_supervisor`` binds
+against, so an upstream rename/move turns a *silently reverted-to-SDK-
+reconnect* adapter into a *loud CI failure* — the prerequisite for trusting
+the monkey-patch (see ``apex_overlay/README.md``).
 
-What the seam guards
-====================
-``gateway/platforms/feishu.py`` keeps two lifecycle entry points as
-upstream-faithful no-op stubs — ``FeishuAdapter._start_ws_supervisor`` (called
-at the end of ``connect()``) and ``FeishuAdapter._cancel_ws_supervisor``
-(awaited in ``disconnect()``). ``feishu_supervisor.apply()`` swaps them for the
-real supervisor (a watcher task + backoff ladder + ``/bot/v3/info`` liveness
-probe — hc-384) and binds four ladder helpers. With the stubs alone (overlay
-absent) the adapter behaves like stock Hermes: no supervisor, and the lark SDK
-keeps its own (broken-but-present) auto-reconnect.
+v0.18 retarget
+==============
+Upstream v0.18 deleted ``gateway/platforms/feishu.py`` (our old patch target)
+and moved the adapter into a bundled plugin (``plugins/platforms/feishu/
+adapter.py``) that is imported LAZILY through ``gateway.platform_registry``.
+The seam therefore attaches at ``PlatformRegistry.create_adapter``: when a
+``feishu`` adapter is created, the wrapper instruments the adapter's class
+(wraps connect/disconnect + the processing hooks, binds the supervisor ladder
+and the hc-385 heartbeat helpers).
 
-If upstream removes the extraction points (``connect``/``disconnect`` no longer
-call the two methods), renames any method the ladder depends on, or drops the
-``CONNECT_IN_BACKGROUND`` convention, the patch silently degrades to the SDK's
-single-shot retry that left bots dead for hours in prod — these tests fail
-loudly instead.
-
-This file ALSO proves the seam wiring: the in-tree stubs are no-ops, ``apply()``
-installs the real methods + marker, the inline websocket-override hook disables
-the SDK retry only when the overlay is active, and the apex-overlay plugin's
-``register()`` applies the seam.
+These tests pin, in order:
+1. the registry choke point (module/class/method + signature);
+2. the upstream adapter internals the supervisor/ladder/heartbeat call;
+3. apply() wraps the registry method and instruments a feishu adapter's class
+   end-to-end (real ``PlatformRegistry`` + ``PlatformEntry``, fake adapter);
+4. wrapper behavior: supervisor armed on connect (websocket mode), revert
+   flag honored, heartbeat start/stop around a turn, disconnect cancels both;
+5. the apex-overlay plugin wiring (register() applies this seam; config
+   enables the plugin).
 
 Run via ``scripts/run_tests_parallel.py`` (per-file fresh interpreter), not a
 single in-process pytest — a process-wide monkey-patch behaves differently
@@ -36,397 +34,490 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import types
+from types import SimpleNamespace
+
+import pytest
 
 from apex_overlay import feishu_supervisor
 
 
 # ---------------------------------------------------------------------------
-# Seam assertions — the two lifecycle extraction points feishu.py keeps
+# 1. Registry choke point pins
 # ---------------------------------------------------------------------------
 
-def test_seam_lifecycle_stub_methods_exist_with_compatible_shape():
-    """feishu.py must keep the two no-op lifecycle stubs apply() swaps.
+def test_seam_registry_target_exists_with_compatible_signature():
+    """apply() wraps gateway.platform_registry.PlatformRegistry.create_adapter."""
+    import importlib
 
-    connect() calls self._start_ws_supervisor() (sync) and disconnect() awaits
-    self._cancel_ws_supervisor() (async). If upstream/a refactor drops or
-    renames either, the supervisor seam has nothing to patch and Feishu
-    silently reverts to the lark SDK's single-shot reconnect. Fail here instead.
-    """
-    from gateway.platforms.feishu import FeishuAdapter
-
-    start = FeishuAdapter.__dict__.get("_start_ws_supervisor")
-    assert start is not None, (
-        "FeishuAdapter._start_ws_supervisor is gone — apex_overlay "
-        "feishu_supervisor can no longer install the self-reconnect seam. "
-        "Re-add the no-op stub in feishu.py (or update _LIFECYCLE_METHODS)."
+    mod = importlib.import_module(feishu_supervisor._TARGET_REGISTRY_MODULE)
+    cls = getattr(mod, feishu_supervisor._TARGET_REGISTRY_CLS, None)
+    assert cls is not None, (
+        "PlatformRegistry is gone — apex_overlay feishu_supervisor has no "
+        "choke point to patch. Update _TARGET_REGISTRY_CLS."
     )
-    assert not inspect.iscoroutinefunction(start), (
-        "_start_ws_supervisor must be sync — connect() calls it without await."
+    fn = getattr(cls, feishu_supervisor._TARGET_FACTORY_METHOD, None)
+    assert fn is not None, (
+        "PlatformRegistry.create_adapter is gone — the Feishu seam can no "
+        "longer intercept adapter creation. Update _TARGET_FACTORY_METHOD."
     )
-    start_params = [p for p in inspect.signature(start).parameters if p != "self"]
-    assert start_params == [], (
-        f"_start_ws_supervisor grew parameters {start_params!r}; connect() "
-        f"calls it as self._start_ws_supervisor() with none."
-    )
-
-    cancel = FeishuAdapter.__dict__.get("_cancel_ws_supervisor")
-    assert cancel is not None, (
-        "FeishuAdapter._cancel_ws_supervisor is gone — disconnect()'s "
-        "supervisor teardown hook was removed. Re-add the no-op stub."
-    )
-    assert inspect.iscoroutinefunction(cancel), (
-        "_cancel_ws_supervisor must be async — disconnect() awaits it."
-    )
-    cancel_params = [p for p in inspect.signature(cancel).parameters if p != "self"]
-    assert cancel_params == [], (
-        f"_cancel_ws_supervisor grew parameters {cancel_params!r}; disconnect() "
-        f"awaits self._cancel_ws_supervisor() with none."
+    params = list(inspect.signature(fn).parameters)
+    assert params == ["self", "name", "config"], (
+        f"create_adapter signature changed to {params!r}; the overlay wrapper "
+        f"forwards (self, name, config)."
     )
 
 
-def test_lifecycle_methods_are_noop_when_not_connectable():
-    """Calling the lifecycle hooks on a non-connectable adapter is harmless.
+def test_seam_registry_is_the_gateway_creation_path_for_feishu():
+    """run.py resolves plugin platforms through platform_registry.create_adapter.
 
-    connect()/disconnect() rely on _start_ws_supervisor()/_cancel_ws_supervisor()
-    being crash-free even when there's no live socket. This invariant holds for
-    BOTH the in-tree no-op stub (overlay absent → SDK owns reconnect) AND the
-    overlay version (its early-return branches: webhook mode / no loop / no
-    task). Order-independent: works whether or not apply() ran earlier in this
-    process (CI runs each test file in a fresh interpreter; a combined pytest
-    run may have patched the class via the cross-file import).
-
-    For the pristine in-tree stub, even a bare object is a no-op; for the
-    overlay version, a webhook-mode adapter with no loop/task hits its
-    early-returns and likewise starts nothing.
-    """
-    from gateway.platforms.feishu import FeishuAdapter
-
-    start = FeishuAdapter.__dict__.get("_start_ws_supervisor")
-    cancel = FeishuAdapter.__dict__.get("_cancel_ws_supervisor")
-    assert start is not None and cancel is not None, (
-        "the two lifecycle stub methods must exist on FeishuAdapter."
-    )
-
-    # A non-connectable adapter: webhook mode + no loop + no in-flight task.
-    # Both the stub (ignores everything) and the overlay (early-returns on
-    # _connection_mode != 'websocket' / loop is None) must do nothing.
-    stub_self = types.SimpleNamespace(
-        _connection_mode="webhook",
-        _ws_self_reconnect=True,
-        _loop=None,
-        _ws_supervisor_task=None,
-    )
-    assert start(stub_self) is None
-    assert stub_self._ws_supervisor_task is None, (
-        "no supervisor task may be started for a non-connectable adapter."
-    )
-    assert asyncio.run(cancel(stub_self)) is None
-
-
-def test_seam_connect_and_disconnect_call_the_lifecycle_hooks():
-    """feishu.py's connect()/disconnect() must call the swapped methods.
-
-    The seam only works if connect() starts the supervisor and disconnect()
-    cancels it. If a refactor drops these call sites, apply() still swaps the
-    methods but they're never invoked — a silent no-supervisor revert.
+    Feishu is plugin-only in v0.18; if the gateway ever grows a second creation
+    path that bypasses the registry, the seam would miss those adapters.
     """
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[2]
-    src = (repo / "gateway" / "platforms" / "feishu.py").read_text(encoding="utf-8")
-
-    assert "self._start_ws_supervisor()" in src, (
-        "feishu.py connect() no longer calls self._start_ws_supervisor() — the "
-        "hc-384 supervisor would never launch even with the overlay applied."
-    )
-    assert "self._cancel_ws_supervisor()" in src, (
-        "feishu.py disconnect() no longer calls self._cancel_ws_supervisor() — "
-        "the supervisor task would leak on shutdown."
+    src = (repo / "gateway" / "run.py").read_text(encoding="utf-8")
+    assert "platform_registry.create_adapter(" in src, (
+        "gateway/run.py no longer creates plugin adapters via "
+        "platform_registry.create_adapter — the Feishu seam interception "
+        "point moved."
     )
 
 
 # ---------------------------------------------------------------------------
-# Seam assertions — every upstream method/attr the ladder depends on
+# 2. Upstream adapter internals the seam depends on
 # ---------------------------------------------------------------------------
 
-def test_seam_ladder_dependencies_exist_with_compatible_signatures():
-    """Pin the FeishuAdapter methods the overlay ladder/helpers call by name.
+def _load_feishu_adapter_cls():
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
-    The reconnect ladder rebuilds the socket and probes liveness through these.
-    An upstream rename would blow up mid-reconnect (exactly when reliability
-    matters most); pin them so it's a CI failure instead.
-    """
-    from gateway.platforms.feishu import FeishuAdapter
+    return FeishuAdapter
 
-    expected = {
-        "_teardown_ws_thread": ["self"],
-        "_connect_websocket": ["self"],
-        "_hydrate_bot_identity": ["self"],
-    }
-    for name, params in expected.items():
-        fn = getattr(FeishuAdapter, name, None)
+
+def test_seam_wrapped_lifecycle_methods_exist():
+    """The four methods the class instrumentation wraps must exist upstream."""
+    cls = _load_feishu_adapter_cls()
+    for name in feishu_supervisor._WRAPPED_METHODS:
+        fn = getattr(cls, name, None)
         assert fn is not None, (
-            f"FeishuAdapter.{name} is gone — apex_overlay feishu_supervisor's "
-            f"reconnect ladder depends on it. Update the overlay and seam-test "
-            f"together."
-        )
-        got = list(inspect.signature(fn).parameters)
-        assert got == params, (
-            f"FeishuAdapter.{name} signature changed to {got!r}; the ladder "
-            f"calls it as {name}({', '.join(params[1:])})."
+            f"FeishuAdapter.{name} is gone — the hc-384/385 instrumentation "
+            f"has nothing to wrap. Update the overlay + this test together."
         )
         assert inspect.iscoroutinefunction(fn), (
-            f"FeishuAdapter.{name} must stay async — the ladder awaits it."
-        )
-
-    # _hydrate_bot_identity is reused as the liveness probe; the ladder relies
-    # on its truthy return meaning "endpoint reachable" (hc-384 added the bool).
-    hydrate_ret = inspect.signature(FeishuAdapter._hydrate_bot_identity).return_annotation
-    assert hydrate_ret in (bool, "bool"), (
-        "FeishuAdapter._hydrate_bot_identity must return bool — _verify_ws_alive "
-        f"uses it as the /bot/v3/info liveness probe; got return {hydrate_ret!r}."
-    )
-
-
-def test_seam_fatal_error_api_is_compatible():
-    """Pin the base-adapter fatal-error API the ladder uses on exhaustion.
-
-    On ladder exhaustion the overlay calls _set_fatal_error(code, msg,
-    retryable=True) then awaits _notify_fatal_error() so the gateway's reconnect
-    watcher recreates the adapter. Pin both.
-    """
-    from gateway.platforms.base import BasePlatformAdapter
-
-    set_fatal = getattr(BasePlatformAdapter, "_set_fatal_error", None)
-    assert set_fatal is not None, "BasePlatformAdapter._set_fatal_error is gone."
-    params = inspect.signature(set_fatal).parameters
-    for needed in ("code", "message", "retryable"):
-        assert needed in params, (
-            f"_set_fatal_error lost the {needed!r} parameter the overlay passes."
-        )
-
-    notify = getattr(BasePlatformAdapter, "_notify_fatal_error", None)
-    assert notify is not None and inspect.iscoroutinefunction(notify), (
-        "BasePlatformAdapter._notify_fatal_error must exist and be async — the "
-        "ladder awaits it after escalating to a fatal error."
-    )
-
-
-def test_seam_connect_in_background_marker_present():
-    """Pin CONNECT_IN_BACKGROUND on FeishuAdapter (the gateway_bootstrap seam
-    keys off it; supervisor + background startup are the two halves of the same
-    Feishu reliability fix). Defined on the adapter class, falsy on the base."""
-    from gateway.platforms.feishu import FeishuAdapter
-    from gateway.platforms.base import BasePlatformAdapter
-
-    assert getattr(FeishuAdapter, "CONNECT_IN_BACKGROUND", False), (
-        "FeishuAdapter.CONNECT_IN_BACKGROUND is no longer truthy — the gateway "
-        "background-startup seam would stop deferring Feishu's slow attach."
-    )
-    assert not getattr(BasePlatformAdapter, "CONNECT_IN_BACKGROUND", False), (
-        "BasePlatformAdapter now defaults CONNECT_IN_BACKGROUND truthy."
-    )
-
-
-def test_seam_ws_client_conn_convention_for_death_detection():
-    """_websocket_appears_dead reads adapter._ws_client / ._ws_future and the
-    lark client's ``_conn``. Pin that the adapter still tracks these so death
-    detection isn't silently disarmed (it would think the socket is alive)."""
-    from gateway.platforms.feishu import FeishuAdapter
-    from gateway.platforms.base import PlatformConfig
-
-    adapter = FeishuAdapter(PlatformConfig(extra={}))
-    for attr in ("_ws_client", "_ws_future", "_ws_supervisor_task",
-                 "_ws_reconnecting", "_intentional_disconnect", "_ws_self_reconnect"):
-        assert hasattr(adapter, attr), (
-            f"FeishuAdapter no longer initializes {attr!r} in __init__ — the "
-            f"hc-384 supervisor seam reads/writes it. Re-add the state line."
+            f"FeishuAdapter.{name} is no longer async; the overlay wrapper "
+            f"awaits it."
         )
 
 
-# ---------------------------------------------------------------------------
-# Seam assertions — the inline SDK-reconnect-disable hook integration
-# ---------------------------------------------------------------------------
+def test_seam_ladder_dependencies_exist_with_compatible_signatures():
+    """Pin the upstream adapter internals the reconnect ladder calls."""
+    cls = _load_feishu_adapter_cls()
 
-def test_seam_runtime_override_hook_present_and_gated_on_overlay():
-    """feishu.py keeps _apply_feishu_ws_runtime_overrides + _feishu_supervisor_active.
+    # Relaunch primitive: rebuilds client + event handler + ws thread.
+    fn = getattr(cls, "_connect_websocket", None)
+    assert fn is not None and inspect.iscoroutinefunction(fn), (
+        "FeishuAdapter._connect_websocket is gone/not-async — the ladder has "
+        "no relaunch primitive."
+    )
+    assert [p for p in inspect.signature(fn).parameters] == ["self"]
 
-    The override hook disables the lark SDK's broken auto-reconnect ONLY when
-    this overlay is active (so an overlay-absent box keeps the SDK's own
-    reconnect). Pin both the hook and the active-check bridge.
+    # Probe transport: adapter-owned executor for blocking SDK calls (v0.18).
+    rb = getattr(cls, "_run_blocking", None)
+    assert rb is not None and inspect.iscoroutinefunction(rb), (
+        "FeishuAdapter._run_blocking is gone — the /bot/v3/info liveness probe "
+        "routes through it."
+    )
+
+    # Escalation: retryable fatal error → gateway reconnect watcher recreates.
+    sfe = getattr(cls, "_set_fatal_error", None)
+    assert sfe is not None, "BasePlatformAdapter._set_fatal_error is gone."
+    sig = inspect.signature(sfe)
+    assert "retryable" in sig.parameters, (
+        "_set_fatal_error lost its retryable kwarg — ladder exhaustion "
+        "escalates with retryable=True."
+    )
+    nfe = getattr(cls, "_notify_fatal_error", None)
+    assert nfe is not None and inspect.iscoroutinefunction(nfe), (
+        "BasePlatformAdapter._notify_fatal_error is gone/not-async."
+    )
+
+
+def test_seam_heartbeat_dependencies_exist_with_compatible_signatures():
+    """Pin send()/edit_message() shapes the hc-385 heartbeat calls."""
+    cls = _load_feishu_adapter_cls()
+
+    send_params = list(inspect.signature(cls.send).parameters)
+    assert send_params[:3] == ["self", "chat_id", "content"], (
+        f"FeishuAdapter.send signature changed to {send_params!r}; the "
+        f"heartbeat calls send(chat_id, text, reply_to=...)."
+    )
+    assert "reply_to" in send_params
+
+    edit_params = list(inspect.signature(cls.edit_message).parameters)
+    assert edit_params[:4] == ["self", "chat_id", "message_id", "content"], (
+        f"FeishuAdapter.edit_message signature changed to {edit_params!r}; the "
+        f"heartbeat calls edit_message(chat_id, message_id, text)."
+    )
+
+
+def test_seam_ws_client_state_conventions():
+    """Pin the instance-attribute conventions the death check reads.
+
+    ``_websocket_appears_dead`` reads ``_ws_client`` / ``_ws_future`` and the
+    lark client's ``_conn``; the teardown helper additionally drives
+    ``_ws_thread_loop``. These are set in ``__init__`` /
+    ``_connect_websocket`` — pin their assignments textually since instance
+    attributes don't exist on the class.
     """
-    import gateway.platforms.feishu as feishu
+    from pathlib import Path
 
-    assert hasattr(feishu, "_apply_feishu_ws_runtime_overrides"), (
-        "feishu.py lost _apply_feishu_ws_runtime_overrides — the WS thread "
-        "launcher relies on it to push ws tuning + the SDK-reconnect disable."
-    )
-    assert hasattr(feishu, "_feishu_supervisor_active"), (
-        "feishu.py lost _feishu_supervisor_active — the override hook needs it "
-        "to gate the SDK-reconnect-disable on the overlay being installed."
-    )
-    # The overlay exposes the bridge the inline hook imports.
-    assert hasattr(feishu_supervisor, "apex_overlay_active"), (
-        "apex_overlay.feishu_supervisor.apex_overlay_active is gone — feishu.py "
-        "imports it to decide whether to disable the SDK's auto-reconnect."
-    )
+    import plugins.platforms.feishu.adapter as feishu_mod
 
-
-def test_override_disables_sdk_reconnect_only_when_overlay_active():
-    """Behavior of the inline hook + overlay marker, end to end.
-
-    Without the overlay marker: SDK auto-reconnect is left ON (upstream).
-    After apply() sets the marker: the hook disables it (hc-384 takes over).
-    The ws-tuning overrides apply in both cases (they're upstream behavior).
-    """
-    import gateway.platforms.feishu as feishu
-    from gateway.platforms.base import PlatformConfig
-
-    # Fresh class state: ensure the marker is not set yet.
-    if hasattr(feishu.FeishuAdapter, feishu_supervisor._ACTIVE_FLAG):
-        delattr(feishu.FeishuAdapter, feishu_supervisor._ACTIVE_FLAG)
-    feishu_supervisor._APPLIED = False
-
-    adapter = feishu.FeishuAdapter(PlatformConfig(extra={}))  # self_reconnect defaults on
-
-    ws_off = types.SimpleNamespace()
-    feishu._apply_feishu_ws_runtime_overrides(ws_off, adapter)
-    assert ws_off._reconnect_nonce == adapter._ws_reconnect_nonce
-    assert not hasattr(ws_off, "_auto_reconnect"), (
-        "with the overlay inactive the lark SDK's auto-reconnect must stay ON "
-        "(upstream behavior) — otherwise an overlay-less box has NO reconnect."
-    )
-
-    # Now activate the overlay and re-run the hook.
-    assert feishu_supervisor.apply() is True
-    ws_on = types.SimpleNamespace()
-    feishu._apply_feishu_ws_runtime_overrides(ws_on, adapter)
-    assert ws_on._auto_reconnect is False, (
-        "with the overlay active the hook must disable the SDK's broken "
-        "single-shot reconnect so the supervisor owns reconnection (hc-384)."
-    )
-
-
-def test_override_leaves_sdk_reconnect_when_reverted_even_with_overlay():
-    """The ws_self_reconnect=False revert flag wins even with the overlay on."""
-    import gateway.platforms.feishu as feishu
-    from gateway.platforms.base import PlatformConfig
-
-    feishu_supervisor._APPLIED = False
-    assert feishu_supervisor.apply() is True
-
-    adapter = feishu.FeishuAdapter(PlatformConfig(extra={"ws_self_reconnect": False}))
-    ws = types.SimpleNamespace()
-    feishu._apply_feishu_ws_runtime_overrides(ws, adapter)
-    assert not hasattr(ws, "_auto_reconnect"), (
-        "ws_self_reconnect=False (revert) must leave the SDK's auto-reconnect "
-        "ON even when the overlay is loaded — a clean fall-back to upstream."
+    src = Path(feishu_mod.__file__).read_text(encoding="utf-8")
+    for attr in (
+        "_ws_client",
+        "_ws_future",
+        "_ws_thread_loop",
+        "_loop",
+        "_running",
+        "_connection_mode",
+        "_client",
+    ):
+        assert f"self.{attr}" in src, (
+            f"FeishuAdapter no longer has self.{attr} — the supervisor/ladder "
+            f"reads it. Re-map the overlay."
+        )
+    # The SDK-retry kill switch convention (upstream itself sets this attr).
+    assert "_auto_reconnect" in src, (
+        "the lark _auto_reconnect override convention disappeared from the "
+        "adapter — verify how the SDK's retry is disabled now."
     )
 
 
 # ---------------------------------------------------------------------------
-# apply() — swaps the stubs, binds the ladder helpers, idempotent
+# 3. apply() + end-to-end interception through a real PlatformRegistry
 # ---------------------------------------------------------------------------
 
-def test_apply_swaps_stubs_binds_helpers_and_is_idempotent():
-    """apply() must swap the 2 stubs, bind the 4 ladder helpers, set the marker,
-    and no-op on repeat."""
-    from gateway.platforms.feishu import FeishuAdapter
-
-    feishu_supervisor._APPLIED = False
-    if hasattr(FeishuAdapter, feishu_supervisor._ACTIVE_FLAG):
-        delattr(FeishuAdapter, feishu_supervisor._ACTIVE_FLAG)
-    assert feishu_supervisor.apply() is True
-
-    # The two lifecycle methods are now the overlay versions (overlay module).
-    for name in feishu_supervisor._LIFECYCLE_METHODS:
-        fn = getattr(FeishuAdapter, name)
-        assert getattr(fn, "__module__", "").endswith("feishu_supervisor"), (
-            f"after apply() FeishuAdapter.{name} must be the overlay version "
-            f"(module apex_overlay.feishu_supervisor); got {fn.__module__!r}."
-        )
-
-    # Every ladder helper the supervisor calls is bound onto the class.
-    for name in feishu_supervisor._LADDER_METHODS:
-        assert hasattr(FeishuAdapter, name), (
-            f"apply() did not bind ladder helper {name!r} onto FeishuAdapter."
-        )
-
-    # The active marker is set so the inline override hook engages.
-    assert getattr(FeishuAdapter, feishu_supervisor._ACTIVE_FLAG, False) is True
-
-    # Idempotent: second apply is a no-op and must not error or rebind.
-    start_before = getattr(FeishuAdapter, "_start_ws_supervisor")
-    assert feishu_supervisor.apply() is True
-    assert getattr(FeishuAdapter, "_start_ws_supervisor") is start_before
+class _StubWsClient:
+    def __init__(self):
+        self._conn = object()
+        self._auto_reconnect = True
 
 
-def test_apply_real_start_supervisor_creates_task_when_enabled():
-    """After apply(), the real _start_ws_supervisor launches a watcher task.
+def _make_fake_adapter_cls():
+    """A fresh fake adapter class with the upstream surface the seam needs.
 
-    Proves apply() installed the *behaving* method, not just any callable: in
-    websocket mode with self-reconnect on, it creates the supervisor task.
+    Fresh per call: class instrumentation mutates the class, so sharing one
+    class across tests would leak state.
     """
-    from gateway.platforms.feishu import FeishuAdapter
-    from gateway.platforms.base import PlatformConfig
+
+    class _FakeFeishuAdapter:
+        def __init__(self, config=None):
+            self.config = config
+            self._connection_mode = "websocket"
+            self._running = False
+            self._loop = None
+            self._ws_client = None
+            self._ws_future = None
+            self._ws_thread_loop = None
+            self._client = object()
+            self.fatal = None
+            self.sent = []
+            self.edited = []
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            self._running = True
+            self._loop = asyncio.get_running_loop()
+            self._ws_client = _StubWsClient()
+            return True
+
+        async def disconnect(self) -> None:
+            self._running = False
+
+        async def on_processing_start(self, event) -> None:
+            return None
+
+        async def on_processing_complete(self, event, outcome) -> None:
+            return None
+
+        async def _connect_websocket(self) -> None:
+            self._ws_client = _StubWsClient()
+
+        async def _run_blocking(self, func, *args):
+            return func(*args)
+
+        def _set_fatal_error(self, code, message, *, retryable):
+            self.fatal = (code, message, retryable)
+
+        async def _notify_fatal_error(self):
+            return None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append((chat_id, content, reply_to))
+            return SimpleNamespace(success=True, message_id=f"hb_{len(self.sent)}")
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False):
+            self.edited.append((chat_id, message_id, content))
+            return SimpleNamespace(success=True, message_id=message_id)
+
+    return _FakeFeishuAdapter
+
+
+def _fresh_registry_with_fake_feishu():
+    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+
+    cls = _make_fake_adapter_cls()
+    registry = PlatformRegistry()
+    registry.register(
+        PlatformEntry(
+            name="feishu",
+            label="Feishu (fake)",
+            adapter_factory=lambda cfg: cls(cfg),
+            check_fn=lambda: True,
+        )
+    )
+    return registry, cls
+
+
+def test_apply_wraps_create_adapter_and_is_idempotent():
+    from gateway.platform_registry import PlatformRegistry
 
     feishu_supervisor._APPLIED = False
-    if hasattr(FeishuAdapter, feishu_supervisor._ACTIVE_FLAG):
-        delattr(FeishuAdapter, feishu_supervisor._ACTIVE_FLAG)
     assert feishu_supervisor.apply() is True
 
-    adapter = FeishuAdapter(PlatformConfig(extra={}))
-    adapter._connection_mode = "websocket"
-    adapter._running = True
-    loop = asyncio.new_event_loop()
-    adapter._loop = loop
+    patched = getattr(PlatformRegistry, feishu_supervisor._TARGET_FACTORY_METHOD)
+    assert getattr(patched, feishu_supervisor._MARK, False), (
+        "after apply(), PlatformRegistry.create_adapter must be the overlay "
+        "wrapper (marked)."
+    )
+
+    # Idempotent: second apply is a no-op, no double-wrap.
+    assert feishu_supervisor.apply() is True
+    assert getattr(PlatformRegistry, feishu_supervisor._TARGET_FACTORY_METHOD) is patched
+
+
+def test_created_feishu_adapter_class_gets_instrumented():
+    feishu_supervisor._APPLIED = False
+    assert feishu_supervisor.apply() is True
+
+    registry, cls = _fresh_registry_with_fake_feishu()
+    adapter = registry.create_adapter("feishu", SimpleNamespace(extra={}))
+    assert adapter is not None
+    assert feishu_supervisor.apex_overlay_active(adapter), (
+        "create_adapter('feishu') must instrument the adapter class."
+    )
+    for name in feishu_supervisor._BOUND_HELPERS:
+        assert hasattr(cls, name), f"helper {name!r} not bound onto the class"
+    # hc-385 flag for the gateway bootstrap seam / reconnect watcher.
+    assert getattr(cls, "CONNECT_IN_BACKGROUND", False) is True
+    # Second create: already-instrumented class is not double-wrapped.
+    connect_before = cls.connect
+    adapter2 = registry.create_adapter("feishu", SimpleNamespace(extra={}))
+    assert adapter2 is not None
+    assert cls.connect is connect_before
+
+
+def test_non_feishu_adapters_are_left_alone():
+    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+
+    feishu_supervisor._APPLIED = False
+    assert feishu_supervisor.apply() is True
+
+    class _OtherAdapter:
+        pass
+
+    registry = PlatformRegistry()
+    registry.register(
+        PlatformEntry(
+            name="telegram",
+            label="TG (fake)",
+            adapter_factory=lambda cfg: _OtherAdapter(),
+            check_fn=lambda: True,
+        )
+    )
+    adapter = registry.create_adapter("telegram", SimpleNamespace(extra={}))
+    assert adapter is not None
+    assert not feishu_supervisor.apex_overlay_active(adapter)
+    assert not hasattr(_OtherAdapter, "_supervise_websocket")
+
+
+# ---------------------------------------------------------------------------
+# 4. Wrapper behavior
+# ---------------------------------------------------------------------------
+
+def _instrumented_adapter(config_extra=None):
+    cls = _make_fake_adapter_cls()
+    assert feishu_supervisor._instrument_feishu_adapter_class(cls) is True
+    return cls(SimpleNamespace(extra=config_extra or {}))
+
+
+@pytest.mark.asyncio
+async def test_connect_arms_supervisor_and_disables_sdk_reconnect():
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
     try:
-        adapter._start_ws_supervisor()
-        task = adapter._ws_supervisor_task
-        assert task is not None, (
-            "the overlay _start_ws_supervisor must create a watcher task in "
-            "websocket mode with self-reconnect enabled."
+        assert adapter._ws_self_reconnect is True
+        assert adapter._ws_client._auto_reconnect is False, (
+            "the supervisor owns reconnection — the lark SDK's retry must be "
+            "disabled on the live client."
         )
-        task.cancel()
-        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        task = adapter._ws_supervisor_task
+        assert task is not None and not task.done(), (
+            "connect() must start the websocket supervisor task."
+        )
+        assert adapter._intentional_disconnect is False
     finally:
-        loop.close()
+        await adapter.disconnect()
+    assert adapter._intentional_disconnect is True
+    assert adapter._ws_supervisor_task is None
+
+
+@pytest.mark.asyncio
+async def test_revert_flag_keeps_upstream_behavior(monkeypatch):
+    """FEISHU_WS_SELF_RECONNECT=false → no supervisor, SDK retry untouched."""
+    monkeypatch.setenv("FEISHU_WS_SELF_RECONNECT", "false")
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
+    try:
+        assert adapter._ws_self_reconnect is False
+        assert adapter._ws_client._auto_reconnect is True, (
+            "with the revert flag the SDK keeps its own auto-reconnect."
+        )
+        assert adapter._ws_supervisor_task is None
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_webhook_mode_never_starts_supervisor():
+    adapter = _instrumented_adapter()
+    adapter._connection_mode = "webhook"
+    assert await adapter.connect() is True
+    try:
+        assert adapter._ws_supervisor_task is None
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ladder_reconnects_dead_socket(monkeypatch):
+    """Dead socket → teardown + relaunch + SDK-retry re-disable + verify."""
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_BASE_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
+
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
+    try:
+        # Simulate a silent drop: lark clears _conn when the receive loop dies.
+        adapter._ws_client._conn = None
+        assert adapter._websocket_appears_dead() is True
+
+        # Probe path: no lark symbols in the fake module → falls back to the
+        # socket-object check, which passes after relaunch.
+        await adapter._reconnect_websocket_with_backoff()
+        assert adapter._ws_client._conn is not None, "socket must be relaunched"
+        assert adapter._ws_client._auto_reconnect is False, (
+            "the fresh client must get the SDK retry re-disabled."
+        )
+        assert adapter.fatal is None
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ladder_exhaustion_escalates_retryable_fatal(monkeypatch):
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_BASE_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_MAX_ATTEMPTS", 2)
+
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
+    try:
+
+        async def _broken_relaunch():
+            raise RuntimeError("relaunch fails")
+
+        adapter._connect_websocket = _broken_relaunch
+        adapter._ws_client._conn = None
+        await adapter._reconnect_websocket_with_backoff()
+        assert adapter.fatal is not None, "exhausted ladder must escalate"
+        code, _message, retryable = adapter.fatal
+        assert code == "feishu_ws_reconnect_exhausted"
+        assert retryable is True, (
+            "escalation must be retryable so the gateway reconnect watcher "
+            "recreates the adapter."
+        )
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_starts_and_stops_around_processing(monkeypatch):
+    monkeypatch.setenv("FEISHU_HEARTBEAT", "true")
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
+    try:
+        assert adapter._heartbeat_enabled is True
+        event = SimpleNamespace(
+            message_id="om_1", source=SimpleNamespace(chat_id="oc_1")
+        )
+        await adapter.on_processing_start(event)
+        task = adapter._heartbeat_tasks.get("om_1")
+        assert task is not None and not task.done(), (
+            "on_processing_start must start a heartbeat task (opt-in enabled)."
+        )
+        await adapter.on_processing_complete(event, None)
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done(), (
+            "on_processing_complete must stop the heartbeat."
+        )
+    finally:
+        await adapter.disconnect()
+    assert not adapter._heartbeat_tasks, "disconnect clears heartbeat tasks"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_default_off():
+    adapter = _instrumented_adapter()
+    assert await adapter.connect() is True
+    try:
+        assert adapter._heartbeat_enabled is False
+        event = SimpleNamespace(
+            message_id="om_1", source=SimpleNamespace(chat_id="oc_1")
+        )
+        await adapter.on_processing_start(event)
+        assert not adapter._heartbeat_tasks, "hc-385 heartbeat is opt-in"
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_config_extra_overrides_env(monkeypatch):
+    """config.yaml platforms.feishu.extra wins over env (fork precedence)."""
+    monkeypatch.setenv("FEISHU_HEARTBEAT", "false")
+    adapter = _instrumented_adapter(
+        config_extra={"heartbeat_enabled": True, "heartbeat_interval_seconds": 15}
+    )
+    assert await adapter.connect() is True
+    try:
+        assert adapter._heartbeat_enabled is True
+        assert adapter._heartbeat_interval == 15
+    finally:
+        await adapter.disconnect()
 
 
 # ---------------------------------------------------------------------------
-# Wiring — the seam loads via the apex-overlay plugin
+# 5. Plugin wiring
 # ---------------------------------------------------------------------------
 
 def test_plugin_register_applies_feishu_supervisor_seam():
     """The bundled apex-overlay plugin's register() applies this seam too."""
-    import importlib.util
-    from pathlib import Path
+    from tests.apex_overlay.conftest import run_plugin_register_with_stubbed_seams
 
-    plugin_init = (
-        Path(__file__).resolve().parents[2]
-        / "plugins" / "apex-overlay" / "__init__.py"
+    called = run_plugin_register_with_stubbed_seams(
+        "_apex_overlay_plugin_under_test_feishu"
     )
-    assert plugin_init.exists(), "apex-overlay plugin __init__.py missing"
-
-    spec = importlib.util.spec_from_file_location(
-        "_apex_overlay_plugin_under_test_feishu", plugin_init
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert hasattr(mod, "register"), "plugin must expose register(ctx)"
-
-    from unittest.mock import patch
-
-    called = {}
-    with patch.object(
-        feishu_supervisor, "apply",
-        lambda: called.setdefault("applied", True) or True,
-    ):
-        # The other seams' apply() also run inside register(); let them run for
-        # real (they're idempotent) — we only assert our seam was invoked.
-        mod.register(ctx=None)
-    assert called.get("applied") is True, (
+    assert "feishu_supervisor" in called, (
         "plugin.register() must call feishu_supervisor.apply()"
     )
 

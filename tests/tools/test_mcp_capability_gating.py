@@ -254,6 +254,12 @@ class TestMethodNotFoundDetection:
         from tools.mcp_tool import _is_method_not_found_error
         assert _is_method_not_found_error(Exception("Method not found")) is True
 
+    def test_unknown_method_phrasing_is_match(self):
+        # agentmemory's MCP server surfaces method-not-found as a plain
+        # "Unknown method: ping" string with no structural -32601 code (#50028).
+        from tools.mcp_tool import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("Unknown method: ping")) is True
+
     def test_unrelated_exception_is_not_match(self):
         from tools.mcp_tool import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False
@@ -291,6 +297,23 @@ class TestKeepaliveProbeFallback:
         await task._keepalive_probe()
 
         # First cycle: ping tried, failed -32601, list_tools used as fallback.
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_falls_back_on_unknown_method_string(self):
+        """Regression for #50028: a server that surfaces method-not-found as a
+        plain "Unknown method: ping" string (no structural -32601 code) must
+        still latch the fallback and use list_tools, NOT reconnect-loop."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=Exception("Unknown method: ping")),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        await task._keepalive_probe()
+
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_awaited_once()
         assert task._ping_unsupported is True

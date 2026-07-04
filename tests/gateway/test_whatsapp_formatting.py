@@ -14,13 +14,24 @@ import pytest
 from gateway.config import Platform
 
 
+@pytest.fixture(autouse=True)
+def _whatsapp_open_optin(monkeypatch):
+    """Opt into WhatsApp allow-all so ``dm_policy: open`` dispatch tests run.
+
+    The adapter fails closed on ``open`` without an allow-all opt-in
+    (SECURITY.md 2.6); these formatting/dispatch-mechanics tests set
+    ``_dm_policy = "open"`` as a stand-in for "process this DM".
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -153,7 +164,7 @@ class TestMessageLimits:
     """WhatsApp message length limits."""
 
     def test_max_message_length_is_practical(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
     def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):

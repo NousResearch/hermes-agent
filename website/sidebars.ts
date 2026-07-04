@@ -10,6 +10,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/platform-support',
         'getting-started/termux',
         'getting-started/nix-setup',
         'getting-started/updating',
@@ -60,6 +61,7 @@ const sidebars: SidebarsConfig = {
           label: 'Core',
           items: [
             'user-guide/features/tools',
+            'user-guide/features/tool-search',
             'user-guide/features/skills',
             'user-guide/features/lsp',
             'user-guide/features/curator',
@@ -104,6 +106,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/spotify',
+            'user-guide/features/pets',
             'user-guide/features/tts',
             'user-guide/features/deliverable-mode',
           ],
@@ -152,7 +155,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },
@@ -187,16 +189,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'devops',
-                  key: 'skills-bundled-devops',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
-                    'user-guide/skills/bundled/devops/devops-kanban-worker',
                   ],
                 },
                 {
@@ -279,6 +271,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-nano-pdf',
                     'user-guide/skills/bundled/productivity/productivity-notion',
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
+                    'user-guide/skills/bundled/productivity/productivity-petdex',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
                   ],
@@ -660,6 +653,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/line',
             'user-guide/messaging/simplex',
             'user-guide/messaging/ntfy',
+            'user-guide/messaging/irc',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/webhooks',
           ],
@@ -707,6 +701,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/google-vertex',
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
         'guides/oauth-over-ssh',

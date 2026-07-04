@@ -69,14 +69,14 @@ def test_seam_target_connect_configured_platforms_exists():
     )
 
 
-def test_intree_loop_returns_five_counter_tuple():
-    """The in-tree (pre-patch) loop returns the 5-tuple start() unpacks.
+def test_intree_loop_returns_six_tuple():
+    """The in-tree (pre-patch) loop returns the 6-tuple start() unpacks.
 
     Even if the overlay never applies (plugin disabled / apply() fails), the
     upstream-faithful body in run.py must still return
-    (connected, background, enabled, nonretryable_errors, retryable_errors)
-    so ``start()``'s unpacking never breaks. Drive it with an empty platform
-    set so no adapter machinery is needed.
+    (aborted, connected, background, enabled, nonretryable_errors,
+    retryable_errors) so ``start()``'s unpacking never breaks. Drive it with an
+    empty platform set so no adapter machinery is needed.
     """
     from gateway.run import GatewayRunner
 
@@ -88,12 +88,18 @@ def test_intree_loop_returns_five_counter_tuple():
 
     runner = types.SimpleNamespace()
     runner.config = types.SimpleNamespace(platforms={})
+
+    async def _no_abort(*_a, **_k):
+        return False
+
+    runner._abort_startup_if_shutdown_requested = _no_abort
     result = asyncio.run(fn(runner))
-    assert isinstance(result, tuple) and len(result) == 5, (
-        f"in-tree _connect_configured_platforms must return a 5-tuple; got "
-        f"{result!r}. start() unpacks exactly 5 counters."
+    assert isinstance(result, tuple) and len(result) == 6, (
+        f"in-tree _connect_configured_platforms must return a 6-tuple; got "
+        f"{result!r}. start() unpacks (aborted + 5 counters)."
     )
-    connected, background, enabled, nonretryable, retryable = result
+    aborted, connected, background, enabled, nonretryable, retryable = result
+    assert aborted is False
     assert connected == 0 and background == 0 and enabled == 0
     assert nonretryable == [] and retryable == []
 
@@ -113,6 +119,12 @@ def test_seam_helper_dependencies_exist_with_compatible_signatures():
         "_safe_adapter_disconnect": ["self", "adapter", "platform"],
         "_sync_voice_mode_state_to_adapter": ["self", "adapter"],
         "_wire_teams_pipeline_runtime": ["self"],
+        # v0.18: per-adapter fail-closed authz factory (upstream bb304b4914) —
+        # the overlay's _prepare_adapter wires it like upstream's inline block.
+        "_make_adapter_auth_check": ["self", "platform"],
+        # v0.18: shutdown-during-startup abort — the overlay loop mirrors
+        # upstream's three checkpoints.
+        "_abort_startup_if_shutdown_requested": ["self", "adapter", "platform"],
     }
     for name, params in expected.items():
         fn = getattr(GatewayRunner, name, None)
@@ -120,11 +132,24 @@ def test_seam_helper_dependencies_exist_with_compatible_signatures():
             f"GatewayRunner.{name} is gone — apex_overlay gateway_bootstrap "
             f"depends on it. Update the overlay and seam-test together."
         )
-        got = list(inspect.signature(fn).parameters)
-        assert got == params, (
+        sig = inspect.signature(fn)
+        got = list(sig.parameters)
+        # The overlay calls these with the pinned positional shape; upstream
+        # may append OPTIONAL params (e.g. v0.18 added is_reconnect to
+        # _connect_adapter_with_timeout) without breaking the call.
+        assert got[: len(params)] == params, (
             f"GatewayRunner.{name} signature changed to {got!r}; the overlay "
             f"calls it as {name}({', '.join(params[1:])})."
         )
+        for extra in got[len(params):]:
+            p = sig.parameters[extra]
+            assert p.default is not inspect.Parameter.empty or p.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ), (
+                f"GatewayRunner.{name} grew a REQUIRED param {extra!r}; the "
+                f"overlay's {name}({', '.join(params[1:])}) call would break."
+            )
 
     # _update_platform_runtime_status is called with these keyword args.
     ups = inspect.signature(GatewayRunner._update_platform_runtime_status).parameters
@@ -229,6 +254,7 @@ class _FakeAdapter:
             self.CONNECT_IN_BACKGROUND = True
         self.connected = False
         self.has_fatal_error = False
+        self.platform = None  # read by _prepare_adapter for the authz factory
 
     # Wired by _prepare_adapter — accept and ignore.
     def set_message_handler(self, *_a, **_k):
@@ -244,6 +270,9 @@ class _FakeAdapter:
         pass
 
     def set_topic_recovery_fn(self, *_a, **_k):
+        pass
+
+    def set_authorization_check(self, *_a, **_k):
         pass
 
 
@@ -277,6 +306,12 @@ def _make_stub_runner(monkeypatch):
     stub._handle_adapter_fatal_error = lambda *a, **k: None
     stub._handle_active_session_busy_message = lambda *a, **k: None
     stub._recover_telegram_topic_thread_id = lambda *a, **k: None
+    stub._make_adapter_auth_check = lambda *a, **k: (lambda *_a, **_k: True)
+
+    async def _no_abort(*_a, **_k):
+        return False
+
+    stub._abort_startup_if_shutdown_requested = _no_abort
 
     async def _safe_disc(adapter, platform):
         return None
@@ -327,6 +362,7 @@ async def test_background_adapter_scheduled_not_inline(monkeypatch):
     stub._create_adapter = _create_adapter
 
     (
+        aborted,
         connected,
         background,
         enabled,
@@ -334,6 +370,7 @@ async def test_background_adapter_scheduled_not_inline(monkeypatch):
         retryable,
     ) = await stub._connect_configured_platforms()
 
+    assert aborted is False
     assert enabled == 2
     assert background == 1, "the CONNECT_IN_BACKGROUND adapter must be deferred"
     assert connected == 1, "the ordinary adapter must connect inline"
@@ -364,7 +401,8 @@ async def test_all_inline_when_nothing_backgrounds(monkeypatch):
     stub.config.platforms = {p1: cfg, p2: cfg}
     stub._create_adapter = lambda platform, pc: _FakeAdapter(background=False)
 
-    connected, background, enabled, _nonr, _retr = await stub._connect_configured_platforms()
+    aborted, connected, background, enabled, _nonr, _retr = await stub._connect_configured_platforms()
+    assert aborted is False
     assert (connected, background, enabled) == (2, 0, 2)
     assert p1 in stub.adapters and p2 in stub.adapters
     assert stub._background_tasks == set()
@@ -376,33 +414,12 @@ async def test_all_inline_when_nothing_backgrounds(monkeypatch):
 
 def test_plugin_register_applies_gateway_bootstrap_seam():
     """The bundled apex-overlay plugin's register() applies this seam too."""
-    import importlib.util
-    from pathlib import Path
+    from tests.apex_overlay.conftest import run_plugin_register_with_stubbed_seams
 
-    plugin_init = (
-        Path(__file__).resolve().parents[2]
-        / "plugins" / "apex-overlay" / "__init__.py"
+    called = run_plugin_register_with_stubbed_seams(
+        "_apex_overlay_plugin_under_test_gw"
     )
-    assert plugin_init.exists(), "apex-overlay plugin __init__.py missing"
-
-    spec = importlib.util.spec_from_file_location(
-        "_apex_overlay_plugin_under_test_gw", plugin_init
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert hasattr(mod, "register"), "plugin must expose register(ctx)"
-
-    from unittest.mock import patch
-
-    called = {}
-    with patch.object(
-        gateway_bootstrap, "apply",
-        lambda: called.setdefault("applied", True) or True,
-    ):
-        # provider_filter.apply also runs inside register(); let it run for real
-        # (it's idempotent) — we only assert our seam was invoked.
-        mod.register(ctx=None)
-    assert called.get("applied") is True, (
+    assert "gateway_bootstrap" in called, (
         "plugin.register() must call gateway_bootstrap.apply()"
     )
 

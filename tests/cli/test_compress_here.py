@@ -5,14 +5,15 @@ only the head, and re-appends the verbatim tail. Inspired by Claude Code's
 Rewind "Summarize up to here" action (v2.1.139, May 2026).
 """
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from tests.cli.test_cli_init import _make_cli
 
 
-def _make_history() -> list[dict[str, str]]:
+def _make_history() -> list[dict[str, Any]]:
     # 8 messages = 4 exchanges.
-    h: list[dict[str, str]] = []
+    h: list[dict[str, Any]] = []
     for i in range(4):
         h.append({"role": "user", "content": f"u{i}"})
         h.append({"role": "assistant", "content": f"a{i}"})
@@ -71,6 +72,39 @@ def test_compress_here_reappends_verbatim_tail(capsys):
     roles = [m["role"] for m in shell.conversation_history
              if m["role"] in ("user", "assistant")]
     assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
+
+
+def test_compress_here_child_flush_repersists_previously_persisted_tail(capsys):
+    """Previously persisted tail turns must be written into the rotated child.
+
+    Live smoke caught a case where the pane showed final tail turns before
+    `/compress here 2`, but the rotated child session in state.db lacked them.
+    The tail dicts were already stamped as persisted in the parent session; the
+    child transcript must clear those parent-session markers before flushing.
+    """
+    shell = _make_cli()
+    shell.session_id = "parent"
+    history = _make_history()
+    for msg in history[4:]:
+        msg["_db_persisted"] = True
+    shell.conversation_history = history
+
+    summary = [{"role": "assistant", "content": "[summary]"}]
+    _wire_agent(shell, summary)
+    shell.agent.session_id = "parent"
+
+    def rotate_child(*args, **kwargs):
+        shell.agent.session_id = "child"
+        return summary, ""
+
+    shell.agent._compress_context.side_effect = rotate_child
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress("/compress here 2")
+
+    flushed = shell.agent._flush_messages_to_session_db.call_args.args[0]
+    assert [m["content"] for m in flushed[-4:]] == ["u2", "a2", "u3", "a3"]
+    assert all("_db_persisted" not in m for m in flushed)
 
 
 def test_compress_here_banner_mentions_summarizing_up_to_here(capsys):

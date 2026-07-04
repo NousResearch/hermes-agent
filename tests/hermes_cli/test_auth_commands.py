@@ -6,6 +6,7 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,15 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _write_auth_store_at(home: Path, payload: dict) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _read_auth_store_at(home: Path) -> dict:
+    return json.loads((home / "auth.json").read_text())
 
 
 def _jwt_with_email(email: str) -> str:
@@ -752,6 +762,80 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     assert entry["last_status"] is None
     assert entry["last_status_at"] is None
     assert entry["last_error_code"] is None
+
+
+def _exhausted_openai_codex_entry(entry_id: str) -> dict:
+    return {
+        "id": entry_id,
+        "label": f"{entry_id}@example.com",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:device_code",
+        "access_token": _jwt_with_email(f"{entry_id}@example.com"),
+        "refresh_token": f"refresh-{entry_id}",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "last_status": "exhausted",
+        "last_status_at": 1711230000.0,
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit_reached",
+        "last_error_message": "The usage limit has been reached",
+        "last_error_reset_at": 1711233600.0,
+    }
+
+
+def test_auth_reset_from_default_clears_named_profile_statuses(tmp_path, monkeypatch, capsys):
+    """Default-profile `auth reset` clears local cooldowns in named profiles too."""
+    from hermes_cli.auth_commands import auth_reset_command
+
+    root = tmp_path / "hermes-root"
+    anthony = root / "profiles" / "anthony-agent"
+    irmella = root / "profiles" / "irmella-agent"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    for home, entry_id in ((root, "root"), (anthony, "anthony"), (irmella, "irmella")):
+        _write_auth_store_at(
+            home,
+            {
+                "version": 1,
+                "credential_pool": {"openai-codex": [_exhausted_openai_codex_entry(entry_id)]},
+            },
+        )
+
+    auth_reset_command(type("Args", (), {"provider": "openai-codex"})())
+
+    out = capsys.readouterr().out
+    assert "across 3 profiles" in out
+    for home in (root, anthony, irmella):
+        entry = _read_auth_store_at(home)["credential_pool"]["openai-codex"][0]
+        assert entry["last_status"] is None
+        assert entry["last_status_at"] is None
+        assert entry["last_error_code"] is None
+        assert entry["last_error_reset_at"] is None
+
+
+def test_auth_reset_all_profiles_does_not_materialize_global_fallback(tmp_path, monkeypatch):
+    """Profiles inheriting root credentials must not get root tokens copied during reset."""
+    from hermes_cli.auth_commands import auth_reset_command
+
+    root = tmp_path / "hermes-root"
+    empty_profile = root / "profiles" / "anthony-agent"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    _write_auth_store_at(
+        root,
+        {
+            "version": 1,
+            "credential_pool": {"openai-codex": [_exhausted_openai_codex_entry("root")]},
+        },
+    )
+    _write_auth_store_at(empty_profile, {"version": 1, "credential_pool": {}})
+
+    auth_reset_command(type("Args", (), {"provider": "openai-codex"})())
+
+    root_entry = _read_auth_store_at(root)["credential_pool"]["openai-codex"][0]
+    assert root_entry["last_status"] is None
+    profile_payload = _read_auth_store_at(empty_profile)
+    assert profile_payload.get("credential_pool", {}) == {}
 
 
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):

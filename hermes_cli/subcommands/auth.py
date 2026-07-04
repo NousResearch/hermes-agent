@@ -62,6 +62,17 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )
     auth_reset.add_argument("provider", help="Provider id")
+    auth_reset_scope = auth_reset.add_mutually_exclusive_group()
+    auth_reset_scope.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Also clear matching credential status in every named profile",
+    )
+    auth_reset_scope.add_argument(
+        "--current-profile-only",
+        action="store_true",
+        help="Only clear the active profile auth store",
+    )
     auth_status = auth_subparsers.add_parser(
         "status", help="Show auth status for a provider"
     )

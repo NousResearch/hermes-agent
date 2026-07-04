@@ -153,6 +153,24 @@ class TestWecomCallbackRouting:
         assert calls["json"]["agentid"] == 1001
 
 
+class TestWecomCallbackLifecycle:
+    @pytest.mark.asyncio
+    async def test_connect_accepts_reconnect_kwarg_without_apps(self):
+        adapter = WecomCallbackAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "mode": "callback",
+                    "host": "127.0.0.1",
+                    "port": 0,
+                    "apps": [],
+                },
+            )
+        )
+
+        assert await adapter.connect(is_reconnect=True) is False
+
+
 class TestWecomCallbackSendTokenRefresh:
     @pytest.mark.asyncio
     async def test_send_retries_with_fresh_token_on_errcode_40001(self):
@@ -345,5 +363,4 @@ class TestWecomCallbackBodySizeLimit:
         small = b"<xml><Encrypt>not-real</Encrypt></xml>"
         response = await adapter._handle_callback(self._request(small))
         assert response.status != 413
-
 

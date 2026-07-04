@@ -115,7 +115,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self._apps:
             logger.warning("[WecomCallback] No callback apps configured")
             return False

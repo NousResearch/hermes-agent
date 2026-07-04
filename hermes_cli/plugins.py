@@ -188,9 +188,11 @@ VALID_HOOKS: Set[str] = {
     "pre_approval_request",
     "post_approval_response",
     # Kanban task lifecycle hooks. Fired by hermes_cli.kanban_db when a task
-    # transitions state, AFTER the change is committed to the board DB (so the
-    # hook always sees durable state and a slow plugin can never hold the
-    # SQLite write lock). Observers only: return values are ignored.
+    # transitions state.  Observer hooks ("kanban_task_claimed", "_unblocked",
+    # "_created") fire AFTER the write txn commits so a slow plugin can never
+    # hold the SQLite write lock and the hook always sees durable state.
+    # Governance hooks ("kanban_pre_complete") fire BEFORE the write txn and
+    # may block the transition.
     #
     # WHICH PROCESS each fires in matters, because kanban workers run as
     # separate `hermes -p <profile> chat -q` subprocesses:
@@ -201,17 +203,30 @@ VALID_HOOKS: Set[str] = {
     #                              kanban_complete (or a CLI/manual complete).
     #   - kanban_task_blocked   -> the WORKER process (worker-initiated block)
     #                              or whichever process drove the block.
+    #   - kanban_task_created   -> whichever process called create_task
+    #                              (CLI, dispatcher, or decomposer).
+    #   - kanban_task_unblocked -> whichever process called unblock_task.
+    #   - kanban_pre_complete   -> the WORKER (or CLI) process BEFORE the
+    #                              complete write txn.  Callbacks may return
+    #                              {"action": "block", "reason": "..."} to
+    #                              veto the transition.  First block wins;
+    #                              None / {"action": "allow"} permits.
     # A plugin that needs to observe every transition centrally should hook in
     # the dispatcher; one that needs per-task in-session context should hook in
     # the worker.
     #
-    # Common kwargs: task_id: str, board: str | None, assignee: str | None,
-    #   run_id: int | None, profile_name: str.
+    # Common kwargs (all hooks): task_id: str, board: str | None,
+    #   assignee: str | None, run_id: int | None, profile_name: str.
     # kanban_task_completed adds: summary: str | None.
     # kanban_task_blocked adds:   reason: str | None.
+    # kanban_pre_complete adds:   summary: str | None (the proposed summary;
+    #                              may differ from final stored value).
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    "kanban_task_created",
+    "kanban_task_unblocked",
+    "kanban_pre_complete",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

@@ -316,6 +316,38 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-api03-mykey"
 
+    def test_api_key_wins_over_auto_discovered_claude_code_credentials(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        assert resolve_anthropic_token() == "sk-ant-api03-mykey"
+
+    def test_api_key_path_does_not_read_auto_discovered_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("Claude Code credentials should not be read")
+            ),
+        )
+
+        assert resolve_anthropic_token() == "sk-ant-api03-mykey"
+
     def test_falls_back_to_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
@@ -374,26 +406,25 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "pool-oauth-token"
 
-    def test_prefers_anthropic_credential_pool_oauth_over_api_key(self, monkeypatch, tmp_path):
+    def test_api_key_wins_over_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        # Pool (source #4) must win over ANTHROPIC_API_KEY (source #5); also
-        # isolate source #3 so a machine-local Claude Code creds / keychain
-        # entry can't short-circuit before the pool.
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
-
-        pool_entry = SimpleNamespace(
-            auth_type="oauth",
-            access_token="pool-oauth-token",
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("Claude Code credentials should not be read")
+            ),
         )
-        pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: [pool_entry],
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: (_ for _ in ()).throw(
+                AssertionError("credential_pool should not be read")
+            ),
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
-        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert resolve_anthropic_token() == "sk-ant...ykey"
 
     def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
         """A persisted OAuth entry with access_token=None must not crash the

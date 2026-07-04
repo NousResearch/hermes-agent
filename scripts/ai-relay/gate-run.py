@@ -16,6 +16,12 @@ except ImportError:
 
 GATE_TIMEOUT = 1800
 
+def repo_python(cwd: Path):
+    for p in (cwd/".venv"/"bin"/"python", cwd/"venv"/"bin"/"python"):
+        if p.exists():
+            return str(p)
+    return sys.executable
+
 def detect_gate(cwd: Path):
     pkg = cwd / "package.json"
     if pkg.exists():
@@ -34,8 +40,31 @@ def detect_gate(cwd: Path):
             if re.search(rf"^{re.escape(target)}:", txt, re.M):
                 return (["make", target], f"make {target}")
     if any((cwd/f).exists() for f in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg")):
-        return ([sys.executable, "-m", "pytest", "-q"], "pytest -q")
+        return ([repo_python(cwd), "-m", "pytest", "-q"], "pytest -q")
     return (None, None)
+
+def is_tool_missing(output: str, cmd: list) -> bool:
+    if not output or not cmd:
+        return False
+
+    bin_name = Path(str(cmd[0])).name
+    module_names = []
+    for i, part in enumerate(cmd[:-1]):
+        if part == "-m":
+            module_names.append(str(cmd[i + 1]))
+
+    checks = []
+    for name in module_names:
+        checks.append(rf"no module named ['\"]?{re.escape(name)}['\"]?(?![\w.])")
+    for name in {bin_name, *module_names}:
+        escaped = re.escape(name)
+        checks.extend([
+            rf"(?<![\w.-]){escaped}: command not found",
+            rf"command not found: {escaped}(?![\w.-])",
+            rf"'{escaped}' is not recognized as an internal",
+        ])
+
+    return any(re.search(check, output, re.I) for check in checks)
 
 _SECRET_RE = [
     re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.I),
@@ -97,17 +126,30 @@ def main():
     try:
         p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=GATE_TIMEOUT)
         exit_code, output = p.returncode, (p.stdout or "")+(p.stderr or "")
+    except FileNotFoundError:
+        write_ledger(cwd, {**base,"gate_command":label,"gate_exit":"not_found","result":"error","status":"error","output_ref":""})
+        print(json.dumps({"gate_status":"error","gate_command":label,
+                          "reason":f"gate tool ไม่ได้ติดตั้ง: {label}","ledger_written":True}, ensure_ascii=False)); sys.exit(3)
     except subprocess.TimeoutExpired:
         write_ledger(cwd, {**base,"gate_command":label,"gate_exit":"timeout","result":"error","status":"error","output_ref":""})
         print(json.dumps({"gate_status":"error","gate_command":label,"reason":"timeout","ledger_written":True}, ensure_ascii=False)); sys.exit(3)
     except Exception as e:
         print(json.dumps({"gate_status":"error","reason":str(e)}, ensure_ascii=False)); sys.exit(3)
 
-    status = "pass" if exit_code == 0 else "fail"
     od = cwd/".hermes"/"gate-output"; od.mkdir(parents=True, exist_ok=True)
     safe_task = re.sub(r"[^A-Za-z0-9._-]","_",a.task_id)
     out_file = od/f"{safe_task}-{ts.replace(':','')}-{os.getpid()}.log"  # ใส่ pid กันชื่อชนเมื่อรันพร้อมกันในวินาทีเดียว
     out_file.write_text(redact(output), encoding="utf-8")
+
+    if exit_code != 0 and is_tool_missing(output, cmd):
+        ledger = write_ledger(cwd, {**base,"gate_command":label,"gate_exit":exit_code,
+                                    "result":"error","status":"error","output_ref":str(out_file)})
+        print(json.dumps({"gate_status":"error","gate_exit":exit_code,"gate_command":label,
+                          "reason":f"gate tool ไม่ได้ติดตั้ง: {label}","commit_sha":sha,
+                          "output_ref":str(out_file),"ledger_written":True}, ensure_ascii=False))
+        sys.exit(3)
+
+    status = "pass" if exit_code == 0 else "fail"
     ledger = write_ledger(cwd, {**base,"gate_command":label,"gate_exit":exit_code,
                                 "result":status,"status":status,"output_ref":str(out_file)})
     print(json.dumps({"gate_status":status,"gate_exit":exit_code,"gate_command":label,

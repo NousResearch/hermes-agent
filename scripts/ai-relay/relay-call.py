@@ -45,7 +45,7 @@ DEFAULT_ADAPTERS = {
 DEFAULT_ACCOUNTS = {
     "fallback": {"code_writing": ["grok","codex","gemini","ollama"]},
     "limits": {"max_rounds_per_issue": 3, "max_calls_per_session": 50,
-               "max_fable_calls_per_session": 3, "budget": None},
+               "max_fable_calls_per_session": 3, "session_hours": 12, "budget": None},
     "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
     "ollama_models": {"default": "qwen3:8b", "code": "deepseek-r1:7b"},
 }
@@ -152,17 +152,30 @@ def load_relay_env(cwd: Path):
     load_env_file(Path.home()/".hermes"/".env")
     load_env_file(cwd/".hermes"/".env")
 
-# ---- จัดประเภท error จาก exit code + stderr (เป็นที่เดียวที่ตีความ) ----
-def classify(exit_code, stderr):
-    s = (stderr or "").lower()
-    if exit_code == 127 or "command not found" in s or "no such file" in s:
+AUTH_RE = re.compile(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables", re.I)
+QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|too many request|usage limit|insufficient", re.I)
+
+# ---- จัดประเภท error จาก exit code + stdout/stderr (เป็นที่เดียวที่ตีความ) ----
+def classify(exit_code, stdout, stderr):
+    out = stdout or ""
+    err = stderr or ""
+    err_low = err.lower()
+    if exit_code == 127:
         return "not_found"
-    if re.search(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables", s):
-        return "auth"
-    if re.search(r"\b429\b|rate.?limit|quota|too many request|usage limit|insufficient", s):
-        return "quota"
     if exit_code == 0:
+        if len(out.strip()) < 40 and AUTH_RE.search(err):
+            return "auth"
         return "ok"
+    if "command not found" in err_low or "no such file" in err_low:
+        return "not_found"
+    if AUTH_RE.search(err):
+        return "auth"
+    if QUOTA_RE.search(err):
+        return "quota"
+    if AUTH_RE.search(out):
+        return "auth"
+    if QUOTA_RE.search(out):
+        return "quota"
     return "crash"
 
 REASON = {
@@ -239,20 +252,36 @@ def run_once(spec, prompt, cwd, model):
         return 124, "", "timeout"
 
 # ---- ตัวนับงบระดับ session (ไฟล์เล็กใน cfg dir · ล็อกไฟล์กันนับพลาดเมื่อรันพร้อมกัน) ----
-def bump_counter(cwd: Path, name: str):
+def bump_counter(cwd: Path, name: str, session_hours=12):
     f = cfg_dir(cwd)/name; f.parent.mkdir(parents=True, exist_ok=True)
     with open(f, "a+", encoding="utf-8") as fh:
         if fcntl: fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
-        try: n = int((fh.read() or "0").strip() or 0)
-        except Exception: n = 0
+        raw = (fh.read() or "").strip()
+        now = time.time()
+        started = now
+        try:
+            data = json.loads(raw) if raw else {}
+            n = int(data.get("count", 0) or 0)
+            started = float(data.get("started", now) or now)
+        except Exception:
+            try: n = int(raw or 0)
+            except Exception: n = 0
+            started = now
+        try:
+            hours = float(session_hours or 12)
+        except Exception:
+            hours = 12
+        if hours > 0 and now - started > hours * 3600:
+            n = 0
+            started = now
         n += 1
-        fh.seek(0); fh.truncate(); fh.write(str(n))
+        fh.seek(0); fh.truncate(); fh.write(json.dumps({"count": n, "started": started}))
         if fcntl: fcntl.flock(fh, fcntl.LOCK_UN)
     return n
 
-def bump_calls(cwd: Path):
-    return bump_counter(cwd, ".session-calls")
+def bump_calls(cwd: Path, session_hours=12):
+    return bump_counter(cwd, ".session-calls", session_hours=session_hours)
 
 # ---- cooldown: ตัวไหนพัง/ชนโควต้าซ้ำในช่วงสั้น พักตัวนั้นชั่วคราว ไม่เสียเวลาลองซ้ำทุกรอบ ----
 def _cooldown_file(cwd: Path): return cfg_dir(cwd)/".cooldown.json"
@@ -313,9 +342,10 @@ def main():
     cd_cfg = {**DEFAULT_ACCOUNTS["cooldown"], **(accounts.get("cooldown") or {})}
     models = accounts.get("ollama_models", DEFAULT_ACCOUNTS["ollama_models"])
     is_brain = bool(adapters.get(a.tool, {}).get("brain"))
+    session_hours = limits.get("session_hours", DEFAULT_ACCOUNTS["limits"]["session_hours"])
 
     # เพดาน session
-    calls = bump_calls(cwd)
+    calls = bump_calls(cwd, session_hours=session_hours)
     if limits.get("max_calls_per_session") and calls > limits["max_calls_per_session"]:
         out = {"status":"limit_exceeded","tool":a.tool,"reason_human":"เกินเพดานจำนวนครั้งต่อรอบงาน หยุดเพื่อกันค่าใช้จ่ายบาน",
                "calls_used":calls,"ledger_written":False}
@@ -323,7 +353,7 @@ def main():
 
     # เพดานแยกของสมองพิเศษ (fable แพงสุด · นับต่างหาก · เกิน = หยุดทันที)
     if is_brain:
-        fable_calls = bump_counter(cwd, ".session-fable-calls")
+        fable_calls = bump_counter(cwd, ".session-fable-calls", session_hours=session_hours)
         if limits.get("max_fable_calls_per_session") and fable_calls > limits["max_fable_calls_per_session"]:
             out = {"status":"limit_exceeded","tool":a.tool,
                    "reason_human":f"เกินเพดานเรียกสมองพิเศษ ({limits['max_fable_calls_per_session']} ครั้ง/รอบงาน) ให้กลับไปใช้สมองหลัก หรือถามเจ้าของก่อน",
@@ -334,7 +364,7 @@ def main():
     safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", a.task_id)
     rounds = 0
     if not is_brain:
-        rounds = bump_counter(cwd, f".rounds-{safe_task}")
+        rounds = bump_counter(cwd, f".rounds-{safe_task}", session_hours=session_hours)
         if limits.get("max_rounds_per_issue") and rounds > limits["max_rounds_per_issue"]:
             out = {"status":"limit_exceeded","tool":a.tool,
                    "reason_human":f"issue {a.task_id} แก้เกิน {limits['max_rounds_per_issue']} รอบแล้ว หยุดเพื่อกันวนไหม้เงิน ให้ยกขึ้นสมองคิดใหม่หรือถามเจ้าของ",
@@ -375,7 +405,7 @@ def main():
         model = models.get("code") if tool == "ollama" else ""
         relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
         code, out, err = run_once(adapters[tool], prompt, cwd, model)
-        st = classify(code, f"{out}\n{err}")
+        st = classify(code, out, err)
         tried.append(f"{tool}:{st}")
 
         if st == "ok":

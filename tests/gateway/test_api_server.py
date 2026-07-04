@@ -2103,6 +2103,62 @@ class TestResponsesEndpoint:
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
+        """After compression, stored history is the compressed transcript, not prior + compressed."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10  # 20 messages — enough to simulate a long conversation
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            # Compressed transcript starts with summary, NOT with prior[0]
+            {"role": "user", "content": "[Compressed summary of earlier conversation]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "3",
+                        "messages": list(compressed_history),
+                        "_compressed": True,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        stored_history = stored["conversation_history"]
+        # Must NOT contain the original prior_history messages
+        for msg in prior_history:
+            assert msg not in stored_history, (
+                f"Prior history message leaked into stored compressed transcript: {msg}"
+            )
+        # Must contain the compressed transcript
+        assert stored_history == compressed_history
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""
         prior_history = [

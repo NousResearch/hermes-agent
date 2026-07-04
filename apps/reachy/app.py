@@ -12,6 +12,7 @@ import uvicorn
 from apps.reachy.sim_bridge import router as sim_router
 from apps.reachy.vscode import router as vscode_router
 from apps.reachy.mcp_tools import router as mcp_tools_router
+from apps.reachy.ae_coding_conductor import router as ae_coding_router
 from hermes_cli.conductor import run_hermes
 
 REPO = Path(__file__).resolve().parents[2]
@@ -41,10 +42,11 @@ class ReachyState:
 
 
 state = ReachyState()
-app = FastAPI(title="Hermes Reachy", version="0.2")
+app = FastAPI(title="Hermes Reachy", version="0.3")
 app.include_router(sim_router)
 app.include_router(vscode_router)
 app.include_router(mcp_tools_router)
+app.include_router(ae_coding_router)
 
 
 @app.get("/", response_class=HTMLResponse)

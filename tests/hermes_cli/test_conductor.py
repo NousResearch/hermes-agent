@@ -78,6 +78,10 @@ def test_default_dispatcher_handles_builtin_schemes() -> None:
         assert result["ok"] is True, command
         assert result["stdout"]
         assert "surface" in result
+    action_result = _dispatch("+æ://conductor plan")
+    assert action_result["ok"] is True
+    assert action_result["surface"]["kind"] == "ae_coding_conductor"
+    assert action_result["surface"]["action"] == "plan"
 
 
 def test_run_hermes_scheme_scheme_property() -> None:

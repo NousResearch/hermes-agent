@@ -89,6 +89,22 @@ def _pc_dispatch(raw: str) -> dict:
     }
 
 
+def _conductor_dispatch(raw: str) -> dict:
+    action = raw.split(" ", 1)[1].strip() if " " in raw else "status"
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": "+æ://conductor → AE Viewport Coding Conductor\n",
+        "stderr": "",
+        "surface": {
+            "kind": "ae_coding_conductor",
+            "address": f"+æ://conductor/{action or 'status'}",
+            "action": action or "status",
+            "runtime": "hermes-agent",
+        },
+    }
+
+
 def _media_dispatch(raw: str) -> dict:
     return {
         "ok": True,
@@ -97,7 +113,7 @@ def _media_dispatch(raw: str) -> dict:
         "stderr": "",
         "surface": {
             "kind": "media",
-            "address": raw,
+            "address": "+æ://media^ffmpeg",
             "runtime": "ffmpeg",
             "execution": "deterministic",
             "allowed": [
@@ -272,6 +288,7 @@ _DISPATCHER.register("vscode://", _vscode_dispatch)
 _DISPATCHER.register("reachy://", _reachy_dispatch)
 _DISPATCHER.register("mcp://", _mcp_dispatch)
 _DISPATCHER.register("+æ://media^ffmpeg", _media_dispatch)
+_DISPATCHER.register("+æ://conductor", _conductor_dispatch)
 
 
 def _is_scheme_cmd(raw: str) -> bool:

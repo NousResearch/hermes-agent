@@ -665,6 +665,12 @@ C:\æ\hermes-fork\blueprints\hermes-viewport-computer.md</pre>
       } else if (/^(c:\/\/cc|H:\/\/cc|hermes:\/\/cc)/.test(trimmed)) {
         const { data } = await conductor(trimmed, []);
         raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (trimmed.startsWith('+æ://conductor')) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
+      } else if (trimmed.startsWith('+æ://media^ffmpeg')) {
+        const { data } = await conductor(trimmed, []);
+        raw(data.stdout || data.stderr || JSON.stringify(data, null, 2));
       } else if (
         /^(pc:\/\/|c:\/\/|H:\/\/|hermes:\/\/|daollc:\/\/|llc:\/\/|NOUS:\/\/|intent:\/\/|\+æ:\/\/|mcp:\/\/|vscode:\/\/|reachy:\/\/)/.test(trimmed)
       ) {

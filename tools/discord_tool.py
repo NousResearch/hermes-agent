@@ -86,7 +86,7 @@ def _discord_request(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
-                return None
+                return [] if method == "GET" else None
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = ""

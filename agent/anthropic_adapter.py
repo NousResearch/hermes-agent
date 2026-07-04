@@ -1391,6 +1391,8 @@ _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
+_OAUTH_TOKEN_EXCHANGE_MAX_429_RETRIES = 3
+_OAUTH_TOKEN_EXCHANGE_MAX_RETRY_AFTER = 30.0
 
 
 def _generate_pkce() -> tuple:
@@ -1404,6 +1406,23 @@ def _generate_pkce() -> tuple:
         hashlib.sha256(verifier.encode()).digest()
     ).rstrip(b"=").decode()
     return verifier, challenge
+
+
+def _oauth_token_exchange_retry_delay(exc: Exception, attempt: int) -> float:
+    """Return a bounded delay for OAuth token-exchange HTTP 429 retries."""
+    headers = getattr(exc, "headers", None)
+    retry_after = None
+    if headers is not None:
+        try:
+            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+        except Exception:
+            retry_after = None
+    if retry_after:
+        try:
+            return min(float(retry_after), _OAUTH_TOKEN_EXCHANGE_MAX_RETRY_AFTER)
+        except (TypeError, ValueError):
+            pass
+    return min(2.0 ** max(0, attempt), _OAUTH_TOKEN_EXCHANGE_MAX_RETRY_AFTER)
 
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
@@ -1474,6 +1493,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        import urllib.error
         import urllib.request
 
         exchange_data = json.dumps({
@@ -1494,23 +1514,43 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         result = None
         last_error = None
         for endpoint in _OAUTH_TOKEN_URLS:
-            req = urllib.request.Request(
-                endpoint,
-                data=exchange_data,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": _OAUTH_TOKEN_USER_AGENT,
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    result = json.loads(resp.read().decode())
+            attempt = 0
+            while True:
+                req = urllib.request.Request(
+                    endpoint,
+                    data=exchange_data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": _OAUTH_TOKEN_USER_AGENT,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        result = json.loads(resp.read().decode())
+                    break
+                except urllib.error.HTTPError as exc:
+                    last_error = exc
+                    if exc.code == 429:
+                        if attempt >= _OAUTH_TOKEN_EXCHANGE_MAX_429_RETRIES:
+                            raise
+                        delay = _oauth_token_exchange_retry_delay(exc, attempt)
+                        logger.debug(
+                            "Anthropic token exchange rate-limited at %s; retrying in %.1fs",
+                            endpoint,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        attempt += 1
+                        continue
+                    logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                    break
+            if result is not None:
                 break
-            except Exception as exc:
-                last_error = exc
-                logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
-                continue
 
         if result is None:
             raise last_error if last_error is not None else ValueError(

@@ -253,6 +253,143 @@ def test_login_token_exchange_falls_back_to_console_host(monkeypatch, tmp_path):
     ], "login must try platform.claude.com first, then fall back to console"
 
 
+def test_login_token_exchange_retries_429_before_fallback(monkeypatch, tmp_path):
+    """A transient token-endpoint 429 must retry in place before falling back.
+
+    Authorization codes are single-use. Falling through to another host after a
+    transient 429 wastes the code and forces the user through the browser flow
+    again, so the platform endpoint must get its retry budget first.
+    """
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured_url: Dict[str, str] = {}
+    _patch_oauth_flow(
+        monkeypatch,
+        callback_code="placeholder",
+        capture_auth_url=captured_url,
+    )
+
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    class _FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    class _Headers(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempts.append(req.full_url)
+        if len(attempts) == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                429,
+                "Too Many Requests",
+                _Headers({"Retry-After": "0.25"}),
+                None,
+            )
+        body = json.dumps(
+            {
+                "access_token": "sk-ant-test-access",
+                "refresh_token": "sk-ant-test-refresh",
+                "expires_in": 3600,
+            }
+        ).encode()
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("time.sleep", lambda delay: sleeps.append(delay))
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is not None, "login should recover from a transient 429"
+    assert attempts == [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://platform.claude.com/v1/oauth/token",
+    ], "429 retry must stay on the same endpoint before considering fallback"
+    assert sleeps == [0.25]
+
+
+def test_login_token_exchange_exhausts_429_without_console_fallback(monkeypatch, tmp_path):
+    """Persistent 429s should fail after bounded in-place retries.
+
+    The legacy console endpoint is not a useful fallback for a rate-limited live
+    endpoint and can turn the failure into a misleading 404.
+    """
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured_url: Dict[str, str] = {}
+    _patch_oauth_flow(
+        monkeypatch,
+        callback_code="placeholder",
+        capture_auth_url=captured_url,
+    )
+
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempts.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("time.sleep", lambda delay: sleeps.append(delay))
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._OAUTH_TOKEN_EXCHANGE_MAX_429_RETRIES",
+        2,
+    )
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is None
+    assert attempts == [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://platform.claude.com/v1/oauth/token",
+        "https://platform.claude.com/v1/oauth/token",
+    ]
+    assert all(url.startswith("https://platform.claude.com") for url in attempts)
+    assert sleeps == [1.0, 2.0]
+
+
 def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     """If the state returned in the callback does not match the one we sent
     in the authorization URL, the flow must abort before exchanging the code.

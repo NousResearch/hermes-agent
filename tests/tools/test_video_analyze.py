@@ -1,7 +1,9 @@
 """Tests for video_analyze tool in tools/vision_tools.py."""
 
 import asyncio
+import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -301,6 +303,47 @@ class TestVideoAnalyzeTool:
         assert content[1]["type"] == "video_url"
         assert "video_url" in content[1]
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+    def test_non_local_backend_reads_video_from_terminal_backend(self, tmp_path, monkeypatch):
+        """Non-local terminal backends must not read local host video paths."""
+        host_video = tmp_path / "clip.mp4"
+        host_video.write_bytes(b"HOST-VIDEO")
+        remote_bytes = b"REMOTE-SANDBOX-VIDEO"
+        remote_b64 = base64.b64encode(remote_bytes).decode("ascii")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        class FakeFileOps:
+            def _exec(self, command, timeout=None):
+                assert str(host_video) in command
+                assert timeout == 300
+                return SimpleNamespace(stdout=remote_b64, exit_code=0)
+
+        captured_kwargs = {}
+
+        async def capture_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "sandbox video"
+            return mock_response
+
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=FakeFileOps()) as get_ops,
+            patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value="sandbox video"),
+        ):
+            result = self._run(
+                video_analyze_tool(str(host_video), "Describe this", task_id="task-123")
+            )
+
+        data = json.loads(result)
+        assert data["success"] is True
+        get_ops.assert_called_once_with("task-123")
+        video_url = captured_kwargs["messages"][0]["content"][1]["video_url"]["url"]
+        uploaded_bytes = base64.b64decode(video_url.split(",", 1)[1])
+        assert uploaded_bytes == remote_bytes
+        assert uploaded_bytes != host_video.read_bytes()
 
 
 # ---------------------------------------------------------------------------

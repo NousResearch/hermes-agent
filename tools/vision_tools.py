@@ -35,6 +35,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import shlex
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1415,6 +1416,60 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     return f"data:{mime};base64,{encoded}"
 
 
+def _terminal_backend_is_local() -> bool:
+    backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return backend in ("", "local")
+
+
+def _is_path_like_video_source(value: str) -> bool:
+    lowered = (value or "").strip().lower()
+    if not lowered:
+        return False
+    return not lowered.startswith(("http://", "https://", "data:"))
+
+
+def _materialize_video_from_terminal_backend(video_source: str, task_id: Optional[str]) -> Path:
+    """Read a path from the active terminal backend into a local temp video file."""
+    from tools.file_tools import _get_file_ops
+
+    source = video_source
+    if source.startswith("file://"):
+        source = source[len("file://"):]
+    suffix = Path(source).suffix.lower()
+    if suffix not in _VIDEO_MIME_TYPES:
+        raise ValueError(
+            f"Unsupported video format: '{suffix}'. "
+            f"Supported: {', '.join(sorted(_VIDEO_MIME_TYPES.keys()))}"
+        )
+
+    command = (
+        "python3 -c "
+        + shlex.quote(
+            "import base64, pathlib, sys; "
+            "p = pathlib.Path(sys.argv[1]).expanduser(); "
+            "sys.stdout.write(base64.b64encode(p.read_bytes()).decode('ascii'))"
+        )
+        + f" {shlex.quote(source)}"
+    )
+    file_ops = _get_file_ops(task_id or "default")
+    result = file_ops._exec(command, timeout=300)
+    if result.exit_code != 0:
+        details = result.stdout.strip() or f"exit code {result.exit_code}"
+        raise ValueError(f"Could not read video from terminal backend: {details}")
+
+    encoded = "".join(result.stdout.split())
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError(f"Terminal backend returned invalid video data: {exc}") from exc
+
+    temp_dir = get_hermes_dir("cache/video", "temp_video_files")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
+    temp_path.write_bytes(data)
+    return temp_path
+
+
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
     """Download video from URL with SSRF protection and retry."""
     import asyncio
@@ -1492,6 +1547,7 @@ async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
     model: str = None,
+    task_id: Optional[str] = None,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
@@ -1526,7 +1582,11 @@ async def video_analyze_tool(
             resolved_url = resolved_url[len("file://"):]
         local_path = Path(os.path.expanduser(resolved_url))
 
-        if local_path.is_file():
+        if not _terminal_backend_is_local() and _is_path_like_video_source(video_url):
+            logger.info("Reading video source via terminal backend: %s", video_url)
+            temp_video_path = _materialize_video_from_terminal_backend(video_url, task_id)
+            should_cleanup = True
+        elif local_path.is_file():
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False
@@ -1742,7 +1802,7 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         pass
     if not model:
         model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return video_analyze_tool(video_url, full_prompt, model)
+    return video_analyze_tool(video_url, full_prompt, model, task_id=kw.get("task_id"))
 
 
 registry.register(

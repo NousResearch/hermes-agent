@@ -69,6 +69,38 @@ class TestLocalBackend:
         res = await isrc.resolve_image_source(f"file://{img}", isrc.ResolveContext())
         assert res.mime == "image/jpeg"
 
+    @pytest.mark.asyncio
+    async def test_bare_relative_path_resolves(self, tmp_path, monkeypatch):
+        """A cwd-relative bare filename ('pic.png') is a valid local source —
+        main accepted it; the resolver must not regress it (PR review)."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.png"
+        img.write_bytes(PNG)
+        monkeypatch.chdir(tmp_path)
+        res = await isrc.resolve_image_source("pic.png", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_unknown_url_scheme_rejected(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with pytest.raises(isrc.UnsupportedScheme):
+            await isrc.resolve_image_source(
+                "ftp://example.com/pic.png", isrc.ResolveContext())
+
+    @pytest.mark.asyncio
+    async def test_svg_rejected_with_conversion_hint(self, tmp_path, monkeypatch):
+        """SVG has no raster magic bytes; the resolver rejects it with a
+        dedicated, actionable message (review note W3)."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        svg = tmp_path / "art.svg"
+        svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+        with pytest.raises(isrc.NotAnImage, match="SVG is not supported"):
+            await isrc.resolve_image_source(str(svg), isrc.ResolveContext())
+
 
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to

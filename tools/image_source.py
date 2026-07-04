@@ -26,11 +26,13 @@ mechanism that fixes "vision can't see container files" also closes the escape.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # Raw-bytes INGEST budget — what the resolver will load before handing off.
 # This is deliberately the 50MB download cap (tools/vision_tools._VISION_MAX_DOWNLOAD_BYTES),
@@ -70,8 +72,6 @@ class NotAnImage(ImageResolutionError):
 @dataclass
 class ResolveContext:
     task_id: Optional[str] = None
-    cfg: Optional[dict[str, Any]] = None
-    extra_roots: tuple = field(default_factory=tuple)
 
 
 @dataclass
@@ -79,6 +79,11 @@ class ResolvedImage:
     data: bytes
     mime: str
     origin: str  # one of: data | http | file | local | container
+
+
+# Explicit URL scheme, e.g. "ftp://", "s3://". Bare Windows drive paths
+# ("C:\x.png") don't match because they lack the "//".
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
@@ -94,27 +99,34 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
             raise SourceUnsafe(reason, src=s)
         return _finalize(await _download_to_bytes(s), "", "http", s)
 
-    candidate = s[len("file://"):] if s.startswith("file://") else s
-    if s.startswith("file://") or _looks_like_path(candidate):
-        p = Path(os.path.expanduser(candidate))
-        # Confinement decision (see module docstring). Under a non-local backend
-        # a path is host-readable ONLY if it lands in a media cache (after
-        # translating a container-visible cache path back to its host mount);
-        # every other path is read inside the sandbox via exec-read, so a host
-        # path outside the caches never yields the host's bytes.
-        host_target = _permitted_host_read_target(p, ctx)
-        if host_target is not None and host_target.is_file():
-            return _finalize(host_target.read_bytes(), "", "file", s)
-        # Not a permitted host read (or the host file is absent) -> read the
-        # bytes inside the sandbox. On the local backend this reaches the same
-        # host file; under a sandbox it reads the container's filesystem.
-        return await _resolve_container_fallback(p, ctx, s)
+    if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
+        raise UnsupportedScheme(
+            "Unrecognized image source scheme. Use an http(s) URL, a local "
+            "file path, a file:// URI, or a data: URL.",
+            src=s,
+        )
 
-    raise UnsupportedScheme(
-        "Unrecognized image source. Use an http(s) URL, a local file path, "
-        "a file:// URI, or a data: URL.",
-        src=s,
-    )
+    # Everything else is a filesystem path — including bare relative names
+    # like "pic.png" (accepted on main; a path-shape gate here regressed them).
+    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
+    p = Path(os.path.expanduser(candidate))
+    # Confinement decision (see module docstring). Under a non-local backend
+    # a path is host-readable ONLY if it lands in a media cache (after
+    # translating a container-visible cache path back to its host mount);
+    # every other path is read inside the sandbox via exec-read, so a host
+    # path outside the caches never yields the host's bytes.
+    host_target = _permitted_host_read_target(p, ctx)
+    if host_target is not None and host_target.is_file():
+        data = await asyncio.to_thread(host_target.read_bytes)
+        return _finalize(data, "", "file", s)
+    if _is_local_terminal_backend():
+        # Local backend: any path was host-readable, so a miss simply means
+        # the file doesn't exist — no sandbox to fall back to.
+        raise SourceNotFound(f"image file not found: '{p}'", src=s, origin="file")
+    # Not a permitted host read (or the host file is absent) -> read the
+    # bytes inside the sandbox. Under a sandbox this reads the container's
+    # filesystem, never the host's.
+    return await _resolve_container_fallback(p, ctx, s)
 
 
 def _resolve_data_url(s: str) -> tuple[bytes, str]:
@@ -135,8 +147,12 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
 def _http_block_reason(url: str) -> Optional[str]:
     """Return a human-readable block reason, or None when the URL is allowed.
 
-    Preserves the specific website-policy message (rather than collapsing it to
-    a generic string) so the agent sees *why* a fetch was refused.
+    Pre-flight short-circuit: policy-blocked URLs are refused BEFORE any
+    network I/O. ``_download_image`` re-checks policy internally (per attempt
+    and against the final redirect target) — that second evaluation is
+    intentional, not redundant: this one guarantees no bytes move for a
+    blocked URL; the inner one covers redirects and non-resolver callers.
+    Preserves the specific website-policy message so the agent sees *why*.
     """
     from tools.url_safety import is_safe_url
     from tools.website_policy import check_website_access
@@ -157,14 +173,13 @@ async def _download_to_bytes(url: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
         tmp = Path(tf.name)
     try:
-        await _download_image(url, tmp)  # enforces the 50MB stream cap + redirect SSRF guard
-        return tmp.read_bytes()
+        # Enforces the 50MB stream cap, redirect SSRF guard, and website policy.
+        await _download_image(url, tmp)
+        return await asyncio.to_thread(tmp.read_bytes)
+    except PermissionError as exc:  # website policy block
+        raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)
-
-
-def _looks_like_path(s: str) -> bool:
-    return s.startswith(("/", "~", "./", "../")) or (len(s) > 1 and s[1] == ":")
 
 
 def _is_local_terminal_backend() -> bool:
@@ -288,5 +303,12 @@ def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> Resolve
         raise SourceTooLarge("image exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is None:
+        if b"<svg" in data[:4096].lower():
+            raise NotAnImage(
+                "SVG is not supported for vision analysis (providers only "
+                "ingest raster images). Convert it to PNG first, e.g. "
+                "`rsvg-convert` or ImageMagick's `convert`.",
+                src=src, origin=origin,
+            )
         raise NotAnImage("source is not a recognized image", src=src, origin=origin)
     return ResolvedImage(data=data, mime=sniffed, origin=origin)

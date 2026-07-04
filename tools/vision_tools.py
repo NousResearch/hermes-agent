@@ -225,8 +225,8 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     """Magic-byte MIME sniff on raw bytes (authoritative; no extension trust).
 
     Returns ``None`` for anything without a recognized image header — including
-    SVG, which has no magic bytes and is not ingestible as vision by any
-    provider. Callers that accept SVG-by-text (path-based) layer that on top.
+    SVG, which has no magic bytes and cannot be ingested as raster vision input
+    by any provider. The resolver surfaces a dedicated error for SVG sources.
     """
     header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -240,17 +240,6 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
     return None
-
-
-def _detect_image_mime_type(image_path: Path) -> Optional[str]:
-    """Return a MIME type when the file looks like a supported image."""
-    with image_path.open("rb") as f:
-        mime = _detect_image_mime_type_from_bytes(f.read(64))
-    if mime is None and image_path.suffix.lower() == ".svg":
-        head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
-        if "<svg" in head:
-            return "image/svg+xml"
-    return mime
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -871,7 +860,7 @@ async def _vision_analyze_native(
         temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-        temp_image_path.write_bytes(resolved.data)
+        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
         should_cleanup = True
 
         image_data_url = await _run_encode_on_cpu_executor(
@@ -1018,7 +1007,7 @@ async def vision_analyze_tool(
         temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-        temp_image_path.write_bytes(resolved.data)
+        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
         should_cleanup = True
 
         # Get image file size for logging

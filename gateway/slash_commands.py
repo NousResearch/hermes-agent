@@ -190,6 +190,13 @@ class GatewaySlashCommandsMixin:
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
+        # Clear the per-session last-resolved-model cache so the next turn
+        # reads from current config instead of falling back to a stale model
+        # after a config change (#58403).
+        _lrm = getattr(self, "_last_resolved_model", None)
+        if _lrm is not None:
+            _lrm.pop(session_key, None)
+
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
         # previous conversation must not survive the reset.

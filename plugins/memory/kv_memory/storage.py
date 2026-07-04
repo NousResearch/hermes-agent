@@ -167,7 +167,7 @@ class KVMemoryDB:
             summary_text: Lightweight text summary for fallback.
             tool_calls: List of tool call dicts this turn.
             model_id: Model used for inference.
-            num_kv_heads, head_dim, num_layers: KV-cache metadata.
+            num_kv_heads, head_dim, num_layers: Quantization metadata.
             metadata: Arbitrary JSON-serializable metadata.
             store_fp16: Also store raw FP16 embedding (for fidelity checks).
 

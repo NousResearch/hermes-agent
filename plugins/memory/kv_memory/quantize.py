@@ -1,14 +1,15 @@
-"""Q4 symmetric per-channel quantization for KV-cache and hidden-state embeddings.
+"""Q4 symmetric per-channel quantization for embedding compression.
 
 Methodology: Persistent Q4 KV Cache (arXiv, Feb 2026).
-  - Per-channel (per-head): one scale per attention head
+  - Per-channel: one float32 scale per block of elements
   - Symmetric 4-bit: values clamped to [-7, 7]
   - Two int4 values packed per uint8 byte
-  - Compression ratio: ~3.8× including float32 scale overhead
+  - Configurable channel size for fidelity/compression trade-off
 
-For hidden-state embeddings without natural channel boundaries, the
-embedding is reshaped into (num_channels, channel_size) groups where
-channel_size defaults to 128 (matching typical head_dim).
+Note: Q4 is provided as an optional aggressive mode. The default
+storage uses float16 (2x compression, zero quality loss). Q4 offers
+4-7x compression with some ranking degradation — suitable for
+large-scale storage where storage cost dominates retrieval quality.
 """
 
 from __future__ import annotations

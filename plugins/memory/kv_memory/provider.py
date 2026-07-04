@@ -73,7 +73,7 @@ KV_MEMORY_STATUS_SCHEMA = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class KVMemoryProvider(MemoryProvider):
-    """Model-native semantic memory via hidden states and KV-cache states."""
+    """Float16-compressed semantic memory with pluggable embedding backends."""
 
     def __init__(self, config: KVMemoryConfig | None = None):
         self._config = config or load_config()

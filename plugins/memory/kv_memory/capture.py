@@ -131,7 +131,7 @@ class vLLMHiddenStateBackend(EmbeddingBackend):
         return 0  # unknown until model is loaded
 
     def is_available(self) -> bool:
-        return False  # Phase 2
+        return False  # not yet available (requires vLLM API support)
 
     def encode(self, text: str) -> np.ndarray:
         raise NotImplementedError(
@@ -204,7 +204,7 @@ def create_embedding_backend(
     """Create an embedding backend, falling back through available options.
 
     Resolution order for "auto":
-      1. vllm (if available — Phase 2)
+      1. vllm (if available — requires local GPU server)
       2. sentence-transformers (always available if installed)
       3. api (requires credentials)
 

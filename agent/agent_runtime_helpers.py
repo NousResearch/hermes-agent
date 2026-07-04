@@ -304,7 +304,14 @@ def sanitize_tool_call_arguments(
                 continue
 
             try:
-                json.loads(arguments)
+                parsed = json.loads(arguments)
+                if not isinstance(parsed, dict):
+                    # JSON type mismatch: OpenAI spec requires a JSON object.
+                    # Unwrap single-element arrays; otherwise fall back to {}.
+                    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                        function["arguments"] = json.dumps(parsed[0])
+                    else:
+                        raise json.JSONDecodeError("non-dict JSON type", arguments, 0)
             except json.JSONDecodeError:
                 tool_call_id = tool_call.get("id")
                 function_name = function.get("name", "?")

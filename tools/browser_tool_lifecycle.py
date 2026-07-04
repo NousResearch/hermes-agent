@@ -627,7 +627,20 @@ def _force_reap_browser_session(task_id: str) -> None:
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:
-    """Reap a single browser session by its exact session key."""
+    """Reap a single browser session by its exact session key.
+
+    Runs under the session owner's profile scope so every caller path (janitor,
+    session replacement, health checks, shutdown) performs the Camofox decision
+    and the cloud credential reads with the owner's secret scope — never another
+    profile's, and never an UnscopedSecretError in multiplex mode. The janitor's
+    own wrapper is a harmless no-op re-entry.
+    """
+    with _session_owner_scope(task_id):
+        _cleanup_single_browser_session_unscoped(task_id)
+
+
+def _cleanup_single_browser_session_unscoped(task_id: str) -> None:
+    """Teardown body; call only through the scoped wrapper above."""
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full

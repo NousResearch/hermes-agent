@@ -17,6 +17,16 @@
   <div class="sub">循环跳出后(拿到答复、被中断、或预算耗尽),还要做一连串收尾:落库、转换输出、组装结果字典、安排后台复盘。这些全集中在 <code>finalize_turn</code>。</div>
 </div>
 
+<h2 id="scope">先分清粒度:是「一轮」的收尾,不是会话结束</h2>
+<p><strong>「收尾」收的是<u>一轮(turn)</u>,不是把整个会话关掉。</strong>两个粒度别混:</p>
+<table>
+  <tr><th>概念</th><th>指什么</th><th>结束标志</th></tr>
+  <tr><td><strong>一轮(turn)</strong></td><td>用户发<strong>一句话</strong> → agent 循环调工具 → 直到吐出<strong>最终文本回复</strong></td><td>就是本篇的 <code>finalize_turn</code></td></tr>
+  <tr><td><strong>一次会话(session)</strong></td><td><strong>很多轮</strong>累积起来的整段对话</td><td>用户关掉/切会话才算完</td></tr>
+</table>
+<p>所以 <code>finalize_turn</code> 是在<strong>这一轮的工具循环跑完、拿到最终回复之后</strong>触发的扫尾,对应「一问一答(含中间多次工具调用)这一个回合」的结束。<strong>收尾完,会话照样活着</strong>——用户再发一句就开启<strong>下一轮</strong>,又走一遍循环 + 收尾。会话状态、记忆、技能都留着给下一轮用。</p>
+<div class="box tip"><strong>一个易忽略的点:最后那步「记忆/技能复盘」是<u>异步</u>的。</strong><code>_spawn_background_review</code> 起的是<strong>后台线程</strong>去「回头总结这轮的经验」,本轮该返回就返回、<strong>不等复盘做完</strong>——所以你不会因为「它在总结经验」而卡住下一句输入。这正是第 1 篇讲的「机制 B 后台复盘」。</div>
+
 <h2 id="where">收尾的入口</h2>
 <p>循环结束后,<code>run_conversation</code> 把一切交给一个函数,它的返回值就是整个 <code>run_conversation</code> 的返回值:</p>
 <pre><code># agent/conversation_loop.py(循环之后)
@@ -32,63 +42,363 @@ return result
   <li>
     <h4>没答复?先处理「迭代耗尽」</h4>
     <p class="where">if final_response is None and 预算/迭代耗尽: _handle_max_iterations(...)</p>
-    <p>如果循环跑完了却没拿到 <code>final_response</code>(被工具循环占满),调 <code>_handle_max_iterations</code> 生成一段总结作为答复,而不是返回空。</p>
+    <p>如果循环跑完了却<strong>没拿到 <code>final_response</code></strong>(被工具循环占满、迭代/预算耗尽),不返回空,而是<strong>剥掉工具、再发一次请求让模型总结</strong>:</p>
+    <pre><code>if final_response is None and (api_call_count &gt;= max_iterations
+                              or iteration_budget.remaining &lt;= 0):
+    _turn_exit_reason = f"max_iterations_reached({api_call_count}/{max_iterations})"
+    agent._emit_status("⚠️ 迭代预算耗尽 — 请模型总结")
+    final_response = agent._handle_max_iterations(messages, api_call_count)  # 无工具的单次总结调用
+    if os.environ.get("HERMES_KANBAN_TASK"):        # 若是 kanban worker:
+        _kb._record_task_failure(..., outcome="timed_out")  # 记一次"超时失败",计入熔断计数
+</code></pre>
+    <div class="box tip">kanban 那段是<strong>诚实上报</strong>:worker 因预算耗尽没干完,得让调度器知道(<code>outcome="timed_out"</code>),而且要<strong>计入 <code>consecutive_failures</code></strong> → 触发 <code>failure_limit</code> 熔断。否则这种任务会每轮静默 block、被操作员自动放行、再 block,陷入无信号的死循环(#29747)。注意:模型这时<strong>已被剥掉工具</strong>,没法自己调 <code>kanban_block</code>,只能由收尾代替它上报。</div>
   </li>
   <li>
-    <h4>容错收尾区(关键设计)</h4>
-    <p>轨迹保存、资源拆除、会话落库都是<strong>可能抛异常</strong>的操作(SQLite 写入等)。它们被包在一个区域里,任何一个抛错都<strong>收集进 <code>_cleanup_errors</code> 而非崩溃</strong>——保证用户等待的 <code>final_response</code> 一定能返回(#8049)。</p>
+    <h4>算 completed(这轮到底算不算成功)</h4>
+    <p><strong>这一步在给这轮盖章:「自然答完」还是「被逼收场」?</strong>关键背景在上一步——如果模型一直调工具、<strong>从没给文本答复</strong>,收尾会强行剥工具让它总结,于是 <code>final_response</code> <strong>也有值了</strong>。所以「有答复」有两种来源:</p>
+    <ul>
+      <li><strong>A 自己答完的</strong>(正常):<code>_turn_exit_reason = "text_response(finish_reason=stop)"</code>。</li>
+      <li><strong>B 被逼总结的</strong>(异常):<code>_turn_exit_reason = "max_iterations_reached(90/90)"</code>。</li>
+    </ul>
+    <p>两种都有答复,但 A 是「干完了」、B 是「没干完硬收场」。<code>completed</code> 就是把它俩分开:</p>
+    <pre><code>normal_text_response = _turn_exit_reason.startswith("text_response(")   # 是不是"正常文本收尾"
+completed = (final_response is not None      # ① 有答复
+             and not failed                  # ② 没被标失败
+             and (api_call_count &lt; max_iterations   # ③a 没到迭代上限
+                  or normal_text_response))         # ③b 或 是正常文本结束
+</code></pre>
+    <p>①②好懂,<strong>难点是 ③ 那个 <code>or</code></strong>——它专为处理一个边界。逐种情形看:</p>
+    <table>
+      <tr><th>情形</th><th><code>api_calls &lt; max</code></th><th><code>normal_text</code></th><th>completed</th></tr>
+      <tr><td>正常答完(没到上限)</td><td>✅</td><td>✅</td><td><strong>✅ 成功</strong></td></tr>
+      <tr><td>正好在最后一圈答完</td><td>❌(=上限)</td><td>✅</td><td><strong>✅ 成功</strong>(<code>or</code> 救的就是它)</td></tr>
+      <tr><td>烧光迭代、被逼总结</td><td>❌</td><td>❌(是 <code>max_iterations_reached</code>)</td><td><strong>❌ 不算成功</strong></td></tr>
+    </table>
+    <p>第 2 行是 <code>or normal_text_response</code> 的意义:模型<strong>恰好在允许的最后一圈</strong>给出正常文本答复,虽然 <code>api_calls</code> 已等于上限,但它<strong>真答完了</strong>,不该因「用满额度」被判失败。第 3 行才是真正的「被迫收场」——到了上限、又不是正常文本结束 → 两个条件都 False → <code>completed=False</code>。</p>
+    <h5>为什么会「api_calls == 上限 且 正常答完」同时成立?</h5>
+    <p>关键在计数时机:<code>api_call_count</code> 是<strong>每圈开头、发请求之前就 +1</strong> 的([第 2 篇的主循环](02-main-loop.html)):</p>
+    <pre><code>while (api_call_count &lt; max_iterations and ...):   # 顶部判条件
+    api_call_count += 1        # ← 进来就 +1,在发请求之前
+    ... 发这一次 API 调用 ...
+</code></pre>
+    <p>以 <code>max_iterations=90</code> 走最后一圈:进循环时 <code>api_call_count=89</code> → 判 <code>89&lt;90</code> ✅ 进得去 → 开头 <code>+1</code> 变 <strong>90</strong> → 发<strong>第 90 次</strong>请求。这第 90 次的返回决定命运:</p>
+    <ul>
+      <li><strong>返回文本(答完了)</strong> → <code>_turn_exit_reason=text_response(stop)</code>,break。此刻 <code>api_call_count=90</code>,<code>90&lt;90</code> 是 <strong>False</strong>,但 <code>normal_text</code> 是 True → <code>or</code> 救场 → <strong>completed ✅</strong>。<em>这就是那个边界情形。</em></li>
+      <li><strong>又调工具</strong> → 执行后回顶部,<code>90&lt;90</code> False → 退出循环,<code>final_response=None</code> → 被逼总结 → <code>max_iterations_reached</code> → <strong>completed ❌</strong>。</li>
+    </ul>
+    <p>所以「api_calls == 上限 且正常答完」= <strong>模型把额度用到最后一格(第 90 次),而这最后一下正好正常答完</strong>。没有那个 <code>or</code>,它会因 <code>90&lt;90</code> 为假被<strong>冤枉成没完成</strong>——明明答完了,只因用满额度。</p>
+    <div class="box warn"><strong>那为什么不直接写成 <code>api_calls &lt;= max</code>、省掉 <code>or</code>?</strong>不行——<code>&lt;=</code> 会把「被逼收场」也误判成成功。因为边界上那两种情况<strong>计数一模一样(都=90)</strong>,区别只在 <code>normal_text</code>:
+    <table>
+      <tr><th>第 90 次干了啥</th><th><code>api_calls&lt;=max</code></th><th>现写法(<code>&lt;</code> or normal_text)</th></tr>
+      <tr><td>正常答完(文本)</td><td>✅ True(对)</td><td>✅ True(对)</td></tr>
+      <tr><td>还在调工具→被逼总结</td><td><strong>✅ True(错!冤枉成成功)</strong></td><td>❌ False(对)</td></tr>
+    </table>
+    <code>&lt;=</code> 只看数字,而这两种数字相同、光靠比大小分不开——<strong>必须靠 <code>normal_text_response</code> 这个「是不是正常文本结束」的额外信号</strong>才能区分,所以不能塌成一个比较。(顺带:<code>&lt;</code> 也更稳——万一将来 grace 之类让计数冲到 <code>max+1</code>,<code>&lt;</code> 不会放行超额的,<code>&lt;=</code> 边界更松。)</div>
+    <div class="box tip"><strong>谁在乎 completed:</strong>就是第 4 篇讲的——<strong>cron / kanban</strong> 拿 <code>completed=False</code> 判断「这任务没真干完」→ 重跑/改期/交人;CLI/网关一般照样把答复显示出来,但能据此知道「这是被截断的、不是圆满结束」。<strong>一句话:有答复 ≠ 成功;烧光迭代靠强制总结拿到的答复,<code>completed=False</code>。</strong></div>
   </li>
   <li>
-    <h4>收尾被中断的工具序列</h4>
-    <p class="where">close_interrupted_tool_sequence(messages, final_response)</p>
-    <p>若中途被中断,可能留下「有 tool_call 但没 tool 结果」的悬空结构。这里补齐,避免落库出不合法的消息序列。</p>
+    <h4>容错收尾区(关键设计):三个易错操作各自兜底</h4>
+    <p class="where">_cleanup_errors[] · #8049</p>
+    <p><strong>核心思想:答复已经算出来了,收尾只是「打扫卫生」——打扫时摔一跤,绝不能连答复一起丢。</strong>接下来三件事都<strong>可能抛异常</strong>,而它们对「答复本身」都不是必需的:</p>
+    <table>
+      <tr><th>操作</th><th>干什么</th><th>为什么会失败</th></tr>
+      <tr><td><code>_save_trajectory</code></td><td>把这轮完整过程存成轨迹文件(供回放/训练)</td><td>文件 I/O 错、JSON 序列化碰到怪对象</td></tr>
+      <tr><td><code>_cleanup_task_resources</code></td><td>拆掉本任务的 VM + 浏览器(<code>cleanup_vm</code> + <code>cleanup_browser</code>;持久化沙箱跳过,交给空闲回收器)</td><td>跟远程沙箱(Morph/Modal/Daytona)走网络超时/断连、浏览器进程拆除失败</td></tr>
+      <tr><td><code>_persist_session</code></td><td>把这轮消息写进 JSON 日志 + SQLite</td><td>SQLite 锁/磁盘满、序列化错</td></tr>
+    </table>
+    <p><strong>它修的 bug(#8049):</strong>以前这三个里任一抛错,会<strong>直接冲出 <code>run_conversation</code></strong>,把用户已经等着的 <code>final_response</code> <strong>一起丢掉</strong>——子进程包装层只看到<strong>空 stdout、连 traceback 都没有</strong>,是一种静默数据丢失。现在<strong>每步独立 try</strong>,错误收集进 <code>_cleanup_errors</code>、绝不打断返回:</p>
+    <pre><code>_cleanup_errors = []
+try: agent._save_trajectory(...)            # 存轨迹
+except Exception as e: _cleanup_errors.append(f"save_trajectory: {e}")
+try: agent._cleanup_task_resources(task_id) # 拆 VM/浏览器
+except Exception as e: _cleanup_errors.append(f"cleanup_task_resources: {e}")
+try: ...落库(见下)...
+except Exception as e: _cleanup_errors.append(f"persist_session: {e}")
+</code></pre>
+    <p>三个 try <strong>各自独立</strong>还有一层意思:<strong>一个失败不能连累后两个</strong>——存轨迹炸了,拆资源和落库照样要跑(否则会漏拆远程 VM、漏存会话)。</p>
+    <h5>要是三个<u>全</u>失败呢?</h5>
+    <p>照样<strong>不崩、答复照返回</strong>,三条错误全记进 <code>cleanup_errors</code>。但副作用轻重不同:</p>
+    <table>
+      <tr><th>哪个失败</th><th>后果</th><th>严重度</th></tr>
+      <tr><td><code>_save_trajectory</code></td><td>这轮轨迹没存(回放/训练数据缺一条)</td><td>轻 —— 不影响答复与会话</td></tr>
+      <tr><td><code>_cleanup_task_resources</code></td><td>VM/浏览器没拆 → 资源泄漏</td><td>中,但<strong>能自愈</strong> —— 空闲回收器(<code>terminal.lifetime_seconds</code> 到点)会兜底拆</td></tr>
+      <tr><td><code>_persist_session</code></td><td>这轮没写进 SQLite/JSON 持久层</td><td>重 —— 见下</td></tr>
+    </table>
+    <p><strong>最该在意 <code>_persist_session</code> 也失败:</strong>答复本身<strong>没丢</strong>——完整 <code>messages</code> 是<strong>在返回的 result 字典里</strong>带回上层的,当前进程/CLI/网关手里有全套,照样能显示交付。<strong>但持久层缺了这一轮</strong>:之后若进程重启或异地 resume,durable 存储里就没有这轮记录、历史出现缺口。即「<strong>答案送到用户面前了,但没存档</strong>」。</p>
+    <div class="box tip"><strong>这正是设计的取舍哲学:</strong>三者都失败时,宁可「<strong>把答案交付出去 + 丢掉存档/清理</strong>」,也不要「<strong>答案和存档一起丢</strong>」。答复是用户真正要、且已花钱算出来的,必须优先保住;存档、清理、轨迹都是可事后补救/自愈的次要项。而且「都失败」是<strong>可见</strong>的——<code>cleanup_errors</code> 同时列出三条,上层看到 <code>persist_session</code> 在其中就能大声告警,而不是像修复前那样两眼一抹黑。</div>
+    <div class="box tip"><strong>铁律 + 可观测:</strong>无论收尾出什么错,用户等待的答复<strong>一定能返回</strong>;错误不是吞掉,而是挂到 result 的 <code>cleanup_errors</code> 上——上层据此能<strong>区分「干净完成」和「答复给了但收尾出过错」</strong>(比如轨迹没存上、VM 没拆掉),做监控告警或补救,但用户体验不受影响。这就是「<strong>非核心收尾降级、核心交付不受影响</strong>」的典型写法。</div>
   </li>
   <li>
-    <h4>持久化会话</h4>
-    <p class="where">agent._persist_session(messages, conversation_history)</p>
-    <p>把完整一轮写入 JSON 日志 + SQLite。这是私有重试之后的最终落库。</p>
+    <h4>落库前的三处修补(保证存下的历史合法)</h4>
+    <p class="where">agent._persist_session 之前</p>
+    <p>直接把 <code>messages</code> 存下去可能留下<strong>不合法的消息序列</strong>,严格提供商(Gemini/Claude)下次会因此「幻觉续写」。所以落库前先修三处:</p>
+    <ul>
+      <li><strong>① 删空响应脚手架</strong>(<code>_drop_trailing_empty_response_scaffolding</code>):把私有重试时垫的 <code>assistant("(empty)")</code>/恢复提醒剥掉,免得下一轮「continue」又掉进同一个空响应循环。</li>
+      <li><strong>② 中断时补收尾</strong>(<code>close_interrupted_tool_sequence</code>):被 <code>/stop</code> 打断、末尾停在 tool 结果时,补一条合成 assistant 消息闭合工具序列,避免持久化出 <code>tool→user</code> 这种严格提供商会拒的交替(#48879)。</li>
+      <li><strong>③ 兑现「交付即有 assistant 行」不变量</strong>(#43849/#44100):有些恢复/回退路径已经把 <code>final_response</code> 交付给了用户/网关,却没在 transcript 里留 assistant 消息。若 <code>final_response</code> 非空、未中断、且末尾不是 assistant → 补一条 <code>{"role":"assistant","content":final_response}</code>,否则下一轮会把「未回答的 user 积压」重答一遍。</li>
+    </ul>
+    <pre><code>agent._drop_trailing_empty_response_scaffolding(messages)          # ①
+if interrupted: close_interrupted_tool_sequence(messages, final_response)  # ②
+if final_response and not interrupted and messages[-1]["role"] != "assistant":
+    messages.append({"role":"assistant","content":final_response})  # ③
+agent._persist_session(messages, conversation_history)             # 落库(JSON + SQLite)
+</code></pre>
+    <div class="box warn"><strong>共同主题:三处修补都是为了让「存下去的历史」是一段<u>合法、可重放</u>的序列。</strong>API 要求严格的角色交替;若存下一个「坏尾巴」(孤儿 tool 结果、有 tool_call 没答案、缺 assistant 回复),下次这段历史被加载重发时就<strong>不合法</strong>——严格提供商(Gemini/Claude)要么<strong>拒绝(返回空内容)</strong>、要么<strong>幻觉续写</strong>。所以落库前必须把尾巴「收干净」。</div>
+    <h5>① 删空响应脚手架(_drop_trailing_empty_response_scaffolding)</h5>
+    <p>本轮模型若返回<strong>空内容</strong>,循环会临时垫一<strong>对</strong>私有重试脚手架——一条 <code>assistant("(empty)")</code> 占位 + 一条<strong>合成的 user「催一下」</strong>消息(都打了 <code>_empty_recovery_synthetic</code> 标记;还有恢复耗尽时的 <code>_empty_terminal_sentinel</code>):</p>
+    <pre><code># 空响应后注入这一对(故意配成 assistant→user,让"本轮进行中"的序列合法)
+messages.append(assistant("(empty)", _empty_recovery_synthetic=True))
+messages.append(user("你刚调完工具却返回空,请处理上面的结果继续", _empty_recovery_synthetic=True))
+</code></pre>
+    <p>这对在<strong>同一轮内</strong>没问题(<code>tool → assistant("(empty)") → user(催) → 继续</code> 是合法的)。但它是<strong>内部重试机器、不是真对话</strong>,若这轮就此结束、没删就落库,会害下一轮。<code>_drop_trailing_empty_response_scaffolding</code> 分两趟剥:</p>
+    <ul>
+      <li><strong>Pass 1:</strong>把尾部带标记的消息 <code>pop</code> 掉(先弹合成 user,再弹 <code>assistant("(empty)")</code>)。</li>
+      <li><strong>Pass 2(仅当 Pass 1 真删了才跑):</strong>再往回倒——删掉尾部的 tool 结果、以及产生它们的那条 <code>assistant(tool_calls)</code>(失败那圈留的「有调用没答案」悬空对)。<strong>正常进行中的工具循环不受影响</strong>(没脚手架标记就直接返回)。</li>
+    </ul>
+    <p><strong>不删会怎样——「两个 user」从哪来:</strong>不删就落库,尾巴停在那条<strong>合成的 user(催一下)</strong>上;等<strong>下一轮真实用户</strong>发消息接上去,就成了:</p>
+    <pre><code>… tool, assistant("(empty)"), user(上一轮遗留的"催一下"), user(下一轮真实消息)
+                                └────────── 两个 user 连排,非法 ──────────┘
+</code></pre>
+    <p>所以那两个 user 是<strong>① 上一轮遗留的合成催促 user + ② 下一轮真实 user</strong>(前面的 <code>tool</code> 是模型返回空之前那次工具结果)。严格提供商看到 <code>user, user</code> <strong>静默拒绝、返回空</strong> → 又触发空响应恢复 → 又补一对 → 又是 <code>user, user</code> → <strong>每轮都空、永远好不了</strong>。所以必须在落库前把这对(及前面悬空的 tool / assistant(tool_calls))倒着剥干净。</p>
+    <h5>② 中断时补收尾(close_interrupted_tool_sequence)</h5>
+    <p>被 <code>/stop</code> 打断的一轮,可能停在一条<strong>裸 tool 消息</strong>上(工具跑完了、或执行被取消,但模型没来得及吐出闭合的 assistant 轮)。这个 helper:若末尾是 <code>tool</code> → 补一条合成 assistant:</p>
+    <pre><code>messages.append({"role":"assistant",
+                 "content": final_response.strip() or "Operation interrupted."})
+</code></pre>
+    <p>中断时 <code>final_response</code> 通常是空的,所以用占位串「Operation interrupted.」而不是空内容。<strong>不补会怎样:</strong>存下 <code>…tool</code> 尾巴,下一轮变 <code>tool → user</code> —— 角色交替违规,Gemini/Claude 会<strong>幻觉续写用户那句、无视之前的上下文</strong>,用户体感就是「上下文丢了」(#48879)。</p>
+    <div class="box tip"><code>finalize_turn</code> 在「正常中断路径」上调它;但<strong>重试/退避/错误型中断</strong>是在 <code>conversation_loop</code> 里<strong>提前 <code>return</code></strong>、根本到不了收尾——所以它做成<strong>共享 helper</strong>,那些提前返回的地方也各自调一遍,保证<u>所有</u>中断路径都把工具序列收好。</div>
+    <h5>③ 兑现「交付即有 assistant 行」不变量(#43849/#44100)</h5>
+    <p>有些<strong>恢复/回退路径</strong>(如部分流恢复、回退到上一轮内容的 <code>break</code>)已经把 <code>final_response</code> <strong>交付给了用户/网关</strong>,却<strong>没在 transcript 里留下 assistant 消息</strong>。要维护的不变量是:<strong>「交付了 final_response ⇒ transcript 里必有对应的 assistant 行」</strong>。</p>
+    <p>所以:<code>final_response</code> 非空、未中断、且末尾不是 assistant → 补一条 <code>{"role":"assistant","content":final_response}</code>。<strong>不补会怎样:</strong>durable 会话结尾停在 tool/user 上,可调用方和网关<strong>其实已经把这条 assistant 答复显示出去了</strong>。下一轮模型看到的是一堆「没被回答的 user 积压」→ <strong>把每一条都重答一遍</strong>。在收尾这个<strong>所有恢复 <code>break</code> 都会汇流的单一咽喉处</strong>补上,就能不管答复由哪条路产生,都守住这个不变量。</p>
   </li>
   <li>
-    <h4>追加运行时页脚</h4>
-    <p>若有答复且未被中断,可能在末尾追加一段运行时页脚(footer)。</p>
+    <h4>轮次退出诊断日志(为什么这轮结束)</h4>
+    <p class="where">logger.info / logger.warning</p>
+    <p>每轮都在 <code>agent.log</code> 记一条<strong>结构化诊断</strong>,把「这轮为什么结束、干了多少活」一次性记全,便于事后回溯(这条是给<strong>运维/排查</strong>看的,不是给用户看的):</p>
+    <pre><code>Turn ended: reason=text_response(finish_reason=stop) model=... api_calls=12/90
+            budget=12/90 tool_turns=8 last_msg_role=assistant response_len=642 session=abc
+</code></pre>
+    <table>
+      <tr><th>字段</th><th>含义</th></tr>
+      <tr><td><code>reason</code></td><td><code>_turn_exit_reason</code>——这轮到底怎么结束的(正常文本/迭代耗尽/被中断/守卫拦停/空响应耗尽…,见第 2 篇)</td></tr>
+      <tr><td><code>api_calls</code></td><td>本轮发了几次 API 调用 / 上限</td></tr>
+      <tr><td><code>budget</code></td><td>迭代预算用了多少 / 总额</td></tr>
+      <tr><td><code>tool_turns</code></td><td>这轮有几条 assistant 带了 tool_calls(调了几"批"工具)</td></tr>
+      <tr><td><code>last_msg_role</code></td><td>历史最后一条是谁(<code>assistant</code>=正常收尾;<code>tool</code>=停在工具结果上,可疑)</td></tr>
+      <tr><td><code>response_len</code></td><td>最终答复多少字符(0=没答复)</td></tr>
+      <tr><td><code>session</code></td><td>会话 id,便于串起同一会话的多轮</td></tr>
+    </table>
+    <h5>关键:末尾是 tool 且没中断 → 升 WARNING</h5>
+    <p>大多数情况这条记在 <strong>INFO</strong>。但有一种要<strong>升级到 WARNING</strong>——<code>last_msg_role == "tool" 且 not interrupted</code>:</p>
+    <pre><code>if last_msg_role == "tool" and not interrupted:
+    # 干到一半、停在工具结果上,却没人中断它 —— 这就是用户常报的"agent 莫名不动了"
+    logger.warning("Turn ended with pending tool result (agent may appear stuck)..."
+                   + diag + " last_tool=%s", *args, last_tool_name)
+else:
+    logger.info(diag, *args)
+</code></pre>
+    <p>为什么单挑这种:正常结束末尾应是 <strong>assistant 文本答复</strong>;如果末尾停在 <code>tool</code> 结果、又<strong>不是</strong>用户主动中断,说明模型「拿到工具结果后没继续、就这么停了」——这正是用户最常报的<strong>「agent 干到一半莫名不动」</strong>。升 WARNING 让它在日志里<strong>跳出来</strong>,还会<strong>往回走找出最后调的工具名</strong>(<code>last_tool</code>),直接指向「卡在哪个工具后面」,省去翻日志定位的功夫。</p>
+  </li>
+  <li>
+    <h4>文件改动校验页脚(防模型「谎报」)</h4>
+    <p class="where">_record_file_mutation_result(执行时记账) · _format_file_mutation_failure_footer(收尾时渲染) · #15524-adjacent</p>
+    <p><strong>要治的病:</strong>模型并发发一批 <code>patch</code>,其中一半以「Could not find old_string」<strong>失败</strong>了,但模型在总结里却声称「所有文件都改好了」——用户得自己 <code>git status</code> 才能拆穿这个谎。</p>
+    <h5>怎么实现:执行时记账,收尾时渲染</h5>
+    <p><strong>① 每轮开头清账:</strong><code>_turn_failed_file_mutations = {}</code>(<code>turn_context</code> 重置)。</p>
+    <p><strong>② 每次 write_file/patch 后记账</strong>(<code>_record_file_mutation_result</code>,在工具执行那步调):</p>
+    <pre><code>landed = file_mutation_result_landed(tool, result)   # 这次写到底落地没
+if is_error and not landed:                          # 失败:记下 {路径: {tool, 错误预览}}
+    for path in targets:
+        if path not in state:                        # 保留"第一次"的错(别被后续不同报错覆盖)
+            state[path] = {"tool": tool, "error_preview": preview}
+else:                                                 # 成功(landed):
+    for path in targets: state.pop(path, None)        # ← 把该路径之前的失败记录弹掉!
+</code></pre>
+    <div class="box tip"><strong>关键在那句 <code>state.pop</code>:</strong>「失败<u>且之后再没成功写过同一路径</u>」这个条件就是这么实现的——同一路径若模型<strong>本轮内重试并成功</strong>了,成功那次会把它的失败记录<strong>删掉</strong>。所以到收尾时,<code>state</code> 里剩下的<strong>只有「到这轮结束仍是失败」的路径</strong>,不会冤枉「先失败后修好」的情况。</div>
+    <p><strong>③ 收尾时渲染页脚</strong>(<code>_format_file_mutation_failure_footer</code>):若 <code>state</code> 非空且开关开着,拼一段真相页脚追加到答复末尾:</p>
+    <pre><code>⚠️ File-mutation verifier: N file(s) were NOT modified this turn despite any
+   wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+  • `/path/a.py` — [patch] Could not find old_string...
+  • `/path/b.py` — [patch] ...
+  • … and 3 more            # 最多列 10 条,其余折叠计数
+</code></pre>
+    <p>这样真相<strong>每轮都被摆在脸上</strong>,模型「说过头」在结构上就<strong>不可能</strong>了。<strong>三道闸门</strong>:仅当 ① <code>final_response</code> 有真实文本 ② 未中断(空/中断轮已有别的提示,不叠) ③ <code>display.file_mutation_verifier</code> 开着(默认 True,可 env 覆盖)时才追加。</p>
+    <div class="box tip"><strong>关键:页脚只给用户看,<u>不</u>入历史、<u>不</u>回喂模型。</strong>看追加时机——<code>_persist_session</code> 在<strong>前</strong>(存的是<strong>没页脚</strong>的答复),追加页脚在<strong>后</strong>、只改返回给上层的 <code>final_response</code>:
+    <table>
+      <tr><th>去哪了</th><th>有页脚?</th></tr>
+      <tr><td>持久化历史 / <code>messages</code></td><td>❌ 无(落库在追加之前)</td></tr>
+      <tr><td>返回给 CLI/网关 → 显示给用户</td><td>✅ 有</td></tr>
+      <tr><td>下一轮再发给模型的上下文</td><td>❌ 无(读的是历史,历史里没有)</td></tr>
+    </table>
+    所以它<strong>既不是额外的 API 调用,也不进模型后续上下文</strong>。而且模型<strong>本轮内早就知道</strong>每个 patch 失败了(每条失败的工具结果都回灌给它看过);页脚不是「再告诉模型一次」,而是针对「<strong>模型看到了失败却在总结里谎报成功</strong>」——在模型<strong>下游</strong>给用户一层<strong>模型改不掉的兜底更正</strong>(源码注释:真相 surfaced「<strong>past the model</strong>」=绕过模型、直达用户)。</div>
+    <div class="box warn"><strong>顺带一个安全细节(#35584):</strong>页脚里每个文件路径都被 <code>_neutralize_footer_paths</code> 用<strong>反引号包起来</strong>。因为网关有个「裸路径自动上传」的媒体提取器——会把答复文本里的裸绝对路径当附件传到消息平台;它<strong>跳过反引号里的路径</strong>。所以万一某条错误信息里回显了敏感路径(如 <code>~/.hermes/config.yaml</code>),反引号包住后就<strong>永远不会被当成可投递路径悄悄上传</strong>——纵深防御。</div>
   </li>
   <li>
     <h4>transform_llm_output 插件钩子</h4>
     <p class="where">hermes_cli.plugins · transform_llm_output</p>
-    <p>插件可在返回前改写答复文本。<strong>第一个返回非空字符串的钩子生效</strong>,返回 None/空则保持原文。</p>
+    <p>工具循环结束、模型给出最终答复<strong>之后</strong>、交付给用户<strong>之前</strong>触发一次,让插件用<strong>普通程序(而非再问一次模型)</strong>改写这段最终文本——不额外烧一分钱 token。回调签名:</p>
+    <pre><code>def cb(response_text, session_id, model, platform, **kwargs) -> str | None:
+    ...
+    return 新文本   # 非空字符串 → 替换;返回 None/空 → 保持原文
+</code></pre>
+    <p><strong>官方例子(海绵宝宝腔,靠环境变量开关):</strong></p>
+    <pre><code>import os, re
+def spongebob(response_text, **kwargs):
+    if os.environ.get("SPONGEBOB_MODE") != "on":
+        return None                                  # 不改,原样放行
+    return re.sub(r"!", "!! Tartar sauce!", response_text)
+
+def register(ctx):
+    ctx.register_hook("transform_llm_output", spongebob)
+</code></pre>
+    <p>更实用的用途:<strong>脱敏</strong>(把最终文本里的用户标识/内网路径正则替换掉)、<strong>署名/水印页脚</strong>、<strong>统一风格</strong>、<strong>翻译</strong>——这些若用「技能/提示词」去做会白烧推理 token,用这个钩子是<strong>零推理成本的后处理</strong>。</p>
+    <ul>
+      <li><strong>第一个返回非空字符串的钩子生效</strong>(置 <code>response_transformed=True</code>);返回 <code>None</code>/空 → 保持原文,让下一个插件继续。</li>
+      <li>只在<strong>有答复且未中断</strong>时触发(<code>/stop</code> 中断轮、空轮不触发)。</li>
+      <li>钩子<strong>抛错只记 warning、不影响返回</strong>——坏插件不会拖垮交付。</li>
+    </ul>
+    <div class="box tip">和第 4 篇的<strong>中间件</strong>别混:中间件改的是「<strong>发出去的请求/参数</strong>」(在调模型之前);这个钩子改的是「<strong>回给用户的最终文本</strong>」(在模型答完之后)。方向正好相反,各占一头。</div>
   </li>
   <li>
     <h4>post_llm_call 插件钩子</h4>
     <p class="where">hermes_cli.plugins · post_llm_call</p>
-    <p>本轮工具循环结束后触发一次,插件常用它把对话数据同步到外部记忆系统。</p>
+    <p>同样在<strong>有答复且未中断</strong>时触发一次,但它是个<strong>纯观察者</strong>——<strong>返回值被忽略</strong>,不改答复(和上一个 <code>transform_llm_output</code> 恰好互补)。它把这轮的全貌交给插件做<strong>副作用</strong>:</p>
+    <pre><code>def cb(session_id, user_message, assistant_response,
+       conversation_history, model, platform, **kwargs):
+    ...   # 返回值忽略,纯做副作用
+</code></pre>
+    <p><strong>典型用途:</strong>把对话同步到外部记忆系统、算响应质量指标、记轮次摘要、触发后续动作。<strong>官方例子——同步到外部记忆:</strong></p>
+    <pre><code>import httpx
+def sync_memory(session_id, user_message, assistant_response, **kwargs):
+    try:
+        httpx.post(f"{MEMORY_API}/store", json={
+            "session_id": session_id,
+            "user": user_message, "assistant": assistant_response,
+        }, timeout=5)
+    except Exception:
+        pass   # 尽力而为,失败不影响主流程
+
+def register(ctx):
+    ctx.register_hook("post_llm_call", sync_memory)
+</code></pre>
+    <div class="box tip"><strong>和 <code>transform_llm_output</code> 的分工:</strong>两者都在「答完之后、交付之前」触发,但——<code>transform_llm_output</code> 是<strong>变换器</strong>(返回新文本会<strong>替换</strong>答复);<code>post_llm_call</code> 是<strong>观察者</strong>(返回值<strong>忽略</strong>,只做记录/同步/触发)。要<u>改</u>文本用前者,要<u>看</u>这轮做点别的事用后者。</div>
   </li>
   <li>
-    <h4>提取本轮 reasoning</h4>
-    <p>从后往前找最近一条非空 <code>reasoning</code>,<strong>但遇到本轮起始的 user 消息就停</strong>——绝不跨进上一轮,避免 UI 推理框显示陈旧内容(#17055)。</p>
+    <h4>提取本轮 reasoning(不跨轮)</h4>
+    <p><code>reasoning</code> 是模型通过 API 字段吐出的<strong>思考过程/思维链</strong>(Claude thinking、DeepSeek 的 reasoning_content、Codex 的 reasoning…)。这步挑出<strong>本轮</strong>的思考,放进 <code>result["last_reasoning"]</code> → 给 CLI/TUI 的<strong>「推理框」</strong>显示。做法:从后往前找最近一条非空 <code>reasoning</code>,<strong>遇到本轮起始的 user 消息就停</strong>:</p>
+    <pre><code>for msg in reversed(messages):
+    if msg["role"] == "user": break              # 到本轮边界,停
+    if msg["role"] == "assistant" and msg.get("reasoning"):
+        last_reasoning = msg["reasoning"]; break  # 本轮最近的非空思考
+</code></pre>
+    <p>两个「为什么」:</p>
+    <ul>
+      <li><strong>为什么遇到 user 就停(不跨轮):</strong>若往回一直找,会捞到<strong>上一轮</strong>的思考,推理框里显示的就是<strong>陈旧内容</strong>(这轮明明没思考,却显示上轮的)——#17055 就是这个 bug。碰到本轮起始的 user 消息就是「本轮边界」,越过它的都是历史,必须停。</li>
+      <li><strong>为什么取「最近的非空」而不是「最后一条 assistant」:</strong>很多提供商(Claude thinking / DeepSeek v4 / Codex)把 reasoning 放在<strong>调工具那一步</strong>的 assistant 消息上,而<strong>最终答复那步 <code>reasoning=None</code></strong>。若只取最后一条 assistant,拿到的是 None、漏掉本轮真实思考。所以要往回找到<strong>本轮内最近一条真有思考的</strong>。</li>
+    </ul>
   </li>
   <li>
-    <h4>组装结果字典</h4>
-    <p>把所有东西打包成 <code>result</code>(下节详列)。</p>
+    <h4>组装结果字典 + 条件字段</h4>
+    <p><code>result</code> 是整个 <code>run_conversation</code> 的返回值。<strong>固定字段</strong>(总在)分四组:</p>
+    <table>
+      <tr><th>组</th><th>字段</th></tr>
+      <tr><td><strong>答复</strong></td><td><code>final_response</code>、<code>last_reasoning</code>、<code>messages</code></td></tr>
+      <tr><td><strong>状态标志</strong></td><td><code>completed</code>、<code>failed</code>、<code>partial</code>、<code>interrupted</code>、<code>turn_exit_reason</code>、<code>api_calls</code>、<code>response_transformed</code>、<code>response_previewed</code></td></tr>
+      <tr><td><strong>路由</strong></td><td><code>model</code>、<code>provider</code>、<code>base_url</code>、<code>session_id</code></td></tr>
+      <tr><td><strong>计量</strong>(整段会话累计)</td><td><code>input/output/cache_read/cache_write/reasoning/prompt/completion/total_tokens</code>、<code>estimated_cost_usd</code>、<code>cost_status</code>、<code>cost_source</code></td></tr>
+    </table>
+    <p><strong>条件字段(有才挂)</strong>——直接看代码里的四个 <code>if</code>:</p>
+    <pre><code>if agent._tool_guardrail_halt_decision is not None:      # 守卫拦停了这轮
+    result["guardrail"] = decision.to_metadata()         #   → 挂拦停元数据
+
+if _cleanup_errors:                                      # 收尾三件事有出错(#8049)
+    result["cleanup_errors"] = _cleanup_errors           #   → 挂错误清单
+
+leftover = agent._drain_pending_steer()                  # 答复后才到、没处塞的 /steer
+if leftover:
+    result["pending_steer"] = leftover                   #   → 交上层当下一轮
+
+if interrupted and agent._interrupt_message:             # 中断且带了消息
+    result["interrupt_message"] = agent._interrupt_message
+</code></pre>
+    <div class="box tip"><strong><code>pending_steer</code> 是什么:</strong><code>/steer</code> 是<strong>轮中途注入指引</strong>的机制(边跑边引导 agent)。正常它会被塞进「下一批工具调用」里生效;但如果它<strong>在最终 assistant 答复之后才到</strong>——这轮已经没有工具批次可塞了——就不能应用在本轮。于是把它<strong>原样交回上层</strong>(<code>pending_steer</code>),让上层<strong>作为下一轮的用户输入</strong>投递,而不是<strong>静默丢掉</strong>。</div>
   </li>
   <li>
-    <h4>清中断状态、清流回调</h4>
-    <p class="where">agent.clear_interrupt();agent._stream_callback = None</p>
-    <p>清掉中断标志和流式回调,防止泄漏到下一次调用。</p>
+    <h4>清状态:中断、流回调、preview 标志</h4>
+    <p class="where">agent.clear_interrupt() · agent._stream_callback = None</p>
+    <p><strong>为什么要专门清:</strong><code>AIAgent</code> 是个<strong>长寿、被反复复用</strong>的对象——同一个实例处理<strong>很多轮</strong>(每条用户消息调一次 <code>run_conversation</code>)。所以任何<strong>「本轮专用」的状态</strong>都必须在轮边界重置,否则<strong>泄漏进下一轮</strong>。这里清三样:</p>
+    <p><strong>① <code>clear_interrupt()</code></strong> 清得比名字看起来多:</p>
+    <pre><code>_interrupt_requested = False; _interrupt_message = None          # 中断标志/消息
+_set_interrupt(False, _execution_thread_id)                      # 主执行线程的中断位
+for wtid in _tool_worker_threads: _set_interrupt(False, wtid)    # 每个并发 worker 的中断位
+_pending_steer = None                                            # 硬中断作废未决的 /steer
+</code></pre>
+    <p>后两条尤其关键(呼应第 4 篇):<strong>线程池会回收复用 worker 线程</strong>,若某个中断位没清,下一个<strong>无关任务</strong>被调度到那个 tid 上会「一进来就 <code>is_interrupted()==True</code>」→ 无缘无故被中止;这里<strong>再兜底清一遍</strong>。而硬中断<strong>作废未决的 /steer</strong>——steer 本是给「下一次工具迭代」的,既然被中断打断、那次迭代不会发生了,留着只会在中断后那轮突然冒出来吓用户。</p>
+    <p><strong>② <code>_stream_callback = None</code>:</strong>流式回调是把 token 逐块喂给消费者(显示 / TTS 语音管线)的函数。不清的话,<strong>下一次调用的流可能触发旧回调</strong> → 往一个<strong>已关闭/已销毁的消费者</strong>吐字(旧 TTS 管道、旧显示,甚至串到别的会话)。<strong>③ <code>_response_was_previewed = False</code>:</strong>「本轮答复已通过预览显示过」的标志,归零好让下一轮重新判断。</p>
   </li>
   <li>
     <h4>判断是否该复盘技能</h4>
-    <p class="where">_should_review_skills(基于本轮 _iters_since_skill)</p>
-    <p>本轮用了多少工具迭代,决定是否到了提醒复盘技能的周期。</p>
+    <p class="where">turn_finalizer · _iters_since_skill &gt;= _skill_nudge_interval</p>
+    <p><strong>「技能复盘」是什么:</strong>Hermes 会<strong>跨会话学习</strong>——回头看 agent 这段时间干了啥,把反复出现的套路<strong>固化成可复用的「技能」</strong>(skill)。这一步只<strong>判定要不要触发一次技能复盘</strong>,三个条件全满足才置位:</p>
+    <pre><code>if (agent._skill_nudge_interval &gt; 0                       # ① 功能开着(0=关)
+        and agent._iters_since_skill &gt;= agent._skill_nudge_interval  # ② 攒够了"工具迭代"(默认 10)
+        and "skill_manage" in agent.valid_tool_names):    # ③ 本会话真能管技能
+    _should_review_skills = True
+    agent._iters_since_skill = 0                           # 触发后清零,重新攒
+</code></pre>
+    <ul>
+      <li><strong>计的是「工具迭代」不是「轮」:</strong><code>_iters_since_skill</code> 数的是<strong>工具调用圈数</strong>(一轮可能用很多圈,也可能一圈)——这比「过了几轮」更能反映「干了多少活、值不值得沉淀成技能」。它<strong>跨轮累计、不在轮开头重置</strong>(轮开头只重置别的);只有两处清零:调了 <code>skill_manage</code>(第 4 篇的 nudge 重置)或这里触发复盘。</li>
+      <li><strong>为什么要 <code>skill_manage</code> 可用:</strong>复盘的产物是「建/改技能」,得靠 <code>skill_manage</code> 工具落地;这工具都没授权给本会话,复盘也没意义。</li>
+    </ul>
+    <div class="box tip">这步<strong>只做决定、不干活</strong>。<code>_should_review_skills</code> 会和(更早算好的)<strong><code>_should_review_memory</code></strong>(记忆复盘)一起,在最后一步汇入 <code>_spawn_background_review</code>——真正的复盘是<strong>后台异步</strong>跑的(见最后一步),不阻塞本轮返回。</div>
   </li>
   <li>
     <h4>同步外部记忆 + 排下次预取</h4>
     <p class="where">agent._sync_external_memory_for_turn(...)</p>
-    <p>把完成的这一轮同步给外部记忆提供商,并排队下一次预取。</p>
+    <p>把完成的这一轮镜像进<strong>外部记忆提供商</strong>(honcho / mem0 / supermemory…),一次做两件事:</p>
+    <pre><code>memory_manager.sync_all(user_text, response_text, ...)      # ① 存:把这轮问答写进外部记忆
+memory_manager.queue_prefetch_all(user_text, session_id)   # ② 预热:据本轮问题,提前把
+                                                           #    下一轮可能用到的记忆拉起来
+</code></pre>
+    <p><strong>为什么要预取(prefetch):</strong>外部记忆的「召回」发生在<strong>每轮开头</strong>(拼系统提示时,第 1 篇的机制 A)。这轮结束就<strong>顺手把下一轮的记忆预热好</strong>,下一轮开头直接拿现成的、不用冷启动等一次记忆查询。</p>
+    <p>几个关键细节:</p>
+    <ul>
+      <li><strong>用 <code>original_user_message</code>,不是 <code>user_message</code>:</strong>后者可能被<strong>注入了技能内容</strong>(skill 斜杠命令会往用户消息里塞东西),拿去查记忆会<strong>撑大或搞坏</strong>提供商的查询。所以用<strong>干净的原始用户消息</strong>。</li>
+      <li><strong>中断的轮整个跳过(#15218):</strong>半截的答复、被打断的工具链、流中途重置——<strong>都不是「可信的对话事实」</strong>,镜像进记忆会<strong>污染将来的召回</strong>(存了用户根本没看到完成的状态)。预取也一并跳过:用户下一句多半是<strong>重试同一意图</strong>,基于中断轮的预取会打在陈旧上下文上。</li>
+      <li><strong>多模态先拍平:</strong>多模态轮的 content 是「分块列表」,提供商只吃纯字符串,所以先按换行拼成文本。</li>
+      <li><strong>严格尽力而为:</strong>整段包在 <code>try/except</code> 里——外部记忆后端配错/离线<strong>绝不能挡住用户看到答复</strong>。</li>
+    </ul>
   </li>
   <li>
     <h4>安排后台复盘(不阻塞返回)</h4>
     <p class="where">agent._spawn_background_review(...)</p>
-    <p>若需复盘记忆或技能,<strong>在答复交付之后</strong>才后台跑——绝不与用户任务争抢模型注意力。尽力而为,失败不影响主流程。</p>
+    <p>仅当<strong>有答复、未中断、且该复盘记忆或技能</strong>时,<strong>另起后台守护线程</strong>去「回头总结这轮的经验」——<strong>在答复交付之后</strong>才跑,绝不与用户任务争抢模型注意力。尽力而为,抛错也不影响主流程(<code>except: pass</code>)。</p>
+    <pre><code>if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    try:
+        agent._spawn_background_review(messages_snapshot=list(messages),
+                                       review_memory=_should_review_memory,
+                                       review_skills=_should_review_skills)
+    except Exception: pass   # 后台复盘尽力而为
+</code></pre>
+    <div class="box tip">三个基本设计点:<strong>①在答复交付之后才跑</strong>——复盘本身是另一个<strong>完整的 agent 子任务</strong>(要调模型、可能写记忆/改技能),放前台会<strong>和用户任务争抢模型注意力</strong>、拖慢响应;<strong>②传快照 <code>list(messages)</code></strong>——后台线程拿当下历史的副本,不被下一轮改动干扰;<strong>③尽力而为</strong>——<code>except: pass</code>。这就是第 1 篇「机制 B 后台复盘」的落地点。</div>
+    <div class="box warn"><strong>它和前面「判断该不该复盘技能」的关系:决定 vs 执行。</strong>别把两步当成两件独立的事——<strong>技能复盘只是这一步要干的活之一</strong>:
+    <pre><code>决定阶段(只置标志,不干活):
+    _should_review_memory  ← 看"过了几轮"(_turns_since_memory,更早算好传进来)
+    _should_review_skills  ← 看"过了几圈工具"(_iters_since_skill,上一步算)
+                          │
+执行阶段(这段):  _spawn_background_review(review_memory=…, review_skills=…)
+                    └─ 一个后台线程 + 一个 fork agent
+                         └─ 把被标 True 的复盘一起做掉(记忆 + 技能,共用同一个 fork)
+</code></pre>
+    所以:<strong>「技能复盘」「记忆复盘」是两<u>种</u>复盘</strong>,各有自己的决定门(<code>_should_review_skills</code> / <code>_should_review_memory</code>);而<strong>后台复盘是唯一的<u>执行者</u></strong>,起一个后台 fork agent,把标记为 True 的那些<strong>一起做完</strong>——不会为技能和记忆各起一个线程。前面那步<strong>只决定、不干活</strong>,活都在这里。</div>
+    <h5>复盘线程里到底怎么跑(background_review)</h5>
+    <p>守护线程里会<strong>另建一个独立的「复盘 fork agent」</strong>(<code>max_iterations=16</code>、<code>quiet_mode=True</code>),用复盘提示词把这轮对话回放给它,让它决定要不要写记忆/改技能。有四处很讲究:</p>
+    <ul>
+      <li><strong>复用父 agent 的缓存前缀(省钱):</strong>fork <strong>共享父的 <code>session_id</code></strong>、<strong>钉住父缓存的系统提示</strong>、并让 <code>tools[]</code> 与父<strong>逐字节一致</strong>——这样它发出的请求命中<strong>同一个提供商缓存前缀</strong>(Anthropic 缓存键含 tools),复盘的输入成本几乎白嫖缓存,不用重付。为此还 <code>_skip_mcp_refresh</code>(免得晚连的 MCP 工具破坏 tools 一致性)。</li>
+      <li><strong>持久化隔离(防「curator 夺舍」):</strong>fork 既然共享父的 <code>session_id</code>,若不隔离,它的复盘指令(「回顾上面对话、更新技能库…」)+ 自己的回答会<strong>写进用户的真实会话 DB</strong>;用户下一轮就把这条注入的指令<strong>当成常驻命令</strong>、于是 agent「变成了 curator」、拒绝真正的任务。所以 <code>_persist_disabled=True</code> 硬停所有 DB 写——复盘<strong>只通过工具写技能/记忆库</strong>,不碰会话历史。</li>
+      <li><strong>只给两把工具:</strong>复盘 agent 的可用工具被限制到 <code>{memory, skill_manage}</code>——它只需要写记忆/改技能,不该(也不能)去跑终端等。</li>
+      <li><strong>线程级静音:</strong>用 <code>thread_scoped_silence()</code> 把<strong>这一条线程</strong>的 stdout/stderr 引到 devnull(不是进程全局——否则会把网关事件循环线程的输出也吞了,#55769),再加 <code>suppress_status_output</code>,让用户<strong>只看到最终「做了什么」的摘要</strong>,不被复盘中途的预算/限流/压缩告警刷屏。</li>
+    </ul>
   </li>
 </ol>
 
@@ -116,7 +426,14 @@ return result
 <p>另外几个条件字段:守卫拦停时带 <code>guardrail</code>;收尾有异常时带 <code>cleanup_errors</code>;若答复后才到的 <code>/steer</code> 没处可塞,带 <code>pending_steer</code> 让调用方作为下一轮交付。</p>
 
 <h2 id="notend">注意:这里不结束会话</h2>
-<div class="box warn">收尾<strong>不</strong>调用记忆提供商的 <code>on_session_end()</code> / <code>shutdown_all()</code>。因为多轮会话里 <code>run_conversation()</code> 每条用户消息都会被调一次,每轮都关闭会杀死提供商,导致第二条消息没法用。真正的会话结束清理交给 CLI(atexit / /reset)和网关(会话过期 / _reset_session)。</p></div>
+<div class="box warn">收尾<strong>不</strong>调用记忆提供商的 <code>on_session_end()</code> / <code>shutdown_all()</code>。因为多轮会话里 <code>run_conversation()</code> 每条用户消息都会被调一次,每轮都关闭会杀死提供商,导致第二条消息没法用。真正的会话结束清理交给 CLI(atexit / /reset)和网关(会话过期 / _reset_session)。</div>
+<div class="box tip"><strong>同名陷阱:别把两个 <code>on_session_end</code> 混了。</strong>
+<table>
+  <tr><th>名字</th><th>是什么</th><th>收尾时</th></tr>
+  <tr><td><strong>记忆提供商的 <code>on_session_end()</code></strong></td><td><code>MemoryProvider</code> ABC 上的<strong>方法</strong></td><td>❌ 不调(上面说的就是它)</td></tr>
+  <tr><td><strong><code>on_session_end</code> 插件钩子</strong></td><td>插件注册的 hook</td><td>✅ <strong>每次 <code>run_conversation</code> 结尾都触发</strong></td></tr>
+</table>
+所以同一个 <code>finalize_turn</code> 里:<strong>记忆提供商</strong>的 session-end 清理<strong>不做</strong>(留到真·会话结束);但<strong>插件钩子</strong> <code>on_session_end</code> <strong>每轮都 fire</strong>(尽力而为、抛错只 warning)。这个钩子名字有点误导——它叫「session_end」,实际是<strong>每轮 turn 结束</strong>都触发,供插件做每轮的清理/刷缓冲。</div>
 
 <h2 id="fulltrip">回到全貌</h2>
 <p>至此一个请求走完:</p>
@@ -136,11 +453,16 @@ flowchart LR
 <h2 id="takeaway">本篇要点</h2>
 <div class="box">
 <ul>
-<li>收尾全在 <code>finalize_turn</code>:落库、输出转换、组装结果、安排复盘。</li>
-<li>收尾区<strong>容错</strong>:任何清理异常都收集进 <code>cleanup_errors</code>,绝不吞掉用户的答复。</li>
-<li>返回的是<strong>富结果字典</strong>:答复 + 推理 + 消息 + token 计量 + 成本 + 退出原因。</li>
-<li>后台记忆/技能复盘<strong>在答复之后</strong>才跑,不抢模型。</li>
-<li>这里<strong>不结束会话</strong>,多轮对话靠 CLI / 网关在真正结束时清理。</li>
+<li>收尾全在 <code>finalize_turn</code>(同步、单一返回):迭代耗尽兜底 → 算 <code>completed</code> → 容错落库 → 诊断日志 → 页脚/钩子/reasoning → 组装结果 → 清状态 → 安排复盘。</li>
+<li><code>completed</code> 只认「<strong>自然答完</strong>」:烧光迭代靠<strong>强制总结</strong>拿到的答复<strong>不算成功</strong>(<code>&lt; max or normal_text</code>,不能写 <code>&lt;=</code>);cron/kanban 据此重派。</li>
+<li>收尾区<strong>容错</strong>:存轨迹/拆资源/落库三件事各自 <code>try</code>,异常进 <code>cleanup_errors</code>,<strong>绝不吞掉用户的答复</strong>(#8049)。三个全失败也照返回,只是「答案送达但没存档」。</li>
+<li>落库前先<strong>修历史尾巴</strong>:删空响应脚手架 / 中断补 assistant / 「交付即有 assistant 行」不变量——否则下一轮 <code>user,user</code> 非法、空响应死循环。</li>
+<li>诊断日志每轮记「为什么结束」;<strong>末尾停在 tool 且没中断 → WARNING</strong>(「莫名停住」场景)。</li>
+<li>文件改动校验页脚防模型<strong>谎报</strong>:失败自愈(成功会弹掉失败记录),<strong>只追加给用户、不入历史、不回喂模型</strong>(落库在前)。</li>
+<li>返回<strong>富结果字典</strong>:答复 + 推理 + 消息 + token 计量 + 成本 + 退出原因,外加条件字段(<code>guardrail</code>/<code>cleanup_errors</code>/<code>pending_steer</code>/<code>interrupt_message</code>)。</li>
+<li>两个插件钩子:<code>transform_llm_output</code> 是<strong>变换器</strong>(改答复文本),<code>post_llm_call</code> 是<strong>观察者</strong>(返回值忽略,同步/记录)。</li>
+<li>后台记忆/技能复盘<strong>在答复之后</strong>才跑(机制 B):独立 fork agent、复用父缓存前缀省钱、<code>_persist_disabled</code> 防「curator 夺舍」。技能/记忆是两<strong>种</strong>复盘、共用一个后台线程。</li>
+<li>这里<strong>不结束会话</strong>(记忆提供商 session-end 留给 CLI/网关);别和<strong>每轮都触发</strong>的同名插件钩子 <code>on_session_end</code> 混了。</li>
 </ul>
 </div>
 

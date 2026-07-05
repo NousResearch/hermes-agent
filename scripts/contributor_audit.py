@@ -29,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from release import resolve_author  # noqa: E402
+from release import resolve_author
 
 REPO_ROOT = SCRIPT_DIR.parent
 

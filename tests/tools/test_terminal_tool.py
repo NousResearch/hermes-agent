@@ -209,6 +209,10 @@ def test_get_env_config_ignores_bad_docker_json_for_local_backend(monkeypatch):
     monkeypatch.setenv("TERMINAL_DOCKER_ENV", "not-json")
     monkeypatch.setenv("TERMINAL_DOCKER_FORWARD_ENV", "not-json")
     monkeypatch.setenv("TERMINAL_DOCKER_EXTRA_ARGS", "not-json")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", "None")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_FORWARD_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", "not-json")
 
     config = terminal_tool._get_env_config()
 
@@ -217,6 +221,10 @@ def test_get_env_config_ignores_bad_docker_json_for_local_backend(monkeypatch):
     assert config["docker_env"] == {}
     assert config["docker_forward_env"] == []
     assert config["docker_extra_args"] == []
+    assert config["apple_container_volumes"] == []
+    assert config["apple_container_env"] == {}
+    assert config["apple_container_forward_env"] == []
+    assert config["apple_container_extra_args"] == []
 
 
 def test_get_env_config_ignores_bad_docker_json_for_ssh_backend(monkeypatch):
@@ -267,6 +275,57 @@ def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeyp
         assert "TERMINAL_DOCKER_VOLUMES" in str(exc)
     else:
         raise AssertionError("Docker backend must validate TERMINAL_DOCKER_VOLUMES")
+
+
+def test_get_env_config_still_rejects_bad_apple_json_for_apple_backend(monkeypatch):
+    """Selecting Apple container should validate its own JSON config."""
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", "None")
+
+    try:
+        terminal_tool._get_env_config()
+    except ValueError as exc:
+        assert "TERMINAL_APPLE_CONTAINER_VOLUMES" in str(exc)
+    else:
+        raise AssertionError("Apple container backend must validate TERMINAL_APPLE_CONTAINER_VOLUMES")
+
+
+def test_get_env_config_apple_container_mounts_host_cwd(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setenv("TERMINAL_CWD", str(project_dir))
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "apple_container"
+    assert config["cwd"] == "/workspace"
+    assert config["host_cwd"] == str(project_dir)
+    assert config["apple_container_mount_cwd_to_workspace"] is True
+
+
+def test_apple_container_host_mount_counts_as_host_access():
+    config = {
+        "env_type": "apple_container",
+        "host_cwd": "/Users/alice/project",
+        "apple_container_mount_cwd_to_workspace": True,
+        "apple_container_volumes": [],
+    }
+
+    assert terminal_tool._container_has_host_access(config) is True
+
+
+def test_apple_container_without_host_mount_is_isolated():
+    config = {
+        "env_type": "apple_container",
+        "host_cwd": None,
+        "apple_container_mount_cwd_to_workspace": False,
+        "apple_container_volumes": ["named-volume:/data"],
+    }
+
+    assert terminal_tool._container_has_host_access(config) is False
 
 
 def test_sudo_wrong_password_failure_detects_rejection_output():

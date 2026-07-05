@@ -139,6 +139,17 @@ def test_cwd_plus_docker_image_keeps_own_id():
         terminal_tool.clear_task_env_overrides("rl-with-cwd")
 
 
+def test_apple_container_image_override_keeps_own_id():
+    """Apple container image overrides are isolation signals too."""
+    terminal_tool.register_task_env_overrides(
+        "apple-rl", {"apple_container_image": "python:3.11", "cwd": "/workspace"}
+    )
+    try:
+        assert terminal_tool._resolve_container_task_id("apple-rl") == "apple-rl"
+    finally:
+        terminal_tool.clear_task_env_overrides("apple-rl")
+
+
 def test_env_type_override_keeps_own_id():
     """env_type is an isolation key — must trigger per-task container."""
     terminal_tool.register_task_env_overrides(

@@ -1953,11 +1953,12 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
 
     Isolated container backends sandbox the agent away from the host, so their
     commands can't damage real files/services and we skip the approval layer.
-    Docker is the exception once host paths are bind-mounted into the container:
-    at that point a command like ``rm -rf /workspace`` reaches host files, so it
-    must go through the normal approval flow.
+    Docker and Apple container are the exceptions once host paths are
+    bind-mounted into the container: at that point a command like
+    ``rm -rf /workspace`` reaches host files, so it must go through the
+    normal approval flow.
     """
-    if env_type == "docker":
+    if env_type in {"docker", "apple_container"}:
         return not has_host_access
     return env_type in ("singularity", "modal", "daytona")
 
@@ -1974,7 +1975,7 @@ def check_dangerous_command(command: str, env_type: str,
         command: The shell command to check.
         env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
-        has_host_access: True when a Docker sandbox bind-mounts host paths,
+        has_host_access: True when a container sandbox bind-mounts host paths,
             so its commands can reach the host and must not skip approval.
 
     Returns:
@@ -2231,12 +2232,12 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
 
-    ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
+    ``has_host_access`` is True when a container sandbox bind-mounts host paths;
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
-    # Skip isolated container backends for both checks. Docker stops skipping
-    # once host paths are bind-mounted into the sandbox.
+    # Skip isolated container backends for both checks. Container backends stop
+    # skipping once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 

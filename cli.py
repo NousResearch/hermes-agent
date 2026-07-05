@@ -405,8 +405,17 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
             "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "apple_container_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "apple_container_binary": "",
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
+            "apple_container_volumes": [],
+            "apple_container_mount_cwd_to_workspace": False,
+            "apple_container_forward_env": [],
+            "apple_container_env": {},
+            "apple_container_extra_args": [],
+            "apple_container_run_as_host_user": False,
+            "apple_container_persist_across_processes": False,
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
@@ -613,6 +622,8 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
+        "apple_container_binary": "TERMINAL_APPLE_CONTAINER_BINARY",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
@@ -630,6 +641,13 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+        "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
+        "apple_container_mount_cwd_to_workspace": "TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE",
+        "apple_container_forward_env": "TERMINAL_APPLE_CONTAINER_FORWARD_ENV",
+        "apple_container_env": "TERMINAL_APPLE_CONTAINER_ENV",
+        "apple_container_extra_args": "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
+        "apple_container_run_as_host_user": "TERMINAL_APPLE_CONTAINER_RUN_AS_HOST_USER",
+        "apple_container_persist_across_processes": "TERMINAL_APPLE_CONTAINER_PERSIST_ACROSS_PROCESSES",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",

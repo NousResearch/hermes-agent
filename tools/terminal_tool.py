@@ -2,17 +2,18 @@
 """
 Terminal Tool Module
 
-A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, and Daytona environments. Supports local execution,
+A terminal tool that executes commands in local, Docker, Apple container,
+Modal, SSH, Singularity, and Daytona environments. Supports local execution,
 containerized backends, and cloud sandboxes, including managed Modal mode.
 
 Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
+- "apple_container": Execute in Apple container lightweight VMs (macOS)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
-- Multiple execution backends (local, docker, modal)
+- Multiple execution backends (local, docker, apple_container, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -257,8 +258,8 @@ from tools.approval import (
 )
 
 
-def _docker_volume_uses_host_path(volume_spec: str) -> bool:
-    """Return True when a docker volume spec bind-mounts a host path."""
+def _volume_spec_uses_host_path(volume_spec: str) -> bool:
+    """Return True when a Docker/Apple volume spec bind-mounts a host path."""
     if not isinstance(volume_spec, str):
         return False
 
@@ -269,13 +270,45 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
     )
 
 
+def _docker_volume_uses_host_path(volume_spec: str) -> bool:
+    """Backward-compatible alias for Docker volume host-path detection."""
+    return _volume_spec_uses_host_path(volume_spec)
+
+
+def _container_has_host_access(config: Dict[str, Any]) -> bool:
+    """Return True when a container sandbox exposes explicit host paths."""
+    env_type = config.get("env_type")
+    if env_type == "docker":
+        if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
+            return True
+        return any(_volume_spec_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    if env_type == "apple_container":
+        if config.get("host_cwd") and config.get("apple_container_mount_cwd_to_workspace"):
+            return True
+        return any(
+            _volume_spec_uses_host_path(vol)
+            for vol in config.get("apple_container_volumes", [])
+        )
+    return False
+
+
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
-    if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
+    return _container_has_host_access(config)
+
+
+def _apple_container_has_host_access(config: Dict[str, Any]) -> bool:
+    """Return True when an Apple container exposes host paths through bind mounts."""
+    if config.get("env_type") != "apple_container":
+        return False
+    if config.get("host_cwd") and config.get("apple_container_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    return any(
+        _volume_spec_uses_host_path(vol)
+        for vol in config.get("apple_container_volumes", [])
+    )
 
 
 def _check_all_guards(command: str, env_type: str,
@@ -948,6 +981,7 @@ from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
+from tools.environments.apple_container import AppleContainerEnvironment as _AppleContainerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
@@ -1060,7 +1094,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 
 
 # Per-task environment overrides registry.
-# Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
+# Allows environments (e.g., TerminalBench2Env) to specify a custom container
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
 # file tools create a new sandbox for that task_id, they check this registry first
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
@@ -1080,6 +1114,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     Supported override keys:
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
+        - apple_container_image: str -- OCI image name for Apple container
         - cwd: str -- Working directory inside the sandbox
 
     Args:
@@ -1146,7 +1181,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "apple_container_image", "env_type",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
@@ -1213,7 +1248,7 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "apple_container"})
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1260,8 +1295,10 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    mount_apple_container_cwd = os.getenv("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    container_backend = env_type in _CONTAINER_BACKENDS
     docker_backend = env_type == "docker"
+    apple_container_backend = env_type == "apple_container"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1287,6 +1324,25 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = {}
         docker_extra_args = []
 
+    if apple_container_backend:
+        apple_container_forward_env = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_FORWARD_ENV", "[]", json.loads, "valid JSON"
+        )
+        apple_container_volumes = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_VOLUMES", "[]", json.loads, "valid JSON"
+        )
+        apple_container_env = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_ENV", "{}", json.loads, "valid JSON"
+        )
+        apple_container_extra_args = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        )
+    else:
+        apple_container_forward_env = []
+        apple_container_volumes = []
+        apple_container_env = {}
+        apple_container_extra_args = []
+
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
@@ -1305,9 +1361,12 @@ def _get_env_config() -> Dict[str, Any]:
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
-    if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+    if (
+        (env_type == "docker" and mount_docker_cwd)
+        or (env_type == "apple_container" and mount_apple_container_cwd)
+    ):
+        cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        candidate = os.path.abspath(os.path.expanduser(cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
@@ -1330,9 +1389,12 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "apple_container_image": os.getenv("TERMINAL_APPLE_CONTAINER_IMAGE", default_image),
+        "apple_container_binary": os.getenv("TERMINAL_APPLE_CONTAINER_BINARY", ""),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
+        "apple_container_mount_cwd_to_workspace": mount_apple_container_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
@@ -1348,8 +1410,8 @@ def _get_env_config() -> Dict[str, Any]:
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
-        # Container resource config (applies to docker, singularity, modal,
-        # daytona -- ignored for local/ssh)
+        # Container resource config (applies to docker, apple_container,
+        # singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
@@ -1358,6 +1420,14 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_env": docker_env,
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
+        "apple_container_volumes": apple_container_volumes,
+        "apple_container_forward_env": apple_container_forward_env,
+        "apple_container_env": apple_container_env,
+        "apple_container_run_as_host_user": os.getenv("TERMINAL_APPLE_CONTAINER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "apple_container_extra_args": apple_container_extra_args,
+        "apple_container_persist_across_processes": os.getenv(
+            "TERMINAL_APPLE_CONTAINER_PERSIST_ACROSS_PROCESSES", "false"
+        ).lower() in {"true", "1", "yes"},
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
         # makes that real by probing for a labeled container at startup and
@@ -1386,6 +1456,53 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
+def resolve_backend_image(
+    env_type: str,
+    config: Dict[str, Any],
+    overrides: Dict[str, Any] | None = None,
+) -> str:
+    """Return the configured image for a container-like backend."""
+    image_keys = {
+        "docker": "docker_image",
+        "singularity": "singularity_image",
+        "modal": "modal_image",
+        "daytona": "daytona_image",
+        "apple_container": "apple_container_image",
+    }
+    key = image_keys.get(env_type)
+    if not key:
+        return ""
+    overrides = overrides or {}
+    return overrides.get(key) or config.get(key, "")
+
+
+def build_container_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the normalized config payload shared by container backends."""
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+        "apple_container_binary": config.get("apple_container_binary", ""),
+        "apple_container_volumes": config.get("apple_container_volumes", []),
+        "apple_container_mount_cwd_to_workspace": config.get("apple_container_mount_cwd_to_workspace", False),
+        "apple_container_forward_env": config.get("apple_container_forward_env", []),
+        "apple_container_env": config.get("apple_container_env", {}),
+        "apple_container_run_as_host_user": config.get("apple_container_run_as_host_user", False),
+        "apple_container_extra_args": config.get("apple_container_extra_args", []),
+        "apple_container_persist_across_processes": config.get("apple_container_persist_across_processes", False),
+    }
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -1395,8 +1512,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "ssh"
+        env_type: One of "local", "docker", "apple_container", "singularity",
+            "modal", "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -1417,6 +1534,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
+    apple_container_forward_env = cc.get("apple_container_forward_env", [])
+    apple_container_env = cc.get("apple_container_env", {})
+    apple_container_extra_args = cc.get("apple_container_extra_args", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1441,6 +1561,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
+        )
+
+    elif env_type == "apple_container":
+        return _AppleContainerEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=cpu, memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+            volumes=cc.get("apple_container_volumes", []),
+            host_cwd=host_cwd,
+            auto_mount_cwd=cc.get("apple_container_mount_cwd_to_workspace", False),
+            forward_env=apple_container_forward_env,
+            env=apple_container_env,
+            run_as_host_user=cc.get("apple_container_run_as_host_user", False),
+            extra_args=apple_container_extra_args,
+            persist_across_processes=cc.get("apple_container_persist_across_processes", False),
+            binary=cc.get("apple_container_binary") or None,
         )
     
     elif env_type == "singularity":
@@ -1532,7 +1668,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'apple_container', 'singularity', 'modal', 'daytona', or 'ssh'"
         )
 
 
@@ -1570,7 +1706,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 _creation_locks.pop(task_id, None)
 
     # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
-    # are not blocked while Modal/Docker sandboxes shut down.
+    # are not blocked while Modal/Docker/Apple sandboxes shut down.
     for task_id, env in envs_to_stop:
         # Invalidate stale file_ops cache entry (Bug fix: prevents
         # ShellFileOperations from referencing a dead sandbox)
@@ -2078,17 +2214,8 @@ def terminal_tool(
         # isolation-keyed RL/benchmark overrides keep resolving as before.
         overrides = resolve_task_overrides(task_id)
         
-        # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
+        # Select image based on env type, with per-task override support.
+        image = resolve_backend_image(env_type, config, overrides)
 
         cwd = overrides.get("cwd") or config["cwd"]
         # A per-task cwd override (registered by the gateway/TUI for workspace
@@ -2195,22 +2322,8 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                        if env_type in _CONTAINER_BACKENDS:
+                            container_config = build_container_config(config)
 
                         local_config = None
                         if env_type == "local":
@@ -2272,7 +2385,7 @@ def terminal_tool(
         if not force:
             approval = _check_all_guards(
                 command, env_type,
-                has_host_access=_docker_has_host_access(config),
+                has_host_access=_container_has_host_access(config),
             )
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
@@ -2780,6 +2893,20 @@ def check_terminal_requirements() -> bool:
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
             return result.returncode == 0
 
+        elif env_type == "apple_container":
+            from tools.environments.apple_container import find_apple_container
+            container_exe = find_apple_container(config.get("apple_container_binary") or None)
+            if not container_exe:
+                logger.error("Apple container executable not found")
+                return False
+            result = subprocess.run(
+                [container_exe, "system", "status", "--format", "json"],
+                capture_output=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            return result.returncode == 0
+
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
@@ -2863,7 +2990,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "apple_container, modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -2881,6 +3008,7 @@ if __name__ == "__main__":
     print("\nCurrent Configuration:")
     print(f"  Environment type: {config['env_type']}")
     print(f"  Docker image: {config['docker_image']}")
+    print(f"  Apple container image: {config['apple_container_image']}")
     print(f"  Modal image: {config['modal_image']}")
     print(f"  Working directory: {config['cwd']}")
     print(f"  Default timeout: {config['timeout']}s")
@@ -2906,9 +3034,10 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/ssh)"
+        "(local/docker/apple_container/singularity/modal/daytona/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
+    print(f"  TERMINAL_APPLE_CONTAINER_IMAGE: {os.getenv('TERMINAL_APPLE_CONTAINER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")

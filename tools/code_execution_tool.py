@@ -636,6 +636,9 @@ def _get_or_create_env(task_id: str):
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
         _resolve_container_task_id,
+        _CONTAINER_BACKENDS,
+        build_container_config,
+        resolve_backend_image,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -662,29 +665,13 @@ def _get_or_create_env(task_id: str):
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
 
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
+        image = resolve_backend_image(env_type, config, overrides)
 
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-            }
+        if env_type in _CONTAINER_BACKENDS:
+            container_config = build_container_config(config)
 
         ssh_config = None
         if env_type == "ssh":

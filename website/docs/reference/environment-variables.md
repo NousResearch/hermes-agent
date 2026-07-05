@@ -204,12 +204,17 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `apple_container`, `ssh`, `singularity`, `modal`, `daytona` |
 | `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
+| `TERMINAL_APPLE_CONTAINER_IMAGE` | Apple container OCI image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
+| `TERMINAL_APPLE_CONTAINER_BINARY` | Override the Apple `container` CLI path/name |
+| `TERMINAL_APPLE_CONTAINER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Apple container sessions |
+| `TERMINAL_APPLE_CONTAINER_VOLUMES` | JSON array of Apple container volume mounts (`host:container[:ro]`) |
+| `TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE` | Opt in to mount the launch cwd into Apple container `/workspace` (`true`/`false`, default: `false`) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |

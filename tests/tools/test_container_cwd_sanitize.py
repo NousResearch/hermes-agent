@@ -62,7 +62,7 @@ class TestIsUnusableContainerCwd:
 
     def test_container_backends_set(self):
         assert tt._CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona"}
+            {"docker", "apple_container", "singularity", "modal", "daytona"}
         )
 
 

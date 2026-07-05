@@ -11,6 +11,7 @@ def _make_env_config(**overrides):
         "singularity_image": "docker://test",
         "modal_image": "test",
         "daytona_image": "test",
+        "apple_container_image": "test",
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 180,
@@ -21,6 +22,13 @@ def _make_env_config(**overrides):
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": True,
         "docker_forward_env": ["MY_SECRET", "API_KEY"],
+        "apple_container_volumes": [],
+        "apple_container_mount_cwd_to_workspace": False,
+        "apple_container_forward_env": [],
+        "apple_container_env": {},
+        "apple_container_extra_args": [],
+        "apple_container_run_as_host_user": False,
+        "apple_container_persist_across_processes": False,
     }
     base.update(overrides)
     return base
@@ -72,6 +80,30 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4").get("container_config", {})
         assert cc.get("docker_forward_env") == []
+
+    def test_apple_container_config_passed(self):
+        """Apple container backend-specific keys are forwarded to container_config."""
+        cfg = _make_env_config(
+            env_type="apple_container",
+            apple_container_image="apple:test",
+            apple_container_mount_cwd_to_workspace=True,
+            apple_container_forward_env=["GITHUB_TOKEN"],
+            apple_container_volumes=["/tmp/data:/data:ro"],
+            apple_container_env={"DEBUG": "1"},
+            apple_container_extra_args=["--rosetta"],
+            apple_container_persist_across_processes=True,
+        )
+
+        captured = self._run(cfg, "apple-task")
+        cc = captured.get("container_config", {})
+
+        assert captured["image"] == "apple:test"
+        assert cc.get("apple_container_mount_cwd_to_workspace") is True
+        assert cc.get("apple_container_forward_env") == ["GITHUB_TOKEN"]
+        assert cc.get("apple_container_volumes") == ["/tmp/data:/data:ro"]
+        assert cc.get("apple_container_env") == {"DEBUG": "1"}
+        assert cc.get("apple_container_extra_args") == ["--rosetta"]
+        assert cc.get("apple_container_persist_across_processes") is True
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

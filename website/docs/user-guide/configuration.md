@@ -108,11 +108,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, an Apple container lightweight VM, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | apple_container | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -120,6 +120,7 @@ terminal:
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  apple_container_image: "nikolaik/python-nodejs:python3.11-nodejs20"       # OCI image for Apple container backend
 ```
 
 For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
@@ -130,6 +131,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
+| **apple_container** | Apple container lightweight VM on macOS | Full (Linux VM per container) | Docker-free isolation on Apple silicon |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
@@ -300,6 +302,51 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
+
+### Apple Container Backend
+
+Runs commands through Apple's [`container`](https://github.com/apple/container) CLI: OCI images execute as lightweight Linux VMs on Apple silicon Macs. This is a good fit for local macOS agents that want Docker-free isolation while keeping the same Hermes terminal/file/`execute_code` backend contract.
+
+```yaml
+terminal:
+  backend: apple_container
+  apple_container_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  apple_container_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
+  apple_container_forward_env:
+    - "GITHUB_TOKEN"
+  apple_container_env:
+    DEBUG: "1"
+  apple_container_volumes:
+    - "/Users/me/projects:/workspace/projects"
+    - "/Users/me/data:/data:ro"
+  apple_container_extra_args:
+    - "--rosetta"
+
+  container_cpu: 1
+  container_memory: 5120
+  container_persistent: true
+  apple_container_persist_across_processes: false
+```
+
+**Requirements:** Apple silicon Mac, macOS 26 or later, `container` installed, and `container system start` already run. Hermes probes `$PATH`, `/usr/local/bin/container`, and `/opt/homebrew/bin/container`; set `apple_container_binary` or `TERMINAL_APPLE_CONTAINER_BINARY` for a custom path.
+
+The backend uses `container run --detach --init` for the long-lived sandbox and `container exec` for each command. `container_persistent: true` bind-mounts Hermes-managed `/root` and `/workspace` directories under `~/.hermes/sandboxes/apple_container/<task>`, so files survive backend recreation. By default `apple_container_persist_across_processes` is `false`, which stops and deletes the live lightweight VM when Hermes cleans up; enable it only when you explicitly want background processes to survive across Hermes restarts.
+
+The Apple backend mirrors Docker's explicit host-access rule: isolated containers skip local dangerous-command prompts, but any `apple_container_mount_cwd_to_workspace` or host-path `apple_container_volumes` mount routes commands through the normal approval flow because `/workspace` can now reach host files.
+
+Environment overrides:
+
+| Env var | Maps to | Notes |
+|---|---|---|
+| `TERMINAL_APPLE_CONTAINER_IMAGE` | `apple_container_image` | OCI base image |
+| `TERMINAL_APPLE_CONTAINER_BINARY` | `apple_container_binary` | CLI path or executable name |
+| `TERMINAL_APPLE_CONTAINER_FORWARD_ENV` | `apple_container_forward_env` | JSON array |
+| `TERMINAL_APPLE_CONTAINER_ENV` | `apple_container_env` | JSON dict |
+| `TERMINAL_APPLE_CONTAINER_VOLUMES` | `apple_container_volumes` | JSON array of `"host:container[:ro]"` strings |
+| `TERMINAL_APPLE_CONTAINER_EXTRA_ARGS` | `apple_container_extra_args` | JSON array appended to `container run` |
+| `TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE` | `apple_container_mount_cwd_to_workspace` | `true` / `false` |
+| `TERMINAL_APPLE_CONTAINER_RUN_AS_HOST_USER` | `apple_container_run_as_host_user` | `true` / `false` |
+| `TERMINAL_APPLE_CONTAINER_PERSIST_ACROSS_PROCESSES` | `apple_container_persist_across_processes` | `true` / `false` — default `false` |
 
 ### SSH Backend
 

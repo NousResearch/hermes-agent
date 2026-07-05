@@ -269,7 +269,35 @@ terminal:
 #   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
-# OPTION 4: Singularity/Apptainer container
+# OPTION 4: Apple container
+# Commands run in Apple's lightweight-VM container runtime on macOS.
+# Great for: Apple silicon Macs, Docker-free local isolation, OCI images
+# Requires: Apple silicon Mac, macOS 26+, apple/container installed and
+# `container system start` already run.
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "apple_container"
+#   cwd: "/workspace"  # Path INSIDE the container (default: /root)
+#   timeout: 180
+#   lifetime_seconds: 300
+#   apple_container_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   apple_container_binary: ""  # Optional path/name; defaults to PATH + common install paths
+#   apple_container_mount_cwd_to_workspace: true
+#   apple_container_forward_env:
+#     - "GITHUB_TOKEN"
+#   apple_container_env:
+#     DEBUG: "1"
+#   apple_container_volumes:
+#     - "/Users/me/projects:/workspace/projects"
+#     - "/Users/me/data:/data:ro"
+#   apple_container_extra_args:
+#     - "--rosetta"
+#   # Optional: reuse the same live Apple container across Hermes restarts.
+#   # Defaults false so Hermes releases Apple lightweight VMs on process exit.
+#   apple_container_persist_across_processes: false
+
+# -----------------------------------------------------------------------------
+# OPTION 5: Singularity/Apptainer container
 # Commands run in a Singularity container (common in HPC environments)
 # Great for: HPC clusters, shared compute environments
 # -----------------------------------------------------------------------------
@@ -281,7 +309,7 @@ terminal:
 #   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 5: Modal cloud execution
+# OPTION 6: Modal cloud execution
 # Commands run on Modal's cloud infrastructure
 # Great for: GPU access, scalable compute, serverless execution
 # -----------------------------------------------------------------------------
@@ -293,7 +321,7 @@ terminal:
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 6: Daytona cloud execution
+# OPTION 7: Daytona cloud execution
 # Commands run in Daytona cloud sandboxes
 # Great for: Cloud dev environments, persistent workspaces, team collaboration
 # Requires: pip install daytona, DAYTONA_API_KEY env var
@@ -307,7 +335,7 @@ terminal:
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, apple_container, singularity, modal, daytona -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

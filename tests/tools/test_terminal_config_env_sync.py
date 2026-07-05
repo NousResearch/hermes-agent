@@ -322,3 +322,29 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_apple_container_config_is_bridged_everywhere():
+    """Apple container backend keys must not drift across entry points."""
+    required = {
+        "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
+        "apple_container_binary": "TERMINAL_APPLE_CONTAINER_BINARY",
+        "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
+        "apple_container_mount_cwd_to_workspace": "TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE",
+        "apple_container_forward_env": "TERMINAL_APPLE_CONTAINER_FORWARD_ENV",
+        "apple_container_env": "TERMINAL_APPLE_CONTAINER_ENV",
+        "apple_container_extra_args": "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
+        "apple_container_run_as_host_user": "TERMINAL_APPLE_CONTAINER_RUN_AS_HOST_USER",
+        "apple_container_persist_across_processes": "TERMINAL_APPLE_CONTAINER_PERSIST_ACROSS_PROCESSES",
+    }
+
+    cli_keys = _cli_env_map_keys()
+    gateway_keys = _gateway_env_map_keys()
+    save_keys = _save_config_env_sync_keys()
+    terminal_env_vars = _terminal_tool_env_var_names()
+
+    for key, env_var in required.items():
+        assert key in cli_keys
+        assert key in gateway_keys
+        assert key in save_keys
+        assert env_var in terminal_env_vars

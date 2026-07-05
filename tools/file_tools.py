@@ -616,7 +616,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    """Return the container-side Hermes mirror prefix for bind-mount backends."""
     try:
         from tools.terminal_tool import (
             _active_environments,
@@ -634,7 +634,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
 
         if env is not None:
-            if env.__class__.__name__ == "DockerEnvironment" and bool(
+            if env.__class__.__name__ in {"DockerEnvironment", "AppleContainerEnvironment"} and bool(
                 getattr(env, "_persistent", False)
             ):
                 return "/root/.hermes"
@@ -644,7 +644,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     except Exception:
         return None
 
-    if config.get("env_type") == "docker" and config.get("container_persistent", True):
+    if config.get("env_type") in {"docker", "apple_container"} and config.get("container_persistent", True):
         return "/root/.hermes"
     return None
 
@@ -652,7 +652,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Hermes
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
-    state, or the Docker container's sandbox mirror of Hermes state.
+    state, or a container sandbox mirror of Hermes state.
 
     Three detectors run in order:
 
@@ -979,6 +979,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _resolve_container_task_id,
         _is_unusable_container_cwd,
         _CONTAINER_BACKENDS,
+        build_container_config,
+        resolve_backend_image,
     )
     import time
 
@@ -1028,16 +1030,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             env_type = config["env_type"]
             overrides = resolve_task_overrides(raw_task_id)
 
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
+            image = resolve_backend_image(env_type, config, overrides)
 
             cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
             # Re-apply the container cwd guard that _get_env_config() already
@@ -1063,17 +1056,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                }
+            if env_type in _CONTAINER_BACKENDS:
+                container_config = build_container_config(config)
 
             ssh_config = None
             if env_type == "ssh":

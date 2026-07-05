@@ -14,6 +14,11 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_CONTAINER_MEMORY",
         "TERMINAL_DOCKER_FORWARD_ENV",
         "TERMINAL_DOCKER_VOLUMES",
+        "TERMINAL_APPLE_CONTAINER_BINARY",
+        "TERMINAL_APPLE_CONTAINER_FORWARD_ENV",
+        "TERMINAL_APPLE_CONTAINER_VOLUMES",
+        "TERMINAL_APPLE_CONTAINER_ENV",
+        "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
         "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
         "TERMINAL_SSH_HOST",
@@ -72,6 +77,40 @@ def test_ssh_backend_without_host_or_user_logs_and_returns_false(monkeypatch, ca
         "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_apple_container_without_cli_logs_and_returns_false(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setattr(
+        "tools.environments.apple_container.find_apple_container",
+        lambda binary=None: None,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "Apple container executable not found" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_apple_container_status_success_returns_true(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setattr(
+        "tools.environments.apple_container.find_apple_container",
+        lambda binary=None: "/usr/local/bin/container",
+    )
+    monkeypatch.setattr(
+        terminal_tool_module.subprocess,
+        "run",
+        lambda *args, **kwargs: __import__("subprocess").CompletedProcess(args[0], 0),
+    )
+
+    assert terminal_tool_module.check_terminal_requirements() is True
 
 
 def test_modal_backend_without_token_or_config_logs_specific_error(monkeypatch, caplog, tmp_path):

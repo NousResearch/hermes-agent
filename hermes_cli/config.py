@@ -1147,7 +1147,9 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "apple_container_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "apple_container_binary": "",
+        # Container resource limits (docker, apple_container, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -1175,6 +1177,13 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        "apple_container_volumes": [],
+        "apple_container_mount_cwd_to_workspace": False,
+        "apple_container_forward_env": [],
+        "apple_container_env": {},
+        "apple_container_extra_args": [],
+        "apple_container_run_as_host_user": False,
+        "apple_container_persist_across_processes": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in
@@ -6578,6 +6587,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
+    "apple_container_binary": "TERMINAL_APPLE_CONTAINER_BINARY",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -6593,6 +6604,13 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+    "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
+    "apple_container_mount_cwd_to_workspace": "TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE",
+    "apple_container_forward_env": "TERMINAL_APPLE_CONTAINER_FORWARD_ENV",
+    "apple_container_env": "TERMINAL_APPLE_CONTAINER_ENV",
+    "apple_container_extra_args": "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
+    "apple_container_run_as_host_user": "TERMINAL_APPLE_CONTAINER_RUN_AS_HOST_USER",
+    "apple_container_persist_across_processes": "TERMINAL_APPLE_CONTAINER_PERSIST_ACROSS_PROCESSES",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
 }
@@ -7660,6 +7678,8 @@ def show_config():
     
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+    elif terminal.get('backend') == 'apple_container':
+        print(f"  Apple image:  {terminal.get('apple_container_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
         print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'modal':

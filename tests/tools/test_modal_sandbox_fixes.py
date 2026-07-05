@@ -94,6 +94,16 @@ class TestCwdHandling:
         assert config["host_cwd"] == "/Users/someone/projects"
         assert config["docker_mount_cwd_to_workspace"] is True
 
+    def test_users_path_maps_to_workspace_for_apple_container_when_enabled(self, monkeypatch):
+        """Apple container should map host cwd into /workspace only when enabled."""
+        monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", "true")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == "/Users/someone/projects"
+        assert config["apple_container_mount_cwd_to_workspace"] is True
+
     def test_windows_path_replaced_for_modal(self, monkeypatch):
         """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
         monkeypatch.setenv("TERMINAL_ENV", "modal")
@@ -101,12 +111,13 @@ class TestCwdHandling:
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root"
 
-    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    @pytest.mark.parametrize("backend", ["modal", "docker", "apple_container", "singularity", "daytona"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
         monkeypatch.setenv("TERMINAL_ENV", backend)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+        monkeypatch.delenv("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", raising=False)
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root", (
             f"Backend {backend}: expected /root default, got {config['cwd']}"
@@ -311,8 +322,8 @@ class TestHostPrefixList:
 # (PR #6436, @Kolektori)
 # =========================================================================
 
-class TestDockerHostBindApproval:
-    """Docker host bind mounts disable the container approval fast-path."""
+class TestContainerHostBindApproval:
+    """Host bind mounts disable the container approval fast-path."""
 
     def test_docker_host_access_detection(self):
         """_docker_has_host_access flags bind-mounted host paths only."""
@@ -333,15 +344,20 @@ class TestDockerHostBindApproval:
         # Windows host path -> host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
-        # Other container backends never report host access.
+        # The Docker-specific helper intentionally ignores other backends.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
+        assert _tt_mod._apple_container_has_host_access(
+            {"env_type": "apple_container", "apple_container_volumes": ["/tmp:/hosttmp"]}
+        ) is True
 
     def test_should_skip_container_guards(self):
-        """Docker skips only when isolated; other sandboxes always skip."""
+        """Host-mountable containers skip only when isolated."""
         import tools.approval as A
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
+        assert A._should_skip_container_guards("apple_container", has_host_access=False) is True
+        assert A._should_skip_container_guards("apple_container", has_host_access=True) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
         assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True

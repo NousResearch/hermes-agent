@@ -1176,6 +1176,7 @@ def setup_terminal_backend(config: dict):
 
     current_backend = cfg_get(config, "terminal", "backend", default="local")
     is_linux = _platform.system() == "Linux"
+    is_macos = _platform.system() == "Darwin"
 
     # Build backend choices with descriptions
     terminal_choices = [
@@ -1189,6 +1190,12 @@ def setup_terminal_backend(config: dict):
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
 
     next_idx = 5
+    if is_macos:
+        terminal_choices.append("Apple container - lightweight VM containers on Apple silicon")
+        idx_to_backend[next_idx] = "apple_container"
+        backend_to_idx["apple_container"] = next_idx
+        next_idx += 1
+
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1253,6 +1260,22 @@ def setup_terminal_backend(config: dict):
             "singularity_image",
             "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         )
+
+    elif selected_backend == "apple_container":
+        print_success("Terminal backend: Apple container")
+
+        container_bin = shutil.which("container")
+        if not container_bin:
+            print_warning("Apple container CLI not found in PATH!")
+            print_info("Install: https://github.com/apple/container")
+        else:
+            print_info(f"Apple container found: {container_bin}")
+            print_info("Ensure the service is running: container system start")
+
+        config["terminal"].setdefault(
+            "apple_container_image", "nikolaik/python-nodejs:python3.11-nodejs20"
+        )
+        config["terminal"].setdefault("apple_container_persist_across_processes", False)
 
     elif selected_backend == "modal":
         print_success("Terminal backend: Modal")

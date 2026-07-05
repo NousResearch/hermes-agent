@@ -1278,7 +1278,49 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+def _credential_pool_lookup_ids_for(provider_id: str) -> Tuple[str, ...]:
+    """Return canonical+legacy alias pool keys for a provider or alias."""
+    normalized = (provider_id or "").strip().lower()
+    if not normalized:
+        return ()
+    ordered: List[str] = [normalized]
+    try:
+        import importlib
+
+        profile = getattr(importlib.import_module("providers"), "get_provider_profile")(
+            normalized
+        )
+    except Exception:
+        profile = None
+    if profile is not None:
+        ordered = [getattr(profile, "name", normalized), normalized]
+        ordered.extend(getattr(profile, "aliases", ()))
+    seen = set()
+    result = []
+    for candidate in ordered:
+        if not isinstance(candidate, str):
+            continue
+        candidate = candidate.strip().lower()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return tuple(result)
+
+
+def _first_credential_pool_entries(
+    pool: Dict[str, Any], provider_ids: Iterable[str]
+) -> List[Dict[str, Any]]:
+    for provider_id in provider_ids:
+        entries = pool.get(provider_id)
+        if isinstance(entries, list) and entries:
+            return list(entries)
+    return []
+
+
+def read_credential_pool(
+    provider_id: Optional[str] = None,
+) -> Dict[str, Any] | List[Dict[str, Any]]:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode, the profile's credential pool is authoritative. If a
@@ -1317,12 +1359,18 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             merged[gp_key] = list(gp_entries)
         return merged
 
-    provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    provider_entries = _first_credential_pool_entries(
+        pool, _credential_pool_lookup_ids_for(provider_id)
+    )
+    if provider_entries:
+        return provider_entries
+
+    # Profile has no entries for this provider — fall back to global.  Include
+    # legacy alias pools so credentials written before alias canonicalization do
+    # not become stranded when runtime/auth commands resolve to the canonical id.
+    return _first_credential_pool_entries(
+        global_pool, _credential_pool_lookup_ids_for(provider_id)
+    )
 
 
 def write_credential_pool(
@@ -1373,6 +1421,37 @@ def write_credential_pool(
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
+
+        # If credentials were previously stored under a provider-profile alias,
+        # remove migrated/removed entries from those legacy buckets.  Canonical
+        # pool reads still fall back to aliases, but any write should gradually
+        # converge the on-disk shape so alias-stored credentials are not
+        # duplicated or resurrected after removal.
+        merged_ids = {
+            entry.get("id")
+            for entry in merged
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        for alias in _credential_pool_lookup_ids_for(provider_id):
+            if alias == provider_id:
+                continue
+            alias_entries = pool.get(alias)
+            if not isinstance(alias_entries, list):
+                continue
+            kept = []
+            for alias_entry in alias_entries:
+                if not isinstance(alias_entry, dict):
+                    kept.append(alias_entry)
+                    continue
+                alias_id = alias_entry.get("id")
+                if alias_id and (alias_id in merged_ids or alias_id in removed):
+                    continue
+                kept.append(alias_entry)
+            if kept:
+                pool[alias] = kept
+            else:
+                pool.pop(alias, None)
+
         return _save_auth_store(auth_store)
 
 

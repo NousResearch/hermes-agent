@@ -1304,15 +1304,32 @@ def get_default_model_for_provider(provider: str) -> str:
     ``hermes model``, or a profile that sets ``provider`` with no ``model``).
 
     For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
-    same model the ``hermes model`` picker offers first. For metered aggregators
-    whose curated list is ordered most-capable-first, that entry is also the
-    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
-    providers carry an explicit low-cost override in
+    same model the ``hermes model`` picker offers first. Provider-profile-only
+    integrations fall back to the profile's curated ``fallback_models`` so
+    plugin-discovered providers work on non-interactive startup paths too.
+
+    For metered aggregators whose curated list is ordered most-capable-first,
+    that entry is also the most EXPENSIVE one, so silently defaulting to it is a
+    billing footgun. Such providers carry an explicit low-cost override in
     ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
     auto-escalate to the flagship.
     """
-    models = _PROVIDER_MODELS.get(provider, [])
-    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
+    normalized = normalize_provider(provider)
+    models = list(_PROVIDER_MODELS.get(normalized, []))
+
+    profile_name = normalized
+    if not models:
+        try:
+            import providers as _providers
+
+            profile = getattr(_providers, "get_provider_profile")(normalized)
+        except Exception:
+            profile = None
+        if profile is not None:
+            profile_name = profile.name
+            models = list(profile.fallback_models or ())
+
+    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(profile_name)
     if override and override in models:
         return override
     return models[0] if models else ""

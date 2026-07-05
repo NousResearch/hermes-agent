@@ -84,7 +84,22 @@ def _normalize_provider(provider: str) -> str:
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
         return custom_key
-    return normalized
+    return _canonicalize_provider_profile_alias(normalized)
+
+
+def _canonicalize_provider_profile_alias(provider: str) -> str:
+    """Return the canonical ProviderProfile name for plugin-declared aliases."""
+    if not provider or provider.startswith(CUSTOM_POOL_PREFIX):
+        return provider
+    try:
+        import importlib
+
+        profile = getattr(importlib.import_module("providers"), "get_provider_profile")(
+            provider
+        )
+    except Exception:
+        return provider
+    return profile.name if profile is not None else provider
 
 
 def _provider_base_url(provider: str) -> str:

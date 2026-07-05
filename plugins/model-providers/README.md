@@ -61,6 +61,11 @@ Nothing else needs to change. `auth.py`, `config.py`, `models.py`,
 `doctor.py`, `model_metadata.py`, `runtime_provider.py`, and the
 chat_completions transport all auto-wire from the registry.
 
+Free or trial provider candidates discovered from external resource lists
+should be integrated the same way: as normal provider profiles with signup
+metadata and curated fallback models. Do not vendor third-party provider
+lists into this tree.
+
 ## Non-trivial profiles
 
 Override the `ProviderProfile` hooks in a subclass for per-provider

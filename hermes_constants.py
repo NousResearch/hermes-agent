@@ -4,8 +4,10 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import json
 import os
 import shutil
+import socket
 import stat
 import sys
 import sysconfig
@@ -918,6 +920,183 @@ def get_config_path() -> Path:
     in 7+ files (skill_utils.py, hermes_logging.py, hermes_time.py, etc.).
     """
     return get_hermes_home() / "config.yaml"
+
+
+_DEVICE_NAME_CACHE: str | None = None
+
+
+def _resolve_meshboard_device_name() -> str | None:
+    """Resolve this device's friendly name from MeshBoard, if available."""
+    import platform
+    import re
+    import subprocess
+
+    hostname = (platform.node() or "").rstrip(".").lower()
+    hostname_base = hostname.replace(".local", "").replace(".lan", "")
+
+    local_ips: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            local_ips = set(result.stdout.split())
+    except Exception:
+        pass
+
+    if not local_ips:
+        try:
+            result = subprocess.run(
+                ["ifconfig"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0:
+                for match in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)", result.stdout):
+                    local_ips.add(match.group(1))
+        except Exception:
+            pass
+
+    mesh_roots = [Path.home() / "Workspaces" / ".mesh"]
+    if os.environ.get("MESHBOARD_RUNTIME"):
+        mesh_roots.append(Path(os.environ["MESHBOARD_RUNTIME"]).expanduser())
+
+    for mesh_root in mesh_roots:
+        devices_path = mesh_root / "registry" / "devices.json"
+        if not devices_path.exists():
+            continue
+
+        try:
+            data = json.loads(devices_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        devices = data.get("devices", []) or []
+
+        marker = mesh_root / "host-id"
+        if marker.exists():
+            try:
+                host_id = marker.read_text(encoding="utf-8").strip()
+            except Exception:
+                host_id = ""
+            if host_id:
+                for device in devices:
+                    if str(device.get("id", "")) == host_id:
+                        label = device.get("label")
+                        if isinstance(label, str) and label.strip():
+                            return label.strip()
+
+        env_host = os.environ.get("MESHBOARD_LOCAL_HOST", "").strip()
+        if env_host:
+            for device in devices:
+                if str(device.get("id", "")) == env_host:
+                    label = device.get("label")
+                    if isinstance(label, str) and label.strip():
+                        return label.strip()
+
+        for device in devices:
+            lan_hint = str(device.get("lan_hint", "")).strip()
+            if lan_hint and lan_hint in local_ips:
+                label = device.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+        for device in devices:
+            ssh_alias = str(device.get("ssh_alias", "")).strip().lower()
+            if ssh_alias and (ssh_alias == hostname or ssh_alias == hostname_base):
+                label = device.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+        for device in devices:
+            device_id = str(device.get("id", "")).strip().lower()
+            if device_id and (device_id == hostname or device_id == hostname_base):
+                label = device.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+    return None
+
+
+def _resolve_tailscale_device_name() -> str | None:
+    """Resolve this device's Tailscale hostname, if Tailscale is available."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+
+        data = json.loads(result.stdout)
+        hostname = data.get("Self", {}).get("HostName")
+        if isinstance(hostname, str) and hostname.strip():
+            return hostname.strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_device_name() -> str:
+    """Return a stable, human-friendly name for this device."""
+    global _DEVICE_NAME_CACHE
+    if _DEVICE_NAME_CACHE is not None:
+        return _DEVICE_NAME_CACHE
+
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            import yaml
+
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            device_config = config.get("device")
+            if isinstance(device_config, dict):
+                name = device_config.get("name")
+                if isinstance(name, str) and name.strip():
+                    _DEVICE_NAME_CACHE = name.strip()
+                    return _DEVICE_NAME_CACHE
+            elif isinstance(device_config, str) and device_config.strip():
+                _DEVICE_NAME_CACHE = device_config.strip()
+                return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    try:
+        meshboard_name = _resolve_meshboard_device_name()
+        if meshboard_name:
+            _DEVICE_NAME_CACHE = meshboard_name
+            return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    try:
+        tailscale_name = _resolve_tailscale_device_name()
+        if tailscale_name:
+            _DEVICE_NAME_CACHE = tailscale_name
+            return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    try:
+        hostname = socket.gethostname()
+        if hostname.endswith(".local"):
+            hostname = hostname[:-6]
+        _DEVICE_NAME_CACHE = hostname or "unknown"
+    except Exception:
+        _DEVICE_NAME_CACHE = "unknown"
+
+    return _DEVICE_NAME_CACHE
 
 
 def get_skills_dir() -> Path:

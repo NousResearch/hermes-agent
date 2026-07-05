@@ -358,7 +358,13 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
-    def test_bare_platform_uses_matching_origin_chat(self):
+    def test_bare_platform_uses_home_channel_not_stale_origin_thread(self, monkeypatch):
+        """Platform-named delivery (deliver=telegram) should use the configured
+        home channel, not the origin's thread context.  Using the origin
+        thread_id for platform deliveries caused cron results to land in
+        the stale thread where the job was created instead of the home
+        channel the user configured with /sethome (#59097)."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
         job = {
             "deliver": "telegram",
             "origin": {
@@ -370,8 +376,8 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_target(job) == {
             "platform": "telegram",
-            "chat_id": "-1001",
-            "thread_id": "17585",
+            "chat_id": "-2002",
+            "thread_id": None,
         }
 
     def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):

@@ -1030,13 +1030,12 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
-    if origin and origin.get("platform") == platform_name:
-        return {
-            "platform": platform_name,
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
-
+    # When delivering to a specific platform (not "origin"), prefer the
+    # configured home channel over the origin's thread context.  The origin
+    # thread_id is only meaningful for deliver=origin (above) — using it
+    # for platform-named deliveries causes cron results to land in the
+    # stale thread where the job was created instead of the home channel
+    # the user configured with /sethome (#59097).
     if not _is_known_delivery_platform(platform_name):
         return None
     chat_id = _get_home_target_chat_id(platform_name)

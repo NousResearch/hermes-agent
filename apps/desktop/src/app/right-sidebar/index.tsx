@@ -1,11 +1,11 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import type { ComponentProps } from 'react'
 
+import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Loader } from '@/components/ui/loader'
-import { Tip } from '@/components/ui/tooltip'
+import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
@@ -22,53 +22,44 @@ import { useProjectTree } from './files/use-project-tree'
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
-  onChangeCwd: (path: string) => Promise<void> | void
 }
 
-export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
+export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSidebarPaneProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
-  const hasCwd = currentCwd.length > 0
 
-  const cwdName = hasCwd
-    ? (currentCwd
-        .split(/[\\/]+/)
-        .filter(Boolean)
-        .pop() ?? currentCwd)
-    : r.noFolderSelected
+  // The file tree is simply "browse the session's working directory". If the
+  // session has a cwd — a repo, a sibling worktree, or any folder — show it. A
+  // bare/detached chat (resolveNewSessionCwd → '') has none, so it shows the
+  // empty hint instead of whatever dir Hermes happens to run from.
+  const hasWorkspace = Boolean(currentCwd)
 
   const {
     collapseAll,
     collapseNonce,
     data,
+    effectiveCwd,
     loadChildren,
     openState,
     refreshRoot,
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(currentCwd)
+  } = useProjectTree(hasWorkspace ? currentCwd : '')
+
+  const cwdName =
+    effectiveCwd
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .pop() ?? effectiveCwd
 
   const canCollapse = Object.values(openState).some(Boolean)
 
-  const chooseFolder = async () => {
-    const selected = await window.hermesDesktop?.selectPaths({
-      defaultPath: hasCwd ? currentCwd : undefined,
-      directories: true,
-      multiple: false,
-      title: r.changeCwdTitle
-    })
-
-    if (selected?.[0]) {
-      await onChangeCwd(selected[0])
-    }
-  }
-
   const previewFile = async (path: string) => {
     try {
-      const preview = await normalizeOrLocalPreviewTarget(path, currentCwd || undefined)
+      const preview = await normalizeOrLocalPreviewTarget(path, effectiveCwd || undefined)
 
       if (!preview) {
         throw new Error(r.couldNotPreview(path))
@@ -93,15 +84,14 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}
-        cwd={currentCwd}
+        cwd={effectiveCwd}
         cwdName={cwdName}
         data={data}
         error={rootError}
-        hasCwd={hasCwd}
+        hasWorkspace={hasWorkspace}
         loading={rootLoading}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
-        onChangeFolder={chooseFolder}
         onCollapseAll={collapseAll}
         onLoadChildren={loadChildren}
         onNodeOpenChange={setNodeOpen}
@@ -116,19 +106,17 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
 interface FilesystemTabProps extends FileTreeBodyProps {
   canCollapse: boolean
   cwdName: string
-  hasCwd: boolean
-  onChangeFolder: () => Promise<void> | void
+  hasWorkspace: boolean
   onCollapseAll: () => void
   onRefresh: () => void
 }
 
-// Sidebar-specific color/hover treatment only — size, radius, cursor and the
-// base focus ring come from <Button size="icon-xs">. This constant exists
-// purely to share the sidebar palette + the hover-reveal behavior below.
+// Sidebar palette + hover-reveal: header actions stay reachable while moving
+// from the project label to the action buttons.
 const HEADER_ACTION_CLASS =
   'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
-const HEADER_ACTION_REVEAL_CLASS = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
+const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 
 function FilesystemTab({
   canCollapse,
@@ -137,11 +125,10 @@ function FilesystemTab({
   cwdName,
   data,
   error,
-  hasCwd,
+  hasWorkspace,
   loading,
   onActivateFile,
   onActivateFolder,
-  onChangeFolder,
   onCollapseAll,
   onLoadChildren,
   onNodeOpenChange,
@@ -152,43 +139,36 @@ function FilesystemTab({
   const { t } = useI18n()
   const r = t.rightSidebar
 
+  // No working directory (a bare/detached chat) → no tree, just a terse hint.
+  // Switching workspace is a project/worktree action, never a raw folder picker.
+  if (!hasWorkspace) {
+    return <PaneEmptyState label={r.noProjectOpen} />
+  }
+
   return (
-    <div className="group/project-header flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <Tip label={hasCwd ? r.folderTip(cwd) : r.openFolder}>
-          <button
-            className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
-            onClick={() => void onChangeFolder()}
-            type="button"
-          >
-            <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
-          </button>
-        </Tip>
+        <div className="flex min-w-0 flex-1">
+          <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
+        </div>
         <Button
           aria-label={r.refreshTree}
-          className={HEADER_ACTION_CLASS}
-          disabled={!hasCwd || loading}
+          className={HEADER_ACTION_LABEL_REVEAL}
+          disabled={loading}
           onClick={onRefresh}
           size="icon-xs"
+          title={r.refreshTree}
           variant="ghost"
         >
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
         <Button
-          aria-label={r.openFolder}
-          className={HEADER_ACTION_CLASS}
-          onClick={() => void onChangeFolder()}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name="folder-opened" size="0.8125rem" />
-        </Button>
-        <Button
           aria-label={r.collapseAll}
-          className={HEADER_ACTION_REVEAL_CLASS}
-          disabled={!hasCwd || !canCollapse}
+          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
+          disabled={!canCollapse}
           onClick={onCollapseAll}
           size="icon-xs"
+          title={r.collapseAll}
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />
@@ -205,14 +185,19 @@ function FilesystemTab({
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
+        onRetry={onRefresh}
         openState={openState}
       />
     </div>
   )
 }
 
-export function RightSidebarSectionHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center px-2.5">{children}</div>
+export function RightSidebarSectionHeader({ children, className, ...props }: ComponentProps<'div'>) {
+  return (
+    <div className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)} {...props}>
+      {children}
+    </div>
+  )
 }
 
 interface FileTreeBodyProps {
@@ -226,6 +211,9 @@ interface FileTreeBodyProps {
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
+  /** Force-reload the root. The hook also auto-retries while errored, so this
+   *  is the impatient-user path. */
+  onRetry?: () => void
   openState: ReturnType<typeof useProjectTree>['openState']
 }
 
@@ -240,21 +228,38 @@ function FileTreeBody({
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
+  onRetry,
   openState
 }: FileTreeBodyProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  // Stay blank for a beat, then skeleton — so a fast project switch doesn't
+  // flash a jarring loading state.
+  const showSkeleton = useDelayedTrue(loading && data.length === 0)
 
   if (!cwd) {
     return <EmptyState body={r.noProjectBody} title={r.noProjectTitle} />
   }
 
   if (error) {
-    return <EmptyState body={r.unreadableBody(error)} title={r.unreadableTitle} />
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+        <EmptyState body={r.unreadableBody(error)} title={r.unreadableTitle} />
+        {onRetry && (
+          <button
+            className="text-[0.68rem] font-medium text-muted-foreground transition hover:text-foreground"
+            onClick={onRetry}
+            type="button"
+          >
+            {r.tryAgain}
+          </button>
+        )}
+      </div>
+    )
   }
 
   if (loading && data.length === 0) {
-    return <FileTreeLoadingState />
+    return showSkeleton ? <FileTreeLoadingState /> : <div className="min-h-0 flex-1" />
   }
 
   if (data.length === 0) {
@@ -297,23 +302,30 @@ function FileTreeLoadingState() {
   const { t } = useI18n()
 
   return (
-    <div aria-label={t.rightSidebar.loadingTree} className="grid min-h-0 flex-1 place-items-center px-3" role="status">
-      <Loader
-        aria-hidden="true"
-        className="size-8 text-(--ui-text-tertiary)"
-        pathSteps={180}
-        role="presentation"
-        strokeScale={0.68}
-        type="spiral-search"
-      />
+    <div aria-label={t.rightSidebar.loadingTree} className="min-h-0 flex-1" role="status">
+      <TreeSkeleton />
     </div>
   )
 }
 
-function EmptyState({ body, title }: { body: string; title: string }) {
+// Terse pane empty state ("No files" / "No diffs"): the panel label itself —
+// same uppercase/tracking + dither dot — just muted instead of theme-primary,
+// centered. Shared by the file tree and review panes so both read identically.
+export function PaneEmptyState({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+      <SidebarPanelLabel className="pl-0 text-(--ui-text-quaternary)">{label}</SidebarPanelLabel>
+    </div>
+  )
+}
+
+// Richer empty/error state (title + body) for the file tree's read failures.
+export function EmptyState({ body, title }: { body: string; title?: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
-      <div className="text-[0.7rem] font-semibold uppercase tracking-[0.07em] text-muted-foreground/75">{title}</div>
+      {title && (
+        <div className="text-[0.7rem] font-semibold uppercase tracking-[0.07em] text-muted-foreground/75">{title}</div>
+      )}
       <div className="text-[0.68rem] leading-relaxed text-muted-foreground/65">{body}</div>
     </div>
   )

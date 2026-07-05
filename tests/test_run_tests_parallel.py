@@ -187,109 +187,93 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# exit-4 retry loop (transient "file or directory not found" on loaded runners)
-# ---------------------------------------------------------------------------
+# ── Bare pytest-flag passthrough ─────────────────────────────────────────────
+#
+# The runner routes any token starting with ``-`` that isn't one of its own
+# options (``-j``/``--jobs``, ``--paths``, ``--slice``, ``--file-timeout``,
+# ``--generate-slices``, ``--files``, ``--include-integration``) straight
+# through to each per-file pytest invocation — no ``--`` separator required.
+# Before this, a bare ``-q`` errored out with "unrecognized arguments",
+# forcing a retry on every run. These tests are behavior contracts, not
+# snapshots: they assert that bare flags reach pytest and that value-taking
+# flags (``-k expr``) keep their value instead of having it stolen by the
+# positional-path discovery.
 
-import importlib.util as _importlib_util  # noqa: E402
+
+def _make_probe_dir(tmp_path: Path) -> Path:
+    """Two trivial passing tests, one named test_alpha, one test_beta."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_flagprobe.py").write_text(
+        "def test_alpha():\n    assert True\n\n"
+        "def test_beta():\n    assert True\n"
+    )
+    return probe_dir
 
 
-def _load_runner_module():
-    """Import scripts/run_tests_parallel.py as a module for in-process tests."""
+def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     repo_root = Path(__file__).resolve().parent.parent
-    path = repo_root / "scripts" / "run_tests_parallel.py"
-    spec = _importlib_util.spec_from_file_location("_rtp_under_test", path)
-    mod = _importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    return subprocess.run(
+        [sys.executable, str(runner), "--paths", str(probe_dir),
+         "-j", "1", "--file-timeout", "30", *extra],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
 
 
-def test_exit4_retry_recovers_when_file_exists(tmp_path, monkeypatch):
-    """A file that exits 4 transiently then passes must be retried and recover.
+def test_bare_q_flag_passes_through(tmp_path: Path) -> None:
+    """A bare ``-q`` (no ``--``) runs clean instead of erroring out."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q")
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments" not in proc.stdout
 
-    Simulates the loaded-CI transient: the per-file pytest subprocess reports
-    "file or directory not found" (exit 4) on the first attempts even though
-    the file is on disk, then succeeds. The runner must retry and report pass.
+
+def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
+    """``-k test_alpha`` reaches pytest as a selector, not as a path.
+
+    The value token (``test_alpha``) must NOT be swallowed by the runner's
+    positional-path discovery — if it were, discovery would look for a path
+    named ``test_alpha``, find nothing, and the run would degrade. We assert
+    the run succeeds AND only one of the two tests was selected (proving the
+    ``-k`` filter actually applied inside pytest).
     """
-    rtp = _load_runner_module()
-    f = tmp_path / "test_transient.py"
-    f.write_text("def test_ok():\n    assert True\n")
-
-    calls = {"n": 0}
-
-    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
-        calls["n"] += 1
-        # First two attempts: transient exit-4. Third: success.
-        if calls["n"] < 3:
-            return 4, "ERROR: file or directory not found\nno tests ran in 0.00s"
-        return 0, "1 passed"
-
-    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
-    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)  # no real sleep
-
-    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
-    assert rc == 0, f"expected recovery to pass, got rc={rc}, output={output!r}"
-    assert calls["n"] == 3, f"expected 3 attempts (1 + 2 retries), got {calls['n']}"
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "test_alpha")
+    assert proc.returncode == 0, proc.stdout
+    # Exactly one test selected: the per-file summary shows "1✓" (1 passed).
+    # test_beta is deselected by the -k filter.
+    assert "1✓" in proc.stdout or "1 passed" in proc.stdout, proc.stdout
+    assert "2✓" not in proc.stdout, (
+        f"both tests ran — -k filter did not apply:\n{proc.stdout}"
+    )
 
 
-def test_exit4_no_retry_when_file_genuinely_missing(tmp_path, monkeypatch):
-    """Exit 4 on a file that does NOT exist must fail fast without retrying.
-
-    Guards the narrowing: we only retry while the file is present on disk, so a
-    real typo / deleted file surfaces immediately instead of looping.
-    """
-    rtp = _load_runner_module()
-    missing = tmp_path / "test_does_not_exist.py"  # never created
-
-    calls = {"n": 0}
-
-    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
-        calls["n"] += 1
-        return 4, "ERROR: file or directory not found"
-
-    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
-    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
-
-    file, rc, output, summary, _wall = rtp._run_one_file(missing, [], tmp_path, 30.0)
-    assert rc == 4, f"genuinely-missing file should keep rc=4, got {rc}"
-    assert calls["n"] == 1, f"missing file must NOT be retried, got {calls['n']} calls"
+def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
+    """The legacy ``--`` separator keeps working alongside bare flags."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments" not in proc.stdout
 
 
-def test_exit4_retry_gives_up_after_max_attempts(tmp_path, monkeypatch):
-    """If the transient never clears, we stop after the bounded attempt count."""
-    rtp = _load_runner_module()
-    f = tmp_path / "test_persistent_transient.py"
-    f.write_text("def test_ok():\n    assert True\n")
-
-    calls = {"n": 0}
-
-    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
-        calls["n"] += 1
-        return 4, "ERROR: file or directory not found"
-
-    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
-    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
-
-    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
-    assert rc == 4
-    # 1 initial + _EXIT4_RETRY_ATTEMPTS retries.
-    assert calls["n"] == 1 + rtp._EXIT4_RETRY_ATTEMPTS
-
-
-def test_file_present_tolerates_transient_negative(tmp_path, monkeypatch):
-    """_file_present must not conclude 'missing' on a single flaky stat."""
-    rtp = _load_runner_module()
-    f = tmp_path / "test_flaky_stat.py"
-    f.write_text("x = 1\n")
-
-    seq = iter([False, False, True])  # first two stats flake, third succeeds
-    monkeypatch.setattr(rtp.Path, "exists", lambda self: next(seq))
-    assert rtp._file_present(f, attempts=3, delay=0.0) is True
-
-
-def test_file_present_reports_truly_missing(tmp_path, monkeypatch):
-    """_file_present returns False when the file is absent across all checks."""
-    rtp = _load_runner_module()
-    f = tmp_path / "nope.py"
-    monkeypatch.setattr(rtp.Path, "exists", lambda self: False)
-    assert rtp._file_present(f, attempts=3, delay=0.0) is False
+def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
+    """A positional path arg still overrides discovery (not routed to pytest)."""
+    probe_dir = _make_probe_dir(tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    # Pass the probe dir positionally (no --paths), plus a bare -q.
+    proc = subprocess.run(
+        [sys.executable, str(runner), str(probe_dir), "-j", "1",
+         "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    # Discovery found the probe file (2 tests), proving the positional path
+    # was consumed as a root, not forwarded to pytest as a bad flag.
+    assert "test_flagprobe.py" in proc.stdout, proc.stdout

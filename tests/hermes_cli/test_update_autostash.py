@@ -322,6 +322,63 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
         hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
 
 
+def test_discard_lockfile_churn_skips_lock_when_package_json_dirty(tmp_path):
+    """Intentional dependency edits update package.json and lockfile together."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"2"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"new"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"new"}\n'
+
+
+def test_discard_lockfile_churn_restores_lock_when_package_json_clean(tmp_path):
+    """Runtime npm lockfile rewrites are still discarded on managed updates."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package-lock.json").write_text('{"lock":"runtime-churn"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"old"}\n'
+
+
 # ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------

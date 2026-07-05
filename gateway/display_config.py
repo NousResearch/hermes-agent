@@ -239,7 +239,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         val = str(value).strip().lower()
-        return val if val in {"off", "new", "all", "verbose"} else "all"
+        return val if val in {"off", "new", "all", "verbose", "log"} else "all"
     if setting in {
         "show_reasoning",
         "streaming",

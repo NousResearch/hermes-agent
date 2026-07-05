@@ -266,8 +266,12 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
+    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()

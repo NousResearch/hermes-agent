@@ -166,6 +166,43 @@ class TestMultiplexConfigFlag:
         assert scoped_config["display"]["tool_progress"] is False
         assert scoped_config["display"]["interim_assistant_messages"] is False
 
+    def test_format_session_info_honors_profile_runtime_scope(self, tmp_path, monkeypatch):
+        """The auto-reset banner must report the routed profile's model, not the
+        base config's (#59003)."""
+        import gateway.run as gateway_run
+
+        root_home = tmp_path / "root"
+        profile_home = tmp_path / "profiles" / "planner"
+        root_home.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+
+        (root_home / "config.yaml").write_text(
+            yaml.safe_dump({"model": {
+                "default": "base-model-xyz", "provider": "custom",
+                "context_length": 128000,
+            }}),
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            yaml.safe_dump({"model": {
+                "default": "planner-model-abc", "provider": "anthropic",
+                "context_length": 200000,
+            }}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", root_home)
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner._resolve_profile_home_for_source = lambda source: profile_home
+
+        # No source → base config (unchanged behavior).
+        assert "base-model-xyz" in runner._format_session_info()
+
+        # With a source → resolved under that source's profile scope.
+        scoped_info = runner._format_session_info(object())
+        assert "planner-model-abc" in scoped_info
+        assert "base-model-xyz" not in scoped_info
+
 
 class TestSessionStoreProfileResolution:
     """SessionStore._generate_session_key honors the flag: legacy namespace

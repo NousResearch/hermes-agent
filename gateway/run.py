@@ -10612,7 +10612,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            # Pass the source so the banner reports the routed
+                            # profile's model/provider, not the base config (#59003).
+                            session_info = self._format_session_info(source)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -11861,13 +11863,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: "Optional[SessionSource]" = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When *source* is provided, model/provider/context are resolved under
+        that source's profile scope, so a multiplexed profile's banner reports
+        its own config instead of the base config.yaml (#59003). Without a
+        source the ambient scope is used (unchanged behavior).
         """
+        if source is not None:
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                return self._format_session_info_impl()
+        return self._format_session_info_impl()
+
+    def _format_session_info_impl(self) -> str:
+        """Build the model/provider info block under the ambient HERMES_HOME scope."""
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()

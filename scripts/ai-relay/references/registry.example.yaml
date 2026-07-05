@@ -1,11 +1,14 @@
 # ทะเบียน AI กลาง — เพิ่ม AI = เติม 1 บล็อก · พัก AI = enabled: false
 # ไม่มีความลับในไฟล์นี้ (ID/token จริงอยู่ accounts.yaml เฉพาะเครื่อง)
+# price_per_call_thb = ราคาต่อการเรียก 1 ครั้ง (บาท) · เป็นค่า [สมมติ] เจ้าของแก้ให้ตรงจริงได้
+#   relay-report ใช้ค่านี้คูณจำนวนครั้งจริงจาก ledger → รายงานเป็นเงินบาท
 ai:
   opus:
     vendor: anthropic
     roles: [brain]
     good_for: [plan, analyze, review, decide]
     cost_tier: 5
+    price_per_call_thb: 8      # [สมมติ]
     login_hint: "claude (login ผ่าน Claude Code)"
     enabled: true
   fable:
@@ -13,6 +16,7 @@ ai:
     roles: [brain]
     good_for: [hard-design, security-decision]
     cost_tier: 5
+    price_per_call_thb: 12     # [สมมติ] แพงสุด
     premium: true
     machine_locked: true      # เฉพาะเครื่องเจ้าของ (โน้ตบุ๊ก+VPS)
     login_hint: "claude (login ผ่าน Claude Code)"
@@ -22,6 +26,7 @@ ai:
     roles: [coder, reviewer]
     good_for: [backend, logic, security]
     cost_tier: 3
+    price_per_call_thb: 3      # [สมมติ]
     fallback_rank: 2
     login_hint: "codex login"
     enabled: true
@@ -30,6 +35,7 @@ ai:
     roles: [coder, reviewer]
     good_for: [fast, bulk, repetitive]
     cost_tier: 2
+    price_per_call_thb: 2      # [สมมติ]
     fallback_rank: 1
     login_hint: "grok login --device-auth"
     enabled: true
@@ -38,6 +44,7 @@ ai:
     roles: [coder]
     good_for: [ui, large-context, many-files]
     cost_tier: 2
+    price_per_call_thb: 1.5    # [สมมติ]
     fallback_rank: 3
     login_hint: "gemini auth login (หรือใส่ GEMINI_API_KEY ใน .env)"
     enabled: true
@@ -46,6 +53,7 @@ ai:
     roles: [coder, reviewer]
     good_for: [general-code]
     cost_tier: 3
+    price_per_call_thb: 3      # [สมมติ]
     login_hint: "claude (login ผ่าน Claude Code)"
     enabled: false            # ยังไม่ต่อเข้าสาย coder รอเปิด
   ollama:
@@ -53,6 +61,7 @@ ai:
     roles: [coder]
     good_for: [free-fallback]
     cost_tier: 1
+    price_per_call_thb: 0      # ฟรี (รันในเครื่อง)
     fallback_rank: 4
     login_hint: "รันในเครื่อง (ollama serve) ไม่ต้อง login"
     enabled: true
@@ -61,6 +70,7 @@ ai:
     roles: [coder]
     good_for: [general-code]
     cost_tier: 1
+    price_per_call_thb: 0.5    # [สมมติ]
     login_hint: "ยังไม่มีโปรแกรมบนเครื่องนี้ (2026-06-26)"
     enabled: false
   glm:
@@ -68,6 +78,7 @@ ai:
     roles: [coder]
     good_for: [general-code]
     cost_tier: 1
+    price_per_call_thb: 0.5    # [สมมติ]
     login_hint: "ยังไม่มีโปรแกรมบนเครื่องนี้ (2026-06-26)"
     enabled: false
   deepseek:
@@ -75,5 +86,6 @@ ai:
     roles: [coder]
     good_for: [logic, math]
     cost_tier: 1
+    price_per_call_thb: 0.5    # [สมมติ]
     login_hint: "ยังไม่มีโปรแกรมบนเครื่องนี้ (2026-06-26)"
     enabled: false

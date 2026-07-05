@@ -419,6 +419,24 @@ class MemoryStore:
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = self._previews([e for _, e in matches])
+                    # Check if new_content would itself be a duplicate of a non-matching
+                    # entry. This catches a common trap: the model tries to "replace"
+                    # entry A with a lightly-edited version, but old_text matches both A
+                    # and B (because B contains old_text as a substring), and the model's
+                    # new_content is already present as entry C. Without this check the
+                    # model gets "Multiple entries matched" -> falls back to add ->
+                    # creates duplicate C.
+                    if new_content in entries:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Multiple entries matched '{old_text}' and the replacement "
+                                f"content already exists as a separate entry. Use a batch "
+                                f"'operations' call to remove the old entries and keep the "
+                                f"existing one, or provide a more specific 'old_text'."
+                            ),
+                            "matches": previews,
+                        }
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -1006,6 +1024,25 @@ def memory_tool(
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
         return _missing_old_text_error(store, target, "remove")
+
+    # Pre-validation for replace: detect the duplicate-entry trap before
+    # reaching the store. When old_text matches multiple entries with
+    # different content AND new_content is already present as a separate
+    # entry, the model will get "Multiple entries matched" -> fall back to
+    # add -> create a duplicate. Catch this early with a targeted hint.
+    if action == "replace" and old_text and content:
+        entries = store._entries_for(target)
+        matches = [(i, e) for i, e in enumerate(entries) if old_text.strip() in e]
+        if len(matches) > 1:
+            unique_texts = {e for _, e in matches}
+            if len(unique_texts) > 1 and content.strip() in entries:
+                return tool_error(
+                    f"old_text matches {len(matches)} different entries and the "
+                    f"replacement content already exists as a separate entry. "
+                    f"Use a batch 'operations' call to remove the old entries and "
+                    f"keep the existing one, or provide a more specific 'old_text'.",
+                    success=False,
+                )
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.

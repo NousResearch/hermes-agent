@@ -343,7 +343,7 @@ def run_dump(args):
     # live via git.  __release_date__ (the package release date) is
     # intentionally NOT shown here — it reads like a wall-clock timestamp and
     # confuses support triage.  The commit date is the real "as-of" date.
-    ver_str = f"{__version__}"
+    ver_str = __version__
     ver_str += f" [{commit}]"
     if commit_date:
         ver_str += f" ({commit_date})"

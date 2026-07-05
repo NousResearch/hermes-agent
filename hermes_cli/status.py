@@ -238,7 +238,7 @@ def show_status(args):
         nous_label = "not logged in (run: hermes portal)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{nous_label}"
+        + nous_label
     )
     portal_url = nous_status.get("portal_base_url") or "(unknown)"
     inference_url = (

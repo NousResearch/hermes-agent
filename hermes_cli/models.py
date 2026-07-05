@@ -3883,7 +3883,7 @@ def validate_requested_model(
             message = (
                 f"Note: `{requested}` was not found in this custom endpoint's model listing "
                 f"({probe.get('probed_url')}). It may still work if the server supports hidden or aliased models."
-                f"{suggestion_text}"
+                + suggestion_text
             )
             if probe.get("used_fallback"):
                 message += (
@@ -3974,7 +3974,7 @@ def validate_requested_model(
                         f"belongs to another configured provider, switch with "
                         f"`--provider <slug>` (or select it from the `/model` "
                         f"picker)."
-                        f"{suggestion_text}"
+                        + suggestion_text
                     ),
                 }
             return {
@@ -3984,7 +3984,7 @@ def validate_requested_model(
                 "message": (
                     f"Note: `{requested}` was not found in the {provider_label} model listing. "
                     "It may still work if your account has access to a newer or hidden model ID."
-                    f"{suggestion_text}"
+                    + suggestion_text
                 ),
             }
 
@@ -4027,9 +4027,9 @@ def validate_requested_model(
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in the MiniMax catalog."
-                    f"{suggestion_text}"
-                    "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
-                    "\n  The model may still work if it exists on the server."
+                    + suggestion_text
+                    + "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
+                    + "\n  The model may still work if it exists on the server."
                 ),
             }
 
@@ -4075,7 +4075,7 @@ def validate_requested_model(
                 "message": (
                     f"Note: `{requested}` was not found in Anthropic's /v1/models listing. "
                     f"It may still work if you have early-access or snapshot IDs."
-                    f"{suggestion_text}"
+                    + suggestion_text
                 ),
             }
         # _fetch_anthropic_models returned None — no token resolvable or
@@ -4184,7 +4184,7 @@ def validate_requested_model(
             "recognized": False,
             "message": (
                 f"Model `{requested}` was not found in this provider's model listing."
-                f"{suggestion_text}"
+                + suggestion_text
             ),
         }
 
@@ -4220,7 +4220,7 @@ def validate_requested_model(
                 "message": (
                     f"Note: `{requested}` was not found in Bedrock model discovery for {region}. "
                     f"It may still work with custom inference profiles or cross-account access."
-                    f"{suggestion_text}"
+                    + suggestion_text
                 ),
             }
         except Exception:

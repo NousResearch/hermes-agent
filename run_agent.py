@@ -1872,6 +1872,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    token_count=msg.get("token_count") if role == "assistant" else None,
                     timestamp=_row_timestamp,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
@@ -5371,10 +5372,10 @@ class AIAgent:
 
         return {"effort": requested_effort}
 
-    def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
+    def _build_assistant_message(self, assistant_message, finish_reason: str, token_count: int = None) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""
         from agent.chat_completion_helpers import build_assistant_message
-        return build_assistant_message(self, assistant_message, finish_reason)
+        return build_assistant_message(self, assistant_message, finish_reason, token_count=token_count)
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.

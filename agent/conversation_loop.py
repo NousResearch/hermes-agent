@@ -630,9 +630,17 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Track per-iteration token usage from the API response so we can
+    # persist output_tokens on each assistant message (issue #58719).
+    canonical_usage = None
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
+
+        # Reset per-iteration token usage so stale data from a prior
+        # iteration doesn't leak into this one (issue #58719).
+        canonical_usage = None
 
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
@@ -959,7 +967,7 @@ def run_conversation(
             final_response = _runtime_context_error
             failed = True
             _turn_exit_reason = "ollama_runtime_context_too_small"
-            messages.append({"role": "assistant", "content": final_response})
+            messages.append({"role": "assistant", "content": final_response, "token_count": canonical_usage.output_tokens if canonical_usage else None})
             agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
             api_call_count -= 1
             agent._api_call_count = api_call_count
@@ -1785,7 +1793,7 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
-                            interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                            interim_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                             messages.append(interim_msg)
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)
@@ -2185,7 +2193,7 @@ def run_conversation(
                     getattr(agent, "_current_streamed_assistant_text", "") or ""
                 ).strip()
                 if _partial:
-                    messages.append({"role": "assistant", "content": _partial})
+                    messages.append({"role": "assistant", "content": _partial, "token_count": canonical_usage.output_tokens if canonical_usage else None})
                     final_response = _partial
                 else:
                     final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
@@ -4203,8 +4211,8 @@ def run_conversation(
             if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
                 agent._codex_incomplete_retries += 1
 
-                interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                interim_has_content = bool((interim_msg.get("content") or "").strip())
+                interim_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
+                interim_has_content = bool(interim_msg.get("content", "").strip()) if isinstance(interim_msg.get("content"), str) else False
                 interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                 interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
                 interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
@@ -4305,7 +4313,7 @@ def run_conversation(
                             "error": _final_response
                         }
 
-                    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
@@ -4411,7 +4419,7 @@ def run_conversation(
                         agent._invalid_json_retries = 0  # Reset for next attempt
                         
                         # Append the assistant message with its (broken) tool_calls
-                        recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
+                        recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                         messages.append(recovery_assistant)
                         
                         # Respond with tool error results for each tool call
@@ -4445,7 +4453,7 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
-                assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                assistant_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                 
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
@@ -4537,7 +4545,7 @@ def run_conversation(
                     agent._emit_status(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
-                    messages.append({"role": "assistant", "content": final_response})
+                    messages.append({"role": "assistant", "content": final_response, "token_count": canonical_usage.output_tokens if canonical_usage else None})
                     # Emit the halt message to the client so it's not
                     # indistinguishable from a crash.  The stream display
                     # was flushed (callback(None)) before tool execution,
@@ -4745,7 +4753,7 @@ def run_conversation(
                         #   tool(result) → assistant("(empty)") → user(nudge)
                         # Without this, we'd have tool → user which most
                         # APIs reject as an invalid sequence.
-                        _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                        _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                         _nudge_msg["content"] = "(empty)"
                         _nudge_msg["_empty_recovery_synthetic"] = True
                         messages.append(_nudge_msg)
@@ -4787,7 +4795,8 @@ def run_conversation(
                             f"({agent._thinking_prefill_retries}/2)"
                         )
                         interim_msg = agent._build_assistant_message(
-                            assistant_message, "incomplete"
+                            assistant_message, "incomplete",
+                            token_count=canonical_usage.output_tokens if canonical_usage else None,
                         )
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
@@ -4864,7 +4873,7 @@ def run_conversation(
                     _turn_exit_reason = "empty_response_exhausted"
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)
-                    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
                     assistant_msg["content"] = "(empty)"
                     # This is a user-facing failure sentinel for the gateway,
                     # not real assistant content. Persisting it makes later
@@ -4926,7 +4935,7 @@ def run_conversation(
                     )
                 ):
                     codex_ack_continuations += 1
-                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete", token_count=canonical_usage.output_tokens if canonical_usage else None)
                     messages.append(interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
 
@@ -4950,7 +4959,7 @@ def run_conversation(
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
-                final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                final_msg = agent._build_assistant_message(assistant_message, finish_reason, token_count=canonical_usage.output_tokens if canonical_usage else None)
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a
@@ -5127,7 +5136,7 @@ def run_conversation(
                 final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
-                messages.append({"role": "assistant", "content": final_response})
+                messages.append({"role": "assistant", "content": final_response, "token_count": canonical_usage.output_tokens if canonical_usage else None})
                 break
     
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn

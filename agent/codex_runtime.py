@@ -361,6 +361,17 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+        # Record usage BEFORE flushing so we can inject token_count
+        # onto the projected assistant messages (issue #58719).
+        usage_result = _record_codex_app_server_usage(agent, turn)
+
+        if usage_result.get("output_tokens"):
+            _out_tokens = usage_result["output_tokens"]
+            for _msg in reversed(messages):
+                if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                    _msg["token_count"] = _out_tokens
+                    break
+
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose
         # normal per-step _persist_session() calls would otherwise flush them.
@@ -381,6 +392,8 @@ def run_codex_app_server_turn(
                     "codex app-server projected-message flush failed",
                     exc_info=True,
                 )
+    else:
+        usage_result = _record_codex_app_server_usage(agent, turn)
 
 
     # Counter ticks for the agent-improvement loop.
@@ -393,7 +406,6 @@ def run_codex_app_server_turn(
     agent._iters_since_skill = (
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
-    usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same

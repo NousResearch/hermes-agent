@@ -21,7 +21,7 @@ class _FakeRunner:
         self.config = SimpleNamespace(get_home_channel=lambda platform: None)
         self.proactive_event_store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
         self.invalidated = []
-        self._agent_cache = {"agent:main:whatsapp:dm:36361360928894": (object(), "sig", 1)}
+        self._agent_cache = {"agent:main:whatsapp:dm:15551234567": (object(), "sig", 1)}
 
     def invalidate_proactive_event_context(self, session_key: str, *, reason: str):
         self.invalidated.append((session_key, reason))
@@ -43,8 +43,8 @@ async def test_deliver_only_webhook_can_attach_proactive_event_to_target_session
     delivery = {
         "deliver": "whatsapp",
         "deliver_extra": {
-            "chat_id": "36361360928894@lid",
-            "user_id": "36361360928894@lid",
+            "chat_id": "15551234567@lid",
+            "user_id": "15551234567@lid",
             "chat_type": "dm",
         },
         "payload": {
@@ -66,7 +66,7 @@ async def test_deliver_only_webhook_can_attach_proactive_event_to_target_session
 
     assert result.success is True
     runner.adapters[Platform.WHATSAPP].send.assert_awaited_once()
-    expected_session_key = "agent:main:whatsapp:dm:36361360928894"
+    expected_session_key = "agent:main:whatsapp:dm:15551234567"
     assert runner.invalidated == [(expected_session_key, "proactive_event_attached")]
     assert expected_session_key not in runner._agent_cache
 

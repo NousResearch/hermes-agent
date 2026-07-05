@@ -124,7 +124,12 @@ def _normalize_child_runtime_tuple(
         return provider, base_url, api_key, api_mode
 
     provider_name = (provider or "").strip()
-    if not explicit_provider:
+    # Only infer the provider from the model when the inherited provider is
+    # missing/auto.  A real parent runtime (e.g. Ollama/custom endpoint serving
+    # an Anthropic-shaped model id) is more authoritative than a model-name
+    # heuristic; otherwise subagents can be rerouted away from the endpoint the
+    # parent is actually using.
+    if not explicit_provider and provider_name in {"", "auto"}:
         try:
             from hermes_cli.models import detect_provider_for_model
 
@@ -1292,8 +1297,14 @@ def _build_child_agent(
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
+    inherited_live_base_url = False
     if not override_base_url:
+        parent_surface_base_url = effective_base_url
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
+        inherited_live_base_url = (
+            _normalized_runtime_url(effective_base_url)
+            != _normalized_runtime_url(parent_surface_base_url)
+        )
     effective_api_key = override_api_key or parent_api_key
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
@@ -1352,7 +1363,9 @@ def _build_child_agent(
             api_key=effective_api_key,
             api_mode=effective_api_mode,
             explicit_provider=override_provider is not None,
-            explicit_base_url=override_base_url is not None,
+            explicit_base_url=(
+                override_base_url is not None or inherited_live_base_url
+            ),
             acp_command=effective_acp_command,
         )
     )

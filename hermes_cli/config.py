@@ -1233,6 +1233,13 @@ DEFAULT_CONFIG = {
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Sandbox egress control (docker backend): "on" = full network (default),
+        # "off" = no network (--network=none), "allowlist" = HTTP(S) only through a
+        # domain-filtered proxy on an internal network (blocks arbitrary exfiltration).
+        "container_network": "on",
+        # Domains reachable in "allowlist" mode (no scheme/path; "*." wildcard ok).
+        # Empty list with allowlist mode means deny-all egress.
+        "container_network_allowlist": [],
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example:
@@ -7058,6 +7065,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+    "container_network": "TERMINAL_CONTAINER_NETWORK",
+    "container_network_allowlist": "TERMINAL_CONTAINER_NETWORK_ALLOWLIST",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
 }
@@ -8191,6 +8200,13 @@ def show_config():
     
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        network = terminal.get('container_network', 'on')
+        if network == 'allowlist':
+            allowlist = terminal.get('container_network_allowlist', []) or []
+            print(f"  Egress:       allowlist ({len(allowlist)} domain(s))" if allowlist
+                  else f"  Egress:       allowlist {color('(empty = deny-all)', Colors.DIM)}")
+        else:
+            print(f"  Egress:       {network}")
     elif terminal.get('backend') == 'singularity':
         print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'modal':

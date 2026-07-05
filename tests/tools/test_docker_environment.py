@@ -46,6 +46,8 @@ def _make_dummy_env(**kwargs):
         task_id=kwargs.get("task_id", "test-task"),
         volumes=kwargs.get("volumes", []),
         network=kwargs.get("network", True),
+        network_mode=kwargs.get("network_mode"),
+        network_allowlist=kwargs.get("network_allowlist"),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
@@ -342,6 +344,125 @@ def test_init_env_args_never_forwards_blank_secret(monkeypatch):
     # The key must not appear at all — not even as an empty -e MY_SECRET= flag.
     assert not any(a.startswith("MY_SECRET=") for a in args)
     assert "MY_SECRET" not in " ".join(args)
+
+
+# ── network egress mode tests ─────────────────────────────────────
+
+
+def _run_args_str(calls):
+    """Join the args of the captured `docker run` call into a single string."""
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    return " ".join(run_calls[0][0])
+
+
+def test_network_on_keeps_full_network(monkeypatch):
+    """Default 'on' mode must not restrict the network."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network_mode="on")
+
+    args = _run_args_str(calls)
+    assert "--network=none" not in args
+    assert "--network" not in args
+
+
+def test_network_off_cuts_network(monkeypatch):
+    """'off' mode must add --network=none."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network_mode="off")
+
+    assert "--network=none" in _run_args_str(calls)
+
+
+def test_legacy_network_false_cuts_network(monkeypatch):
+    """Backward compat: network=False (no network_mode) still means no network."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network=False, network_mode=None)
+
+    assert "--network=none" in _run_args_str(calls)
+
+
+def test_network_mode_overrides_legacy_bool(monkeypatch):
+    """Explicit network_mode='on' wins even if legacy network=False is passed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network=False, network_mode="on")
+
+    assert "--network=none" not in _run_args_str(calls)
+
+
+def test_allowlist_mode_uses_proxy_network_and_env(monkeypatch):
+    """'allowlist' mode attaches the internal proxy network and injects proxy env."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    class _Proxy:
+        network = "hermes-egress-test"
+        proxy_env = {"HTTP_PROXY": "http://hermes-egress-proxy:8888"}
+
+    import tools.environments.egress_proxy as ep
+    monkeypatch.setattr(ep, "ensure_allowlisted_network", lambda allowlist: _Proxy())
+
+    _make_dummy_env(network_mode="allowlist", network_allowlist=["github.com"])
+
+    args = _run_args_str(calls)
+    assert "--network hermes-egress-test" in args
+    assert "HTTP_PROXY=http://hermes-egress-proxy:8888" in args
+
+
+def test_allowlist_mode_fails_closed_when_proxy_unavailable(monkeypatch):
+    """If the egress proxy can't be set up, fall back to no network (not open)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    import tools.environments.egress_proxy as ep
+    def _boom(allowlist):
+        raise RuntimeError("proxy down")
+    monkeypatch.setattr(ep, "ensure_allowlisted_network", _boom)
+
+    _make_dummy_env(network_mode="allowlist", network_allowlist=["github.com"])
+
+    assert "--network=none" in _run_args_str(calls)
+
+
+def test_resolve_network_mode():
+    """_resolve_network_mode precedence and fail-closed behavior."""
+    assert docker_env._resolve_network_mode(None, True) == "on"
+    assert docker_env._resolve_network_mode(None, False) == "off"
+    assert docker_env._resolve_network_mode("off", True) == "off"
+    assert docker_env._resolve_network_mode("ALLOWLIST", True) == "allowlist"
+    # A typo in an egress-control setting must never grant full network.
+    assert docker_env._resolve_network_mode("bogus", True) == "off"  # fail-closed
+    assert docker_env._resolve_network_mode("", False) == "off"
+
+
+def test_normalize_allowlist():
+    """_normalize_allowlist cleans, validates, and dedupes hosts."""
+    result = docker_env._normalize_allowlist([
+        "GitHub.com",                  # lowercased
+        "https://pypi.org/simple/",    # scheme + path stripped
+        "registry.npmjs.org:443",      # port stripped
+        "*.githubusercontent.com",     # wildcard ok
+        "github.com",                  # dedupe
+        "bad host",                    # space -> invalid
+        123,                           # non-string -> dropped
+        "",                            # empty -> dropped
+    ])
+    assert result == [
+        "github.com",
+        "pypi.org",
+        "registry.npmjs.org",
+        "*.githubusercontent.com",
+    ]
+    assert docker_env._normalize_allowlist(None) == []
+    assert docker_env._normalize_allowlist("not-a-list") == []
 
 
 # ── docker_env tests ──────────────────────────────────────────────

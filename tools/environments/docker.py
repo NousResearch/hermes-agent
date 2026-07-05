@@ -36,6 +36,12 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Hostname/domain allowlist entries: labels of alphanumerics/hyphens joined by
+# dots. Permits a leading "*." wildcard and bare IPv4 literals.
+_ALLOWLIST_HOST_RE = re.compile(
+    r"^(?:\*\.)?(?:[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\.)*"
+    r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?$"
+)
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -90,6 +96,67 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
                 continue
         normalized[key] = value
 
+    return normalized
+
+
+_VALID_NETWORK_MODES = ("on", "off", "allowlist")
+
+
+def _resolve_network_mode(network_mode: Optional[str], network: bool) -> str:
+    """Resolve the effective egress mode.
+
+    ``network_mode`` (``"on"`` | ``"off"`` | ``"allowlist"``) takes precedence.
+    When it is None/empty, fall back to the legacy ``network`` bool
+    (``True`` -> ``"on"``, ``False`` -> ``"off"``). Unknown values fail CLOSED to
+    ``"off"`` — a typo in an egress-control setting must never silently grant
+    full network access.
+    """
+    if network_mode is None or network_mode == "":
+        return "on" if network else "off"
+    mode = str(network_mode).strip().lower()
+    if mode not in _VALID_NETWORK_MODES:
+        logger.error(
+            "Unknown container_network value %r; expected one of %s. "
+            "Failing closed to 'off' (no network). Fix the config to restore egress.",
+            network_mode,
+            _VALID_NETWORK_MODES,
+        )
+        return "off"
+    return mode
+
+
+def _normalize_allowlist(allowlist: list[str] | None) -> list[str]:
+    """Validate and deduplicate a domain allowlist for ``allowlist`` egress mode.
+
+    Entries are lowercased hostnames/domains (no scheme, no path). Invalid
+    entries are dropped with a warning rather than failing container startup.
+    """
+    if not allowlist:
+        return []
+    if not isinstance(allowlist, list):
+        logger.warning("container_network_allowlist is not a list: %r", allowlist)
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in allowlist:
+        if not isinstance(item, str):
+            logger.warning("Ignoring non-string allowlist entry: %r", item)
+            continue
+        host = item.strip().lower()
+        # Strip an accidental scheme or trailing path/port the user may have pasted.
+        if "://" in host:
+            host = host.split("://", 1)[1]
+        host = host.split("/", 1)[0].split(":", 1)[0]
+        if not host:
+            continue
+        if not _ALLOWLIST_HOST_RE.match(host):
+            logger.warning("Ignoring invalid allowlist host: %r", item)
+            continue
+        if host in seen:
+            continue
+        seen.add(host)
+        normalized.append(host)
     return normalized
 
 
@@ -591,6 +658,8 @@ class DockerEnvironment(BaseEnvironment):
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
+        network_mode: Optional[str] = None,
+        network_allowlist: list[str] | None = None,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
@@ -605,6 +674,12 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+
+        # Resolve effective egress mode. ``network_mode`` (on/off/allowlist) is the
+        # primary control; the legacy ``network`` bool is kept for backwards compat
+        # (network=False == network_mode="off"). See _SECURITY_ARGS / egress_proxy.
+        self._network_mode = _resolve_network_mode(network_mode, network)
+        self._network_allowlist = _normalize_allowlist(network_allowlist)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
@@ -639,8 +714,43 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker storage driver does not support per-container disk limits "
                     "(requires overlay2 on XFS with pquota). Container will run without disk quota."
                 )
-        if not network:
+        # Egress control. "on" keeps full network (current default), "off" cuts
+        # all network, "allowlist" routes HTTP(S) through a domain-filtered proxy
+        # on an --internal network (raw/non-proxied egress has no route out).
+        if self._network_mode == "off":
             resource_args.append("--network=none")
+        elif self._network_mode == "allowlist":
+            try:
+                from tools.environments.egress_proxy import ensure_allowlisted_network
+
+                proxy = ensure_allowlisted_network(self._network_allowlist)
+                resource_args.extend(["--network", proxy.network])
+                # Inject proxy env so package managers / git / curl route through it.
+                # Merged into self._env here so it lands in both the `docker run -e`
+                # args and the init_session snapshot (subsequent exec inherits it).
+                overridden = sorted(
+                    k for k in proxy.proxy_env
+                    if k in self._env and self._env[k] != proxy.proxy_env[k]
+                )
+                if overridden:
+                    # Not a bypass — the internal network has no route out — but
+                    # traffic pointed away from the proxy will just fail.
+                    logger.warning(
+                        "docker_env overrides egress proxy settings (%s); "
+                        "connections not routed through the proxy have no route out.",
+                        ", ".join(overridden),
+                    )
+                self._env = {**proxy.proxy_env, **self._env}
+            except Exception as e:
+                # Fail closed: if the egress proxy can't be set up, do NOT fall
+                # back to open network — cut egress entirely and surface the error.
+                logger.error(
+                    "Failed to set up allowlist egress proxy (%s). "
+                    "Falling back to --network=none (fail-closed).",
+                    e,
+                    exc_info=True,
+                )
+                resource_args.append("--network=none")
 
         # Persistent workspace via bind mounts from a configurable host directory
         # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent

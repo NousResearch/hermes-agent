@@ -1469,6 +1469,11 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        # Egress control (docker backend): "on" | "off" | "allowlist"
+        "container_network": os.getenv("TERMINAL_CONTAINER_NETWORK", "on"),
+        "container_network_allowlist": _parse_env_var(
+            "TERMINAL_CONTAINER_NETWORK_ALLOWLIST", "[]", json.loads, "valid JSON"
+        ),
     }
 
 
@@ -1513,10 +1518,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
     docker_network = cc.get("docker_network", True)
+    network_mode = cc.get("container_network", "on")
+    network_allowlist = cc.get("container_network_allowlist", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
-    
+
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
         # prior Hermes processes that hit SIGKILL / OOM / a closed terminal
@@ -1538,6 +1545,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             network=docker_network,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
+            network_mode=network_mode,
+            network_allowlist=network_allowlist,
         )
     
     elif env_type == "singularity":
@@ -1779,7 +1788,15 @@ def cleanup_all_environments():
             logger.info("Removed orphaned: %s", path)
         except OSError as e:
             logger.debug("Failed to remove orphaned path %s: %s", path, e)
-    
+
+    # Egress proxies ("allowlist" mode) are shared across sandboxes and not
+    # torn down per-environment — prune the ones nothing is attached to.
+    try:
+        from tools.environments.egress_proxy import prune_egress_proxies
+        prune_egress_proxies()
+    except Exception as e:
+        logger.debug("Egress proxy prune failed: %s", e)
+
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
     return cleaned
@@ -2295,6 +2312,8 @@ def terminal_tool(
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "container_network": config.get("container_network", "on"),
+                                "container_network_allowlist": config.get("container_network_allowlist", []),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),

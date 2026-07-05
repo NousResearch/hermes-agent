@@ -630,6 +630,8 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+        "container_network": "TERMINAL_CONTAINER_NETWORK",
+        "container_network_allowlist": "TERMINAL_CONTAINER_NETWORK_ALLOWLIST",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "docker_network": "TERMINAL_DOCKER_NETWORK",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",

@@ -1587,6 +1587,8 @@ if _config_path.exists():
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
                 "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
                 "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+                "container_network": "TERMINAL_CONTAINER_NETWORK",
+                "container_network_allowlist": "TERMINAL_CONTAINER_NETWORK_ALLOWLIST",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }

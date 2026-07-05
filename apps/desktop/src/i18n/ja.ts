@@ -2249,6 +2249,9 @@ export const ja = defineLocale({
       notReady: '明確化リクエストはまだ準備できていません',
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
       sendFailed: '明確化応答を送信できませんでした',
+      responsePendingTitle: '明確化応答はまだ処理中の可能性があります',
+      responsePendingMessage:
+        'Hermes は選択を時間内に確認できませんでした。バックエンドにはまだ届く可能性があるため、重複応答を避けるため少し待ってから再試行してください。',
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',

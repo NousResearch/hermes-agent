@@ -2247,6 +2247,42 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_sequential_clarify_passes_selection_metadata(self, agent):
+        agent.valid_tool_names = set(agent.valid_tool_names) | {"clarify"}
+        agent.clarify_callback = lambda *args, **kwargs: "Alpha, Gamma"
+        tc = _mock_tool_call(
+            name="clarify",
+            arguments=json.dumps({
+                "question": "Pick all that apply",
+                "choices": ["Alpha", "Beta", "Gamma"],
+                "multi_select": True,
+                "min_selections": 1,
+                "max_selections": 2,
+                "allow_other": False,
+            }),
+            call_id="clarify-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        seen = {}
+
+        def fake_clarify_tool(**kwargs):
+            seen.update(kwargs)
+            return json.dumps({
+                "user_response": "Alpha, Gamma",
+                "selected_choices": ["Alpha", "Gamma"],
+                "selection_mode": "multi",
+            })
+
+        with patch("tools.clarify_tool.clarify_tool", side_effect=fake_clarify_tool):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert seen["multi_select"] is True
+        assert seen["min_selections"] == 1
+        assert seen["max_selections"] == 2
+        assert seen["allow_other"] is False
+        assert messages[-1]["tool_call_id"] == "clarify-1"
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(

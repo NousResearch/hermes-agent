@@ -672,6 +672,37 @@ def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> Non
     assert "export QUOTED='a'\"'\"'b'" in run_text
 
 
+def test_named_profile_run_script_clears_inherited_matrix_policy_env() -> None:
+    """Named profile gateways must let profile config/.env set Matrix routing.
+
+    Container-wide persona env applies to the default/root gateway. If values
+    such as MATRIX_AUTO_THREAD leak into ``hermes -p project gateway run``, the
+    Matrix config bridge treats them as intentional env overrides and ignores
+    the named profile's ``matrix.auto_thread`` / ``matrix.session_scope``. Clear
+    only non-secret routing policy knobs before the profile starts.
+    """
+
+    run_text = S6ServiceManager._render_run_script("coder", {})
+
+    for name in (
+        "MATRIX_SESSION_SCOPE",
+        "MATRIX_AUTO_THREAD",
+        "MATRIX_DM_AUTO_THREAD",
+        "MATRIX_DM_MENTION_THREADS",
+    ):
+        assert f"unset {name}" in run_text
+
+    # Credentials, room/user allowlists, and other security boundaries must not
+    # be cleared implicitly by the supervisor script.
+    assert "unset MATRIX_ACCESS_TOKEN" not in run_text
+    assert "unset MATRIX_ALLOWED_USERS" not in run_text
+    assert "unset MATRIX_ALLOWED_ROOMS" not in run_text
+
+    default_text = S6ServiceManager._render_run_script("default", {})
+    assert "unset MATRIX_AUTO_THREAD" not in default_text
+    assert "unset MATRIX_SESSION_SCOPE" not in default_text
+
+
 def test_render_run_script_resets_home_before_exec() -> None:
 
     run_text = S6ServiceManager._render_run_script("coder", {})

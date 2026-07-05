@@ -559,6 +559,61 @@ async def test_auto_thread_tracks_participation(monkeypatch):
     assert "$msg1" in adapter._threads
 
 
+@pytest.mark.asyncio
+async def test_room_session_scope_keeps_top_level_followups_in_same_session(monkeypatch):
+    """Project-style Matrix rooms should not fork context per top-level event."""
+    from gateway.session import build_session_key
+
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    # Simulate a hostile inherited/container default. The explicit room scope
+    # must win inside the adapter, leaving top-level messages unthreaded.
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "true")
+    monkeypatch.setenv("MATRIX_SESSION_SCOPE", "room")
+
+    adapter = _make_adapter()
+    first = _make_event("remember task A", event_id="$task")
+    followup = _make_event("now create it", event_id="$followup")
+
+    await adapter._on_room_message(first)
+    await adapter._on_room_message(followup)
+
+    assert adapter.handle_message.await_count == 2
+    msg1 = adapter.handle_message.await_args_list[0].args[0]
+    msg2 = adapter.handle_message.await_args_list[1].args[0]
+    assert msg1.source.thread_id is None
+    assert msg2.source.thread_id is None
+
+    key1 = build_session_key(msg1.source)
+    key2 = build_session_key(msg2.source)
+    assert key1 == key2
+    assert "$task" not in key1
+    assert "$followup" not in key2
+
+
+@pytest.mark.asyncio
+async def test_room_session_scope_ignores_real_matrix_thread_roots(monkeypatch):
+    """Room-scoped project rooms must not fork when a client sends m.thread."""
+    from gateway.session import build_session_key
+
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "true")
+    monkeypatch.setenv("MATRIX_SESSION_SCOPE", "room")
+
+    adapter = _make_adapter()
+    top_level = _make_event("remember task A", event_id="$task")
+    threaded = _make_event("now create it", event_id="$followup", thread_id="$task")
+
+    await adapter._on_room_message(top_level)
+    await adapter._on_room_message(threaded)
+
+    assert adapter.handle_message.await_count == 2
+    msg1 = adapter.handle_message.await_args_list[0].args[0]
+    msg2 = adapter.handle_message.await_args_list[1].args[0]
+    assert msg1.source.thread_id is None
+    assert msg2.source.thread_id is None
+    assert build_session_key(msg1.source) == build_session_key(msg2.source)
+
+
 # ---------------------------------------------------------------------------
 # Thread persistence
 # ---------------------------------------------------------------------------

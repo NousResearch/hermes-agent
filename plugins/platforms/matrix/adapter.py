@@ -2610,6 +2610,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
 
+        # In project-style Matrix rooms the room is already the task/project
+        # boundary. Treat real Matrix threads as presentation detail so a user
+        # replying in-thread and then sending a top-level follow-up stays in one
+        # Hermes session. DMs keep their thread behavior.
+        if not is_dm and self._matrix_session_scope == "room":
+            thread_id = None
+
         formatted_body = source_content.get("formatted_body")
         # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
         mentions_block = source_content.get("m.mentions") or {}

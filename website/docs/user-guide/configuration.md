@@ -1431,6 +1431,7 @@ display:
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
+  status_phrases: {}      # Gateway: customize generic long-running status phrases
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
@@ -1495,6 +1496,69 @@ Example footer appended to a Telegram/Discord/Slack reply:
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
+
+### Gateway status phrases
+
+Messaging gateways use short generic phrases for long-running status updates instead of echoing raw tool arguments, command previews, or model scratch text. You can customize those phrase catalogs globally or per platform.
+
+Hermes always starts with the built-in defaults, then loads these sources in order:
+
+1. `~/.hermes/status_phrases.yaml`
+2. every `.yaml` or `.yml` file in `~/.hermes/status_phrases/`
+3. `display.status_phrases` in `config.yaml`
+4. `display.platforms.<platform>.status_phrases`
+
+```yaml
+display:
+  status_phrases:
+    mode: append                    # append (default) | replace
+    phrases:
+      status:
+        - still working through it
+        - waiting for the result
+      generic:
+        - on it
+        - checking that now
+```
+
+Use `mode: replace` when your catalog should fully replace the built-ins for any surface you define. Use `mode: append` to add your phrases after the defaults.
+
+You can also load profile-relative files or directories. Paths are resolved under `HERMES_HOME`; absolute paths and `..` escapes are ignored so profile configs stay portable.
+
+```yaml
+display:
+  status_phrases:
+    path: status_phrases/team.yaml
+    paths:
+      - status_phrases/slack.yaml
+      - status_phrases/ops
+```
+
+Phrase files use the same shape:
+
+```yaml
+mode: append
+phrases:
+  status:
+    - still checking
+  generic:
+    - one moment
+```
+
+For platform-specific wording, put the same block under a platform override:
+
+```yaml
+display:
+  platforms:
+    slack:
+      status_phrases:
+        mode: append
+        phrases:
+          status:
+            - still working on this thread
+```
+
+The supported phrase surfaces are `status` for long-running/waiting updates and `generic` as the fallback bucket. Hermes keeps only non-empty phrase strings, caps each phrase at 160 characters, and caps each custom surface at 80 phrases.
 
 ### Per-platform progress overrides
 

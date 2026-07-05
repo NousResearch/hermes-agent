@@ -365,6 +365,8 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+For long-running gateway status updates, Hermes can use generic status phrase catalogs instead of relaying raw tool details. Configure them with `display.status_phrases` globally or `display.platforms.<platform>.status_phrases` per channel; see [Gateway status phrases](/user-guide/configuration#gateway-status-phrases).
+
 ## Background Sessions
 
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:

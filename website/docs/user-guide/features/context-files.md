@@ -25,11 +25,13 @@ Only **one** project context type is loaded per session (first match wins): `.he
 
 ## AGENTS.md
 
-`AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
+`AGENTS.md` is the primary portable project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
+
+At session start, Hermes loads only the `AGENTS.md` in the current working directory, and only if no higher-priority `.hermes.md` or `HERMES.md` was found. This is deliberately different from Codex-style nested `AGENTS.md` instruction merging: nested files are not preloaded into the cached system prompt.
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/

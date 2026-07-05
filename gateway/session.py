@@ -95,15 +95,13 @@ from .whatsapp_identity import (
 )
 from utils import atomic_replace
 
-# Session keys/ids flow into filesystem paths downstream (e.g.
+# Session ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
 # filenames in agent_runtime_helpers). Any value that could escape the
 # sessions directory as a path must be rejected at the entry boundary.
 # Rejects: parent traversal (``..``), a path separator anywhere (``/`` or
 # ``\``, so a non-leading Windows separator can't slip through), and a
-# leading Windows drive letter (``C:``). Legitimate session keys are
-# colon-delimited multi-segment ids (``agent:main:<platform>:...``) and
-# never contain these, so there are no false positives in practice.
+# leading Windows drive letter (``C:``).
 def _is_path_unsafe(value: object) -> bool:
     """Return True if ``value`` could traverse outside the sessions dir."""
     if not value:
@@ -116,6 +114,23 @@ def _is_path_unsafe(value: object) -> bool:
     # separator forms are already caught above — but keep an explicit guard
     # for the drive-letter prefix in case a separator was normalized away.
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
+
+# Session keys are persisted as JSON object keys, not filenames, and may embed
+# platform-native identifiers. DingTalk conversation ids are base64 strings
+# whose alphabet includes ``/``; rejecting every interior slash makes those
+# sessions disappear on reload. Keep rejecting path-shaped values while
+# allowing interior slashes inside opaque key segments.
+def _is_session_key_unsafe(value: object) -> bool:
+    """Return True if a session key looks like a path-escape attempt."""
+    if not value:
+        return False
+    s = str(value)
+    if ".." in s or "\\" in s:
+        return True
+    if s.startswith(("/", "~")):
+        return True
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":" and s[2:3] in ("/", "\\")
 
 
 @dataclass
@@ -741,9 +756,14 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
-        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _is_path_unsafe(_val):
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22).
+        # session_id flows into filenames and keeps the strict check; session_key
+        # is a JSON key and must tolerate base64 chat ids with interior "/".
+        for _field, _val, _checker in (
+            ("session_key", session_key, _is_session_key_unsafe),
+            ("session_id", session_id, _is_path_unsafe),
+        ):
+            if _checker(_val):
                 raise ValueError(
                     f"Invalid {_field}: potential directory traversal detected"
                 )

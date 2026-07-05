@@ -1165,6 +1165,35 @@ class TestSessionEntryFromDictTraversalValidation:
         with pytest.raises(ValueError, match="session_key"):
             SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
 
+    def test_session_key_absolute_unix_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="/etc/passwd"))
+
+    def test_session_key_home_path_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="~/sessions"))
+
+    def test_session_key_windows_path_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="C:/windows/system32"))
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="agent:main:bad\\sub"))
+
+    def test_session_key_allows_dingtalk_base64_slash(self):
+        from gateway.session import SessionEntry
+
+        keys = [
+            "agent:main:dingtalk:dm:cidDAIsw68cJ7w/QyVwV0zB+KTziay5M9uOmLdzHoEi1tM=",
+            "agent:main:dingtalk:group:cidvL9m/YqbdGp1lPYxdOOEvw==:15528999368652879",
+            "agent:main:dingtalk:dm:$:LWCP_v1:$NW/8Xdhg39tkxmokXozO/Q==",
+        ]
+        for key in keys:
+            entry = SessionEntry.from_dict(self._entry(session_key=key))
+            assert entry.session_key == key
+
     def test_session_id_absolute_unix_raises(self):
         from gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
@@ -1191,8 +1220,6 @@ class TestSessionEntryFromDictTraversalValidation:
         from gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
-        with pytest.raises(ValueError, match="session_key"):
-            SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
 
 
 class TestEnsureLoadedSkipsInvalidEntries:

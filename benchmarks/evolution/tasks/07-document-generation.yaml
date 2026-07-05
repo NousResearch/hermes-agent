@@ -1,0 +1,18 @@
+name: document-generation
+description: "Generate structured documentation from codebase analysis"
+domain: software-development
+complexity: 4
+success_criteria:
+  - type: file_exists
+    path: /tmp/documentation.md
+    weight: 0.3
+  - type: content_match
+    path: /tmp/documentation.md
+    pattern: "(?i)overview|usage|example|api"
+    weight: 0.4
+  - type: content_match
+    path: /tmp/documentation.md
+    pattern: "##"
+    weight: 0.3
+timeout_seconds: 180
+max_turns: 12

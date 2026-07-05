@@ -1,0 +1,18 @@
+name: code-review
+description: "Review a PR for security issues, bugs, and style violations"
+domain: software-development
+complexity: 6
+success_criteria:
+  - type: content_match
+    path: /tmp/code_review.md
+    pattern: "(?i)security|vuln|risk|bug|issue"
+    weight: 0.4
+  - type: content_match
+    path: /tmp/code_review.md
+    pattern: "(?i)recommend|fix|improve|suggest"
+    weight: 0.3
+  - type: file_exists
+    path: /tmp/code_review.md
+    weight: 0.3
+timeout_seconds: 180
+max_turns: 15

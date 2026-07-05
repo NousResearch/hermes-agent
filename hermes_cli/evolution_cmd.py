@@ -49,60 +49,113 @@ def _fmt_ts(ts: Optional[str]) -> str:
 
 
 def _cmd_status(args) -> int:
-    """Show Evolution Engine status and recent runs."""
-    try:
-        from agent.evolution.config import EvolutionConfig
-        config = EvolutionConfig.from_config()
-    except Exception as e:
-        print(f"Error loading config: {e}")
-        return 1
+    """Show Evolution Engine dashboard — status, improvement, auto-discoveries."""
+    from agent.evolution.config import EvolutionConfig
+    config = EvolutionConfig.from_config()
 
-    status_line = "ENABLED" if config.enabled else "DISABLED"
-    print(f"Evolution Engine: {status_line}")
-    print(f"  mode:           {config.mode}")
-    print(f"  max iterations: {config.max_iterations}")
-    print(f"  regression gate: {'on' if config.regression_enabled else 'off'}")
-    print()
+    print("═" * 55)
+    print(f"  HERMES EVOLUTION ENGINE")
+    print(f"  Status: {'🟢 ENABLED' if config.enabled else '⚫ DISABLED'}")
+    print(f"  Mode: {config.mode} | Max Iterations: {config.max_iterations} | Safety: {'on' if config.regression_enabled else 'off'}")
+    print("═" * 55)
 
     if not config.enabled:
-        print("Enable with: hermes config set evolution.enabled true")
+        print("\n  Enable: hermes evolution enable")
         return 0
 
+    # ── Run History ──
+    from agent.evolution.evolution_store import get_evolution_store
+    store = get_evolution_store()
+    runs = store.list_runs(limit=20)
+
+    if runs:
+        succeeded = sum(1 for r in runs if r["status"] == "succeeded")
+        failed = sum(1 for r in runs if r["status"] == "failed")
+        total = len(runs)
+        print(f"\n  📊 RUN HISTORY ({total} total)")
+        bar_w = 30
+        s_bar = "█" * int(succeeded/total*bar_w) if total else ""
+        f_bar = "░" * int(failed/total*bar_w) if total else ""
+        print(f"  Passed:  {succeeded:3d} {s_bar}")
+        print(f"  Failed:  {failed:3d} {f_bar}")
+
+    # ── Improvement Metrics ──
     try:
-        from agent.evolution.evolution_store import get_evolution_store
-        store = get_evolution_store()
-        runs = store.list_runs(limit=20)
-    except Exception as e:
-        print(f"Error accessing evolution store: {e}")
-        return 1
+        from agent.evolution.improvement_metrics import get_tracker
+        tracker = get_tracker()
+        report = tracker.generate_report()
+        s = report["summary"]
+        if s["total_records"] > 0:
+            print(f"\n  📈 IMPROVEMENT PROOF")
+            sig = "✅ Significant (p<0.05)" if s["statistically_significant"] else "⏳ Need more data"
+            print(f"  Records: {s['total_records']} | Mean Δ: {s['mean_improvement']:+.3f} | Effect: {s['effect_size_label']} (d={s['effect_size']:.2f})")
+            print(f"  {sig}")
+            if report["tasks_improving"]:
+                print(f"  Improving: {', '.join(report['tasks_improving'][:5])}")
+    except Exception:
+        pass
 
+    # ── Auto-Discoveries ──
+    try:
+        from agent.evolution.conversation_observer import get_observer
+        observer = get_observer()
+        stats = observer.get_stats()
+        clusters = observer.suggest_tasks(min_occurrences=2, min_confidence=0.3)
+        if stats["total_sessions_observed"] > 0:
+            print(f"\n  🔍 AUTO-DISCOVERY")
+            print(f"  Sessions observed: {stats['total_sessions_observed']}")
+            print(f"  Clusters found:    {stats['total_clusters']}")
+            print(f"  Ready for tasks:   {len(clusters)}")
+            for c in clusters[:3]:
+                print(f"    • {c.task_name}: {c.occurrence_count} sessions, {c.confidence:.0%} confidence")
+    except Exception:
+        pass
+
+    # ── Pre-built Tasks ──
+    try:
+        from agent.evolution.task_definition import list_tasks
+        from pathlib import Path
+        tasks = list_tasks()
+        bundled = [t for t in tasks if t.name in {
+            'bug-fix-verify', 'code-review', 'deploy-verify', 'data-pipeline',
+            'api-endpoint', 'security-audit', 'document-generation',
+            'refactor-module', 'dependency-update', 'config-migration',
+        }]
+        custom = [t for t in tasks if t not in bundled]
+        if bundled:
+            print(f"\n  📦 PRE-BUILT TASKS ({len(bundled)} available)")
+            print(f"  Run: hermes evolution benchmark")
+            print(f"  Define custom: hermes evolution define-task <file.yaml>")
+    except Exception:
+        pass
+
+    # ── Training Data ──
+    try:
+        from agent.evolution.atropos_export import get_export_stats
+        es = get_export_stats(days=30)
+        if es["total_runs"] > 0:
+            print(f"\n  🎯 ATROPOS TRAINING DATA")
+            print(f"  Records available: {es['estimated_training_records']} (last 30 days)")
+            print(f"  Export: hermes evolution export --all")
+    except Exception:
+        pass
+
+    # ── Quick Start ──
     if not runs:
-        print("No evolution runs recorded yet.")
-        print("Define a task: hermes evolution define-task <file.yaml>")
-        return 0
+        benchtasks = []
+        try:
+            from agent.evolution.task_definition import list_tasks
+            benchtasks = list_tasks()
+        except Exception:
+            pass
+        print(f"\n  🚀 QUICK START")
+        if benchtasks:
+            print(f"  {len(benchtasks)} pre-built tasks ready.")
+        print(f"  hermes evolution benchmark           # Run all tasks")
+        print(f"  hermes evolution run bug-fix-verify  # Run a specific task")
+        print(f"  hermes evolution suggest-tasks       # Auto-discover from your usage")
 
-    succeeded = sum(1 for r in runs if r["status"] == "succeeded")
-    failed = sum(1 for r in runs if r["status"] == "failed")
-    exhausted = sum(1 for r in runs if r["status"] == "exhausted")
-    pending = sum(1 for r in runs if r["status"] == "pending")
-
-    print(f"Recent runs ({len(runs)} total):")
-    print(f"  succeeded: {succeeded}  failed: {failed}  exhausted: {exhausted}  pending: {pending}")
     print()
-
-    # Table header
-    print(f"{'Status':8} {'Task':30} {'Score':8} {'Iters':6} {'When':12}")
-    print("-" * 70)
-
-    for r in runs[:20]:
-        icon = {"succeeded": "✅", "failed": "❌", "exhausted": "⚠️", "pending": "⏳"}.get(r["status"], "❓")
-        score = r.get("final_score")
-        score_str = f"{score:.2f}" if score is not None else "N/A"
-        iters = f"{r.get('iterations', 0)}/{r.get('max_iterations', 5)}"
-        when = _fmt_ts(r.get("created_at"))
-        task_name = r["task_name"][:29]
-        print(f"{icon} {r['status']:7} {task_name:30} {score_str:8} {iters:6} {when:12}")
-
     return 0
 
 

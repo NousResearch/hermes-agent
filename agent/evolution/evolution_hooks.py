@@ -105,6 +105,14 @@ def on_session_end(agent: Any, **kwargs: Any) -> None:
     except Exception:
         pass
 
+    # Auto-export training data if due (weekly, idle-gated)
+    try:
+        from agent.evolution.auto_export import get_auto_export
+        exporter = get_auto_export()
+        exporter.maybe_export()
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Turn hooks

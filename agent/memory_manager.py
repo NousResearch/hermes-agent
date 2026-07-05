@@ -334,19 +334,34 @@ class StreamingContextScrubber:
 
 
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+    """Wrap prefetched memory in a framed block with system note.
+
+    Uses plain-text box-drawing framing (matching the built-in MEMORY
+    block style) instead of ``<memory-context>`` XML tags.  XML-style
+    tags trigger prompt-injection detection in several models (Claude,
+    Gemini, etc.), causing them to refuse the recalled context even
+    when the system note explicitly marks it as authoritative.  The
+    box-drawing style is treated as inert formatting by all major
+    models.
+
+    The ``StreamingContextScrubber`` still recognises legacy
+    ``<memory-context>`` tags in streamed output for backward
+    compatibility; no scrubber changes are needed.
+    """
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    separator = "═" * 46
     return (
-        "<memory-context>\n"
+        f"{separator}\n"
+        "RECALLED MEMORY (persistent cross-session context)\n"
+        f"{separator}\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
         "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
-        "</memory-context>"
+        f"{clean}"
     )
 
 

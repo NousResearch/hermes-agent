@@ -7266,18 +7266,35 @@ class TelegramAdapter(BasePlatformAdapter):
 
         bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
         bot_id = getattr(self._bot, "id", None)
+        try:
+            bot_id_int = int(bot_id) if bot_id is not None else None
+        except (TypeError, ValueError):
+            bot_id_int = None
         expected = f"@{bot_username}" if bot_username else None
 
         def _iter_sources():
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
             yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
 
+        def _text_link_user_id(entity: Any) -> Optional[int]:
+            url = str(getattr(entity, "url", "") or "")
+            match = re.fullmatch(r"tg://user\?id=(\d+)(?:[&#].*)?", url)
+            if not match:
+                return None
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
-        # a user without a public username). Those entities are authoritative:
-        # raw substring matches like "foo@hermes_bot.example" are not mentions
-        # (bug #12545). Entities also correctly handle @handles inside URLs, code
-        # blocks, and quoted text, where a regex scan would over-match.
+        # a user without a public username). Some clients/operators can also
+        # produce a hidden user mention as type=text_link with a tg://user?id=...
+        # URL, whose visible text can be arbitrary (for example just "Эй?").
+        # Those entities are authoritative: raw substring matches like
+        # "foo@hermes_bot.example" are not mentions (bug #12545). Entities also
+        # correctly handle @handles inside URLs, code blocks, and quoted text,
+        # where a regex scan would over-match.
         for source_text, entities in _iter_sources():
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
@@ -7291,6 +7308,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
                     if user and getattr(user, "id", None) == bot_id:
+                        return True
+                elif entity_type == "text_link":
+                    if bot_id_int is not None and _text_link_user_id(entity) == bot_id_int:
                         return True
                 elif entity_type == "bot_command" and expected:
                     # Telegram's official group-disambiguation form for slash

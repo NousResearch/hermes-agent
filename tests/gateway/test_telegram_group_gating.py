@@ -150,6 +150,11 @@ def _bot_command_entity(text, command):
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
+def _text_link_entity(text, visible_text, url):
+    offset = text.index(visible_text)
+    return SimpleNamespace(type="text_link", offset=offset, length=len(visible_text), url=url)
+
+
 def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)
 
@@ -435,6 +440,13 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
     assert adapter._should_process_message(_group_message("hi @hermes_bot", entities=[_mention_entity("hi @hermes_bot")])) is True
     assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
+    hidden_text = "Эй?"
+    assert adapter._should_process_message(
+        _group_message(
+            hidden_text,
+            entities=[_text_link_entity(hidden_text, hidden_text, "tg://user?id=999")],
+        )
+    ) is True
     # Commands must also respect require_mention when it is enabled
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
     # Telegram's group command menu sends ``/cmd@botname`` as a single

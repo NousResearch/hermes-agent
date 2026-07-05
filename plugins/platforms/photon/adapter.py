@@ -489,7 +489,7 @@ class PhotonAdapter(BasePlatformAdapter):
             message = (
                 "Photon upstream stream degraded"
                 f" (state={state}, degradedForMs={degraded_for_ms}): "
-                f"{last_issue}"
+                + last_issue
             )
             logger.error("[photon] %s", message)
             self._set_fatal_error(

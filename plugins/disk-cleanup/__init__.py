@@ -287,7 +287,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
             return f"Tracked {path_arg} as '{category}'."
         return (
             f"Not tracked (already present, missing, or outside HERMES_HOME): "
-            f"{path_arg}"
+            + path_arg
         )
 
     if sub == "forget":

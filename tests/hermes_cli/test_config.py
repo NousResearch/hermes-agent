@@ -318,6 +318,34 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
 
+    def test_atomic_config_write_refuses_unreadable_existing_config(self, tmp_path):
+        """The shared chokepoint every sibling write site routes through must
+        fail closed on an unreadable existing config.yaml — this locks in the
+        whole bug class (gateway slash commands, doctor --fix, yuanbao/telegram
+        auto-sethome, tui_gateway _save_cfg), not just the three named paths."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_atomic_config_write_creates_new_file(self, tmp_path):
+        """A genuinely absent config.yaml must still be created — the guard
+        only refuses to clobber an existing-but-unreadable file."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        assert not config_path.exists()
+        atomic_config_write(config_path, {"model": {"provider": "openrouter"}})
+        assert config_path.exists()
+        assert "openrouter" in config_path.read_text(encoding="utf-8")
+
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_config({"model": "test/custom-model", "max_turns": 37})

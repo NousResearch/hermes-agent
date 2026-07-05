@@ -375,7 +375,7 @@ class TestMattermostSend:
         assert payload["root_id"] == "root_post_123"
 
     @pytest.mark.asyncio
-    async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
+    async def test_progress_send_with_invalid_thread_root_status_error_never_falls_back_flat(self):
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})

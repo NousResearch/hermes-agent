@@ -411,6 +411,9 @@ class TestSyncSkills:
         """Return context manager stack for patching sync globals."""
         from contextlib import ExitStack
         stack = ExitStack()
+        # Empty string pins the *default* bootstrap path (unset/empty → "all",
+        # seed every bundled skill) regardless of the outer environment.
+        stack.enter_context(patch.dict("os.environ", {"HERMES_SKILLS_BOOTSTRAP": ""}))
         stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
@@ -830,12 +833,16 @@ class TestSyncSkills:
         assert not (skills_dir / ".hub" / "lock.json").exists()
 
     def test_nonexistent_bundled_dir(self, tmp_path):
-        with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
+        # Empty env value exercises the default mode mapping (→ "all").
+        with patch.dict("os.environ", {"HERMES_SKILLS_BOOTSTRAP": ""}), \
+                patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
-            "optional_provenance_backfilled": [],
+            "optional_provenance_backfilled": [], "bootstrap_mode": "all",
+            "promoted_optional": [], "pruned": [], "prune_user_modified": [],
+            "total_available_bundled": 0,
         }
 
     def test_failed_copy_does_not_poison_manifest(self, tmp_path):
@@ -1208,7 +1215,9 @@ class TestNoBundledSkillsOptOut:
         hermes_home.mkdir()
         # No marker written.
 
-        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+        # Empty env value exercises the default mode mapping (→ "all").
+        with patch.dict("os.environ", {"HERMES_SKILLS_BOOTSTRAP": ""}), \
+             patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
              patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
              patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
              patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
@@ -1259,7 +1268,9 @@ class TestOptOutToggleAndRemove:
         manifest_file = skills_dir / ".bundled_manifest"
         home = tmp_path / "home"
         home.mkdir()
-        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+        # Empty env value exercises the default mode mapping (→ "all").
+        with patch.dict("os.environ", {"HERMES_SKILLS_BOOTSTRAP": ""}), \
+             patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
              patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
              patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
              patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \

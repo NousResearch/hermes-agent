@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,111 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 # hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (kept as a literal here to
 # avoid importing the CLI layer into this low-level sync module).
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+
+# Opt-in curated bootstrap (HERMES_SKILLS_BOOTSTRAP=curated) seeds only this
+# focused subset instead of every bundled skill. Selection rationale: keep the
+# skills a typical coding/agent operator reaches for on a fresh install —
+# agent CLIs and workflows (claude-code/codex/opencode/hermes-agent), GitHub
+# flows, MCP, design/docs authoring, local-AI serving and evaluation,
+# research, document handling, debugging/planning practices, and macOS
+# personal-productivity integrations — and leave out demo/novelty skills
+# (e.g. gaming) that mostly add noise. The default mode is "all" (seed every
+# bundled skill); this list only takes effect when curated is explicitly set.
+CURATED_BOOTSTRAP_BUNDLED_SKILLS = frozenset({
+    "apple-notes",
+    "apple-reminders",
+    "findmy",
+    "imessage",
+    "macos-computer-use",
+    "claude-code",
+    "codex",
+    "hermes-agent",
+    "kanban-codex-lane",
+    "opencode",
+    "architecture-diagram",
+    "claude-design",
+    "design-md",
+    "excalidraw",
+    "humanizer",
+    "popular-web-designs",
+    "jupyter-live-kernel",
+    "kanban-orchestrator",
+    "kanban-worker",
+    "webhook-subscriptions",
+    "dogfood",
+    "himalaya",
+    "codebase-inspection",
+    "github-auth",
+    "github-code-review",
+    "github-issues",
+    "github-pr-workflow",
+    "github-repo-management",
+    "native-mcp",
+    "evaluating-llms-harness",
+    "huggingface-hub",
+    "llama-cpp",
+    "serving-llms-vllm",
+    "dspy",
+    "obsidian",
+    "google-workspace",
+    "linear",
+    "nano-pdf",
+    "notion",
+    "ocr-and-documents",
+    "powerpoint",
+    "arxiv",
+    "blogwatcher",
+    "llm-wiki",
+    "research-paper-writing",
+    "debugging-hermes-tui-commands",
+    "hermes-agent-skill-authoring",
+    "hermes-s6-container-supervision",
+    "node-inspect-debugger",
+    "plan",
+    "python-debugpy",
+    "requesting-code-review",
+    "spike",
+    "subagent-driven-development",
+    "systematic-debugging",
+    "test-driven-development",
+    "writing-plans",
+})
+
+
+# Official optional skills promoted into the curated set: vetted search,
+# vector-store, container, and debugging helpers that round out the curated
+# bundled skills above. Like the bundled list, this only applies when the
+# user explicitly opts in with HERMES_SKILLS_BOOTSTRAP=curated.
+CURATED_BOOTSTRAP_OPTIONAL_SKILLS = frozenset({
+    "1password",
+    "chroma",
+    "code-wiki",
+    "docker-management",
+    "duckduckgo-search",
+    "fastmcp",
+    "faiss",
+    "mcporter",
+    "oss-forensics",
+    "qdrant-vector-search",
+    "rest-graphql-debug",
+    "searxng-search",
+    "watchers",
+})
+
+
+_BOOTSTRAP_MODE_ALIASES = {
+    "": "all",
+    "default": "all",
+    "all": "all",
+    "full": "all",
+    "legacy": "all",
+    "curated": "curated",
+    "lean": "curated",
+    "none": "none",
+    "off": "none",
+    "disabled": "none",
+}
 
 
 def _get_bundled_dir() -> Path:
@@ -302,6 +407,96 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     return index
 
 
+def _bootstrap_mode() -> str:
+    """Return the bundled-skill bootstrap mode.
+
+    ``all`` is the default: seed every bundled skill, matching long-standing
+    behavior so existing users see no change on update.  ``curated`` is a pure
+    opt-in (``HERMES_SKILLS_BOOTSTRAP=curated``) that seeds a focused set of
+    broadly useful coding, agent, GitHub, MCP, local-AI, research, document,
+    and ops skills — and prunes pristine previously-seeded skills outside that
+    set.  ``none`` disables bundled seeding without requiring a profile
+    marker.  Unrecognized values fall back to ``all``.
+    """
+    raw = os.environ.get("HERMES_SKILLS_BOOTSTRAP", "").strip().lower()
+    return _BOOTSTRAP_MODE_ALIASES.get(raw, "all")
+
+
+def _filter_skills(
+    skills: Iterable[Tuple[str, Path]],
+    allowed_names: set[str] | frozenset[str],
+) -> List[Tuple[str, Path]]:
+    return [(name, path) for name, path in skills if name in allowed_names]
+
+
+def _optional_skills_for_curated_bootstrap() -> List[Tuple[str, Path]]:
+    """Return selected official optional skills promoted into curated bootstrap."""
+    index = _optional_skill_index()
+    selected: Dict[str, Path] = {}
+    for name in CURATED_BOOTSTRAP_OPTIONAL_SKILLS:
+        match = index.get(name)
+        if not match:
+            continue
+        _folder_name, _install_path, src = match
+        frontmatter_name = _read_skill_name(src / "SKILL.md", src.name)
+        selected[frontmatter_name] = src
+    return sorted(selected.items(), key=lambda item: item[0])
+
+
+def _skill_dest_for_source(skill_src: Path, source_root: Path) -> Path:
+    return SKILLS_DIR / skill_src.relative_to(source_root)
+
+
+def _prune_unselected_skills(
+    manifest: Dict[str, str],
+    selected_names: set[str],
+    prunable_sources: Dict[str, Tuple[Path, Path]],
+    *,
+    quiet: bool = False,
+) -> Tuple[List[str], List[str]]:
+    """Remove old bundled skills that curated bootstrap no longer selects.
+
+    Only pristine copies are removed.  If a user changed the skill contents, the
+    directory is preserved and remains manifest-tracked so future repairs can
+    still reason about it.
+    """
+    pruned: List[str] = []
+    preserved_user_modified: List[str] = []
+
+    for name in sorted(set(prunable_sources) - selected_names):
+        skill_src, source_root = prunable_sources[name]
+        dest = _skill_dest_for_source(skill_src, source_root)
+        origin_hash = manifest.get(name, "")
+
+        if not dest.exists():
+            if name in manifest:
+                del manifest[name]
+            continue
+
+        source_hash = _dir_hash(skill_src)
+        user_hash = _dir_hash(dest)
+        pristine_hash = origin_hash or source_hash
+
+        if user_hash != pristine_hash:
+            if name in manifest:
+                preserved_user_modified.append(name)
+                if not quiet:
+                    print(f"  ~ {name} (no longer default, user-modified, kept)")
+            continue
+
+        try:
+            _rmtree_writable(dest)
+            pruned.append(name)
+            manifest.pop(name, None)
+            if not quiet:
+                print(f"  - {name} (removed from curated default)")
+        except (OSError, IOError) as e:
+            if not quiet:
+                print(f"  ! Failed to prune {name}: {e}")
+
+    return pruned, preserved_user_modified
+
+
 def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
     """Move an existing skill directory into a restore backup, preserving rel path."""
     rel = path.relative_to(SKILLS_DIR)
@@ -488,6 +683,8 @@ def sync_skills(quiet: bool = False) -> dict:
         dict with keys: copied (list), updated (list), skipped (int),
                         user_modified (list), cleaned (list), total_bundled (int)
     """
+    mode = _bootstrap_mode()
+
     # Opt-out: a profile (named or the default ~/.hermes) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
     # empty-result shape with skipped_opt_out lets callers report "opted out"
@@ -499,21 +696,62 @@ def sync_skills(quiet: bool = False) -> dict:
         return {
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
-            "optional_provenance_backfilled": [], "skipped_opt_out": True,
+            "suppressed": [], "optional_provenance_backfilled": [],
+            "skipped_opt_out": True, "bootstrap_mode": mode,
+            "promoted_optional": [], "pruned": [], "prune_user_modified": [],
+            "total_available_bundled": 0,
         }
 
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
-            "optional_provenance_backfilled": [],
+            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "suppressed": [], "optional_provenance_backfilled": [],
+            "bootstrap_mode": mode, "promoted_optional": [],
+            "pruned": [], "prune_user_modified": [],
+            "total_available_bundled": 0,
         }
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
-    bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_names = {name for name, _ in bundled_skills}
+    all_bundled_skills = _discover_bundled_skills(bundled_dir)
+    optional_dir = _get_optional_dir()
+    all_optional_skills = _discover_bundled_skills(optional_dir)
+
+    if mode == "all":
+        bundled_skills = all_bundled_skills
+        promoted_optional_skills: List[Tuple[str, Path]] = []
+    elif mode == "none":
+        bundled_skills = []
+        promoted_optional_skills = []
+    else:
+        bundled_skills = _filter_skills(
+            all_bundled_skills,
+            CURATED_BOOTSTRAP_BUNDLED_SKILLS,
+        )
+        promoted_optional_skills = _optional_skills_for_curated_bootstrap()
+
+    sync_sources: List[Tuple[str, Path, Path]] = [
+        (name, path, bundled_dir) for name, path in bundled_skills
+    ] + [
+        (name, path, optional_dir) for name, path in promoted_optional_skills
+    ]
+    selected_names = {name for name, _path, _root in sync_sources}
+    known_sources: Dict[str, Tuple[Path, Path]] = {
+        name: (path, bundled_dir) for name, path in all_bundled_skills
+    }
+    # Pruning previously-seeded skills is strictly part of the opt-in curated
+    # mode. The default "all" mode and the "none" mode never delete what an
+    # earlier sync seeded, so existing users see no change on update.
+    prunable_sources: Dict[str, Tuple[Path, Path]] = (
+        dict(known_sources) if mode == "curated" else {}
+    )
+    for name, path in all_optional_skills:
+        if name in manifest:
+            known_sources[name] = (path, optional_dir)
+            if mode == "curated":
+                prunable_sources[name] = (path, optional_dir)
     suppressed = _read_suppressed_names()
     # Index of skills already provided by external_dirs (skip writing them)
     external_index = _build_external_skill_index()
@@ -525,7 +763,7 @@ def sync_skills(quiet: bool = False) -> dict:
     suppressed_skipped: List[str] = []
     skipped = 0
 
-    for skill_name, skill_src in bundled_skills:
+    for skill_name, skill_src, source_root in sync_sources:
         # Curator-pruned built-ins: do not re-seed. The suppression list
         # (~/.hermes/skills/.curator_suppressed) is written when the curator
         # archives a bundled skill with curator.prune_builtins enabled. Without
@@ -535,7 +773,7 @@ def sync_skills(quiet: bool = False) -> dict:
             suppressed_skipped.append(skill_name)
             continue
 
-        dest = _compute_relative_dest(skill_src, bundled_dir)
+        dest = _skill_dest_for_source(skill_src, source_root)
         bundled_hash = _dir_hash(skill_src)
 
         # Recover an orphaned backup before classifying. If a previous
@@ -688,8 +926,16 @@ def sync_skills(quiet: bool = False) -> dict:
             # ── In manifest but not on disk — user deleted it ──
             skipped += 1
 
-    # Clean stale manifest entries (skills removed from bundled dir)
-    cleaned = sorted(set(manifest.keys()) - bundled_names)
+    pruned, prune_user_modified = _prune_unselected_skills(
+        manifest,
+        selected_names,
+        prunable_sources,
+        quiet=quiet,
+    )
+
+    # Clean stale manifest entries (skills removed from bundled/optional source)
+    source_names = set(known_sources) | selected_names
+    cleaned = sorted(set(manifest.keys()) - source_names)
     for name in cleaned:
         del manifest[name]
 
@@ -714,9 +960,14 @@ def sync_skills(quiet: bool = False) -> dict:
         "user_modified": user_modified,
         "cleaned": cleaned,
         "suppressed": suppressed_skipped,
-        "total_bundled": len(bundled_skills),
+        "total_bundled": len(sync_sources),
+        "total_available_bundled": len(all_bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,
         "shadowed_by_external": shadowed_by_external,
+        "bootstrap_mode": mode,
+        "promoted_optional": [name for name, _path in promoted_optional_skills],
+        "pruned": pruned,
+        "prune_user_modified": prune_user_modified,
     }
 
 
@@ -1177,6 +1428,14 @@ if __name__ == "__main__":
         parts.append(f"{len(names)} user-modified (kept): {shown}")
     if result["cleaned"]:
         parts.append(f"{len(result['cleaned'])} cleaned from manifest")
+    if result.get("pruned"):
+        parts.append(f"{len(result['pruned'])} pruned from curated default")
     if result.get("optional_provenance_backfilled"):
         parts.append(f"{len(result['optional_provenance_backfilled'])} official optional backfilled")
-    print(f"\nDone: {', '.join(parts)}. {result['total_bundled']} total bundled.")
+    if result.get("promoted_optional"):
+        parts.append(f"{len(result['promoted_optional'])} optional promoted")
+    print(
+        f"\nDone: {', '.join(parts)}. "
+        f"{result['total_bundled']} total seeded "
+        f"(mode={result.get('bootstrap_mode', 'unknown')})."
+    )

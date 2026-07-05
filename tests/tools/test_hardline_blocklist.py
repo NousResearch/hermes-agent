@@ -305,6 +305,156 @@ def test_root_wipe_at_command_position_is_hardline(command):
 
 
 # -------------------------------------------------------------------------
+# Leading-wrapper and binary-path bypass of the command-position anchor
+# -------------------------------------------------------------------------
+#
+# The floor anchors its shutdown/reboot and rm-root rules to command position
+# via _CMDPOS, which consumes a set of leading wrapper commands. That set missed
+# ordinary exec wrappers (nice, ionice, stdbuf, timeout) and the shell builtins
+# command/builtin, and it allowed no path to the binary. Each of those shifts
+# the destructive verb off the anchor while the shell still runs it, so
+# `nice reboot`, `command systemctl poweroff`, `timeout 5 rm -rf /` and
+# `/bin/reboot` slipped the floor. The reboot family has no softer
+# DANGEROUS_PATTERNS backstop, so those bypassed approval in every mode
+# including the default one; the rm forms bypassed the floor under --yolo /
+# approvals.mode=off / cron approve-mode, where the floor is the only guard.
+_WRAPPER_PATH_BYPASS = [
+    # shutdown / reboot family behind a wrapper or a path
+    "nice reboot",
+    "command reboot",
+    "command shutdown -h now",
+    "command systemctl poweroff",
+    "ionice poweroff",
+    "nice init 0",
+    "command telinit 6",
+    "timeout 5 reboot",
+    "nice -n 10 reboot",
+    "nice -10 reboot",
+    "timeout -k 5s 10 reboot",
+    "/bin/reboot",
+    "/sbin/shutdown -h now",
+    "/usr/bin/systemctl poweroff",
+    "./reboot",
+    # root / protected / home wipe behind a wrapper or a path
+    "command rm -rf /",
+    "nice rm -rf /",
+    "ionice rm -rf /",
+    "stdbuf -oL rm -rf /",
+    "timeout 5 rm -rf /",
+    "/bin/rm -rf /",
+    "/usr/bin/rm -rf /",
+    "./rm -rf /",
+    "command rm -rf /etc",
+    "nice rm -rf ~",
+    'nice rm -rf "/"',
+    # Wrapper flags whose operand is non-numeric command metadata (a signal
+    # name, an ionice class, a stdbuf mode) must be consumed too, so the verb
+    # after them still anchors. Consuming only flags and digit-leading operands
+    # left these outside the floor.
+    "timeout -s KILL 5 reboot",
+    "timeout --signal KILL 5 reboot",
+    "ionice -c best-effort rm -rf /",
+    "stdbuf -o L rm -rf /",
+    "env FOO=1 timeout --signal KILL 5 rm -rf /",
+    # sudo/env/doas are wrappers too, and their OPTIONS (not just env
+    # assignments and sudo flags-without-operands) must be consumed so the verb
+    # after them still anchors. `env -i reboot` and `sudo -u root reboot` were
+    # left outside the floor by the narrower per-wrapper handling.
+    "env -i reboot",
+    "env --ignore-environment reboot",
+    "env -u FOO reboot",
+    "env -i systemctl poweroff",
+    "env --unset=FOO rm -rf /",
+    "sudo -u root reboot",
+    "sudo -u root rm -rf /",
+    "doas reboot",
+    "doas -u root rm -rf /",
+    # A path to the WRAPPER executable (not just to the verb) must be consumed
+    # too, so `/usr/bin/nice reboot` anchors like `nice reboot` does. The path
+    # prefix previously applied only in front of the final verb.
+    "/usr/bin/nice reboot",
+    "/usr/bin/timeout 5 reboot",
+    "/usr/bin/env -i reboot",
+    "/usr/bin/sudo -u root reboot",
+    "/usr/bin/env --unset=FOO rm -rf /",
+    "/bin/nice rm -rf /",
+    "./env -i reboot",
+    "../bin/env -i reboot",
+    # A slash-containing RELATIVE path names the same executable as its absolute
+    # form (identical after `cd /`), so a relative path whose first segment is a
+    # bare name (no leading `/`, `./`, or `../`) must be consumed too. These
+    # slipped the anchor while the shell still ran the system binary.
+    "usr/bin/env -i reboot",
+    "usr/bin/nice reboot",
+    "bin/reboot",
+    "bin/rm -rf /",
+    "sbin/shutdown -h now",
+    "usr/bin/systemctl poweroff",
+    "cd / && usr/bin/env -i reboot",
+    "cd / && bin/rm -rf /",
+]
+
+
+@pytest.mark.parametrize("command", _WRAPPER_PATH_BYPASS)
+def test_wrapper_or_path_prefixed_hardline_is_blocked(command):
+    """A destructive verb behind an exec wrapper or a binary path is still that
+    verb at command position, so it must hit the floor (was a silent bypass)."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"wrapper/path bypass leaked past the hardline floor: {command!r}"
+    assert desc
+
+
+# The wrapper prefixes only move the anchor. A wrapper in front of a NON-trigger
+# command, or the trigger word as a later data argument, must stay runnable: the
+# flag/duration consumption in the anchor must never swallow a real following
+# command into the wrapper prefix.
+_WRAPPER_PREFIX_NOT_A_HARDLINE = [
+    "nice grep reboot log.txt",
+    "timeout 5 echo reboot",
+    "nice -n 10 grep reboot file",
+    "command grep reboot",
+    "command ls",
+    "nice make -j4",
+    "timeout 30 pytest tests/",
+    "ionice -c3 cp big.iso /mnt/backup/",
+    "echo /bin/reboot",
+    "nice rm -rf ./build",
+    "timeout 5 rm -rf /tmp/scratch",
+    # A flag operand must not be mistaken for the command: the benign command
+    # after an operand-taking flag stays runnable.
+    "ionice -c best-effort tar -cf out.tar /etc",
+    "timeout -s KILL 5 echo reboot",
+    "nice -n 10 grep -c reboot file",
+    # sudo/env/doas options and assignments in front of a benign command stay
+    # runnable, and a non-destructive systemctl verb after a wrapper option is
+    # not on the floor.
+    "sudo apt update",
+    "env EDITOR=vim git commit",
+    "env -i make",
+    "sudo -u deploy systemctl status nginx",
+    "doas -u deploy ls",
+    # A path to a NON-wrapper program is not a wrapper prefix, and a path that
+    # merely contains a trigger word is not the verb at command position.
+    "/usr/bin/grep reboot file",
+    "/usr/local/bin/my-reboot-log --tail",
+    "/home/user/nice-tool reboot-helper",
+    # A slash-containing relative path to a NON-wrapper program, or a relative
+    # path that merely contains a trigger word, is not the verb at command
+    # position and stays runnable.
+    "usr/bin/grep reboot file",
+    "usr/local/bin/my-reboot-log --tail",
+    "git log origin/reboot-branch",
+]
+
+
+@pytest.mark.parametrize("command", _WRAPPER_PREFIX_NOT_A_HARDLINE)
+def test_wrapper_prefix_with_safe_target_is_not_hardline(command):
+    """A wrapper in front of a benign command must not become a false positive."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"false positive: wrapper prefix hit the floor: {command!r} ({desc})"
+
+
+# -------------------------------------------------------------------------
 # Shell line-continuation bypass
 # -------------------------------------------------------------------------
 #
@@ -471,6 +621,32 @@ def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monke
     assert result["approved"] is False, "yolo leaked a line-continuation root wipe"
     assert result.get("hardline") is True
     assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_wrapper_reboot_blocked_in_default_mode(clean_session):
+    """The reboot family has no softer DANGEROUS_PATTERNS backstop, so a wrapper
+    or path spelling that missed the hardline anchor was approved with NO prompt
+    even in the DEFAULT (non-yolo) flow. This is the core of the bug: the floor
+    must catch it so the agent cannot power off the host without consent.
+    """
+    for cmd in ["nice reboot", "command systemctl poweroff", "/bin/reboot",
+                "timeout 5 reboot", "nice init 0"]:
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"wrapper reboot auto-approved in default mode: {cmd!r}"
+        assert result.get("hardline") is True
+        assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_wrapper_path_root_wipe_cannot_bypass_hardline(clean_session, monkeypatch):
+    """Under yolo the hardline floor is the only guard left; a wrapper or path
+    spelling of a root wipe must still be blocked."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in ["command rm -rf /", "nice rm -rf /", "/bin/rm -rf /",
+                "stdbuf -oL rm -rf /", "timeout 5 rm -rf /"]:
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked a wrapper/path root wipe: {cmd!r}"
+        assert result.get("hardline") is True
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):

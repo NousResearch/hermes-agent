@@ -356,19 +356,62 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # Inspired by Mercury Agent's permission-hardened blocklist
 # (https://github.com/cosmicstack-labs/mercury-agent).
 
-# Regex fragment matching the *start* of a command (i.e. positions where
-# a shell would begin parsing a new command).  Used by shutdown/reboot
-# patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
-# Matches: start of string, after command separators (; && || | newline),
-# after subshell openers ( `$(` or backtick ), optionally consuming
-# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# Command-position-anchored destructive verbs (the ones _CMDPOS guards). A
+# wrapper flag may consume its own operand, but never one of these: the operand
+# lookahead below stops so the verb still anchors as a command.
+_HARDLINE_VERBS = r'(?:rm|shutdown|reboot|halt|poweroff|init|systemctl|telinit)\b'
+
+# Leading wrapper commands that run their argument as a new command, so a
+# destructive verb sitting after the whole prefix is still that verb at command
+# position. sudo, env, and doas are wrappers too and are handled by the same
+# argument grammar as the rest: a narrower "env assignments only" / "sudo flags
+# only" special case left `env -i reboot`, `env --unset=FOO rm -rf /`, and
+# `sudo -u root reboot` outside the floor because their options (and the option
+# operands) were not consumed before the verb.
+_WRAPPER_WORD = (
+    r'(?:sudo|doas|env|exec|nohup|setsid|time|nice|ionice|stdbuf|timeout'
+    r'|command|builtin)'
+)
+
+# One wrapper argument: a flag optionally followed by a single operand that is
+# not itself a destructive verb (`-u root`, `-s KILL`, `--unset=FOO`), a bare
+# numeric/duration positional (`timeout 5`, `nice -n 10`), or a NAME=VALUE
+# assignment (`env FOO=1`). The operand lookahead never eats a destructive
+# command word, so the verb after the wrapper still anchors and an option
+# operand cannot be mistaken for the command.
+_WRAPPER_ARG = (
+    r'(?:\s+-\S+(?:\s+(?!' + _HARDLINE_VERBS + r')[^\s-]\S*)?'
+    r'|\s+\d+\S*'
+    r'|\s+\w+=\S*)'
+)
+
+# Regex fragment matching the *start* of a command (i.e. positions where a
+# shell would begin parsing a new command). Used by shutdown/reboot patterns so
+# they don't fire on "echo reboot" or "grep 'shutdown' log". Matches: start of
+# string, after command separators (; && || | newline), after subshell openers
+# (`$(` or backtick), optionally consuming leading wrapper commands with their
+# options/operands/assignments and an absolute/relative path to the binary.
+# Optional path to an executable, applied before both the leading wrappers and
+# the destructive verb, so a path-qualified wrapper (`/usr/bin/nice reboot`,
+# `./env -i reboot`) is consumed the same way as a path-qualified verb
+# (`/bin/reboot`) and cannot move the verb off anchor.
+#
+# Any slash-containing path resolves to the same executable, so the prefix must
+# accept every spelling that names a binary: absolute (`/usr/bin/`), dot-relative
+# (`./`, `../bin/`), AND slash-containing relative (`usr/bin/`, `bin/`). The
+# earlier `\.{0,2}/…` form only matched a leading `/`, `./`, or `../`, so a
+# relative path whose first segment is a bare name (`usr/bin/env -i reboot`,
+# `bin/reboot`, and after `cd /` the same system binaries) still slipped the
+# anchor. The first segment is now an optional leading `/` followed by zero or
+# more `name/` segments, where a segment is any non-space non-slash run (covering
+# `.`, `..`, and bare names alike).
+_OPTIONAL_PATH_PREFIX = r'(?:/?(?:[^\s/]+/)*)?'
 _CMDPOS = (
-    r'(?:^|[;&|\n`]|\$\()'         # start position
-    r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:^|[;&|\n`]|\$\()'                          # start position
+    r'\s*'                                          # optional whitespace
+    r'(?:' + _OPTIONAL_PATH_PREFIX + _WRAPPER_WORD + _WRAPPER_ARG + r'*\s+)*'  # leading (path-qualified) wrappers + args
     r'\s*'
+    + _OPTIONAL_PATH_PREFIX                         # optional path to the verb (/bin/, ./)
 )
 
 # Destructive-path argument matcher for the rm hardline rules.

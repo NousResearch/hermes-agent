@@ -2727,9 +2727,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 changed = True
 
             if changed:
-                from utils import atomic_yaml_write
+                from hermes_cli.config import atomic_config_write
 
-                atomic_yaml_write(
+                atomic_config_write(
                     config_path,
                     config,
                     default_flow_style=False,
@@ -3025,8 +3025,11 @@ class TelegramAdapter(BasePlatformAdapter):
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
 
-                A caller-supplied ``limits`` (none today) is left untouched;
-                otherwise the CLOSE_WAIT-safe limits are injected.
+                Used by the proxy and direct-DNS branches, where httpx honours
+                the client-level ``limits`` kwarg. A caller-supplied ``limits``
+                is left untouched; otherwise the CLOSE_WAIT-safe limits are
+                injected. The fallback-IP branch does NOT use this helper — see
+                the ``_transport_kwargs`` note below for why.
                 """
                 kwargs = dict(httpx_kwargs or {})
                 if _pool_limits is not None and "limits" not in kwargs:
@@ -3054,17 +3057,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Keep request/update pools separate to reduce contention during
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
+                # httpx ignores the client-level `limits` kwarg when a custom
+                # `transport` is supplied (#58790).  Unlike the proxy/direct
+                # branches (which inject limits at the client level via
+                # `_with_limits`), this branch MUST pass the tuned limits
+                # directly into TelegramFallbackTransport so its inner
+                # AsyncHTTPTransport instances honour keepalive_expiry — do not
+                # route this through `_with_limits`, httpx would discard it.
+                _transport_kwargs: dict = {}
+                if _pool_limits is not None:
+                    _transport_kwargs["limits"] = _pool_limits
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)

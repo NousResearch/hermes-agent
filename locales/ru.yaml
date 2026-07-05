@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Нет команды для отклонения."
     denied_singular:       "❌ Команда отклонена."
     denied_plural:         "❌ Команды отклонены ({count} команд)."
+    denied_reason_singular: "❌ Команда отклонена. Причина передана агенту: \"{reason}\""
+    denied_reason_plural:  "❌ Команды отклонены ({count} команд). Причина передана агенту: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast доступен только для моделей OpenAI, поддерживающих Priority Processing."

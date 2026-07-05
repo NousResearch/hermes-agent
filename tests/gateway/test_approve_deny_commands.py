@@ -324,6 +324,61 @@ class TestDenyCommand:
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
 
+    @pytest.mark.asyncio
+    async def test_deny_with_reason_attaches_reason(self):
+        """/deny <reason> attaches the reason to the resolved entry."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(
+            _make_event("/deny that path is still in use")
+        )
+        assert entry.result == "deny"
+        assert entry.reason == "that path is still in use"
+        assert "that path is still in use" in result
+
+    @pytest.mark.asyncio
+    async def test_deny_all_with_reason(self):
+        """/deny all <reason> denies everything and relays one reason."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        result = await runner._handle_deny_command(
+            _make_event("/deny all wrong directory")
+        )
+        assert "2 commands" in result
+        assert all(e.result == "deny" for e in [e1, e2])
+        assert all(e.reason == "wrong directory" for e in [e1, e2])
+
+    @pytest.mark.asyncio
+    async def test_deny_plain_has_no_reason(self):
+        """A bare /deny leaves the reason unset (regression guard)."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        await runner._handle_deny_command(_make_event("/deny"))
+        assert entry.result == "deny"
+        assert entry.reason is None
+
 
 # ------------------------------------------------------------------
 # Bare "yes" must NOT trigger approval

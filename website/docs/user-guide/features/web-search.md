@@ -340,7 +340,7 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 
 ### Yandex Search
 
-Search via Yandex Cloud's `WebSearch.Search` REST API — good coverage for Russian-language and CIS-region queries.
+Search via Yandex Cloud's `WebSearchAsync.Search` REST API — good coverage for Russian-language and CIS-region queries. The API is operation-based: Hermes submits the query, then polls the operation status (up to 20s) until results are ready — this adds a little latency versus other backends but is how the API actually works (there's no synchronous variant for API-key auth).
 
 ```bash
 # ~/.hermes/.env

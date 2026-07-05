@@ -242,7 +242,7 @@ If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package
 - **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
 - **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
 - **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
-- **`plugins/web/yandex/`** — search-only, two-credential (`API key` + `folder ID`) provider whose backend response is base64-encoded XML rather than JSON. Shows how to gate `is_available()` on multiple env vars and decode/parse a non-JSON payload inside `search()`.
+- **`plugins/web/yandex/`** — search-only, two-credential (`API key` + `folder ID`) provider whose backend is *operation-based*: the initial POST only returns an operation id, and `search()` has to poll a separate status endpoint until it completes before decoding the base64-encoded XML result. Shows how to gate `is_available()` on multiple env vars and implement a bounded poll loop instead of a single request/response call.
 
 ## Distribute via pip
 

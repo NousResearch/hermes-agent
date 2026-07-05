@@ -19,14 +19,20 @@ Env vars::
     YANDEX_SEARCH_LANG=...      # optional — result localization, e.g. "LOCALIZATION_EN"
     YANDEX_SEARCH_TYPE=...      # optional — search domain, default "SEARCH_TYPE_RU"
 
-Calls the ``WebSearch.Search`` v2 REST method::
+Calls the ``WebSearchAsync.Search`` v2 REST method — the only variant this
+API actually exposes for API-key auth. The initial POST returns an
+Operation stub (``{"id": ..., "done": false}``), not the results
+themselves; this module polls ``operation.api.cloud.yandex.net`` until the
+operation reports ``done: true``, then reads the base64-encoded XML out of
+``response.rawData``::
 
-    POST https://searchapi.api.cloud.yandex.net/v2/web/search
+    POST https://searchapi.api.cloud.yandex.net/v2/web/searchAsync
     Authorization: Api-Key <YANDEX_SEARCH_API_KEY>
+    -> {"id": "<operation-id>", "done": false}
 
-The response wraps the results as base64-encoded XML in a ``rawData`` field
-(protobuf JSON mapping for ``bytes``) — this module decodes and parses that
-XML into the standard Hermes result shape.
+    GET https://operation.api.cloud.yandex.net/operations/<operation-id>
+    Authorization: Api-Key <YANDEX_SEARCH_API_KEY>
+    -> {"done": true, "response": {"rawData": "<base64 XML>"}}
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional
 
@@ -41,7 +48,10 @@ from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
-_YANDEX_ENDPOINT = "https://searchapi.api.cloud.yandex.net/v2/web/search"
+_YANDEX_SEARCH_ENDPOINT = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
+_YANDEX_OPERATION_ENDPOINT = "https://operation.api.cloud.yandex.net/operations/"
+_POLL_INTERVAL_SECONDS = 1.0
+_POLL_TIMEOUT_SECONDS = 20.0
 
 
 def _text(node: Optional[ET.Element]) -> str:
@@ -110,7 +120,7 @@ def _parse_yandex_xml(raw_xml: bytes, limit: int) -> Dict[str, Any]:
 
 
 class YandexWebSearchProvider(WebSearchProvider):
-    """Search-only provider for the Yandex Cloud Search API (WebSearch.Search v2)."""
+    """Search-only provider for the Yandex Cloud Search API (WebSearchAsync.Search v2)."""
 
     @property
     def name(self) -> str:
@@ -133,7 +143,11 @@ class YandexWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a search against the Yandex Search API (``WebSearch.Search``).
+        """Execute a search against the Yandex Search API (``WebSearchAsync.Search``).
+
+        The API is operation-based: the initial POST only returns an
+        operation id, so this submits the search then polls the operation
+        endpoint (up to ``_POLL_TIMEOUT_SECONDS``) until it completes.
 
         Returns ``{"success": True, "data": {"web": [{"title", "url", "description", "position"}]}}``
         on success, or ``{"success": False, "error": str}`` on failure.
@@ -171,16 +185,13 @@ class YandexWebSearchProvider(WebSearchProvider):
         if lang:
             payload["l10n"] = lang
 
+        headers = {
+            "Authorization": f"Api-Key {api_key}",
+            "Content-Type": "application/json",
+        }
+
         try:
-            resp = httpx.post(
-                _YANDEX_ENDPOINT,
-                json=payload,
-                headers={
-                    "Authorization": f"Api-Key {api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=15,
-            )
+            resp = httpx.post(_YANDEX_SEARCH_ENDPOINT, json=payload, headers=headers, timeout=15)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("Yandex Search HTTP error: %s", exc)
@@ -198,8 +209,35 @@ class YandexWebSearchProvider(WebSearchProvider):
             return {"success": False, "error": f"Could not reach Yandex Search: {exc}"}
 
         try:
-            data = resp.json()
-            raw_xml = base64.b64decode(data["rawData"])
+            operation_id = resp.json()["id"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Yandex Search operation submit response parse error: %s", exc)
+            return {"success": False, "error": "Could not parse Yandex Search operation response"}
+
+        try:
+            operation = self._poll_operation(operation_id, headers)
+        except TimeoutError:
+            return {
+                "success": False,
+                "error": f"Yandex Search operation did not complete within {_POLL_TIMEOUT_SECONDS:.0f}s",
+            }
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Yandex Search operation-status HTTP error: %s", exc)
+            return {
+                "success": False,
+                "error": f"Yandex Search operation status returned HTTP {exc.response.status_code}",
+            }
+        except httpx.RequestError as exc:
+            logger.warning("Yandex Search operation-status request error: %s", exc)
+            return {"success": False, "error": f"Could not reach Yandex Search operation status: {exc}"}
+
+        if operation.get("error"):
+            err = operation["error"]
+            message = err.get("message", "unknown error") if isinstance(err, dict) else str(err)
+            return {"success": False, "error": f"Yandex Search operation failed: {message}"}
+
+        try:
+            raw_xml = base64.b64decode(operation["response"]["rawData"])
         except Exception as exc:  # noqa: BLE001
             logger.warning("Yandex Search response parse error: %s", exc)
             return {"success": False, "error": "Could not parse Yandex Search response"}
@@ -216,6 +254,26 @@ class YandexWebSearchProvider(WebSearchProvider):
                 query, len(result["data"]["web"]), limit,
             )
         return result
+
+    def _poll_operation(self, operation_id: str, headers: Dict[str, str]) -> Dict[str, Any]:
+        """Poll the operation endpoint until it completes or ``_POLL_TIMEOUT_SECONDS`` elapses.
+
+        Raises ``TimeoutError`` if the operation never reports ``done: true``
+        in time; propagates ``httpx`` exceptions on transport/HTTP failures.
+        """
+        import httpx
+
+        deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
+        url = f"{_YANDEX_OPERATION_ENDPOINT}{operation_id}"
+        while True:
+            resp = httpx.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            operation = resp.json()
+            if operation.get("done"):
+                return operation
+            if time.monotonic() >= deadline:
+                raise TimeoutError
+            time.sleep(_POLL_INTERVAL_SECONDS)
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

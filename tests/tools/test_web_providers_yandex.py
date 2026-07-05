@@ -117,6 +117,14 @@ class TestYandexProviderIsConfigured:
 
 
 class TestYandexProviderSearch:
+    """search() is operation-based: POST submits, GET polls until done.
+
+    ``httpx.post`` is mocked as the submit call (returns ``{"id": ...}``);
+    ``httpx.get`` is mocked as the operation-status poll (returns
+    ``{"done": True, "response": {"rawData": ...}}`` immediately, since the
+    provider's poll loop just re-calls GET until ``done`` is true).
+    """
+
     @staticmethod
     def _mock_resp(json_data, status_code=200):
         m = MagicMock()
@@ -125,11 +133,23 @@ class TestYandexProviderSearch:
         m.raise_for_status = MagicMock()
         return m
 
+    def _mock_submit(self, operation_id="op-123"):
+        return self._mock_resp({"id": operation_id})
+
+    def _mock_done(self, raw_data=None, error=None):
+        response = {"done": True}
+        if error is not None:
+            response["error"] = error
+        else:
+            response["response"] = {"rawData": raw_data}
+        return self._mock_resp(response)
+
     def test_happy_path_normalizes_results(self, monkeypatch):
         _set_creds(monkeypatch)
         from plugins.web.yandex.provider import YandexWebSearchProvider
 
-        with patch("httpx.post", return_value=self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})):
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             result = YandexWebSearchProvider().search("test query", limit=5)
 
         assert result["success"] is True
@@ -159,16 +179,53 @@ class TestYandexProviderSearch:
             captured["url"] = url
             captured["headers"] = kwargs.get("headers", {})
             captured["json"] = kwargs.get("json", {})
-            return self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})
+            return self._mock_submit()
 
-        with patch("httpx.post", side_effect=fake_post):
+        with patch("httpx.post", side_effect=fake_post), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             YandexWebSearchProvider().search("q", limit=5)
 
-        assert captured["url"] == "https://searchapi.api.cloud.yandex.net/v2/web/search"
+        assert captured["url"] == "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
         assert captured["headers"].get("Authorization") == "Api-Key yc-key-123"
         assert captured["json"]["folderId"] == "b1gexample"
         assert captured["json"]["query"]["queryText"] == "q"
         assert captured["json"]["responseFormat"] == "FORMAT_XML"
+
+    def test_polls_operation_endpoint_with_id(self, monkeypatch):
+        _set_creds(monkeypatch)
+        from plugins.web.yandex.provider import YandexWebSearchProvider
+
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            return self._mock_done(_b64_xml(_SAMPLE_XML))
+
+        with patch("httpx.post", return_value=self._mock_submit("op-abc-999")), \
+             patch("httpx.get", side_effect=fake_get):
+            YandexWebSearchProvider().search("q", limit=5)
+
+        assert captured["url"] == "https://operation.api.cloud.yandex.net/operations/op-abc-999"
+        assert captured["headers"].get("Authorization") == "Api-Key yc-key-123"
+
+    def test_polls_until_done_true(self, monkeypatch):
+        """First poll reports not-done; second reports done — must poll again, not give up."""
+        _set_creds(monkeypatch)
+        monkeypatch.setattr("plugins.web.yandex.provider._POLL_INTERVAL_SECONDS", 0.01)
+        from plugins.web.yandex.provider import YandexWebSearchProvider
+
+        responses = [
+            self._mock_resp({"done": False}),
+            self._mock_done(_b64_xml(_SAMPLE_XML)),
+        ]
+
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", side_effect=responses):
+            result = YandexWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert len(result["data"]["web"]) == 3
 
     def test_limit_maps_to_groups_on_page(self, monkeypatch):
         _set_creds(monkeypatch)
@@ -178,9 +235,10 @@ class TestYandexProviderSearch:
 
         def fake_post(url, **kwargs):
             captured["json"] = kwargs.get("json", {})
-            return self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})
+            return self._mock_submit()
 
-        with patch("httpx.post", side_effect=fake_post):
+        with patch("httpx.post", side_effect=fake_post), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             YandexWebSearchProvider().search("q", limit=7)
 
         assert captured["json"]["groupSpec"]["groupsOnPage"] == "7"
@@ -193,9 +251,10 @@ class TestYandexProviderSearch:
 
         def fake_post(url, **kwargs):
             captured["json"] = kwargs.get("json", {})
-            return self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})
+            return self._mock_submit()
 
-        with patch("httpx.post", side_effect=fake_post):
+        with patch("httpx.post", side_effect=fake_post), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             YandexWebSearchProvider().search("q", limit=500)
 
         assert captured["json"]["groupSpec"]["groupsOnPage"] == "100"
@@ -210,9 +269,10 @@ class TestYandexProviderSearch:
 
         def fake_post(url, **kwargs):
             captured["json"] = kwargs.get("json", {})
-            return self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})
+            return self._mock_submit()
 
-        with patch("httpx.post", side_effect=fake_post):
+        with patch("httpx.post", side_effect=fake_post), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             YandexWebSearchProvider().search("q", limit=5)
 
         assert captured["json"]["region"] == "225"
@@ -228,9 +288,10 @@ class TestYandexProviderSearch:
 
         def fake_post(url, **kwargs):
             captured["json"] = kwargs.get("json", {})
-            return self._mock_resp({"rawData": _b64_xml(_SAMPLE_XML)})
+            return self._mock_submit()
 
-        with patch("httpx.post", side_effect=fake_post):
+        with patch("httpx.post", side_effect=fake_post), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_SAMPLE_XML))):
             YandexWebSearchProvider().search("q", limit=5)
 
         assert "region" not in captured["json"]
@@ -240,14 +301,43 @@ class TestYandexProviderSearch:
         _set_creds(monkeypatch)
         from plugins.web.yandex.provider import YandexWebSearchProvider
 
-        with patch("httpx.post", return_value=self._mock_resp({"rawData": _b64_xml(_ERROR_XML)})):
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_done(_b64_xml(_ERROR_XML))):
             result = YandexWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
         assert "Backend error" in result["error"]
         assert "15" in result["error"]
 
-    def test_http_error_returns_failure(self, monkeypatch):
+    def test_operation_error_field_returns_failure(self, monkeypatch):
+        """The operation itself can report failure via its own `error` field
+        (distinct from a successful response whose XML body contains
+        <error>) — e.g. quota exceeded, invalid folderId, etc."""
+        _set_creds(monkeypatch)
+        from plugins.web.yandex.provider import YandexWebSearchProvider
+
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_done(error={"code": 7, "message": "quota exceeded"})):
+            result = YandexWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "quota exceeded" in result["error"]
+
+    def test_operation_timeout_returns_failure(self, monkeypatch):
+        """Operation never reports done=true within the poll budget -> typed error, not a hang."""
+        _set_creds(monkeypatch)
+        monkeypatch.setattr("plugins.web.yandex.provider._POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr("plugins.web.yandex.provider._POLL_TIMEOUT_SECONDS", 0.03)
+        from plugins.web.yandex.provider import YandexWebSearchProvider
+
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_resp({"done": False})):
+            result = YandexWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "did not complete" in result["error"].lower()
+
+    def test_http_error_on_submit_returns_failure(self, monkeypatch):
         import httpx
         _set_creds(monkeypatch)
         from plugins.web.yandex.provider import YandexWebSearchProvider
@@ -264,6 +354,22 @@ class TestYandexProviderSearch:
         assert "401" in result["error"]
         assert "Invalid API key" in result["error"]
 
+    def test_http_error_on_poll_returns_failure(self, monkeypatch):
+        import httpx
+        _set_creds(monkeypatch)
+        from plugins.web.yandex.provider import YandexWebSearchProvider
+
+        bad = MagicMock()
+        bad.status_code = 404
+        err = httpx.HTTPStatusError("404", request=MagicMock(), response=bad)
+
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", side_effect=err):
+            result = YandexWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "404" in result["error"]
+
     def test_request_error_returns_failure(self, monkeypatch):
         import httpx
         _set_creds(monkeypatch)
@@ -279,7 +385,8 @@ class TestYandexProviderSearch:
         _set_creds(monkeypatch)
         from plugins.web.yandex.provider import YandexWebSearchProvider
 
-        with patch("httpx.post", return_value=self._mock_resp({"rawData": "not-valid-base64!!!"})):
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_done("not-valid-base64!!!")):
             result = YandexWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
@@ -290,7 +397,8 @@ class TestYandexProviderSearch:
         from plugins.web.yandex.provider import YandexWebSearchProvider
 
         broken_xml = _b64_xml("<yandexsearch><response><results>")  # unterminated
-        with patch("httpx.post", return_value=self._mock_resp({"rawData": broken_xml})):
+        with patch("httpx.post", return_value=self._mock_submit()), \
+             patch("httpx.get", return_value=self._mock_done(broken_xml)):
             result = YandexWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False

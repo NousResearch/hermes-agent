@@ -145,6 +145,27 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     http_client.close()
 
 
+@patch("run_agent.OpenAI")
+def test_create_openai_client_uses_plain_httpx_client_for_copilot(mock_openai, monkeypatch):
+    """Copilot Claude chat-completions rejects the custom socket-options transport."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://api.githubcopilot.com",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    http_client = _extract_http_client(forwarded)
+    assert isinstance(http_client, httpx.Client)
+    assert getattr(http_client._transport._pool, "_socket_options", None) is None
+    http_client.close()
+
+
 def test_get_proxy_for_base_url_returns_none_when_host_bypassed(monkeypatch):
     """NO_PROXY must suppress the proxy for matching base_urls.
 

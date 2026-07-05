@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { OAuthProvider } from '@/types/hermes'
+import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
@@ -32,6 +32,25 @@ function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> =
     status: {
       logged_in: loggedIn
     },
+    ...patch
+  }
+}
+
+// One `/api/env` row (an EnvVarInfo) for the API-keys view. Mirrors the
+// `provider()` factory above: a valid base + per-test overrides, typed against
+// the real response shape so it can't drift from EnvVarInfo.
+function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
+  return {
+    advanced: false,
+    category: 'provider',
+    description: '',
+    is_password: true,
+    is_set: false,
+    provider: '',
+    provider_label: '',
+    redacted_value: null,
+    tools: [],
+    url: '',
     ...patch
   }
 }
@@ -83,7 +102,7 @@ describe('ProvidersSettings', () => {
       providers: [
         provider('qwen-oauth', true, {
           cli_command: 'hermes auth add qwen-oauth',
-          disconnect_hint: 'Use `hermes auth add qwen-oauth` or that provider\'s CLI to remove it.',
+          disconnect_hint: "Use `hermes auth add qwen-oauth` or that provider's CLI to remove it.",
           disconnectable: false,
           flow: 'external',
           name: 'Qwen (via Qwen CLI)'
@@ -96,5 +115,57 @@ describe('ProvidersSettings', () => {
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
+  })
+
+  it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
+    // A provider the backend catalog tags (provider/provider_label) but that has
+    // no desktop PROVIDER_GROUPS prefix row must still render its own card —
+    // this is the GUI/CLI drift fix: membership comes from the backend, not
+    // from the hand-maintained prefix list.
+    getEnvVars.mockResolvedValue({
+      WIDGETAI_API_KEY: keyVar({
+        provider: 'widgetai',
+        provider_label: 'WidgetAI',
+        url: 'https://widgetai.example/keys'
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
+
+  it('orders API-key providers by priority then name, and filters them via search', async () => {
+    // These three providers have no curated PROVIDER_GROUPS priority, so they
+    // share the default priority and fall back to alphabetical among themselves
+    // (Acme, Middle, Zebra) — exercising the name tiebreak of the priority sort.
+    getEnvVars.mockResolvedValue({
+      ZEBRA_API_KEY: keyVar({ provider: 'zebra', provider_label: 'Zebra' }),
+      ACME_API_KEY: keyVar({ provider: 'acme', provider_label: 'Acme' }),
+      MIDDLE_API_KEY: keyVar({ provider: 'middle', provider_label: 'Middle' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    // Equal priority → alphabetical tiebreak: Acme, Middle, Zebra.
+    await screen.findByText('Acme')
+    const labels = screen.getAllByText(/Acme|Middle|Zebra/).map(el => el.textContent)
+    expect(labels).toEqual(['Acme', 'Middle', 'Zebra'])
+
+    // Typing narrows the list to matching providers only.
+    const search = screen.getByPlaceholderText('Search providers…')
+    fireEvent.change(search, { target: { value: 'mid' } })
+
+    await waitFor(() => expect(screen.queryByText('Acme')).toBeNull())
+    expect(screen.getByText('Middle')).toBeTruthy()
+    expect(screen.queryByText('Zebra')).toBeNull()
+
+    // A non-matching query shows the empty-state copy.
+    fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })
 })

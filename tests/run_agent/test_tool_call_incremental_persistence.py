@@ -198,6 +198,43 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_execute_tool_calls_sequential_sends_persisted_result_to_ui_callbacks():
+    """Desktop WS callbacks must not receive giant raw tool results.
+
+    The model-facing tool message is persisted/truncated before the next LLM
+    call, but the Desktop renderer also receives tool.completed/tool_complete
+    events over the JSON-RPC WebSocket. Those callbacks must see the same
+    compact persisted preview, otherwise a single large tool result can still
+    flood the renderer socket and trigger ws write slow/backpressure.
+    """
+    agent = _make_agent()
+    raw_result = "x" * 120_000
+    persisted_result = "<persisted-output>\npreview only\n</persisted-output>"
+    progress_results: list[str] = []
+    complete_results: list[str] = []
+    agent.tool_progress_callback = lambda event, _name, _preview, _args, **kw: (
+        progress_results.append(kw["result"]) if event == "tool.completed" else None
+    )
+    agent.tool_complete_callback = lambda _call_id, _name, _args, result: complete_results.append(result)
+    assistant_message = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(name="web_search", call_id="c-big")],
+    )
+    messages: list = []
+
+    with (
+        patch("run_agent.handle_function_call", return_value=raw_result),
+        patch("agent.tool_executor.maybe_persist_tool_result", return_value=persisted_result) as persist,
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    persist.assert_called_once()
+    assert progress_results == [persisted_result]
+    assert complete_results == [persisted_result]
+    assert persisted_result in messages[0]["content"]
+    assert raw_result not in messages[0]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Contract 3: the CONCURRENT path flushes each collected tool result in append
 # order.  Dispatch goes through agent._invoke_tool (the real concurrent
@@ -250,3 +287,37 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+def test_execute_tool_calls_concurrent_sends_persisted_result_to_ui_callbacks():
+    agent = _make_agent()
+    raw_result = "y" * 120_000
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+    messages: list = []
+    progress_results: list[str] = []
+    complete_results: list[str] = []
+    agent.tool_progress_callback = lambda event, _name, _preview, _args, **kw: (
+        progress_results.append(kw["result"]) if event == "tool.completed" else None
+    )
+    agent.tool_complete_callback = lambda _call_id, _name, _args, result: complete_results.append(result)
+
+    def _persisted(**kwargs):
+        return f"<persisted-output>{kwargs['tool_use_id']}</persisted-output>"
+
+    with (
+        patch.object(agent, "_invoke_tool", return_value=raw_result),
+        patch("agent.tool_executor.maybe_persist_tool_result", side_effect=_persisted),
+    ):
+        agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
+
+    assert progress_results == [
+        "<persisted-output>c1</persisted-output>",
+        "<persisted-output>c2</persisted-output>",
+    ]
+    assert complete_results == progress_results
+    assert all(raw_result not in message["content"] for message in messages)
+    assert all("<persisted-output>" in message["content"] for message in messages)

@@ -16,6 +16,47 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_agent_terminal_output_is_capped_before_desktop_ws(monkeypatch):
+    """Live background-process terminal output must not flood Desktop WS.
+
+    Large stdout chunks are still retained by the process registry for explicit
+    process(log) reads, but the live read-only terminal stream is best-effort UI
+    telemetry. It must be bounded before _emit/write_json so a noisy background
+    worker cannot stall the renderer WebSocket and trigger lost-gateway overlays.
+    """
+    from tools.process_registry import process_registry
+
+    emitted = []
+    prior_output = process_registry.on_output
+    prior_close = process_registry.on_close
+    server._sessions.clear()
+    server._sessions["sid-1"] = {"session_key": "session-key-1"}
+
+    class FakeSession:
+        id = "proc-big"
+        session_key = "session-key-1"
+
+    try:
+        process_registry.on_output = None
+        process_registry.on_close = None
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
+
+        server._wire_agent_terminal_output()
+        process_registry.on_output(FakeSession(), "x" * 80_000)
+    finally:
+        process_registry.on_output = prior_output
+        process_registry.on_close = prior_close
+        server._sessions.clear()
+
+    assert emitted
+    event, sid, payload = emitted[0]
+    assert event == "agent.terminal.output"
+    assert sid == "sid-1"
+    assert payload["process_id"] == "proc-big"
+    assert len(payload["chunk"]) <= 16_384
+    assert "omitted" in payload["chunk"]
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -149,4 +149,28 @@ describe('connecting overlay vs recovery surface', () => {
     expect(screen.getByText(/use local gateway/i)).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
+
+  it('post-boot connection loss is not presented as an initial startup/install failure', () => {
+    setGatewayState('error')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Lost connection to the gateway',
+      failureKind: 'connection-lost',
+      running: false,
+      visible: true
+    })
+
+    render(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+
+    expect(screen.getByText(/connection was interrupted/i)).toBeTruthy()
+    expect(screen.queryByText(/couldn't start/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /open logs/i })).toBeTruthy()
+  })
 })

@@ -8496,6 +8496,33 @@ def _notification_poller_loop(
         process_registry.completion_queue.put(evt)
 
 
+def _bound_agent_terminal_live_chunk(chunk: Any) -> str:
+    """Bound best-effort live terminal chunks before they cross Desktop WS.
+
+    The process registry keeps full output for explicit process(log)/poll reads.
+    The live read-only terminal stream is UI telemetry; sending a single huge
+    stdout/stderr frame through JSON-RPC can stall the renderer WebSocket and
+    trigger false lost-gateway overlays. Preserve the head/tail plus a marker so
+    the user sees what happened without flooding the transport.
+    """
+    text = chunk if isinstance(chunk, str) else str(chunk)
+    max_chars = 16_384
+    if len(text) <= max_chars:
+        return text
+
+    marker = (
+        "\r\n… [Hermes: middle omitted from live terminal stream; "
+        "use process(log) for full output] …\r\n"
+    )
+    budget = max_chars - len(marker)
+    if budget <= 0:
+        return marker[:max_chars]
+
+    head = budget // 2
+    tail = budget - head
+    return f"{text[:head]}{marker}{text[-tail:]}"
+
+
 def _wire_agent_terminal_output() -> None:
     """Idempotently route background-process output (and tab-close requests) to
     the desktop, keyed by process id. Read-only agent terminal tabs stream
@@ -8526,7 +8553,7 @@ def _wire_agent_terminal_output() -> None:
         _emit(
             "agent.terminal.output",
             _owner_sid_for_process(session),
-            {"process_id": session.id, "chunk": chunk},
+            {"process_id": session.id, "chunk": _bound_agent_terminal_live_chunk(chunk)},
         )
 
     def _emit_agent_terminal_close(session, process_id):

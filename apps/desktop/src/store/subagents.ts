@@ -181,7 +181,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 
-  if (!(sid in map)) {
+  if (!Object.hasOwn(map, sid)) {
     return
   }
 
@@ -191,7 +191,7 @@ export function clearSessionSubagents(sid: string) {
 
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid]
+  const list = Object.hasOwn(map, sid) ? map[sid] : undefined
 
   if (!list?.length) {
     return
@@ -208,7 +208,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
 
 export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid] ?? []
+  const list = Object.hasOwn(map, sid) ? map[sid] : []
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 

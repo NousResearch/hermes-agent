@@ -102,4 +102,15 @@ describe('todosForHydration (stale-active guard on restore)', () => {
   it('returns null when there is nothing stored', () => {
     expect(todosForHydration(null)).toBeNull()
   })
+
+  it('clears a prototype-named session without a false hit (#58441)', () => {
+    // 'toString' resolves to Object.prototype.toString; clearing an empty
+    // map for it must be an own-key miss, not treat the inherited fn as a list.
+    const before = $todosBySession.get()
+
+    clearSessionTodos('toString')
+    clearActiveSessionTodos('toString')
+
+    expect($todosBySession.get()).toBe(before)
+  })
 })

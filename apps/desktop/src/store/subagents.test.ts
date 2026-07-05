@@ -131,4 +131,13 @@ describe('subagent store', () => {
     expect($subagentsBySession.get().s1).toBeUndefined()
     expect($subagentsBySession.get().s2).toHaveLength(1)
   })
+
+  it('treats a prototype-named session id as an own miss (#58441)', () => {
+    // 'toString' resolves to Object.prototype.toString on a plain object;
+    // upsert must create a real array, not crash on the inherited function.
+    upsertSubagent('toString', { goal: 'proto', status: 'running', subagent_id: 'a1', task_index: 0 })
+
+    expect(listFor('toString')).toHaveLength(1)
+    expect(Array.isArray($subagentsBySession.get().toString)).toBe(true)
+  })
 })

@@ -66,7 +66,7 @@ export function clearSessionTodos(sid: string) {
 
   const map = $todosBySession.get()
 
-  if (!(sid in map)) {
+  if (!Object.hasOwn(map, sid)) {
     return
   }
 
@@ -80,7 +80,8 @@ export function clearSessionTodos(sid: string) {
 // composer forever. A finished list is left untouched so its short linger
 // still shows the last checkmark landing.
 export function clearActiveSessionTodos(sid: string) {
-  const todos = $todosBySession.get()[sid]
+  const map = $todosBySession.get()
+  const todos = Object.hasOwn(map, sid) ? map[sid] : undefined
 
   if (!todos || !todoListActive(todos)) {
     return

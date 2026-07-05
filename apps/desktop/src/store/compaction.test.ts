@@ -50,4 +50,14 @@ describe('compaction store', () => {
 
     expect($compactingSessions.get()).toBe(before)
   })
+
+  it('does not report a prototype-named session as active (#58441)', () => {
+    // 'toString' is on Object.prototype; an empty map must not look like it
+    // already contains it, and setting it must store an own key.
+    expect(Object.hasOwn($compactingSessions.get(), 'toString')).toBe(false)
+
+    setSessionCompacting('toString', true)
+
+    expect($compactingSessions.get().toString).toBe(true)
+  })
 })

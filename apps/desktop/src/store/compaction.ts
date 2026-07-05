@@ -11,7 +11,7 @@ export const $compactingSessions = atom<Record<string, true>>({})
 
 export const $compactionActive = computed(
   [$compactingSessions, $activeSessionId],
-  (sessions, activeId) => keyFor(activeId) in sessions
+  (sessions, activeId) => Object.hasOwn(sessions, keyFor(activeId))
 )
 
 export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
@@ -19,7 +19,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   const sessions = $compactingSessions.get()
 
   if (active) {
-    if (key in sessions) {
+    if (Object.hasOwn(sessions, key)) {
       return
     }
 
@@ -28,7 +28,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
     return
   }
 
-  if (!(key in sessions)) {
+  if (!Object.hasOwn(sessions, key)) {
     return
   }
 

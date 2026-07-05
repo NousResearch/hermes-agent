@@ -445,6 +445,32 @@ describe('applyBackendUpdate recovery', () => {
     await promise
   })
 
+  it('treats a successful no-op backend update as complete without waiting for a restart', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: [
+        'old action line',
+        '=== hermes-update started 2026-07-05 14:48:39 ===',
+        '⚕ Updating Hermes Agent...',
+        '→ Fetching updates...',
+        '✓ Already up to date!',
+        '✓ Update complete!'
+      ],
+      name: 'update',
+      pid: 1,
+      running: false
+    })
+    checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
   it('surfaces an error when the backend never comes back after the restart', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))

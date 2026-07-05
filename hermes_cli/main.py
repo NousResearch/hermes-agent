@@ -9692,6 +9692,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 print("✓ Already up to date!")
+                print("✓ Update complete!")
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 

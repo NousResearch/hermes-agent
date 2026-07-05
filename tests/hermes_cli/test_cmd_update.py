@@ -217,6 +217,7 @@ class TestCmdUpdateBranchFallback:
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        assert "Update complete!" in captured.out
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]

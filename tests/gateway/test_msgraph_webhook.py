@@ -1,6 +1,7 @@
 """Tests for the Microsoft Graph webhook adapter."""
 
 import asyncio
+import json
 
 import pytest
 

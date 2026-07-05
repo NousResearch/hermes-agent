@@ -482,6 +482,12 @@ class ConversationObserver:
                 if tools[i] == tools[i+1] == tools[i+2]:
                     return trigger.apply_fix("repetitive-task", "loop_detected")
 
+            # Tool errors → PR proposer (code-level fix)
+            if trigger.should_propose_pr(self):
+                result = trigger._propose_code_fix("tool-error", "execution_error")
+                if result:
+                    return result
+
             # Missing output: did work, no files
             work_tools = {"write_file", "patch", "execute_code"}
             if any(t in work_tools for t in tools) and not self._current_files:

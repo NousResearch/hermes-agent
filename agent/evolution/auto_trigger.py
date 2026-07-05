@@ -126,40 +126,121 @@ class AutoTrigger:
             f"   I'll handle this correctly next time."
         )
 
-    def _propose_code_fix(self, task_name: str, failure_type: str) -> Optional[str]:
-        """Route a failure to the PR proposer for code-level fixes."""
-        try:
-            from agent.evolution.pr_proposer import propose_code_fix
+    def should_propose_pr(self, observer) -> bool:
+        """Check if conditions are right for a PR proposal.
 
-            # Build minimal failure evidence from the current session
-            result = propose_code_fix(
+        Triggers when the session had both:
+        1. User correction (strong signal something is wrong)
+        2. Tool usage (we know which tool was involved)
+        """
+        has_correction = bool(observer._current_user_messages)
+        has_tools = bool(observer._current_tool_sequence)
+        return has_correction and has_tools
+
+    def _propose_code_fix(self, task_name: str, failure_type: str) -> Optional[str]:
+        """Route a failure to the PR proposer for code-level fixes.
+
+        Uses LLM (if available) to diagnose the failing tool and generate code.
+        Falls back to the most-used tool in the current session.
+        """
+        try:
+            from agent.evolution.pr_proposer import PRProposer
+            from agent.evolution.auxiliary_llm import get_evolution_llm
+
+            # Determine which tool to fix — use observer data
+            observer = None
+            try:
+                from agent.evolution.conversation_observer import get_observer
+                observer = get_observer()
+            except Exception:
+                pass
+
+            tool_name = task_name[:40]
+            if observer and observer._current_tool_sequence:
+                from collections import Counter
+                tool_name = Counter(observer._current_tool_sequence).most_common(1)[0][0]
+
+            # Step 1: Try LLM to generate the fix
+            llm = get_evolution_llm()
+            proposed_code = ""
+            if llm and llm.is_available:
+                tool_name, proposed_code = self._llm_generate_code_fix(
+                    llm, task_name, failure_type
+                )
+            if not proposed_code:
+                tool_name = tool_name[:40]
+                proposed_code = ""
+
+            # Step 2: Run one HyperAgents generation
+            proposer = PRProposer()
+            result = proposer.run_generation(
                 failure_analysis={
                     "findings": [{
                         "category": failure_type,
                         "confidence": 0.7,
                         "description": f"Auto-detected {failure_type} during '{task_name}'",
-                        "evidence": f"Observer detected {failure_type} pattern. "
-                                    f"Skill-level fix insufficient — code change needed.",
+                        "evidence": f"Observer detected {failure_type} pattern across multiple sessions.",
                     }],
                     "total_occurrences": 1,
                     "total_sessions": 1,
                 },
-                proposed_code="",  # Empty → PR is a proposal for maintainer to implement
-                tool_name=task_name[:40],
+                proposed_code=proposed_code,
+                tool_name=tool_name,
             )
 
-            if "pr_body" in result:
+            # Step 3: If a candidate was selected, offer to create PR
+            selected = result.get("selected")
+            if selected:
                 if self.nudge_level == SILENT:
                     return None
                 return (
-                    f"📝 HAEE detected a recurring issue with '{task_name}'.\n"
-                    f"   A code-level fix may be needed (beyond skill improvements).\n"
-                    f"   PR proposal generated for maintainer review.\n"
+                    f"📝 HAEE detected a code-level issue with '{tool_name}'.\n"
+                    f"   Generation {selected.get('generation', 1)} candidate selected "
+                    f"(fitness: {selected.get('fitness', 0):.2f}).\n"
                     f"   Review: hermes evolution pr-status"
                 )
+            elif "error" in result:
+                return None  # Silent — tool file not found or excluded path
+        except Exception as e:
+            logger.debug("PR proposer failed: %s", e)
+        return None
+
+    def _llm_generate_code_fix(
+        self, llm, task_name: str, failure_type: str
+    ) -> tuple:
+        """Use LLM to generate a code fix. Returns (tool_name, code)."""
+        prompt = f"""You are a code-fixing agent. Analyze this failure and generate a fix.
+
+FAILURE: {failure_type}
+TASK: {task_name}
+CONTEXT: This failure was auto-detected by HAEE's observer during normal agent usage.
+The agent's tool consistently fails when this pattern occurs.
+
+Your job:
+1. Identify which Hermes Agent tool file is most likely responsible
+   (e.g., tools/terminal_tool.py, tools/file_tools.py, tools/web_tools.py)
+2. Generate a complete, corrected version of that file
+3. Include comments explaining what was fixed and why
+
+Respond with ONLY valid JSON:
+{{
+  "tool_file": "tools/terminal_tool.py",
+  "description": "Fixed output truncation that caused silent failures",
+  "code": "#!/usr/bin/env python3\\n\\\"\\\"\\\"Fixed terminal tool.\\\"\\\"\\\"\\n..."
+}}"""
+
+        try:
+            response = llm.analyze_sync(prompt)
+            import json, re
+            # Extract JSON
+            match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                return data.get("tool_file", task_name), data.get("code", "")
         except Exception:
             pass
-        return None
+
+        return task_name, ""
 
     def _run_improvement_for_failure(
         self, task, cluster, failure_type, session_id

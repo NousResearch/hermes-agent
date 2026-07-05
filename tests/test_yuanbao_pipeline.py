@@ -1505,6 +1505,100 @@ class TestResolveYbresRefs:
         assert paths == []
         assert mimes == []
 
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_resource_url_resolve(self, tmp_path):
+        """A resourceId cache hit must not await ``_fetch_resource_url`` at all."""
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_fetch:
+                paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                    adapter, [("rid-cached", "image", "")], log_prefix="test",
+                )
+
+            assert paths == [str(cached_file)]
+            assert mimes == ["image/jpeg"]
+            p_fetch.assert_not_awaited()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_still_resolves(self, tmp_path):
+        """Uncached refs still pay the resolve; cached ones are served in place."""
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/new"),
+            ) as p_fetch, patch.object(
+                MediaResolveMiddleware, "_download_and_cache",
+                new=AsyncMock(return_value=("/cache/new.jpg", "image/jpeg")),
+            ):
+                paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                    adapter,
+                    [("rid-cached", "image", ""), ("rid-new", "image", "")],
+                    log_prefix="test",
+                )
+
+            assert paths == [str(cached_file), "/cache/new.jpg"]
+            assert mimes == ["image/jpeg", "image/jpeg"]
+            p_fetch.assert_awaited_once()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
+
+class TestResolveMediaUrlsCacheHit:
+    """Current-message media cache hits must skip the download-URL resolve."""
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_resolve_download_url(self, tmp_path):
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_resolve_download_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_resolve, patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_fetch:
+                paths, mimes = await MediaResolveMiddleware._resolve_media_urls(
+                    adapter,
+                    [{
+                        "kind": "image",
+                        "url": "https://hunyuan.tencent.com/api/resource/download?resourceId=rid-cached",
+                    }],
+                )
+
+            assert paths == [str(cached_file)]
+            assert mimes == ["image/jpeg"]
+            p_resolve.assert_not_awaited()
+            p_fetch.assert_not_awaited()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
 
 class TestMediaResolveMiddlewareRouting:
     """Branch-routing tests for MediaResolveMiddleware.handle()."""

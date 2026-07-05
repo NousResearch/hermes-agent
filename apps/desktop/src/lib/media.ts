@@ -1,4 +1,5 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -149,5 +150,5 @@ export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)
 
-  return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
+  return `${capitalize(kind)}: ${escaped}`
 }

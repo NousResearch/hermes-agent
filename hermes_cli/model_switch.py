@@ -52,6 +52,54 @@ _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencod
 logger = logging.getLogger(__name__)
 
 
+def _declared_model_ids(value: Any) -> list[str]:
+    """Return configured model IDs from supported config shapes.
+
+    Accepts:
+    - ``{"model-id": {...}}``
+    - ``["model-a", "model-b"]``
+    - ``[{"id": "model-a"}, {"name": "model-b"}]``
+    - ``"model-a"``
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: Any) -> None:
+        if not isinstance(candidate, str):
+            return
+        model_id = candidate.strip()
+        if not model_id:
+            return
+        lowered = model_id.lower()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        ids.append(model_id)
+
+    if isinstance(value, str):
+        _add(value)
+        return ids
+
+    if isinstance(value, dict):
+        for model_id in value:
+            _add(model_id)
+        return ids
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str):
+                _add(item)
+                continue
+            if isinstance(item, dict):
+                model_id = item.get("id")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    model_id = item.get("name")
+                _add(model_id)
+        return ids
+
+    return ids
+
+
 def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     """ProviderDef for a direct ``model.provider: custom`` endpoint."""
     base_url = str(current_base_url or "").strip()
@@ -700,22 +748,9 @@ def _configured_provider_matches(
     def _match(value) -> Optional[str]:
         """Canonical id if ``value`` (a model collection or scalar) declares
         ``target``, else None."""
-        if isinstance(value, str):
-            return value if value.strip().lower() == target else None
-        if isinstance(value, dict):
-            for mid in value:
-                if isinstance(mid, str) and mid.strip().lower() == target:
-                    return mid
-            return None
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                if isinstance(item, str) and item.strip().lower() == target:
-                    return item
-                if isinstance(item, dict):
-                    name = item.get("name")
-                    if isinstance(name, str) and name.strip().lower() == target:
-                        return name
-            return None
+        for model_id in _declared_model_ids(value):
+            if model_id.lower() == target:
+                return model_id
         return None
 
     matches: dict[str, str] = {}
@@ -1243,16 +1278,9 @@ def switch_model(
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
                 if slug == target_provider:
-                    cfg_models = cfg.get("models", {})
-                    # Direct membership works for dict (keys) and list (strings)
-                    if new_model in cfg_models:
+                    if new_model in _declared_model_ids(cfg.get("models", {})):
                         override = True
                         break
-                    # Also accept if models is a list of dicts with 'name' field
-                    if isinstance(cfg_models, list):
-                        if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
-                            override = True
-                            break
         # Also check custom_providers list — models declared there should be accepted
         # even if the remote /v1/models endpoint doesn't list them.
         if not override and custom_providers and isinstance(custom_providers, list):
@@ -1270,7 +1298,7 @@ def switch_model(
                     if new_model == entry_model:
                         override = True
                         break
-                    if isinstance(entry_models, dict) and new_model in entry_models:
+                    if new_model in _declared_model_ids(entry_models):
                         override = True
                         break
         if override:
@@ -1303,20 +1331,19 @@ def switch_model(
         api_mode = determine_api_mode(target_provider, base_url)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
-    # without it, /model switches into an anthropic_messages-routed OpenCode
-    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
-    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
-    if (
-        api_mode == "anthropic_messages"
-        and target_provider in {"opencode-zen", "opencode-go"}
-        and isinstance(base_url, str)
-        and base_url
-    ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
+    # symmetrically (strip /v1 for anthropic_messages, re-append it for
+    # chat_completions / codex_responses).  Mirrors the same logic in
+    # hermes_cli.runtime_provider.resolve_runtime_provider; without the strip,
+    # /model switches into an anthropic_messages-routed OpenCode model
+    # (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
+    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404
+    # page — and without the re-append, a stripped URL persisted to
+    # model.base_url broke every later chat_completions model (glm, deepseek,
+    # kimi) the same way.
+    if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
+        from hermes_cli.models import normalize_opencode_base_url
+        base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)
@@ -1427,6 +1454,7 @@ def list_authenticated_providers(
     max_models: int | None = None,
     current_model: str = "",
     refresh: bool = False,
+    probe_custom_providers: bool = True,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1453,6 +1481,11 @@ def list_authenticated_providers(
     live catalog. Use for an explicit user-triggered "refresh models" action
     (e.g. the desktop picker's refresh control); leave false for normal picker
     opens so they stay snappy on the 1h cache.
+
+    ``probe_custom_providers`` controls live ``/models`` discovery for saved
+    custom OpenAI-compatible endpoints. Keep the default true for CLI parity;
+    GUI picker opens can pass false to show configured models immediately
+    without waiting on offline local endpoints.
     """
     import os
     from agent.models_dev import (
@@ -1956,18 +1989,11 @@ def list_authenticated_providers(
             if default_model:
                 models_list.append(default_model)
             # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
-            cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, dict):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+            # Hermes writes ``models:`` as a dict keyed by model id, but older
+            # or hand-edited configs may use strings or ``[{id: ...}]`` rows.
+            for model_id in _declared_model_ids(ep_cfg.get("models", [])):
+                if model_id not in models_list:
+                    models_list.append(model_id)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1995,7 +2021,7 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             has_explicit_models = bool(models_list)
-            should_probe = bool(api_url) and discover and (
+            should_probe = probe_custom_providers and bool(api_url) and discover and (
                 bool(api_key) or not has_explicit_models
             )
             if should_probe:
@@ -2172,15 +2198,9 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            cfg_models = entry.get("models", {})
-            if isinstance(cfg_models, dict):
-                for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+            for model_id in _declared_model_ids(entry.get("models", {})):
+                if model_id not in groups[group_key]["models"]:
+                    groups[group_key]["models"].append(model_id)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
@@ -2256,7 +2276,8 @@ def list_authenticated_providers(
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
             should_probe = (
-                bool(api_url)
+                probe_custom_providers
+                and bool(api_url)
                 and (bool(api_key) or not grp["models"])
                 and grp.get("discover_models", True)
             )

@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -705,6 +705,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     chat_id TEXT,
     chat_type TEXT,
     thread_id TEXT,
+    display_name TEXT,
+    origin_json TEXT,
+    expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -1522,6 +1525,19 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 18:
+                # v18: gateway metadata consolidation (#9006). Backfill
+                # display_name / origin_json / expiry_finalized from
+                # sessions.json so pre-migration gateway sessions are
+                # discoverable from state.db without the JSON index.
+                try:
+                    self._backfill_gateway_metadata_from_sessions_json(cursor)
+                except Exception as exc:
+                    # Backfill is best-effort: sessions.json may be absent,
+                    # corrupted, or partially stale. Missing metadata simply
+                    # means consumers fall back to sessions.json for those
+                    # rows until the gateway rewrites them.
+                    logger.debug("v18 gateway metadata backfill skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1647,8 +1663,17 @@ class SessionDB:
         chat_id: str = None,
         chat_type: str = None,
         thread_id: str = None,
+        display_name: str = None,
+        origin_json: str = None,
     ) -> None:
-        """Persist the gateway routing peer for an existing session row."""
+        """Persist the gateway routing peer for an existing session row.
+
+        ``display_name`` / ``origin_json`` carry the gateway's presentation
+        and full origin metadata (#9006) so consumers (mcp_serve, mirror,
+        channel directory) can read routing data from state.db instead of
+        sessions.json.  They are COALESCE'd only in the sense that ``None``
+        leaves the existing value untouched.
+        """
         if not session_id or not session_key:
             return
 
@@ -1656,7 +1681,9 @@ class SessionDB:
             conn.execute(
                 """UPDATE sessions
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?
+                       chat_type = ?, thread_id = ?,
+                       display_name = COALESCE(?, display_name),
+                       origin_json = COALESCE(?, origin_json)
                    WHERE id = ?""",
                 (
                     session_key,
@@ -1665,11 +1692,167 @@ class SessionDB:
                     chat_id,
                     chat_type,
                     thread_id,
+                    display_name,
+                    origin_json,
                     session_id,
                 ),
             )
 
         self._execute_write(_do)
+
+    def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
+        """Mark a gateway session's expiry-finalization flag in state.db.
+
+        Mirrors ``SessionEntry.expiry_finalized`` (sessions.json) so the flag
+        survives even if the JSON index is pruned or lost (#9006).
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET expiry_finalized = ? WHERE id = ?",
+                (1 if finalized else 0, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def list_gateway_sessions(
+        self,
+        *,
+        platform: Optional[str] = None,
+        active_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """List gateway sessions (rows with a session_key) from state.db.
+
+        Returns the newest row per session_key — the same shape consumers got
+        from sessions.json: one live mapping per routing key.  ``platform``
+        filters on ``source``; ``active_only`` restricts to sessions that
+        have not ended.
+        """
+        query = """
+            SELECT sessions.*,
+                   COALESCE(
+                       (SELECT MAX(m.timestamp) FROM messages m
+                        WHERE m.session_id = sessions.id),
+                       sessions.started_at
+                   ) AS last_active
+            FROM sessions
+            WHERE session_key IS NOT NULL
+              AND started_at = (
+                  SELECT MAX(s2.started_at) FROM sessions s2
+                  WHERE s2.session_key = sessions.session_key
+              )
+        """
+        params: list = []
+        if platform:
+            query += " AND LOWER(source) = LOWER(?)"
+            params.append(platform)
+        if active_only:
+            query += " AND ended_at IS NULL"
+        query += " ORDER BY last_active DESC"
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_session_by_origin(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        thread_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Find the most recent live session_id for a platform + chat origin.
+
+        Equivalent of gateway/mirror's sessions.json scan: matches on
+        source + chat_id (+ thread_id when provided).  When ``user_id`` is
+        provided, exact sender matches are preferred; if multiple distinct
+        users share the chat and none matches, returns None rather than
+        contaminating another participant's session.
+        """
+        if not platform or chat_id in (None, ""):
+            return None
+        query = """
+            SELECT id, user_id, started_at FROM sessions
+            WHERE LOWER(source) = LOWER(?)
+              AND session_key IS NOT NULL
+              AND chat_id = ?
+              AND ended_at IS NULL
+        """
+        params: list = [platform, str(chat_id)]
+        if thread_id is not None:
+            query += " AND COALESCE(thread_id, '') = ?"
+            params.append(str(thread_id))
+        query += " ORDER BY started_at DESC"
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(query, params).fetchall()]
+        if not rows:
+            return None
+        if user_id:
+            exact = [r for r in rows if str(r.get("user_id") or "") == str(user_id)]
+            if exact:
+                return str(exact[0]["id"])
+            if len(rows) > 1:
+                return None
+        elif len(rows) > 1:
+            distinct_users = {
+                str(r.get("user_id") or "").strip()
+                for r in rows
+                if str(r.get("user_id") or "").strip()
+            }
+            if len(distinct_users) > 1:
+                return None
+        return str(rows[0]["id"])
+
+    def _backfill_gateway_metadata_from_sessions_json(
+        self, cursor: sqlite3.Cursor
+    ) -> None:
+        """One-time v18 backfill of gateway metadata from sessions.json.
+
+        Existing gateway sessions predate the display_name / origin_json /
+        expiry_finalized columns; copy what sessions.json knows so consumers
+        can switch to state.db without losing pre-migration sessions.
+        Only fills NULL columns — never overwrites data written by newer code.
+        """
+        sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+        if not sessions_file.exists():
+            return
+        with open(sessions_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return
+        for key, entry in data.items():
+            if str(key).startswith("_") or not isinstance(entry, dict):
+                continue
+            session_id = entry.get("session_id")
+            if not session_id:
+                continue
+            origin = entry.get("origin")
+            cursor.execute(
+                """UPDATE sessions
+                   SET session_key = COALESCE(session_key, ?),
+                       chat_id = COALESCE(chat_id, ?),
+                       chat_type = COALESCE(chat_type, ?),
+                       thread_id = COALESCE(thread_id, ?),
+                       display_name = COALESCE(display_name, ?),
+                       origin_json = COALESCE(origin_json, ?),
+                       expiry_finalized = CASE
+                           WHEN COALESCE(expiry_finalized, 0) = 0 AND ? = 1 THEN 1
+                           ELSE expiry_finalized
+                       END
+                   WHERE id = ?""",
+                (
+                    entry.get("session_key") or key,
+                    (origin or {}).get("chat_id") if isinstance(origin, dict) else None,
+                    entry.get("chat_type"),
+                    (origin or {}).get("thread_id") if isinstance(origin, dict) else None,
+                    entry.get("display_name"),
+                    json.dumps(origin) if isinstance(origin, dict) else None,
+                    1 if entry.get("expiry_finalized") or entry.get("memory_flushed") else 0,
+                    str(session_id),
+                ),
+            )
 
     def find_latest_gateway_session_for_peer(
         self,
@@ -2712,6 +2895,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        search_query: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -2739,6 +2923,12 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        ``search_query`` matches case-insensitive substrings against each
+        surfaced row's title and id (and, like ``id_query``, every title/id in
+        its forward compression chain). A punctuation-stripped variant is also
+        matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
+        ``order_by_last_active`` path.
         """
         where_clauses = []
         params = []
@@ -2791,6 +2981,7 @@ class SessionDB:
         # order_by_last_active path (which builds the chain CTE); other callers
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
+        search_needle = (search_query or "").strip().lower()
         if order_by_last_active:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
@@ -2807,25 +2998,53 @@ class SessionDB:
             # the timestamp test and hijack resume/list projection.
             outer_where = where_sql
             id_params: List[Any] = []
+            filter_clauses: List[str] = []
+
+            def _like_pattern(needle: str) -> str:
+                escaped = (
+                    needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                return f"%{escaped}%"
+
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
                 # compression chain matches the needle. LIKE with a leading
                 # wildcard can't use an index, but the chain membership and
                 # the small result set keep this bounded — far cheaper than
                 # fetching every session and scanning in Python.
-                id_clause = (
+                filter_clauses.append(
                     "EXISTS (SELECT 1 FROM chain cq"
                     "        WHERE cq.root_id = s.id"
                     "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
                 )
-                like_pattern = (
-                    "%"
-                    + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    + "%"
+                id_params.append(_like_pattern(id_needle))
+            if search_needle:
+                # Same chain-membership trick as id_query, but matching either
+                # the title or the id of any session in the chain. The compact
+                # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                compact_needle = re.sub(r"[\W_]+", "", search_needle)
+                compact_sql = (
+                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
+                    " '-', ''), '_', ''), '.', ''), ' ', '')"
                 )
-                id_params = [like_pattern]
+                search_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    " JOIN sessions cs ON cs.id = cq.cur_id"
+                    " WHERE cq.root_id = s.id"
+                    " AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                    " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
+                )
+                id_params.extend([_like_pattern(search_needle)] * 2)
+                if compact_needle:
+                    search_clause += (
+                        f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                    )
+                    id_params.append(_like_pattern(compact_needle))
+                filter_clauses.append(search_clause + "))")
+            if filter_clauses:
+                combined = " AND ".join(filter_clauses)
                 outer_where = (
-                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                    f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (

@@ -12,6 +12,7 @@ the full SessionStore machinery.
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
@@ -20,6 +21,31 @@ logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
+# Import-time default, used by ``_resolve_sessions_index`` below to detect a
+# test monkeypatch of the constant (test seam, see tests/gateway/test_mirror.py)
+# vs. an unmodified import-time value (in which case it re-resolves through
+# the active profile override).
+_SESSIONS_INDEX_IMPORT_DEFAULT = _SESSIONS_INDEX
+
+
+def _resolve_sessions_index() -> Path:
+    """Resolve the sessions.json index path, honoring the active profile.
+
+    ``_SESSIONS_INDEX`` is frozen at import time, which pins every later
+    delivery-mirror lookup to whichever profile's ``HERMES_HOME`` was active
+    when this module was first imported — a cross-profile session leak under
+    the multiplexed gateway, where multiple profiles share one process.
+    Re-resolve through ``get_hermes_home()`` on every call so the
+    context-local profile override (``set_hermes_home_override``) is honored,
+    mirroring the cache-dir profile-isolation fix.
+
+    A test that monkeypatches the module constant away from its import-time
+    default is respected (test seam preserved).
+    """
+    current = _SESSIONS_INDEX
+    if current != _SESSIONS_INDEX_IMPORT_DEFAULT:
+        return current
+    return get_hermes_home() / "sessions" / "sessions.json"
 
 
 def mirror_to_session(
@@ -110,11 +136,12 @@ def _find_session_id(
     same-chat candidates exist and none matches the user, return None instead
     of guessing and contaminating another participant's session.
     """
-    if not _SESSIONS_INDEX.exists():
+    sessions_index = _resolve_sessions_index()
+    if not sessions_index.exists():
         return None
 
     try:
-        with open(_SESSIONS_INDEX, encoding="utf-8") as f:
+        with open(sessions_index, encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return None

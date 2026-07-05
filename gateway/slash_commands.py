@@ -3140,10 +3140,14 @@ class GatewaySlashCommandsMixin:
             if not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
 
+            # Pass the FULL transcript (tool results included) — same
+            # rationale as the session-hygiene auto-compress in
+            # gateway/run.py (#3854): filtering to user/assistant-only
+            # starves the compressor's tool-result pruning and can trip the
+            # protect-first/last early-return on short filtered histories.
             msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in {"user", "assistant"} and m.get("content")
+                m for m in history
+                if m.get("role") in {"user", "assistant", "tool"}
             ]
 
             # Boundary-aware split: only the head is summarized; the most

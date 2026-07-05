@@ -1073,6 +1073,7 @@ def _apply_main_model_assignment(
     if not isinstance(model_cfg, dict):
         model_cfg = {}
     prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    prev_model = str(model_cfg.get("default") or "").strip()
     new_provider = provider.strip().lower()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
@@ -1094,7 +1095,12 @@ def _apply_main_model_assignment(
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
-    model_cfg.pop("context_length", None)
+    # Preserve context_length on a same-model/same-provider re-pick so
+    # re-selecting a model in the dashboard doesn't silently drop a user's
+    # manually-set override.  Only clear it when the model or provider
+    # actually changed — the new model may have a different context window.
+    if new_provider != prev_provider or model != prev_model:
+        model_cfg.pop("context_length", None)
     return model_cfg
 
 

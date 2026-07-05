@@ -45,6 +45,25 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
+    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+        """Sum two usage buckets (e.g. MoA advisor fan-out + aggregator).
+
+        ``raw_usage`` is dropped on the sum — it describes a single API
+        response and cannot be meaningfully merged. ``request_count`` adds so
+        callers can see how many underlying API calls a combined figure covers.
+        """
+        if not isinstance(other, CanonicalUsage):
+            return NotImplemented
+        return CanonicalUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            request_count=self.request_count + other.request_count,
+            raw_usage=None,
+        )
+
 
 @dataclass(frozen=True)
 class BillingRoute:
@@ -451,6 +470,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("15.00"),
         output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -461,6 +482,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
         output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -471,6 +494,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
         output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -481,6 +506,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.80"),
         output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -579,9 +606,34 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Vertex AI hosts the same Gemini models as Google AI Studio; price them
+    # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
+    # the OpenAI-compat endpoint requires so the pricing key matches.
+    if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
+        return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
+
+
+def _normalize_bedrock_model_name(model: str) -> str:
+    """Normalize a Bedrock model id to its bare foundation-model form.
+
+    Bedrock cross-region inference profiles prefix the foundation model id
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
+    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
+    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
+    lookup or every cross-region session prices as unknown.  Mirrors the
+    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
+    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    """
+    name = model.lower().strip()
+    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    return name
 
 
 def _normalize_anthropic_model_name(model: str) -> str:
@@ -610,6 +662,14 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
     if route.provider == "anthropic":
         normalized = _normalize_anthropic_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+    # Bedrock cross-region inference profiles carry a region prefix
+    # (us./global./eu./...) that the bare pricing keys don't have.
+    if route.provider == "bedrock":
+        normalized = _normalize_bedrock_model_name(model)
         if normalized != model:
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
@@ -760,9 +820,22 @@ def normalize_usage(
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
+    # Responses API shape: output_tokens_details.reasoning_tokens.
+    # Chat Completions shape (OpenAI, OpenRouter, DeepSeek, etc.):
+    # completion_tokens_details.reasoning_tokens. Reading only the former
+    # left reasoning_tokens=0 for every chat_completions reasoning model —
+    # hidden thinking was invisible in session accounting even though it
+    # dominates output spend on models like deepseek-v4-flash (measured:
+    # single calls burning 21K reasoning tokens to emit 500 visible tokens).
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if not reasoning_tokens:
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details:
+            reasoning_tokens = _to_int(
+                getattr(completion_details, "reasoning_tokens", 0)
+            )
 
     return CanonicalUsage(
         input_tokens=input_tokens,

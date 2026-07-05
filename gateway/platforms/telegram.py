@@ -4507,8 +4507,35 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # ── Group mention gating ──────────────────────────────────────────────
 
-    def _telegram_require_mention(self) -> bool:
-        """Return whether group chats should require an explicit bot trigger."""
+    def _telegram_require_mention_chats(self) -> set[str]:
+        """Return group chat IDs that require an explicit bot trigger even when
+        ``require_mention`` is globally disabled.
+
+        This is the opt-in counterpart to ``free_response_chats``: it lets the
+        bot stay chatty everywhere by default while still requiring an @mention
+        in specific chats — e.g. multi-bot rooms where several agents share a
+        group and should not all answer every unaddressed message.  DMs are
+        never affected.  Empty set means no per-chat override (backward
+        compatible).
+        """
+        raw = self.config.extra.get("require_mention_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_REQUIRE_MENTION_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_require_mention(self, chat_id: Optional[str] = None) -> bool:
+        """Return whether group chats should require an explicit bot trigger.
+
+        When *chat_id* is supplied and appears in ``require_mention_chats``, the
+        mention requirement is forced on for that chat regardless of the global
+        setting — the per-chat opt-in counterpart to ``free_response_chats``.
+        (``free_response_chats`` is checked ahead of this at the call sites, so a
+        chat listed in both stays chatty; keep chats in only one list.)
+        """
+        if chat_id is not None and str(chat_id) in self._telegram_require_mention_chats():
+            return True
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
@@ -4884,7 +4911,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # if require_mention is disabled, every group message is a request.
         if chat_id_str in self._telegram_free_response_chats():
             return False
-        if not self._telegram_require_mention():
+        if not self._telegram_require_mention(chat_id_str):
             return False
         if self._is_reply_to_bot(message):
             return False
@@ -5135,7 +5162,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True
-        if not self._telegram_require_mention():
+        if not self._telegram_require_mention(chat_id_str):
             return True
         if self._is_reply_to_bot(message):
             return True

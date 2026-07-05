@@ -1034,6 +1034,14 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                # require_mention_chats: opt-in counterpart to free_response_chats —
+                # force @mention gating in these chats even when require_mention is
+                # globally off (e.g. multi-bot rooms).
+                rmc = telegram_cfg.get("require_mention_chats")
+                if rmc is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION_CHATS"):
+                    if isinstance(rmc, list):
+                        rmc = ",".join(str(v) for v in rmc)
+                    os.environ["TELEGRAM_REQUIRE_MENTION_CHATS"] = str(rmc)
                 # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
                 ac = telegram_cfg.get("allowed_chats")
                 if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):

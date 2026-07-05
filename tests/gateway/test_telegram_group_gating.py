@@ -11,6 +11,7 @@ from gateway.session import SessionSource
 def _make_adapter(
     require_mention=None,
     free_response_chats=None,
+    require_mention_chats=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
     ignored_threads=None,
@@ -30,6 +31,8 @@ def _make_adapter(
         extra["require_mention"] = require_mention
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if require_mention_chats is not None:
+        extra["require_mention_chats"] = require_mention_chats
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -541,6 +544,37 @@ def test_free_response_chats_bypass_mention_requirement():
 
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is True
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
+
+
+def test_require_mention_chats_opt_in_gates_specific_chat():
+    """require_mention_chats forces @mention gating in listed chats even when
+    require_mention is globally off — the opt-in counterpart to
+    free_response_chats (e.g. multi-bot rooms where several agents share a
+    group and should not all answer every unaddressed message)."""
+    adapter = _make_adapter(require_mention=False, require_mention_chats=["-200"])
+
+    # In the opted-in chat a plain message is ignored...
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is False
+    # ...but an explicit @mention still triggers.
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-200,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned) is True
+    # Every other chat stays chatty because the global default is off.
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is True
+
+
+def test_require_mention_chats_from_env(monkeypatch):
+    """TELEGRAM_REQUIRE_MENTION_CHATS feeds the per-chat opt-in when config is absent."""
+    monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION_CHATS", "-200, -300")
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._telegram_require_mention_chats() == {"-200", "-300"}
+    assert adapter._telegram_require_mention("-200") is True   # opted-in chat
+    assert adapter._telegram_require_mention("-999") is False  # falls back to global (off)
+    assert adapter._telegram_require_mention() is False        # no chat_id → global
 
 
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():

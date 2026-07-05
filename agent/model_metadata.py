@@ -2336,11 +2336,17 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """
     _IMAGE_TOKEN_COST = 1500
     total_chars = 0
+    total_cjk_chars = 0
     image_tokens = 0
     for msg in messages:
-        total_chars += _estimate_message_chars(msg)
+        chars, cjk_chars = _estimate_message_chars(msg)
+        total_chars += chars
+        total_cjk_chars += cjk_chars
         image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
-    return ((total_chars + 3) // 4) + image_tokens
+    # Non-CJK text: ~4 chars per token (current heuristic)
+    # CJK/fullwidth text: ~2 tokens per character (3-8x denser than ASCII)
+    non_cjk_chars = total_chars - total_cjk_chars
+    return ((non_cjk_chars + 3) // 4) + (total_cjk_chars * 2) + image_tokens
 
 
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
@@ -2369,14 +2375,71 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
-def _estimate_message_chars(msg: Dict[str, Any]) -> int:
+def _count_cjk_chars(text: str) -> int:
+    """Count CJK (Chinese/Japanese/Korean) and fullwidth characters in text.
+
+    These characters typically take 2-3 tokens each in most tokenizers
+    (e.g., cl100k_base, o200k_base), compared to ~0.25 tokens per ASCII
+    character.  Without this correction, rough token estimates for East
+    Asian text can undercount by 8-12x.
+    """
+    count = 0
+    for ch in text:
+        cp = ord(ch)
+        # CJK Unified Ideographs
+        if 0x4E00 <= cp <= 0x9FFF:
+            count += 1
+        # CJK Unified Ideographs Extension A
+        elif 0x3400 <= cp <= 0x4DBF:
+            count += 1
+        # CJK Unified Ideographs Extension B
+        elif 0x20000 <= cp <= 0x2A6DF:
+            count += 1
+        # CJK Compatibility Ideographs
+        elif 0xF900 <= cp <= 0xFAFF:
+            count += 1
+        # Fullwidth Forms (FF01-FF60, FFE0-FFE6)
+        elif 0xFF01 <= cp <= 0xFF60:
+            count += 1
+        elif 0xFFE0 <= cp <= 0xFFE6:
+            count += 1
+        # Hiragana
+        elif 0x3040 <= cp <= 0x309F:
+            count += 1
+        # Katakana
+        elif 0x30A0 <= cp <= 0x30FF:
+            count += 1
+        # Hangul Syllables
+        elif 0xAC00 <= cp <= 0xD7AF:
+            count += 1
+        # Hangul Jamo
+        elif 0x1100 <= cp <= 0x11FF:
+            count += 1
+        # Hangul Compatibility Jamo
+        elif 0x3130 <= cp <= 0x318F:
+            count += 1
+        # CJK Radicals Supplement
+        elif 0x2E80 <= cp <= 0x2EFF:
+            count += 1
+        # Kangxi Radicals
+        elif 0x2F00 <= cp <= 0x2FDF:
+            count += 1
+    return count
+
+
+def _estimate_message_chars(msg: Dict[str, Any]) -> tuple[int, int]:
     """Char count for token estimation, excluding base64 image data.
 
-    Base64 images are counted via `_count_image_tokens` instead; including
-    their raw chars here would massively overestimate token usage.
+    Returns ``(total_chars, cjk_chars)`` so callers can apply the
+    CJK-aware token heuristic.
+
+    Base64 images are counted via ``_count_image_tokens`` instead;
+    including their raw chars here would massively overestimate token
+    usage.
     """
     if not isinstance(msg, dict):
-        return len(str(msg))
+        raw = str(msg)
+        return len(raw), _count_cjk_chars(raw)
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k == "_anthropic_content_blocks":
@@ -2399,7 +2462,8 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
                 shadow[k] = v
         else:
             shadow[k] = v
-    return len(str(shadow))
+    text = str(shadow)
+    return len(text), _count_cjk_chars(text)
 
 
 def estimate_request_tokens_rough(
@@ -2418,9 +2482,14 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        cjk = _count_cjk_chars(system_prompt)
+        non_cjk = len(system_prompt) - cjk
+        total += ((non_cjk + 3) // 4) + (cjk * 2)
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:
-        total += (len(str(tools)) + 3) // 4
+        tools_text = str(tools)
+        cjk = _count_cjk_chars(tools_text)
+        non_cjk = len(tools_text) - cjk
+        total += ((non_cjk + 3) // 4) + (cjk * 2)
     return total

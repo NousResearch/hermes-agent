@@ -220,7 +220,7 @@ class IndentDumper(yaml.SafeDumper):
     serializers so all write paths emit byte-identical layouts (#31999).
     """
 
-    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
+    def increase_indent(self, flow=False, indentless=False):
         return super().increase_indent(flow, False)
 
 

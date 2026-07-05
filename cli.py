@@ -15,7 +15,7 @@ Usage:
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError:
     # Graceful fallback when hermes_bootstrap isn't registered in the venv
     # yet — happens during partial ``hermes update`` where git-reset landed
@@ -3081,7 +3081,7 @@ def _apply_bracketed_paste_timeout_patch() -> None:
         _vt100_mod.Vt100Parser.feed = _patched_vt100_feed
         _vt100_mod._hermes_bp_timeout_patched = True
         logger.debug("Applied Vt100Parser bracketed-paste timeout patch (#16263)")
-    except Exception as exc:  # noqa: BLE001 — defensive: never break startup
+    except Exception as exc:
         logger.debug("Bracketed-paste timeout patch skipped: %s", exc)
 
 
@@ -15956,7 +15956,7 @@ def main(
                         _build_parts = None
                         try:
                             from agent.image_routing import (
-                                build_native_content_parts as _build_parts,  # noqa: F811
+                                build_native_content_parts as _build_parts,
                             )
                             from agent.image_routing import decide_image_input_mode
                             from hermes_cli.config import load_config

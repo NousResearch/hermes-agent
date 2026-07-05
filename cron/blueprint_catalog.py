@@ -103,7 +103,7 @@ class AutomationBlueprint:
 # Curated in-repo catalog
 # ---------------------------------------------------------------------------
 
-_TIME = lambda default="08:00": BlueprintSlot(  # noqa: E731 - concise factory
+_TIME = lambda default="08:00": BlueprintSlot(
     name="time", type="time", label="What time?", default=default,
     help="24h local time, e.g. 08:00",
 )

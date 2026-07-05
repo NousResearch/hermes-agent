@@ -1066,7 +1066,7 @@ def handle_function_call(
     # tool name, not the bridge.
     _ts_mod = None
     try:
-        from tools import tool_search as _ts_mod  # noqa: F401
+        from tools import tool_search as _ts_mod
     except Exception:
         _ts_mod = None
 

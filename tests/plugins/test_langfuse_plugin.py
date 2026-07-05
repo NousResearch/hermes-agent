@@ -38,6 +38,10 @@ class TestManifest:
         # Required env vars are the user-facing HERMES_ prefixed keys.
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]
         assert "HERMES_LANGFUSE_SECRET_KEY" in data["requires_env"]
+        # pip_dependencies declares the langfuse SDK so that dependency
+        # management tools can discover it after venv refresh.
+        assert "pip_dependencies" in data
+        assert any("langfuse" in d for d in data["pip_dependencies"])
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +94,34 @@ class TestRuntimeGate:
 
         langfuse_plugin = self._fresh_plugin()
         assert langfuse_plugin._get_langfuse() is None
+
+    def test_warns_when_sdk_missing_but_credentials_present(
+        self, monkeypatch, caplog
+    ):
+        """When the langfuse SDK is absent but credentials are configured,
+        _get_langfuse() must log a warning so the operator sees the silent
+        no-op instead of wondering why tracing stopped."""
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        # Simulate configured credentials.
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-test123")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-test456")
+
+        langfuse_plugin = self._fresh_plugin()
+        # Force Langfuse to None (SDK not installed).
+        langfuse_plugin.Langfuse = None
+
+        with caplog.at_level(logging.WARNING):
+            assert langfuse_plugin._get_langfuse() is None
+
+        assert any(
+            "langfuse" in r.message.lower() and "not installed" in r.message.lower()
+            for r in caplog.records
+        ), f"Expected SDK-missing warning, got: {caplog.records}"
 
     def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
         """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""

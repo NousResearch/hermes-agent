@@ -162,6 +162,19 @@ def _get_langfuse() -> Optional[Langfuse]:
         return _LANGFUSE_CLIENT
 
     if Langfuse is None:
+        # Warn if real credentials are configured but SDK is missing — the
+        # plugin is fail-open so this produces a silent no-op otherwise
+        # (e.g. after a venv refresh removes the langfuse package).
+        # Skip the warning for placeholder/template credentials — those
+        # already get a separate "look like placeholders" warning below.
+        pk = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
+        sk = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
+        if pk and sk and pk.startswith("pk-lf-") and sk.startswith("sk-lf-"):
+            logger.warning(
+                "Langfuse plugin: credentials are configured but the 'langfuse' "
+                "SDK is not installed — tracing is a silent no-op. "
+                "Install with: pip install langfuse"
+            )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 

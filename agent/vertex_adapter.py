@@ -173,7 +173,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
 
         return creds.token, project_id
     except Exception as e:
-        logger.error(f"Failed to resolve Vertex AI credentials: {e}")
+        logger.error("Failed to resolve Vertex AI credentials: %s", e)
         _creds_cache.pop(cache_key, None)
 
         # If ADC failed (e.g. expired refresh token), try the SA file

@@ -87,11 +87,16 @@ export const en: Translations = {
       remoteTitle: 'Remote gateway sign-in required',
       remoteDescription:
         'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
+      connectionLostTitle: 'Hermes connection was interrupted',
+      connectionLostDescription:
+        'Hermes started, but the desktop lost its live connection to the gateway. Retry reconnects without reinstalling; your chats and settings stay safe.',
       retry: 'Retry',
       repairInstall: 'Repair install',
       useLocalGateway: 'Use local gateway',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      connectionLostHint:
+        'Retry reconnects to the running gateway. Repair install is hidden because this is a connection interruption, not an install failure.',
       remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',

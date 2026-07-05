@@ -25,7 +25,9 @@ Design:
 
 import json
 import logging
+import sys
 import os
+import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
@@ -333,6 +335,38 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+
+    def _auto_consolidate(self, target: str) -> bool:
+        """Try to make room in `target` by running memory-auto-compress.py.
+
+        Returns True if the file shrunk (compression freed some space), False otherwise.
+        Only invokes the script when the threshold is exceeded; silent no-op otherwise.
+        Does NOT raise — auto-consolidation is best-effort, the rejection path
+        handles the actual error reporting.
+        """
+        path = self._path_for(target)
+        if not path.exists():
+            return False
+        before_size = path.stat().st_size
+        script = get_memory_dir().parent / "scripts" / "memory-auto-compress.py"
+        if not script.exists():
+            return False
+        try:
+            # 5s timeout — auto-consolidation should be fast (just file rewrites).
+            # If the script hangs, the user is already in a bad state; fail open.
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            after_size = path.stat().st_size if path.exists() else before_size
+            return after_size < before_size
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.warning(f"memory auto-consolidate failed: {type(e).__name__}: {e}")
+            return False
+
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -363,6 +397,17 @@ class MemoryStore:
             # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
+
+            if new_total > limit:
+                # Try auto-consolidation first: runs memory-auto-compress.py to
+                # archive oldest sections, then re-measure. If that makes room, the
+                # add proceeds silently — no manual intervention needed.
+                if self._auto_consolidate(target):
+                    # Re-read state after compress (file changed under us)
+                    self._reload_target(target, skip_drift=True)
+                    entries = self._entries_for(target)
+                    new_entries = entries + [content]
+                    new_total = len(ENTRY_DELIMITER.join(new_entries))
 
             if new_total > limit:
                 current = self._char_count(target)

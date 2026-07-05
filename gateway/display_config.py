@@ -239,6 +239,10 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         val = str(value).strip().lower()
+        if val in {"false", "0", "no"}:
+            return "off"
+        if val in {"true", "1", "yes", "on"}:
+            return "all"
         return val if val in {"off", "new", "all", "verbose", "log"} else "all"
     if setting in {
         "show_reasoning",
@@ -246,6 +250,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "busy_steer_ack_enabled",
         "thinking_progress",
     }:
         if isinstance(value, str):

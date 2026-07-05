@@ -448,10 +448,7 @@ def _cmd_export(args) -> int:
 def _cmd_suggest_tasks(args) -> int:
     """Auto-discover task definitions from observed agent usage patterns."""
     try:
-        from agent.evolution.conversation_observer import (
-            get_observer,
-            PATTERN_LABELS,
-        )
+        from agent.evolution.conversation_observer import get_observer
         from agent.evolution.task_definition import save_task, get_task_dir
     except Exception as e:
         print(f"Error loading observer module: {e}")
@@ -461,7 +458,10 @@ def _cmd_suggest_tasks(args) -> int:
     suggestions = observer.suggest_tasks(min_occurrences=args.min_occurrences)
 
     if not suggestions:
-        print("No task patterns discovered yet.")
+        stats = observer.get_stats()
+        print("No task clusters ready for definition yet.\n")
+        print(f"  Sessions observed: {stats["total_sessions_observed"]}")
+        print(f"  Clusters forming:  {stats["total_clusters"]}")
         print()
         print("The Conversation Observer watches your agent usage and detects")
         print("recurring patterns (bug fixes, deployments, file work, etc.).")
@@ -474,27 +474,27 @@ def _cmd_suggest_tasks(args) -> int:
     print(f"Discovered {len(suggestions)} task pattern(s) from your agent usage:\n")
 
     saved_count = 0
-    for i, pattern in enumerate(suggestions, 1):
-        label = PATTERN_LABELS.get(pattern.pattern_type, pattern.pattern_type)
+    for i, cluster in enumerate(suggestions, 1):
+        label = cluster.task_name
         print(f"  [{i}] {label}")
-        print(f"      Task:        {pattern.suggested_task_name}")
-        print(f"      Description: {pattern.description}")
-        print(f"      Occurrences: {pattern.occurrences} sessions")
+        print(f"      Task:        {cluster.task_name}")
+        print(f"      Description: {cluster.description}")
+        print(f"      Occurrences: {cluster.occurrence_count} sessions")
         print(f"      Confidence:  {pattern.confidence:.0%}")
         print(f"      Tools used:  {', '.join(pattern.tools_used[:5])}")
         if pattern.commands_seen:
             print(f"      Sample cmd:  {pattern.commands_seen[-1][:80]}")
-        print(f"      Criteria:    {len(pattern.suggested_criteria)} suggested")
+        print(f"      Criteria:    {len(cluster.suggested_criteria)} suggested")
 
         if args.verbose:
-            yaml_str = observer.suggest_task_yaml(pattern)
+            yaml_str = observer.suggest_task_yaml(cluster)
             print(f"\n{yaml_str}")
 
         if args.save:
             try:
                 from agent.evolution.task_definition import TaskDefinition
-                yaml_str = observer.suggest_task_yaml(pattern)
-                task_path = get_task_dir() / f"{pattern.suggested_task_name}.yaml"
+                yaml_str = observer.suggest_task_yaml(cluster)
+                task_path = get_task_dir() / f"{cluster.task_name}.yaml"
                 task_path.parent.mkdir(parents=True, exist_ok=True)
                 task_path.write_text(yaml_str)
                 saved_count += 1
